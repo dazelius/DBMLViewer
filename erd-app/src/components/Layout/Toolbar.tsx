@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSchemaStore } from '../../store/useSchemaStore.ts';
 import { useCanvasStore } from '../../store/useCanvasStore.ts';
+import { useExploreStore } from '../../store/useExploreStore.ts';
 import SQLExportModal from '../Export/SQLExportModal.tsx';
 import ExcelImportModal from '../Import/ExcelImportModal.tsx';
 import { exportCanvasAsImage } from '../../core/export/imageExporter.ts';
@@ -17,6 +18,8 @@ export default function Toolbar() {
   const setNodes = useCanvasStore((s) => s.setNodes);
   const nodes = useCanvasStore((s) => s.nodes);
   const setTransform = useCanvasStore((s) => s.setTransform);
+  const collapseMode = useExploreStore((s) => s.collapseMode);
+  const toggleCollapseMode = useExploreStore((s) => s.toggleCollapseMode);
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -94,6 +97,23 @@ export default function Toolbar() {
               <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
             </svg>
             <span>Fit</span>
+          </ToolButton>
+
+          {/* Collapse toggle */}
+          <ToolButton onClick={toggleCollapseMode} title="Toggle collapse mode">
+            {collapseMode ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <line x1="3" y1="9" x2="21" y2="9" />
+                <line x1="3" y1="15" x2="21" y2="15" />
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <line x1="3" y1="9" x2="21" y2="9" />
+              </svg>
+            )}
+            <span>{collapseMode ? 'Expand' : 'Collapse'}</span>
           </ToolButton>
 
           <div className="w-px h-5 mx-1" style={{ background: 'var(--border-color)' }} />

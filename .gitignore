@@ -1,6 +1,10 @@
 # Dependencies
 node_modules/
 
+# Root-level test artifacts
+/package.json
+/package-lock.json
+
 # Build output
 dist/
 dist-ssr/

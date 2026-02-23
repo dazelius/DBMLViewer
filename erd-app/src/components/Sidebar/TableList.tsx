@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useSchemaStore } from '../../store/useSchemaStore.ts';
 import { useCanvasStore } from '../../store/useCanvasStore.ts';
+import { useExploreStore } from '../../store/useExploreStore.ts';
 import type { SchemaTable } from '../../core/schema/types.ts';
 
 export default function TableList() {
@@ -10,6 +11,9 @@ export default function TableList() {
   const nodes = useCanvasStore((s) => s.nodes);
   const transform = useCanvasStore((s) => s.transform);
   const setTransform = useCanvasStore((s) => s.setTransform);
+  const hiddenGroups = useExploreStore((s) => s.hiddenGroups);
+  const toggleGroupVisibility = useExploreStore((s) => s.toggleGroupVisibility);
+  const showAllGroups = useExploreStore((s) => s.showAllGroups);
 
   const handleTableClick = (tableId: string) => {
     setSelectedTable(tableId);
@@ -71,6 +75,25 @@ export default function TableList() {
         )}
       </div>
 
+      {/* Group filter bar */}
+      {groups.length > 0 && hiddenGroups.size > 0 && (
+        <div
+          className="flex items-center gap-1 px-3 py-1.5 text-[10px]"
+          style={{ borderBottom: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}
+        >
+          <span style={{ color: 'var(--text-muted)' }}>
+            {hiddenGroups.size} group{hiddenGroups.size > 1 ? 's' : ''} hidden
+          </span>
+          <button
+            onClick={showAllGroups}
+            className="ml-auto text-[10px] font-medium cursor-pointer"
+            style={{ color: 'var(--accent)' }}
+          >
+            Show all
+          </button>
+        </div>
+      )}
+
       <div className="flex-1 py-1 overflow-y-auto">
         {groups.map((grp) => (
           <GroupSection
@@ -80,6 +103,8 @@ export default function TableList() {
             tables={grp.tables}
             selectedTableId={selectedTableId}
             onTableClick={handleTableClick}
+            hidden={hiddenGroups.has(grp.name)}
+            onToggleVisibility={() => toggleGroupVisibility(grp.name)}
           />
         ))}
 
@@ -115,38 +140,66 @@ export default function TableList() {
 }
 
 function GroupSection({
-  name, color, tables, selectedTableId, onTableClick,
+  name, color, tables, selectedTableId, onTableClick, hidden, onToggleVisibility,
 }: {
   name: string;
   color: string;
   tables: SchemaTable[];
   selectedTableId: string | null;
   onTableClick: (id: string) => void;
+  hidden?: boolean;
+  onToggleVisibility?: () => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
-    <div className="mb-0.5">
-      <button
-        onClick={() => setCollapsed(!collapsed)}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-semibold cursor-pointer"
+    <div className="mb-0.5" style={{ opacity: hidden ? 0.4 : 1 }}>
+      <div
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-semibold"
         style={{ color: color }}
         onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover)'; }}
         onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
       >
-        <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: color }} />
-        <span className="truncate">{name}</span>
-        <span className="ml-auto text-[9px] font-normal" style={{ color: 'var(--text-muted)' }}>
-          {tables.length}
-        </span>
-        <svg
-          width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-          style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0)', transition: 'transform 0.15s' }}
+        {/* Visibility toggle */}
+        {onToggleVisibility && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggleVisibility(); }}
+            className="flex-shrink-0 cursor-pointer"
+            title={hidden ? 'Show group' : 'Hide group'}
+            style={{ color: hidden ? 'var(--text-muted)' : color }}
+          >
+            {hidden ? (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+                <line x1="1" y1="1" x2="23" y2="23" />
+              </svg>
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            )}
+          </button>
+        )}
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="flex items-center gap-2 flex-1 min-w-0 cursor-pointer"
         >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-      {!collapsed && tables.map((table) => (
+          <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: color }} />
+          <span className="truncate">{name}</span>
+          <span className="ml-auto text-[9px] font-normal" style={{ color: 'var(--text-muted)' }}>
+            {tables.length}
+          </span>
+          <svg
+            width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+            style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0)', transition: 'transform 0.15s' }}
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+      </div>
+      {!collapsed && !hidden && tables.map((table) => (
         <TableRow
           key={table.id}
           table={table}

@@ -1,7 +1,8 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useSchemaStore } from '../../store/useSchemaStore.ts';
 import { useCanvasStore } from '../../store/useCanvasStore.ts';
-import { renderCanvas } from './renderer/CanvasRenderer.ts';
+import { useExploreStore } from '../../store/useExploreStore.ts';
+import { renderCanvas, type ExploreVisuals } from './renderer/CanvasRenderer.ts';
 import { handleWheel, fitToScreen } from './interaction/ZoomPanHandler.ts';
 import { findTableAtPoint, findGroupAtPoint, findColumnAtPoint, createInitialDragState, type DragState, type HoverInfo } from './interaction/DragHandler.ts';
 import { findRefAtPoint } from './interaction/SelectionHandler.ts';
@@ -32,6 +33,26 @@ export default function ERDCanvas() {
   const setSelectedTable = useCanvasStore((s) => s.setSelectedTable);
   const setSelectedRef = useCanvasStore((s) => s.setSelectedRef);
 
+  const impactActive = useExploreStore((s) => s.impactActive);
+  const impactDepthMap = useExploreStore((s) => s.impactDepthMap);
+  const columnSearchActive = useExploreStore((s) => s.columnSearchActive);
+  const columnSearchResults = useExploreStore((s) => s.columnSearchResults);
+  const pathFinderActive = useExploreStore((s) => s.pathFinderActive);
+  const pathFinderResult = useExploreStore((s) => s.pathFinderResult);
+  const collapseMode = useExploreStore((s) => s.collapseMode);
+  const hiddenGroups = useExploreStore((s) => s.hiddenGroups);
+
+  const exploreVisuals: ExploreVisuals = {
+    impactActive,
+    impactDepthMap,
+    columnSearchActive,
+    columnSearchResults,
+    pathFinderActive,
+    pathFinderPath: pathFinderResult,
+    collapseMode,
+    hiddenGroups,
+  };
+
   // Render loop
   const render = useCallback(() => {
     const canvas = canvasRef.current;
@@ -45,8 +66,8 @@ export default function ERDCanvas() {
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);
 
-    renderCanvas(ctx, rect.width, rect.height, schema, nodes, transform, selectedTableId, selectedRefId, hoveredTableRef.current);
-  }, [schema, nodes, transform, selectedTableId, selectedRefId]);
+    renderCanvas(ctx, rect.width, rect.height, schema, nodes, transform, selectedTableId, selectedRefId, hoveredTableRef.current, exploreVisuals);
+  }, [schema, nodes, transform, selectedTableId, selectedRefId, exploreVisuals]);
 
   useEffect(() => {
     const loop = () => {
@@ -115,7 +136,6 @@ export default function ERDCanvas() {
         startNodeY: node.position.y,
       };
     } else if (schema) {
-      // Check if clicking on a group bounding box
       const groupName = findGroupAtPoint(e.clientX, e.clientY, rect, schema.tableGroups, nodes, transform);
       if (groupName) {
         const grp = schema.tableGroups.find((g) => g.name === groupName);
@@ -157,7 +177,7 @@ export default function ERDCanvas() {
     }
   }, [nodes, transform, schema, setSelectedTable, setSelectedRef]);
 
-  // Mouse move - drag/pan + hover tooltip
+  // Mouse move
   const onMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
 
@@ -191,7 +211,6 @@ export default function ERDCanvas() {
       return;
     }
 
-    // Hover detection for table highlight + note tooltip
     if (!schema) { setTooltip(null); hoveredTableRef.current = null; return; }
 
     const canvas = canvasRef.current;
@@ -215,11 +234,7 @@ export default function ERDCanvas() {
     const ox = containerRect ? hover.screenX - containerRect.left : hover.screenX;
     const oy = containerRect ? hover.screenY - containerRect.top : hover.screenY;
 
-    setTooltip({
-      text: col.note,
-      x: ox + 14,
-      y: oy - 10,
-    });
+    setTooltip({ text: col.note, x: ox + 14, y: oy - 10 });
   }, [transform, updateNodePosition, updateMultipleNodePositions, setTransform, schema, nodes]);
 
   const onMouseUp = useCallback(() => {

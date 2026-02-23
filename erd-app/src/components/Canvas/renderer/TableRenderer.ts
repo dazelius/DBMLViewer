@@ -410,4 +410,102 @@ function drawTableFull(
   ctx.restore(); // end outer save
 }
 
+/** Collapsed mode: show only header with column count badge */
+export function drawTableCollapsed(
+  ctx: CanvasRenderingContext2D,
+  table: SchemaTable,
+  node: TableNode,
+  transform: ViewTransform,
+  isSelected: boolean,
+  isDark: boolean
+) {
+  const theme = getTheme(isDark);
+  const s = transform.scale;
+  const { x, y } = node.position;
+  const { width } = node.size;
+
+  const collapsedH = HEADER_HEIGHT + 8;
+  const sx = x * s + transform.x;
+  const sy = y * s + transform.y;
+  const sw = width * s;
+  const sh = collapsedH * s;
+  const sr = BORDER_RADIUS * s;
+
+  const cvs = ctx.canvas;
+  if (sx + sw < -50 || sy + sh < -50 || sx > cvs.width + 50 || sy > cvs.height + 50) return;
+
+  const accent = table.groupColor ?? theme.ungroupedAccent;
+  const stripeW = LEFT_STRIPE_WIDTH * s;
+
+  ctx.save();
+
+  ctx.shadowColor = isDark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.08)';
+  ctx.shadowBlur = 10 * s;
+  ctx.shadowOffsetY = 2 * s;
+  roundRect(ctx, sx, sy, sw, sh, sr);
+  ctx.fillStyle = theme.tableBg;
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+
+  roundRect(ctx, sx, sy, sw, sh, sr);
+  ctx.strokeStyle = isSelected ? accent : theme.tableBorder;
+  ctx.lineWidth = isSelected ? 2.5 : 1;
+  ctx.stroke();
+
+  ctx.save();
+  roundRect(ctx, sx, sy, sw, sh, sr);
+  ctx.clip();
+
+  // Left stripe
+  ctx.fillStyle = accent;
+  ctx.fillRect(sx, sy, stripeW, sh);
+
+  // Header bg
+  ctx.fillStyle = theme.tableHeaderBg;
+  ctx.fillRect(sx, sy, sw, sh);
+  ctx.fillStyle = hexToRgba(accent, isDark ? 0.12 : 0.08);
+  ctx.fillRect(sx, sy, sw, sh);
+
+  // Dot
+  const fontSize = Math.max(8, 13 * s);
+  ctx.textBaseline = 'middle';
+  const dotR = 3.5 * s;
+  const dotX = sx + stripeW + 12 * s;
+  const dotY = sy + sh / 2;
+  ctx.beginPath();
+  ctx.arc(dotX, dotY, dotR, 0, Math.PI * 2);
+  ctx.fillStyle = accent;
+  ctx.fill();
+
+  // Table name
+  const nameLeft = dotX + dotR + 7 * s;
+  ctx.font = `700 ${fontSize}px ${FONT_FAMILY}`;
+  ctx.fillStyle = theme.tableHeaderText;
+
+  // Column count badge
+  const countStr = `${table.columns.length}`;
+  const badgeFontSize = Math.max(6, 10 * s);
+  ctx.font = `600 ${badgeFontSize}px ${FONT_FAMILY}`;
+  const countW = ctx.measureText(countStr).width;
+  const badgePad = 6 * s;
+  const badgeW = countW + badgePad * 2;
+  const badgeH = badgeFontSize + 4 * s;
+  const badgeX = sx + sw - stripeW - badgeW - 8 * s;
+  const badgeY = dotY - badgeH / 2;
+
+  roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 3 * s);
+  ctx.fillStyle = hexToRgba(accent, isDark ? 0.2 : 0.12);
+  ctx.fill();
+  ctx.fillStyle = hexToRgba(accent, isDark ? 0.8 : 0.7);
+  ctx.fillText(countStr, badgeX + badgePad, dotY);
+
+  // Name (truncated before badge)
+  ctx.font = `700 ${fontSize}px ${FONT_FAMILY}`;
+  ctx.fillStyle = theme.tableHeaderText;
+  fillTextTruncated(ctx, table.name, nameLeft, dotY, badgeX - nameLeft - 6 * s);
+
+  ctx.restore();
+  ctx.restore();
+}
+
 export { HEADER_HEIGHT, ROW_HEIGHT };
