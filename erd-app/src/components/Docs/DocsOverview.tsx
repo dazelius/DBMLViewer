@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useSchemaStore } from '../../store/useSchemaStore.ts';
+import { useCanvasStore } from '../../store/useCanvasStore.ts';
 import type { SchemaTable, SchemaRef, ParsedSchema } from '../../core/schema/types.ts';
 import { analyzeSchemaWithAI, type AIInsight } from '../../core/ai/claudeAnalyzer.ts';
 
@@ -51,6 +52,9 @@ export default function DocsOverview({ onSelectTable }: DocsOverviewProps) {
       <div style={{ paddingTop: 0, paddingBottom: 48 }}>
         <SchemaInsights schema={schema} onSelectTable={onSelectTable} />
       </div>
+
+      {/* Data Volume Insights */}
+      <DataVolumeInsights schema={schema} onSelectTable={onSelectTable} />
 
       {/* Groups */}
       {tableGroups.map((grp) => {
@@ -168,9 +172,11 @@ function TableCard({ table, color, onClick, refs }: {
   onClick: () => void;
   refs: SchemaRef[];
 }) {
+  const heatmapData = useCanvasStore((s) => s.heatmapData);
   const relCount = refs.filter((r) => r.fromTable === table.id || r.toTable === table.id).length;
   const pkCount = table.columns.filter((c) => c.isPrimaryKey).length;
   const fkCount = table.columns.filter((c) => c.isForeignKey).length;
+  const rowCount = heatmapData.get(table.name.toLowerCase());
 
   return (
     <button
@@ -232,6 +238,7 @@ function TableCard({ table, color, onClick, refs }: {
         {pkCount > 0 && <MetaTag label={`${pkCount} PK`} variant="warning" />}
         {fkCount > 0 && <MetaTag label={`${fkCount} FK`} variant="accent" />}
         {relCount > 0 && <MetaTag label={`${relCount} refs`} variant="ref" />}
+        {rowCount !== undefined && <MetaTag label={`${rowCount.toLocaleString()} rows`} variant="rows" />}
       </div>
     </button>
   );
@@ -448,7 +455,7 @@ function analyzeSchema(schema: ParsedSchema): { insights: Insight[]; health: Hea
       level: 'info',
       title: `허브 테이블 ${hubs.length}개 (10개+ 테이블에서 참조)`,
       problem: '매우 많은 테이블이 의존하고 있어, 이 테이블의 스키마 변경 시 광범위한 영향이 발생합니다.',
-      action: '변경 전 Impact Analysis를 수행하고, 관련 팀에 사전 공유하세요.',
+      action: '변경 전 영향 범위를 분석하고, 관련 팀에 사전 공유하세요.',
       tables: hubs.map((t) => `${t.name} (${inCounts.get(t.id)} refs)`),
     });
   }
@@ -1142,7 +1149,424 @@ function InsightCard({ insight, tables, onSelectTable }: {
   );
 }
 
-function MetaTag({ label, variant }: { label: string; variant?: 'accent' | 'warning' | 'ref' }) {
+/* ─────────────────── Data Volume Insights ─────────────────── */
+
+interface VolumeStats {
+  totalRows: number;
+  totalCells: number;
+  matchedCount: number;
+  schemaCount: number;
+  coverage: number;
+  avgRows: number;
+  medianRows: number;
+  maxRows: number;
+  skewRatio: number;
+  topTables: { name: string; group: string | null; rows: number; cols: number; refs: number }[];
+  groupDist: { name: string; color: string; rows: number; tableCount: number }[];
+  hotspots: { name: string; rows: number; refs: number; score: number }[];
+  emptyTables: string[];
+  paretoTop20Pct: number;
+}
+
+function analyzeDataVolume(schema: ParsedSchema, heatmap: Map<string, number>): VolumeStats | null {
+  if (heatmap.size === 0) return null;
+
+  const { tables, refs, tableGroups } = schema;
+
+  const tableGroupMap = new Map<string, string>();
+  const tableGroupColor = new Map<string, string>();
+  for (const g of tableGroups) {
+    for (const tid of g.tables) {
+      tableGroupMap.set(tid, g.name);
+      tableGroupColor.set(g.name, g.color ?? '#6c8eef');
+    }
+  }
+
+  const refCountMap = new Map<string, number>();
+  for (const r of refs) {
+    refCountMap.set(r.fromTable, (refCountMap.get(r.fromTable) ?? 0) + 1);
+    refCountMap.set(r.toTable, (refCountMap.get(r.toTable) ?? 0) + 1);
+  }
+
+  const matched: { name: string; group: string | null; rows: number; cols: number; refs: number }[] = [];
+  const emptyTables: string[] = [];
+
+  for (const t of tables) {
+    const rc = heatmap.get(t.name.toLowerCase());
+    if (rc !== undefined && rc > 0) {
+      matched.push({
+        name: t.name,
+        group: t.groupName ?? null,
+        rows: rc,
+        cols: t.columns.length,
+        refs: refCountMap.get(t.id) ?? 0,
+      });
+    } else {
+      emptyTables.push(t.name);
+    }
+  }
+
+  if (matched.length === 0) return null;
+
+  const sortedRows = matched.map((m) => m.rows).sort((a, b) => a - b);
+  const totalRows = sortedRows.reduce((a, b) => a + b, 0);
+  const medianRows = sortedRows[Math.floor(sortedRows.length / 2)];
+  const maxRows = sortedRows[sortedRows.length - 1];
+  const totalCells = matched.reduce((s, m) => s + m.rows * m.cols, 0);
+
+  const topTables = [...matched].sort((a, b) => b.rows - a.rows).slice(0, 10);
+
+  // Pareto: top 20% tables hold X% of data
+  const sortedDesc = [...matched].sort((a, b) => b.rows - a.rows);
+  const top20Count = Math.max(1, Math.ceil(matched.length * 0.2));
+  const top20Rows = sortedDesc.slice(0, top20Count).reduce((s, m) => s + m.rows, 0);
+  const paretoTop20Pct = totalRows > 0 ? Math.round((top20Rows / totalRows) * 100) : 0;
+
+  // Group distribution
+  const groupRowMap = new Map<string, { rows: number; count: number }>();
+  let ungroupedRows = 0;
+  let ungroupedCount = 0;
+  for (const m of matched) {
+    if (m.group) {
+      const cur = groupRowMap.get(m.group) ?? { rows: 0, count: 0 };
+      cur.rows += m.rows;
+      cur.count += 1;
+      groupRowMap.set(m.group, cur);
+    } else {
+      ungroupedRows += m.rows;
+      ungroupedCount++;
+    }
+  }
+  const groupDist: VolumeStats['groupDist'] = [];
+  for (const [name, data] of groupRowMap) {
+    groupDist.push({ name, color: tableGroupColor.get(name) ?? '#6c8eef', rows: data.rows, tableCount: data.count });
+  }
+  if (ungroupedCount > 0) {
+    groupDist.push({ name: 'Ungrouped', color: '#5c6078', rows: ungroupedRows, tableCount: ungroupedCount });
+  }
+  groupDist.sort((a, b) => b.rows - a.rows);
+
+  // Hotspots: high rows AND high refs
+  const hotspots = matched
+    .filter((m) => m.refs >= 3 && m.rows >= 20)
+    .map((m) => ({ name: m.name, rows: m.rows, refs: m.refs, score: m.rows * m.refs }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+
+  return {
+    totalRows,
+    totalCells,
+    matchedCount: matched.length,
+    schemaCount: tables.length,
+    coverage: Math.round((matched.length / tables.length) * 100),
+    avgRows: Math.round(totalRows / matched.length),
+    medianRows,
+    maxRows,
+    skewRatio: medianRows > 0 ? Math.round(maxRows / medianRows) : maxRows,
+    topTables,
+    groupDist,
+    hotspots,
+    emptyTables,
+    paretoTop20Pct,
+  };
+}
+
+function formatNum(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+  return n.toLocaleString();
+}
+
+function DataVolumeInsights({ schema, onSelectTable }: { schema: ParsedSchema; onSelectTable: (tableId: string) => void }) {
+  const heatmapData = useCanvasStore((s) => s.heatmapData);
+  const [expanded, setExpanded] = useState(false);
+
+  const stats = useMemo(() => analyzeDataVolume(schema, heatmapData), [schema, heatmapData]);
+
+  if (!stats) return null;
+
+  const coverageColor = stats.coverage >= 80 ? '#22c55e' : stats.coverage >= 50 ? '#f59e0b' : '#ef4444';
+
+  return (
+    <div
+      className="rounded-xl"
+      style={{
+        border: '1px solid var(--border-color)',
+        background: 'var(--bg-secondary)',
+        overflow: 'hidden',
+        marginBottom: 48,
+      }}
+    >
+      {/* Header */}
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-4 w-full px-5 py-4 cursor-pointer text-left"
+        style={{ transition: 'background 0.15s' }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-hover)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+      >
+        <div
+          className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+          style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #ef4444 100%)' }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
+            <rect x="3" y="12" width="4" height="9" rx="1" />
+            <rect x="10" y="7" width="4" height="14" rx="1" />
+            <rect x="17" y="3" width="4" height="18" rx="1" />
+          </svg>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2.5">
+            <h3 className="text-[13px] font-bold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+              Data Volume Insights
+            </h3>
+            <span className="text-[8px] font-bold px-1.5 py-[2px] rounded tracking-wider" style={{ background: 'rgba(59,130,246,0.1)', color: '#3b82f6' }}>
+              {formatNum(stats.totalRows)} ROWS
+            </span>
+            <span className="text-[8px] font-bold px-1.5 py-[2px] rounded tracking-wider" style={{ background: 'rgba(34,197,94,0.1)', color: coverageColor }}>
+              {stats.coverage}% COVERAGE
+            </span>
+          </div>
+          <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+            {stats.matchedCount}개 테이블의 데이터 규모 분석 — 클릭하여 상세 보기
+          </p>
+        </div>
+        <svg
+          width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2.5" strokeLinecap="round"
+          style={{
+            transform: expanded ? 'rotate(0)' : 'rotate(-90deg)',
+            transition: 'transform 0.2s cubic-bezier(0.16,1,0.3,1)',
+            flexShrink: 0,
+          }}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {/* Expanded content */}
+      {expanded && (
+        <div className="px-5 pb-5" style={{ borderTop: '1px solid var(--border-color)' }}>
+          {/* Summary stats */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 mb-5">
+            <VolumeStat label="Total Rows" value={formatNum(stats.totalRows)} sub="전체 데이터 행 수" color="#3b82f6" />
+            <VolumeStat label="Total Cells" value={formatNum(stats.totalCells)} sub="rows × columns" color="#8b5cf6" />
+            <VolumeStat label="Avg / Table" value={formatNum(stats.avgRows)} sub={`중앙값 ${formatNum(stats.medianRows)}`} color="#22c55e" />
+            <VolumeStat label="Skew Ratio" value={`${stats.skewRatio}x`} sub="최대 / 중앙값 편중도" color={stats.skewRatio > 20 ? '#f59e0b' : '#22c55e'} />
+          </div>
+
+          {/* Pareto insight */}
+          <div
+            className="rounded-lg px-4 py-3 mb-4 flex items-center gap-3"
+            style={{
+              background: stats.paretoTop20Pct >= 80 ? 'rgba(249,115,22,0.06)' : 'rgba(59,130,246,0.06)',
+              border: `1px solid ${stats.paretoTop20Pct >= 80 ? 'rgba(249,115,22,0.15)' : 'rgba(59,130,246,0.12)'}`,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={stats.paretoTop20Pct >= 80 ? '#f97316' : '#3b82f6'} strokeWidth="2" strokeLinecap="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            <div>
+              <span className="text-[11px] font-bold" style={{ color: stats.paretoTop20Pct >= 80 ? '#f97316' : '#3b82f6' }}>
+                상위 20% 테이블이 전체 데이터의 {stats.paretoTop20Pct}%를 보유
+              </span>
+              <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                {stats.paretoTop20Pct >= 80
+                  ? '데이터가 소수 테이블에 집중되어 있습니다. 해당 테이블의 성능 최적화를 우선 검토하세요.'
+                  : '데이터가 비교적 고르게 분포되어 있습니다.'}
+              </p>
+            </div>
+          </div>
+
+          {/* Top Heavy Tables */}
+          <div className="mb-5">
+            <h4 className="text-[11px] font-bold uppercase tracking-wider mb-3" style={{ color: 'var(--text-muted)' }}>
+              Top Heavy Tables
+            </h4>
+            <div className="flex flex-col gap-1.5">
+              {stats.topTables.map((t) => {
+                const pct = stats.maxRows > 0 ? (t.rows / stats.maxRows) * 100 : 0;
+                const tbl = schema.tables.find((st) => st.name === t.name);
+                return (
+                  <div
+                    key={t.name}
+                    className="flex items-center gap-3 rounded-lg px-3 py-2 interactive"
+                    style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)', cursor: tbl ? 'pointer' : 'default' }}
+                    onClick={() => { if (tbl) onSelectTable(tbl.id); }}
+                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border-color)'; }}
+                  >
+                    <span className="text-[11px] font-semibold truncate" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', width: 160, flexShrink: 0 }}>
+                      {t.name}
+                    </span>
+                    {t.group && (
+                      <span className="text-[9px] font-medium px-1.5 py-[1px] rounded" style={{ background: 'var(--bg-surface)', color: 'var(--text-muted)', flexShrink: 0 }}>
+                        {t.group}
+                      </span>
+                    )}
+                    <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-surface)', minWidth: 60 }}>
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          width: `${Math.max(3, pct)}%`,
+                          background: `linear-gradient(90deg, #3b82f6, ${pct > 70 ? '#ef4444' : pct > 40 ? '#f59e0b' : '#22c55e'})`,
+                          transition: 'width 0.4s ease',
+                        }}
+                      />
+                    </div>
+                    <span className="text-[11px] font-bold tabular-nums" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', minWidth: 48, textAlign: 'right' }}>
+                      {formatNum(t.rows)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Group Distribution */}
+          {stats.groupDist.length > 1 && (
+            <div className="mb-5">
+              <h4 className="text-[11px] font-bold uppercase tracking-wider mb-3" style={{ color: 'var(--text-muted)' }}>
+                Group Data Distribution
+              </h4>
+              {/* Stacked bar */}
+              <div className="flex h-4 rounded-full overflow-hidden mb-3" style={{ background: 'var(--bg-surface)' }}>
+                {stats.groupDist.map((g) => {
+                  const pct = stats.totalRows > 0 ? (g.rows / stats.totalRows) * 100 : 0;
+                  if (pct < 1) return null;
+                  return (
+                    <div
+                      key={g.name}
+                      title={`${g.name}: ${formatNum(g.rows)} rows (${Math.round(pct)}%)`}
+                      style={{ width: `${pct}%`, background: g.color, opacity: 0.7, transition: 'width 0.4s' }}
+                    />
+                  );
+                })}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {stats.groupDist.map((g) => {
+                  const pct = stats.totalRows > 0 ? Math.round((g.rows / stats.totalRows) * 100) : 0;
+                  return (
+                    <div key={g.name} className="flex items-center gap-2.5 px-3 py-2 rounded-lg" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)' }}>
+                      <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: g.color }} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[10px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{g.name}</div>
+                        <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{g.tableCount} tables</div>
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <div className="text-[11px] font-bold tabular-nums" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{formatNum(g.rows)}</div>
+                        <div className="text-[9px] tabular-nums" style={{ color: 'var(--text-muted)' }}>{pct}%</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Data Hotspots */}
+          {stats.hotspots.length > 0 && (
+            <div className="mb-5">
+              <h4 className="text-[11px] font-bold uppercase tracking-wider mb-3" style={{ color: 'var(--text-muted)' }}>
+                Data Hotspots
+                <span className="ml-2 text-[8px] font-bold px-1.5 py-[2px] rounded" style={{ background: 'var(--warning-muted)', color: 'var(--warning)' }}>
+                  JOIN 복잡도 주의
+                </span>
+              </h4>
+              <div className="flex flex-col gap-1.5">
+                {stats.hotspots.map((h) => {
+                  const tbl = schema.tables.find((st) => st.name === h.name);
+                  return (
+                    <div
+                      key={h.name}
+                      className="flex items-center gap-3 rounded-lg px-3 py-2.5 interactive"
+                      style={{ background: 'rgba(249,115,22,0.04)', border: '1px solid rgba(249,115,22,0.12)', cursor: tbl ? 'pointer' : 'default' }}
+                      onClick={() => { if (tbl) onSelectTable(tbl.id); }}
+                      onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#f97316'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(249,115,22,0.12)'; }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0">
+                        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                      </svg>
+                      <span className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', minWidth: 140 }}>
+                        {h.name}
+                      </span>
+                      <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-muted)' }}>
+                        {formatNum(h.rows)} rows
+                      </span>
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>×</span>
+                      <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-muted)' }}>
+                        {h.refs} FK refs
+                      </span>
+                      <span className="text-[10px] font-bold tabular-nums ml-auto" style={{ color: '#f97316' }}>
+                        score {formatNum(h.score)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Empty Tables */}
+          {stats.emptyTables.length > 0 && (
+            <div>
+              <h4 className="text-[11px] font-bold uppercase tracking-wider mb-3" style={{ color: 'var(--text-muted)' }}>
+                Empty Tables
+                <span className="ml-2 text-[8px] font-bold px-1.5 py-[2px] rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
+                  {stats.emptyTables.length} tables
+                </span>
+              </h4>
+              <p className="text-[10px] mb-2.5" style={{ color: 'var(--text-muted)' }}>
+                스키마에 정의되었지만 데이터가 없는 테이블입니다. 데이터 시트가 누락되었거나, 아직 데이터가 입력되지 않았을 수 있습니다.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {stats.emptyTables.map((name) => {
+                  const tbl = schema.tables.find((t) => t.name === name);
+                  return (
+                    <span
+                      key={name}
+                      className="text-[10px] font-medium px-2 py-[3px] rounded-md interactive"
+                      style={{
+                        background: 'var(--bg-surface)',
+                        color: 'var(--text-secondary)',
+                        border: '1px solid var(--border-color)',
+                        fontFamily: 'var(--font-mono)',
+                        cursor: tbl ? 'pointer' : 'default',
+                        transition: 'border-color 0.15s, color 0.15s',
+                      }}
+                      onClick={() => { if (tbl) onSelectTable(tbl.id); }}
+                      onMouseEnter={(e) => { if (tbl) { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; } }}
+                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border-color)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+                    >
+                      {name}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VolumeStat({ label, value, sub, color }: { label: string; value: string; sub: string; color: string }) {
+  return (
+    <div
+      className="rounded-lg px-3 py-3 text-center"
+      style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)' }}
+    >
+      <div className="text-[18px] font-bold tabular-nums" style={{ color, fontFamily: 'var(--font-mono)' }}>{value}</div>
+      <div className="text-[10px] font-semibold uppercase tracking-wider mt-0.5" style={{ color: 'var(--text-primary)' }}>{label}</div>
+      <div className="text-[9px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{sub}</div>
+    </div>
+  );
+}
+
+function MetaTag({ label, variant }: { label: string; variant?: 'accent' | 'warning' | 'ref' | 'rows' }) {
   let bg = 'var(--bg-surface)';
   let fg = 'var(--text-muted)';
 
@@ -1152,6 +1576,9 @@ function MetaTag({ label, variant }: { label: string; variant?: 'accent' | 'warn
   } else if (variant === 'warning') {
     bg = 'var(--warning-muted)';
     fg = 'var(--warning)';
+  } else if (variant === 'rows') {
+    bg = 'rgba(59,130,246,0.08)';
+    fg = '#3b82f6';
   } else if (variant === 'ref') {
     bg = 'var(--bg-surface)';
     fg = 'var(--text-muted)';

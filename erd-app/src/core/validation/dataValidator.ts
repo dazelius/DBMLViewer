@@ -58,18 +58,50 @@ function isMetaSheet(name: string): boolean {
   return SKIP_SHEETS.has(name.toLowerCase());
 }
 
+/** Scan the first few rows to find the one that best matches known column names */
+function findHeaderRow(raw: unknown[][], knownCols?: Set<string>): number {
+  const scanLimit = Math.min(5, raw.length);
+  let bestIdx = 0;
+  let bestScore = -1;
+
+  for (let r = 0; r < scanLimit; r++) {
+    const row = (raw[r] as unknown[]) ?? [];
+    const cells = row.map((v) => String(v ?? '').trim().toLowerCase()).filter(Boolean);
+    if (cells.length === 0) continue;
+
+    if (knownCols && knownCols.size > 0) {
+      const matchCount = cells.filter((c) => knownCols.has(c)).length;
+      if (matchCount > bestScore) {
+        bestScore = matchCount;
+        bestIdx = r;
+      }
+    } else {
+      const stringCells = cells.filter((c) => isNaN(Number(c)));
+      if (stringCells.length > bestScore) {
+        bestScore = stringCells.length;
+        bestIdx = r;
+      }
+    }
+  }
+
+  return bestIdx;
+}
+
 function parseSheetAsTable(
   sheet: XLSX.WorkSheet,
-  sheetName: string
+  sheetName: string,
+  knownCols?: Set<string>
 ): TableData | null {
   const raw = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
   if (raw.length < 2) return null;
 
-  const headerRow = (raw[0] as unknown[]).map((h) => String(h ?? '').trim());
+  const headerIdx = findHeaderRow(raw, knownCols);
+
+  const headerRow = (raw[headerIdx] as unknown[]).map((h) => String(h ?? '').trim());
   if (headerRow.filter(Boolean).length === 0) return null;
 
   const rows: Record<string, string>[] = [];
-  for (let i = 1; i < raw.length; i++) {
+  for (let i = headerIdx + 1; i < raw.length; i++) {
     const rowArr = raw[i] as unknown[];
     if (!rowArr || rowArr.every((v) => v == null || String(v).trim() === '')) continue;
     const record: Record<string, string> = {};
@@ -84,9 +116,20 @@ function parseSheetAsTable(
   return { name: sheetName, headers: headerRow.filter(Boolean), rows, rowCount: rows.length };
 }
 
-export function parseDataFromFiles(files: { name: string; data: ArrayBuffer }[]): { tables: TableData[]; logs: string[] } {
+export function parseDataFromFiles(
+  files: { name: string; data: ArrayBuffer }[],
+  schema?: ParsedSchema
+): { tables: TableData[]; logs: string[] } {
   const tables: TableData[] = [];
   const logs: string[] = [];
+
+  // Build known column name map from schema for header detection
+  const schemaColsMap = new Map<string, Set<string>>();
+  if (schema) {
+    for (const t of schema.tables) {
+      schemaColsMap.set(t.name.toLowerCase(), new Set(t.columns.map((c) => c.name.toLowerCase())));
+    }
+  }
 
   const xlsxFiles = files.filter((f) => f.name.endsWith('.xlsx') && !f.name.startsWith('~$'));
   logs.push(`Found ${xlsxFiles.length} Excel files`);
@@ -102,7 +145,8 @@ export function parseDataFromFiles(files: { name: string; data: ArrayBuffer }[])
         const sheet = wb.Sheets[sheetName];
         if (!sheet) continue;
 
-        const td = parseSheetAsTable(sheet, sheetName);
+        const knownCols = schemaColsMap.get(sheetName.toLowerCase());
+        const td = parseSheetAsTable(sheet, sheetName, knownCols);
         if (td) {
           tables.push(td);
           sheetsFound++;

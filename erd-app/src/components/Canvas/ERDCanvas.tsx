@@ -47,22 +47,14 @@ export default function ERDCanvas() {
   const heatmapData = useCanvasStore((s) => s.heatmapData);
   const heatmapEnabled = useCanvasStore((s) => s.heatmapEnabled);
 
-  const impactActive = useExploreStore((s) => s.impactActive);
-  const impactDepthMap = useExploreStore((s) => s.impactDepthMap);
   const columnSearchActive = useExploreStore((s) => s.columnSearchActive);
   const columnSearchResults = useExploreStore((s) => s.columnSearchResults);
-  const pathFinderActive = useExploreStore((s) => s.pathFinderActive);
-  const pathFinderResult = useExploreStore((s) => s.pathFinderResult);
   const collapseMode = useExploreStore((s) => s.collapseMode);
   const hiddenGroups = useExploreStore((s) => s.hiddenGroups);
 
   const exploreVisuals: ExploreVisuals = {
-    impactActive,
-    impactDepthMap,
     columnSearchActive,
     columnSearchResults,
-    pathFinderActive,
-    pathFinderPath: pathFinderResult,
     collapseMode,
     hiddenGroups,
     focusActive,

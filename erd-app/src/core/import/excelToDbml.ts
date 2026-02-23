@@ -47,6 +47,7 @@ interface ImportResult {
   };
   logs: string[];
   dataRowCounts: Map<string, number>;
+  dataSheets: Map<string, { headers: string[]; rows: Record<string, string>[] }>;
 }
 
 function cleanText(text: unknown): string {
@@ -76,6 +77,36 @@ function extractTableName(filename: string): string {
     .replace(/\.xlsx$/i, '')
     .replace(/^DataDefine_/i, '')
     .replace(/_SheetDefine$/i, '');
+}
+
+/** Scan the first few rows to find the one that best matches known column names */
+function findHeaderRow(raw: unknown[][], knownCols?: Set<string>): number {
+  const scanLimit = Math.min(5, raw.length);
+  let bestIdx = 0;
+  let bestScore = -1;
+
+  for (let r = 0; r < scanLimit; r++) {
+    const row = (raw[r] as unknown[]) ?? [];
+    const cells = row.map((v) => String(v ?? '').trim().toLowerCase()).filter(Boolean);
+    if (cells.length === 0) continue;
+
+    if (knownCols && knownCols.size > 0) {
+      const matchCount = cells.filter((c) => knownCols.has(c)).length;
+      if (matchCount > bestScore) {
+        bestScore = matchCount;
+        bestIdx = r;
+      }
+    } else {
+      // Fallback: pick the row with most non-numeric string cells
+      const stringCells = cells.filter((c) => isNaN(Number(c)));
+      if (stringCells.length > bestScore) {
+        bestScore = stringCells.length;
+        bestIdx = r;
+      }
+    }
+  }
+
+  return bestIdx;
 }
 
 function findColumnIndex(headerRow: unknown[], name: string): number {
@@ -281,7 +312,9 @@ function processEnumSheet(wb: XLSX.WorkBook, logs: string[]): ExcelEnum[] {
 }
 
 function processTableGroupSheet(wb: XLSX.WorkBook, logs: string[]): ExcelTableGroup[] {
-  const sheet = wb.Sheets['TableGroup'];
+  const sheetName = wb.SheetNames.find((s) => s.toLowerCase() === 'tablegroup');
+  if (!sheetName) return [];
+  const sheet = wb.Sheets[sheetName];
   if (!sheet) return [];
 
   const data = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
@@ -415,6 +448,7 @@ export function excelFilesToDbml(
   const allEnums: ExcelEnum[] = [];
   const allGroups: ExcelTableGroup[] = [];
   const dataRowCounts = new Map<string, number>();
+  const dataSheets = new Map<string, { headers: string[]; rows: Record<string, string>[] }>();
   let totalNotes = 0;
 
   const META_SHEETS = new Set(['define', 'tabledefine', 'enum', 'tablegroup']);
@@ -425,9 +459,12 @@ export function excelFilesToDbml(
 
   logs.push(`Found ${xlsxFiles.length} Excel files`);
 
+  // Pass 1: Parse schema (Define, Enum, TableGroup)
+  const parsedWorkbooks: { name: string; wb: XLSX.WorkBook }[] = [];
   for (const file of xlsxFiles) {
     try {
       const wb = XLSX.read(file.data, { type: 'array' });
+      parsedWorkbooks.push({ name: file.name, wb });
 
       const { table, fks, noteCount } = processDefineSheet(wb, file.name, logs);
       if (table && table.columns.length > 0) {
@@ -441,20 +478,53 @@ export function excelFilesToDbml(
 
       const groups = processTableGroupSheet(wb, logs);
       allGroups.push(...groups);
+    } catch (err) {
+      logs.push(`[ERROR] ${file.name}: ${err}`);
+    }
+  }
 
+  // Build known column name sets from all parsed schema tables
+  const knownColsMap = new Map<string, Set<string>>();
+  for (const t of tables) {
+    knownColsMap.set(t.name.toLowerCase(), new Set(t.columns.map((c) => c.name.toLowerCase())));
+  }
+
+  // Pass 2: Parse data sheets (for heatmap & data preview)
+  for (const { name: fileName, wb } of parsedWorkbooks) {
+    try {
       for (const sheetName of wb.SheetNames) {
         if (META_SHEETS.has(sheetName.toLowerCase())) continue;
         if (sheetName.includes('#')) continue;
         const sheet = wb.Sheets[sheetName];
         if (!sheet) continue;
         const raw = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
-        const rowCount = Math.max(0, raw.length - 1);
-        if (rowCount > 0) {
-          dataRowCounts.set(sheetName.toLowerCase(), rowCount);
+        if (raw.length < 2) continue;
+
+        const knownCols = knownColsMap.get(sheetName.toLowerCase());
+        const headerIdx = findHeaderRow(raw, knownCols);
+
+        const headerRow = (raw[headerIdx] as unknown[]).map((h) => String(h ?? '').trim());
+        const validHeaders = headerRow.filter(Boolean);
+        if (validHeaders.length === 0) continue;
+        const rows: Record<string, string>[] = [];
+        for (let i = headerIdx + 1; i < raw.length; i++) {
+          const rowArr = raw[i] as unknown[];
+          if (!rowArr || rowArr.every((v) => v == null || String(v).trim() === '')) continue;
+          const record: Record<string, string> = {};
+          for (let j = 0; j < headerRow.length; j++) {
+            if (!headerRow[j]) continue;
+            record[headerRow[j]] = rowArr[j] != null ? String(rowArr[j]).trim() : '';
+          }
+          rows.push(record);
+        }
+        if (rows.length > 0) {
+          const key = sheetName.toLowerCase();
+          dataRowCounts.set(key, rows.length);
+          dataSheets.set(key, { headers: validHeaders, rows });
         }
       }
     } catch (err) {
-      logs.push(`[ERROR] ${file.name}: ${err}`);
+      logs.push(`[ERROR] ${fileName} data parse: ${err}`);
     }
   }
 
@@ -520,5 +590,6 @@ export function excelFilesToDbml(
     },
     logs,
     dataRowCounts,
+    dataSheets,
   };
 }

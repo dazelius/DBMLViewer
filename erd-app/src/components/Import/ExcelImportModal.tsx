@@ -2,12 +2,19 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { excelFilesToDbml } from '../../core/import/excelToDbml.ts';
 import { useEditorStore } from '../../store/useEditorStore.ts';
 import { useCanvasStore } from '../../store/useCanvasStore.ts';
+import {
+  gitSync,
+  gitStatus,
+  gitLoadFiles,
+  type GitStatus,
+} from '../../core/import/gitlabService.ts';
 
 interface ExcelImportModalProps {
   onClose: () => void;
 }
 
 type ImportState = 'idle' | 'processing' | 'done' | 'error';
+type ImportTab = 'local' | 'gitlab';
 
 interface FolderEntry {
   handle: FileSystemDirectoryHandle;
@@ -17,6 +24,8 @@ interface FolderEntry {
 const IDB_NAME = 'erd-studio-import';
 const IDB_STORE = 'dir-handles';
 const IDB_KEY = 'last-datadefine-multi';
+const DEFAULT_SCHEMA_PATH = 'GameData/DataDefine';
+const DEFAULT_DATA_PATH = 'GameData/Data';
 
 async function openIDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -80,6 +89,7 @@ async function readFilesFromHandle(dirHandle: FileSystemDirectoryHandle): Promis
 
 export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
   const setDbmlText = useEditorStore((s) => s.setDbmlText);
+  const [tab, setTab] = useState<ImportTab>('gitlab');
   const [state, setState] = useState<ImportState>('idle');
   const [logs, setLogs] = useState<string[]>([]);
   const [stats, setStats] = useState<{ files: number; tables: number; columns: number; refs: number; enums: number; groups: number; notes: number } | null>(null);
@@ -90,6 +100,11 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
   const [folders, setFolders] = useState<FolderEntry[]>([]);
   const [savedFolders, setSavedFolders] = useState<FolderEntry[]>([]);
   const [quickLoading, setQuickLoading] = useState(false);
+
+  // Git state
+  const [gitInfo, setGitInfo] = useState<GitStatus | null>(null);
+  const [glIncludeData, setGlIncludeData] = useState(true);
+  const [syncing, setSyncing] = useState(false);
 
   const hasFSApi = 'showDirectoryPicker' in window;
 
@@ -103,10 +118,14 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
     });
   }, [hasFSApi]);
 
+  useEffect(() => {
+    gitStatus().then(setGitInfo).catch(() => setGitInfo(null));
+  }, []);
+
   const processFiles = async (allFiles: { name: string; data: ArrayBuffer }[]) => {
     if (allFiles.length === 0) {
       setState('error');
-      setError('No .xlsx files found in the selected folders.');
+      setError('No .xlsx files found.');
       return;
     }
     const result = excelFilesToDbml(allFiles);
@@ -117,6 +136,9 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
 
     if (result.dataRowCounts.size > 0) {
       useCanvasStore.getState().setHeatmapData(result.dataRowCounts);
+    }
+    if (result.dataSheets.size > 0) {
+      useCanvasStore.getState().setTableData(result.dataSheets);
     }
   };
 
@@ -210,11 +232,61 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
     }
   }, []);
 
+  /* ─── Git Import ─── */
+  const handleGitImport = useCallback(async () => {
+    setState('processing');
+    setLogs(['Git 레포지토리 동기화 중...']);
+    setSyncing(true);
+
+    try {
+      // 1) git pull (clone if first time)
+      const syncResult = await gitSync(undefined, undefined, 'develop');
+      setSyncing(false);
+
+      if (syncResult.status === 'cloned') {
+        setLogs((prev) => [...prev, `✅ 레포지토리 클론 완료 (${syncResult.commit ?? ''})`]);
+      } else if (syncResult.status === 'updated') {
+        setLogs((prev) => [...prev, `✅ 최신 버전으로 업데이트 (${syncResult.commit ?? ''})`]);
+      } else {
+        setLogs((prev) => [...prev, `⚡ 이미 최신 상태 (${syncResult.commit ?? ''})`]);
+      }
+
+      // 2) Load schema files from local clone
+      setLogs((prev) => [...prev, `\n📂 스키마 파일 로드 중... (${DEFAULT_SCHEMA_PATH})`]);
+      const schemaFiles = await gitLoadFiles(DEFAULT_SCHEMA_PATH);
+      setLogs((prev) => [...prev, `✅ 스키마 파일 ${schemaFiles.length}개 로드`]);
+
+      // 3) Load data files if enabled
+      let dataFiles: { name: string; data: ArrayBuffer }[] = [];
+      if (glIncludeData) {
+        setLogs((prev) => [...prev, `\n📊 데이터 파일 로드 중... (${DEFAULT_DATA_PATH})`]);
+        dataFiles = await gitLoadFiles(DEFAULT_DATA_PATH);
+        setLogs((prev) => [...prev, `✅ 데이터 파일 ${dataFiles.length}개 로드`]);
+      }
+
+      const allFiles = [...schemaFiles, ...dataFiles];
+      setLogs((prev) => [...prev, `\n📦 총 ${allFiles.length}개 파일 처리 중...`]);
+      await processFiles(allFiles);
+
+      // Update git info
+      gitStatus().then(setGitInfo).catch(() => {});
+    } catch (err: any) {
+      setState('error');
+      setError(String(err));
+      setSyncing(false);
+    }
+  }, [glIncludeData]);
+
   const handleApply = () => {
     if (dbmlResult) {
       setDbmlText(dbmlResult);
       onClose();
     }
+  };
+
+  const handleReset = () => {
+    setState('idle');
+    setError('');
   };
 
   return (
@@ -225,7 +297,7 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
     >
       <div
         className="w-full rounded-xl overflow-hidden modal-enter"
-        style={{ maxWidth: 580, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-xl)' }}
+        style={{ maxWidth: 620, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-xl)' }}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: '1px solid var(--border-color)' }}>
@@ -237,9 +309,9 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
               </svg>
             </div>
             <div>
-              <h2 className="text-[14px] font-bold tracking-tight" style={{ color: 'var(--text-primary)' }}>Import from Excel</h2>
+              <h2 className="text-[14px] font-bold tracking-tight" style={{ color: 'var(--text-primary)' }}>Import Excel</h2>
               <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                복수의 폴더를 추가하여 Excel 파일을 가져올 수 있습니다
+                로컬 폴더 또는 GitLab 레포지토리에서 가져오기
               </p>
             </div>
           </div>
@@ -257,9 +329,135 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
           </button>
         </div>
 
+        {/* Tabs (only show when idle) */}
+        {state === 'idle' && (
+          <div className="flex px-6 pt-4 gap-1">
+            <ImportTabBtn active={tab === 'gitlab'} onClick={() => setTab('gitlab')}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 0 1-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 0 1 4.82 2a.43.43 0 0 1 .58 0 .42.42 0 0 1 .11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0 1 18.6 2a.43.43 0 0 1 .58 0 .42.42 0 0 1 .11.18l2.44 7.51L23 13.45a.84.84 0 0 1-.35.94z" />
+              </svg>
+              GitLab
+            </ImportTabBtn>
+            <ImportTabBtn active={tab === 'local'} onClick={() => setTab('local')}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              </svg>
+              Local Folder
+            </ImportTabBtn>
+          </div>
+        )}
+
         {/* Body */}
         <div className="px-6 py-5">
-          {state === 'idle' && (
+          {/* ─── GitLab Tab ─── */}
+          {state === 'idle' && tab === 'gitlab' && (
+            <div>
+              {/* Git status */}
+              <div
+                className="rounded-xl p-4 mb-4"
+                style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)' }}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round">
+                    <circle cx="12" cy="12" r="4" />
+                    <line x1="1.05" y1="12" x2="7" y2="12" />
+                    <line x1="17.01" y1="12" x2="22.96" y2="12" />
+                  </svg>
+                  <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>Git Repository</span>
+                </div>
+                {gitInfo?.cloned ? (
+                  <div className="flex flex-col gap-1 mt-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-medium" style={{ color: 'var(--text-muted)', minWidth: 50 }}>Commit</span>
+                      <span className="text-[11px] font-mono font-medium" style={{ color: 'var(--success)' }}>
+                        {gitInfo.commit}
+                      </span>
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        {gitInfo.date ? new Date(gitInfo.date).toLocaleString('ko-KR') : ''}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-medium" style={{ color: 'var(--text-muted)', minWidth: 50 }}>Message</span>
+                      <span className="text-[11px] truncate" style={{ color: 'var(--text-secondary)' }}>
+                        {gitInfo.message}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                    아직 클론되지 않음 — 아래 버튼을 누르면 자동으로 클론합니다
+                  </p>
+                )}
+              </div>
+
+              {/* Paths info */}
+              <div
+                className="rounded-lg overflow-hidden mb-4"
+                style={{ border: '1px solid var(--border-color)' }}
+              >
+                <div
+                  className="flex items-center gap-2 px-3 py-2"
+                  style={{ background: 'var(--bg-primary)', borderBottom: '1px solid var(--border-color)' }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" className="flex-shrink-0">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  </svg>
+                  <span className="text-[11px] font-mono" style={{ color: 'var(--text-primary)' }}>{DEFAULT_SCHEMA_PATH}</span>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>Schema</span>
+                </div>
+                <div
+                  className="flex items-center gap-2 px-3 py-2"
+                  style={{ background: 'var(--bg-primary)' }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" className="flex-shrink-0">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  </svg>
+                  <span className="text-[11px] font-mono" style={{ color: glIncludeData ? 'var(--text-primary)' : 'var(--text-muted)' }}>{DEFAULT_DATA_PATH}</span>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold" style={{ background: 'rgba(59,130,246,0.08)', color: '#3b82f6' }}>Data</span>
+                </div>
+              </div>
+
+              {/* Include data checkbox */}
+              <label
+                className="flex items-center gap-2.5 rounded-lg px-3 py-2.5 cursor-pointer interactive mb-4"
+                style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)' }}
+              >
+                <input
+                  type="checkbox"
+                  checked={glIncludeData}
+                  onChange={(e) => setGlIncludeData(e.target.checked)}
+                  className="accent-[var(--accent)] w-3.5 h-3.5"
+                />
+                <div>
+                  <span className="text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
+                    데이터 파일도 함께 가져오기
+                  </span>
+                  <span className="text-[10px] ml-1" style={{ color: 'var(--text-muted)' }}>
+                    히트맵, Data Preview 용
+                  </span>
+                </div>
+              </label>
+
+              {/* Import button */}
+              <button
+                onClick={handleGitImport}
+                className="w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg text-[12px] font-bold cursor-pointer interactive"
+                style={{ background: 'var(--accent)', color: '#fff', boxShadow: 'var(--shadow-glow)' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-hover)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--accent)'; }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                {gitInfo?.cloned ? 'Git Pull & Import' : 'Git Clone & Import'}
+              </button>
+            </div>
+          )}
+
+          {/* ─── Local Folder Tab ─── */}
+          {state === 'idle' && tab === 'local' && (
             <div>
               {/* Quick Load from saved */}
               {hasFSApi && savedFolders.length > 0 && folders.length === 0 && (
@@ -432,16 +630,20 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
             </div>
           )}
 
+          {/* ─── Processing ─── */}
           {state === 'processing' && (
-            <div className="text-center py-10">
+            <div className="text-center py-8">
               <div className="w-10 h-10 border-2 border-t-transparent rounded-full spinner mx-auto mb-4" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
-              <p className="text-[13px] font-medium" style={{ color: 'var(--text-secondary)' }}>Processing Excel files...</p>
-              {logs.length > 1 && (
-                <p className="text-[11px] mt-2" style={{ color: 'var(--text-muted)' }}>{logs[logs.length - 1]}</p>
+              <p className="text-[13px] font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+                {tab === 'gitlab' && syncing ? 'Git 동기화 중...' : 'Excel 파일 처리 중...'}
+              </p>
+              {logs.length > 0 && (
+                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{logs[logs.length - 1]}</p>
               )}
             </div>
           )}
 
+          {/* ─── Error ─── */}
           {state === 'error' && (
             <div className="py-4">
               <div className="flex items-start gap-3 mb-4 px-4 py-3 rounded-xl" style={{ background: 'var(--error-muted)', border: '1px solid var(--error)' }}>
@@ -450,10 +652,10 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
                   <line x1="15" y1="9" x2="9" y2="15" />
                   <line x1="9" y1="9" x2="15" y2="15" />
                 </svg>
-                <span className="text-[12px] leading-relaxed" style={{ color: 'var(--error)' }}>{error}</span>
+                <span className="text-[12px] leading-relaxed break-all" style={{ color: 'var(--error)' }}>{error}</span>
               </div>
               <button
-                onClick={() => { setState('idle'); setError(''); }}
+                onClick={handleReset}
                 className="text-[12px] font-semibold cursor-pointer interactive px-3 py-1.5 rounded-lg"
                 style={{ color: 'var(--accent)', background: 'var(--accent-muted)' }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.color = '#fff'; }}
@@ -464,6 +666,7 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
             </div>
           )}
 
+          {/* ─── Done ─── */}
           {state === 'done' && stats && (
             <div>
               {/* Stats */}
@@ -527,6 +730,26 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
         />
       </div>
     </div>
+  );
+}
+
+/* ─── Sub-components ─── */
+
+function ImportTabBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-1.5 px-4 py-2 text-[11px] font-semibold rounded-t-lg cursor-pointer interactive"
+      style={{
+        background: active ? 'var(--bg-primary)' : 'transparent',
+        color: active ? 'var(--text-primary)' : 'var(--text-muted)',
+        borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+      }}
+      onMouseEnter={(e) => { if (!active) { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.background = 'var(--bg-hover)'; } }}
+      onMouseLeave={(e) => { if (!active) { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent'; } }}
+    >
+      {children}
+    </button>
   );
 }
 

@@ -17,6 +17,7 @@ interface CanvasState {
 
   heatmapData: Map<string, number>;
   heatmapEnabled: boolean;
+  tableData: Map<string, { headers: string[]; rows: Record<string, string>[] }>;
 
   setNodes: (nodes: Map<string, TableNode>) => void;
   updateNodePosition: (tableId: string, x: number, y: number) => void;
@@ -31,6 +32,7 @@ interface CanvasState {
   exitFocusMode: () => void;
   setHeatmapData: (data: Map<string, number>) => void;
   toggleHeatmap: () => void;
+  setTableData: (data: Map<string, { headers: string[]; rows: Record<string, string>[] }>) => void;
 }
 
 export const useCanvasStore = create<CanvasState>((set, get) => ({
@@ -47,6 +49,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   heatmapData: new Map(),
   heatmapEnabled: false,
+  tableData: new Map(),
 
   setNodes: (nodes) => set({ nodes: new Map(nodes) }),
 
@@ -129,4 +132,5 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   setHeatmapData: (data) => set({ heatmapData: data, heatmapEnabled: data.size > 0 }),
   toggleHeatmap: () => set((s) => ({ heatmapEnabled: !s.heatmapEnabled })),
+  setTableData: (data) => set({ tableData: data }),
 }));

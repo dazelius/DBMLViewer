@@ -6,12 +6,8 @@ import { drawTable, drawTableCollapsed, type HeatmapInfo } from './TableRenderer
 import { drawRelationship, determineConnectionSide } from './RelationshipRenderer.ts';
 
 export interface ExploreVisuals {
-  impactActive: boolean;
-  impactDepthMap: Map<string, number>;
   columnSearchActive: boolean;
   columnSearchResults: Set<string>;
-  pathFinderActive: boolean;
-  pathFinderPath: string[];
   collapseMode: boolean;
   hiddenGroups: Set<string>;
   focusActive: boolean;
@@ -20,12 +16,8 @@ export interface ExploreVisuals {
 }
 
 const DEFAULT_EXPLORE: ExploreVisuals = {
-  impactActive: false,
-  impactDepthMap: new Map(),
   columnSearchActive: false,
   columnSearchResults: new Set(),
-  pathFinderActive: false,
-  pathFinderPath: [],
   collapseMode: false,
   hiddenGroups: new Set(),
   focusActive: false,
@@ -37,19 +29,8 @@ function getTableOpacity(
   tableId: string,
   explore: ExploreVisuals
 ): number {
-  if (explore.impactActive) {
-    const depth = explore.impactDepthMap.get(tableId);
-    if (depth === undefined) return 0.08;
-    if (depth === 0) return 1;
-    if (depth === 1) return 0.9;
-    if (depth === 2) return 0.5;
-    return 0.25;
-  }
   if (explore.columnSearchActive) {
     return explore.columnSearchResults.has(tableId) ? 1 : 0.1;
-  }
-  if (explore.pathFinderActive) {
-    return explore.pathFinderPath.includes(tableId) ? 1 : 0.08;
   }
   return 1;
 }
@@ -62,24 +43,9 @@ function getRefVisuals(
   const hoverHighlight = hoveredTableId != null &&
     (ref.fromTable === hoveredTableId || ref.toTable === hoveredTableId);
 
-  if (explore.impactActive) {
-    const fromD = explore.impactDepthMap.get(ref.fromTable);
-    const toD = explore.impactDepthMap.get(ref.toTable);
-    if (fromD !== undefined && toD !== undefined) {
-      return { highlight: hoverHighlight || (fromD === 0 || toD === 0), dimmed: false };
-    }
-    return { highlight: false, dimmed: true };
-  }
   if (explore.columnSearchActive) {
     const both = explore.columnSearchResults.has(ref.fromTable) && explore.columnSearchResults.has(ref.toTable);
     return { highlight: hoverHighlight || both, dimmed: !both && !hoverHighlight };
-  }
-  if (explore.pathFinderActive) {
-    const path = explore.pathFinderPath;
-    const fi = path.indexOf(ref.fromTable);
-    const ti = path.indexOf(ref.toTable);
-    const onPath = fi >= 0 && ti >= 0 && Math.abs(fi - ti) === 1;
-    return { highlight: hoverHighlight || onPath, dimmed: !onPath && !hoverHighlight };
   }
   if (hoveredTableId) {
     return { highlight: hoverHighlight, dimmed: !hoverHighlight };
@@ -121,7 +87,7 @@ export function renderCanvas(
     return;
   }
 
-  const hasExploreFilter = explore.impactActive || explore.columnSearchActive || explore.pathFinderActive;
+  const hasExploreFilter = explore.columnSearchActive;
 
   // Determine which tables are visible (group filtering)
   const tableGroupMap = new Map<string, string>();

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { useSchemaStore } from '../../store/useSchemaStore.ts';
+import { useCanvasStore } from '../../store/useCanvasStore.ts';
 import { measureTableSize } from '../../core/layout/autoLayout.ts';
 import { renderCanvas } from '../Canvas/renderer/CanvasRenderer.ts';
 import { findTableAtPoint, findColumnAtPoint, createInitialDragState, type DragState, type HoverInfo } from '../Canvas/interaction/DragHandler.ts';
@@ -62,6 +63,8 @@ function buildMiniLayout(schema: ParsedSchema, tableId: string): Map<string, Tab
 
 export default function DocsMiniERD({ tableId }: DocsMiniERDProps) {
   const schema = useSchemaStore((s) => s.schema);
+  const heatmapData = useCanvasStore((s) => s.heatmapData);
+  const heatmapEnabled = useCanvasStore((s) => s.heatmapEnabled);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<ViewTransform>({ x: 0, y: 0, scale: 1 });
@@ -145,9 +148,10 @@ export default function DocsMiniERD({ tableId }: DocsMiniERDProps) {
       canvas.height = rect.height * dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+      const hmData = heatmapEnabled && heatmapData.size > 0 ? heatmapData : null;
       renderCanvas(
         ctx, rect.width, rect.height, miniSchema, miniNodes, transform,
-        selectedTableId, null, hoveredTableRef.current, undefined, hoveredColumnRef.current
+        selectedTableId, null, hoveredTableRef.current, undefined, hoveredColumnRef.current, hmData
       );
       raf = requestAnimationFrame(render);
     };

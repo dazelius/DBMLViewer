@@ -71,52 +71,39 @@ export default function DocsLayout({ activeTableId, activeEnumName }: DocsLayout
     <div className="flex flex-col h-full w-full" style={{ background: 'var(--bg-primary)' }}>
       {/* Header */}
       <header
-        className="flex items-center justify-between px-3 h-12 flex-shrink-0 select-none"
+        className="flex items-center justify-between px-5 h-14 flex-shrink-0 select-none"
         style={{
           borderBottom: '1px solid var(--border-color)',
           background: 'var(--bg-secondary)',
         }}
       >
         {/* Left: Logo + Mode + Sub-tabs */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-5">
           {/* Logo */}
-          <div className="flex items-center gap-2 mr-1">
+          <div className="flex items-center gap-2.5 mr-1">
             <div
-              className="w-6 h-6 rounded-md flex items-center justify-center"
+              className="w-7 h-7 rounded-lg flex items-center justify-center"
               style={{ background: 'var(--accent)', boxShadow: '0 1px 4px var(--accent)40' }}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round">
                 <circle cx="12" cy="12" r="3" />
                 <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83" />
               </svg>
             </div>
-            <span className="font-bold text-[13px] tracking-tight" style={{ color: 'var(--text-primary)' }}>
+            <span className="font-bold text-[15px] tracking-tight" style={{ color: 'var(--text-primary)' }}>
               SchemaLens
             </span>
           </div>
 
           {/* Mode Switch */}
-          <div
-            className="flex p-[3px] rounded-lg"
-            style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}
-          >
-            <ModeTab active={false} onClick={() => navigate('/editor')}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-                <line x1="9" y1="3" x2="9" y2="21" />
-              </svg>
-              Editor
-            </ModeTab>
-            <ModeTab active={true} onClick={() => navigate('/docs')}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-              </svg>
-              Docs
-            </ModeTab>
+          <div className="flex items-center gap-1">
+            <ModeTab active={false} onClick={() => navigate('/editor')}>Editor</ModeTab>
+            <ModeTab active={true} onClick={() => navigate('/docs')}>Docs</ModeTab>
+            <ModeTab active={false} onClick={() => navigate('/diff')}>Diff</ModeTab>
+            <ModeTab active={false} onClick={() => navigate('/validation')}>Validation</ModeTab>
           </div>
 
-          <div className="w-px h-5 mx-0.5 flex-shrink-0" style={{ background: 'var(--border-color)' }} />
+          <div className="w-px h-6 mx-2 flex-shrink-0" style={{ background: 'var(--border-color)' }} />
 
           {/* Docs sub-tabs */}
           <div
@@ -269,12 +256,12 @@ function ModeTab({ active, onClick, children }: { active: boolean; onClick: () =
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-1.5 px-3 py-[5px] text-[11px] font-semibold rounded-md cursor-pointer"
+      className="px-4 py-1.5 text-[13px] font-semibold rounded-lg cursor-pointer"
       style={{
         background: active ? 'var(--accent)' : 'transparent',
         color: active ? '#fff' : 'var(--text-muted)',
-        boxShadow: active ? '0 1px 3px rgba(0,0,0,0.25)' : 'none',
-        transition: 'background 0.15s, color 0.15s',
+        boxShadow: active ? '0 2px 8px rgba(0,0,0,0.3), var(--shadow-glow)' : 'none',
+        transition: 'all 0.15s ease',
       }}
       onMouseEnter={(e) => {
         if (!active) {

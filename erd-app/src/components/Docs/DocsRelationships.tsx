@@ -18,6 +18,8 @@ interface TooltipData {
 
 export default function DocsRelationships() {
   const schema = useSchemaStore((s) => s.schema);
+  const heatmapData = useCanvasStore((s) => s.heatmapData);
+  const heatmapEnabled = useCanvasStore((s) => s.heatmapEnabled);
   const nodes = useCanvasStore((s) => s.nodes);
   const setNodes = useCanvasStore((s) => s.setNodes);
   const transform = useCanvasStore((s) => s.transform);
@@ -66,9 +68,10 @@ export default function DocsRelationships() {
       canvas.height = rect.height * dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+      const hmData = heatmapEnabled && heatmapData.size > 0 ? heatmapData : null;
       renderCanvas(
         ctx, rect.width, rect.height, schema, nodes, transform,
-        selectedTableId, null, hoveredTableRef.current, undefined, hoveredColumnRef.current
+        selectedTableId, null, hoveredTableRef.current, undefined, hoveredColumnRef.current, hmData
       );
       raf = requestAnimationFrame(render);
     };

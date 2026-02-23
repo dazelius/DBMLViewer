@@ -97,6 +97,7 @@ async function readFilesFromHandle(dirHandle: FileSystemDirectoryHandle): Promis
 
 export default function ValidationLayout() {
   const schema = useSchemaStore((s) => s.schema);
+  const tableData = useCanvasStore((s) => s.tableData);
 
   const [step, setStep] = useState<'pick' | 'loading' | 'result'>('pick');
   const [folders, setFolders] = useState<FolderEntry[]>([]);
@@ -113,6 +114,7 @@ export default function ValidationLayout() {
 
   const inputRef = useRef<HTMLInputElement>(null);
   const hasFSApi = 'showDirectoryPicker' in window;
+  const autoRan = useRef(false);
 
   useEffect(() => {
     if (!hasFSApi) return;
@@ -120,6 +122,21 @@ export default function ValidationLayout() {
       if (handles.length > 0) setSavedFolders(handles.map((h) => ({ handle: h, name: h.name })));
     });
   }, [hasFSApi]);
+
+  // Auto-validate if tableData is already loaded (from auto-load)
+  useEffect(() => {
+    if (autoRan.current || !schema || tableData.size === 0 || result) return;
+    autoRan.current = true;
+
+    const tables: TableData[] = [];
+    for (const [key, val] of tableData) {
+      tables.push({ name: key, headers: val.headers, rows: val.rows, rowCount: val.rows.length });
+    }
+
+    const vResult = validateData(schema, tables);
+    setResult(vResult);
+    setStep('result');
+  }, [schema, tableData, result]);
 
   const runValidation = useCallback(async (entries: FolderEntry[]) => {
     if (!schema) return;
@@ -135,7 +152,7 @@ export default function ValidationLayout() {
       }
 
       setLoadLogs((prev) => [...prev, `\nParsing data...`]);
-      const { tables, logs } = parseDataFromFiles(allFiles);
+      const { tables, logs } = parseDataFromFiles(allFiles, schema);
       setLoadLogs((prev) => [...prev, ...logs]);
 
       setLoadLogs((prev) => [...prev, `\nValidating ${tables.length} tables against schema...`]);
@@ -144,10 +161,14 @@ export default function ValidationLayout() {
       setStep('result');
 
       const heatmap = new Map<string, number>();
+      const tblData = new Map<string, { headers: string[]; rows: Record<string, string>[] }>();
       for (const dt of tables) {
-        heatmap.set(dt.name.toLowerCase(), dt.rowCount);
+        const key = dt.name.toLowerCase();
+        heatmap.set(key, dt.rowCount);
+        tblData.set(key, { headers: dt.headers, rows: dt.rows });
       }
       useCanvasStore.getState().setHeatmapData(heatmap);
+      useCanvasStore.getState().setTableData(tblData);
     } catch (err: any) {
       setLoadLogs((prev) => [...prev, `[ERROR] ${err}`]);
     }
