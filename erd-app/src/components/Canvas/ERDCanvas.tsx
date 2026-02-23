@@ -85,7 +85,7 @@ export default function ERDCanvas() {
       const canvas = canvasRef.current;
       if (canvas) {
         const rect = canvas.getBoundingClientRect();
-        setTimeout(() => fitToScreen(rect.width, rect.height, nodes, setTransform), 50);
+        setTimeout(() => fitToScreen(rect.width, rect.height, nodes, setTransform, collapseMode), 50);
       }
     }
   }, [schema, nodes, setTransform]);
@@ -251,8 +251,8 @@ export default function ERDCanvas() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    fitToScreen(rect.width, rect.height, nodes, setTransform);
-  }, [nodes, setTransform]);
+    fitToScreen(rect.width, rect.height, nodes, setTransform, collapseMode);
+  }, [nodes, setTransform, collapseMode]);
 
   return (
     <div ref={containerRef} className="relative w-full h-full overflow-hidden">

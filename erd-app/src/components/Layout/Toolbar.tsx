@@ -34,23 +34,22 @@ export default function Toolbar() {
 
   const handleAutoArrange = useCallback(() => {
     if (!schema) return;
-    const newNodes = forceArrangeLayout(schema);
+    const newNodes = forceArrangeLayout(schema, collapseMode);
     setNodes(newNodes);
-    // Fit to screen after rearranging
     const canvas = document.querySelector<HTMLCanvasElement>('#erd-canvas');
     if (canvas) {
       const rect = canvas.getBoundingClientRect();
-      setTimeout(() => fitToScreen(rect.width, rect.height, newNodes, setTransform), 60);
+      setTimeout(() => fitToScreen(rect.width, rect.height, newNodes, setTransform, collapseMode), 60);
     }
-  }, [schema, setNodes, setTransform]);
+  }, [schema, setNodes, setTransform, collapseMode]);
 
   const handleFitScreen = useCallback(() => {
     const canvas = document.querySelector<HTMLCanvasElement>('#erd-canvas');
     if (canvas) {
       const rect = canvas.getBoundingClientRect();
-      fitToScreen(rect.width, rect.height, nodes, setTransform);
+      fitToScreen(rect.width, rect.height, nodes, setTransform, collapseMode);
     }
-  }, [nodes, setTransform]);
+  }, [nodes, setTransform, collapseMode]);
 
   return (
     <>

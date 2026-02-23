@@ -7,8 +7,9 @@ const ROW_HEIGHT = 26;
 const TABLE_PADDING = 20;
 const TABLE_MIN_WIDTH = 220;
 const CHAR_WIDTH = 7.5;
+const COLLAPSED_HEIGHT = TABLE_HEADER_HEIGHT + 8;
 
-export function measureTableSize(table: { name: string; columns: { name: string; type: string }[] }): { width: number; height: number } {
+export function measureTableSize(table: { name: string; columns: { name: string; type: string }[] }, collapsed = false): { width: number; height: number } {
   const headerWidth = table.name.length * 9 + 48;
   let maxColWidth = 0;
   for (const col of table.columns) {
@@ -16,29 +17,33 @@ export function measureTableSize(table: { name: string; columns: { name: string;
     if (colTextWidth > maxColWidth) maxColWidth = colTextWidth;
   }
   const width = Math.max(TABLE_MIN_WIDTH, headerWidth, maxColWidth) + TABLE_PADDING;
-  const height = TABLE_HEADER_HEIGHT + table.columns.length * ROW_HEIGHT + 10;
+  const height = collapsed
+    ? COLLAPSED_HEIGHT
+    : TABLE_HEADER_HEIGHT + table.columns.length * ROW_HEIGHT + 10;
   return { width, height };
 }
 
 export function computeLayout(
   schema: ParsedSchema,
-  existingNodes: Map<string, TableNode>
+  existingNodes: Map<string, TableNode>,
+  collapsed = false
 ): Map<string, TableNode> {
-  return runLayout(schema, existingNodes, false);
+  return runLayout(schema, existingNodes, false, collapsed);
 }
 
-export function forceArrangeLayout(schema: ParsedSchema): Map<string, TableNode> {
-  return runLayout(schema, new Map(), true);
+export function forceArrangeLayout(schema: ParsedSchema, collapsed = false): Map<string, TableNode> {
+  return runLayout(schema, new Map(), true, collapsed);
 }
 
 function runLayout(
   schema: ParsedSchema,
   existingNodes: Map<string, TableNode>,
-  forceAll: boolean
+  forceAll: boolean,
+  collapsed = false
 ): Map<string, TableNode> {
   const sizes = new Map<string, { width: number; height: number }>();
   for (const table of schema.tables) {
-    sizes.set(table.id, measureTableSize(table));
+    sizes.set(table.id, measureTableSize(table, collapsed));
   }
 
   if (schema.tableGroups.length > 0) {

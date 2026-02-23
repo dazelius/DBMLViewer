@@ -3,19 +3,17 @@ import type { TableNode, ViewTransform } from '../../../core/layout/layoutTypes.
 
 const HEADER_HEIGHT = 36;
 const ROW_HEIGHT = 26;
+const COLLAPSED_HEIGHT = HEADER_HEIGHT + 8;
 
 interface Point { x: number; y: number }
 
-/**
- * Determine which side of each table to connect, considering overlap.
- * Returns screen-space coordinates for connection anchor points.
- */
 function getConnectionPoints(
   fromNode: TableNode,
   toNode: TableNode,
   fromColIdx: number,
   toColIdx: number,
-  transform: ViewTransform
+  transform: ViewTransform,
+  collapseMode: boolean = false
 ): { from: Point; to: Point; fromSide: 'left' | 'right'; toSide: 'left' | 'right' } {
   const s = transform.scale;
   const tx = transform.x;
@@ -26,10 +24,13 @@ function getConnectionPoints(
   const tLeft = toNode.position.x;
   const tRight = toNode.position.x + toNode.size.width;
 
-  const fromColY = fromNode.position.y + HEADER_HEIGHT + fromColIdx * ROW_HEIGHT + ROW_HEIGHT / 2;
-  const toColY = toNode.position.y + HEADER_HEIGHT + toColIdx * ROW_HEIGHT + ROW_HEIGHT / 2;
+  const fromColY = collapseMode
+    ? fromNode.position.y + COLLAPSED_HEIGHT / 2
+    : fromNode.position.y + HEADER_HEIGHT + fromColIdx * ROW_HEIGHT + ROW_HEIGHT / 2;
+  const toColY = collapseMode
+    ? toNode.position.y + COLLAPSED_HEIGHT / 2
+    : toNode.position.y + HEADER_HEIGHT + toColIdx * ROW_HEIGHT + ROW_HEIGHT / 2;
 
-  // Pick sides based on relative horizontal positions
   let fromSide: 'left' | 'right';
   let toSide: 'left' | 'right';
   let fromX: number;
@@ -39,31 +40,25 @@ function getConnectionPoints(
   const gapReverse = fLeft - tRight;
 
   if (gap >= 0) {
-    // Target is to the right (no overlap)
     fromSide = 'right'; toSide = 'left';
     fromX = fRight; toX = tLeft;
   } else if (gapReverse >= 0) {
-    // Target is to the left (no overlap)
     fromSide = 'left'; toSide = 'right';
     fromX = fLeft; toX = tRight;
   } else {
-    // Tables overlap horizontally - pick the side with more clearance
     const rightDist = Math.abs(fRight - tLeft);
     const leftDist = Math.abs(fLeft - tRight);
     const rightRight = Math.abs(fRight - tRight);
     const leftLeft = Math.abs(fLeft - tLeft);
 
     if (rightRight <= leftLeft) {
-      // Both to the right
       fromSide = 'right'; toSide = 'right';
       fromX = fRight; toX = tRight;
     } else {
-      // Both to the left
       fromSide = 'left'; toSide = 'left';
       fromX = fLeft; toX = tLeft;
     }
 
-    // Or try opposite sides if that's shorter
     if (rightDist < leftDist && rightDist < rightRight && rightDist < leftLeft) {
       fromSide = 'right'; toSide = 'left';
       fromX = fRight; toX = tLeft;
@@ -81,56 +76,84 @@ function getConnectionPoints(
   };
 }
 
-/**
- * Draw a clean orthogonal (right-angle) path between two points.
- * Handles all four side combinations: R→L, L→R, R→R, L→L
- */
+/** Draw a rounded-corner line segment: moveTo → arcTo waypoints → lineTo end */
+function roundedLineTo(ctx: CanvasRenderingContext2D, points: Point[], radius: number) {
+  if (points.length < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const next = points[i + 1];
+
+    const dx1 = curr.x - prev.x;
+    const dy1 = curr.y - prev.y;
+    const dx2 = next.x - curr.x;
+    const dy2 = next.y - curr.y;
+    const seg1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
+    const seg2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+    const r = Math.min(radius, seg1 / 2, seg2 / 2);
+
+    if (r > 0.5) {
+      ctx.arcTo(curr.x, curr.y, next.x, next.y, r);
+    } else {
+      ctx.lineTo(curr.x, curr.y);
+    }
+  }
+
+  const last = points[points.length - 1];
+  ctx.lineTo(last.x, last.y);
+  ctx.stroke();
+}
+
 function drawOrthogonalPath(
   ctx: CanvasRenderingContext2D,
   from: Point,
   to: Point,
   fromSide: 'left' | 'right',
   toSide: 'left' | 'right',
-  scale: number
+  scale: number,
+  fromArmOffset: number = 0,
+  toArmOffset: number = 0
 ) {
-  const arm = Math.max(20 * scale, 15);
+  const baseArm = Math.max(20 * scale, 15);
+  const fromArm = baseArm + fromArmOffset * scale;
+  const toArm = baseArm + toArmOffset * scale;
+  const cornerR = Math.min(6 * scale, 12);
 
-  // Extend horizontally from each endpoint
   const fDir = fromSide === 'right' ? 1 : -1;
   const tDir = toSide === 'left' ? -1 : 1;
 
-  const fx = from.x + fDir * arm;
-  const tx = to.x + tDir * arm;
+  const fx = from.x + fDir * fromArm;
+  const tx = to.x + tDir * toArm;
 
-  ctx.beginPath();
-  ctx.moveTo(from.x, from.y);
+  const pts: Point[] = [{ x: from.x, y: from.y }];
 
   if (fromSide !== toSide) {
-    // Opposite sides (R→L or L→R): standard S-shape or Z-shape
-    const midX = (fx + tx) / 2;
-
-    // If arms already meet or cross, use direct routing
     if ((fromSide === 'right' && fx >= tx) || (fromSide === 'left' && fx <= tx)) {
-      ctx.lineTo(fx, from.y);
-      ctx.lineTo(fx, (from.y + to.y) / 2);
-      ctx.lineTo(tx, (from.y + to.y) / 2);
-      ctx.lineTo(tx, to.y);
+      const midY = (from.y + to.y) / 2;
+      pts.push({ x: fx, y: from.y });
+      pts.push({ x: fx, y: midY });
+      pts.push({ x: tx, y: midY });
+      pts.push({ x: tx, y: to.y });
     } else {
-      ctx.lineTo(midX, from.y);
-      ctx.lineTo(midX, to.y);
+      const midX = (fx + tx) / 2;
+      pts.push({ x: midX, y: from.y });
+      pts.push({ x: midX, y: to.y });
     }
   } else {
-    // Same side (R→R or L→L): route around
     const outerX = fDir === 1
-      ? Math.max(fx, tx) + arm
-      : Math.min(fx, tx) - arm;
+      ? Math.max(fx, tx) + baseArm
+      : Math.min(fx, tx) - baseArm;
 
-    ctx.lineTo(outerX, from.y);
-    ctx.lineTo(outerX, to.y);
+    pts.push({ x: outerX, y: from.y });
+    pts.push({ x: outerX, y: to.y });
   }
 
-  ctx.lineTo(to.x, to.y);
-  ctx.stroke();
+  pts.push({ x: to.x, y: to.y });
+
+  roundedLineTo(ctx, pts, cornerR);
 }
 
 function drawOneSymbol(ctx: CanvasRenderingContext2D, x: number, y: number, side: 'left' | 'right', scale: number) {
@@ -192,7 +215,10 @@ export function drawRelationship(
   isSelected: boolean,
   isDark: boolean,
   isHoverHighlight: boolean = false,
-  dimmed: boolean = false
+  dimmed: boolean = false,
+  collapseMode: boolean = false,
+  fromArmOffset: number = 0,
+  toArmOffset: number = 0
 ) {
   const fromNode = nodes.get(ref.fromTable);
   const toNode = nodes.get(ref.toTable);
@@ -207,7 +233,7 @@ export function drawRelationship(
   if (fromColIdx < 0 || toColIdx < 0) return;
 
   const { from, to, fromSide, toSide } = getConnectionPoints(
-    fromNode, toNode, fromColIdx, toColIdx, transform
+    fromNode, toNode, fromColIdx, toColIdx, transform, collapseMode
   );
 
   const defaultColor = isDark ? '#585b70' : '#b0b4c8';
@@ -234,7 +260,6 @@ export function drawRelationship(
     ctx.globalAlpha = 0.15;
   }
 
-  // Glow effect for highlighted lines
   if (isHoverHighlight) {
     ctx.shadowColor = color;
     ctx.shadowBlur = 8;
@@ -245,7 +270,7 @@ export function drawRelationship(
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  drawOrthogonalPath(ctx, from, to, fromSide, toSide, transform.scale);
+  drawOrthogonalPath(ctx, from, to, fromSide, toSide, transform.scale, fromArmOffset, toArmOffset);
 
   if (isHoverHighlight) {
     ctx.shadowColor = 'transparent';
@@ -258,4 +283,43 @@ export function drawRelationship(
   drawEndpoint(ctx, to, toSide, toEnd, transform.scale);
 
   ctx.restore();
+}
+
+/** Determine which side a connection exits from, matching getConnectionPoints logic */
+export function determineConnectionSide(
+  fromNode: TableNode,
+  toNode: TableNode
+): { fromSide: 'left' | 'right'; toSide: 'left' | 'right' } {
+  const fLeft = fromNode.position.x;
+  const fRight = fromNode.position.x + fromNode.size.width;
+  const tLeft = toNode.position.x;
+  const tRight = toNode.position.x + toNode.size.width;
+
+  const gap = tLeft - fRight;
+  const gapReverse = fLeft - tRight;
+
+  if (gap >= 0) return { fromSide: 'right', toSide: 'left' };
+  if (gapReverse >= 0) return { fromSide: 'left', toSide: 'right' };
+
+  const rightDist = Math.abs(fRight - tLeft);
+  const leftDist = Math.abs(fLeft - tRight);
+  const rightRight = Math.abs(fRight - tRight);
+  const leftLeft = Math.abs(fLeft - tLeft);
+
+  let fromSide: 'left' | 'right';
+  let toSide: 'left' | 'right';
+
+  if (rightRight <= leftLeft) {
+    fromSide = 'right'; toSide = 'right';
+  } else {
+    fromSide = 'left'; toSide = 'left';
+  }
+
+  if (rightDist < leftDist && rightDist < rightRight && rightDist < leftLeft) {
+    fromSide = 'right'; toSide = 'left';
+  } else if (leftDist < rightDist && leftDist < rightRight && leftDist < leftLeft) {
+    fromSide = 'left'; toSide = 'right';
+  }
+
+  return { fromSide, toSide };
 }

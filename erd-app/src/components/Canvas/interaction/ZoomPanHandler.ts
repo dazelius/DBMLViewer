@@ -25,11 +25,14 @@ export function handleWheel(
   });
 }
 
+const COLLAPSED_HEIGHT = 44; // TABLE_HEADER_HEIGHT(36) + 8
+
 export function fitToScreen(
   canvasWidth: number,
   canvasHeight: number,
   nodes: Map<string, { position: { x: number; y: number }; size: { width: number; height: number } }>,
-  setTransform: (t: ViewTransform) => void
+  setTransform: (t: ViewTransform) => void,
+  collapseMode = false
 ) {
   if (nodes.size === 0) {
     setTransform({ x: 0, y: 0, scale: 1 });
@@ -38,10 +41,11 @@ export function fitToScreen(
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const node of nodes.values()) {
+    const h = collapseMode ? COLLAPSED_HEIGHT : node.size.height;
     minX = Math.min(minX, node.position.x);
     minY = Math.min(minY, node.position.y);
     maxX = Math.max(maxX, node.position.x + node.size.width);
-    maxY = Math.max(maxY, node.position.y + node.size.height);
+    maxY = Math.max(maxY, node.position.y + h);
   }
 
   const contentWidth = maxX - minX;

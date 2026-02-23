@@ -3,7 +3,7 @@ import type { TableNode, ViewTransform } from '../../../core/layout/layoutTypes.
 import { drawGrid } from './GridRenderer.ts';
 import { drawTableGroups } from './GroupRenderer.ts';
 import { drawTable, drawTableCollapsed } from './TableRenderer.ts';
-import { drawRelationship } from './RelationshipRenderer.ts';
+import { drawRelationship, determineConnectionSide } from './RelationshipRenderer.ts';
 
 export interface ExploreVisuals {
   impactActive: boolean;
@@ -135,12 +135,58 @@ export function renderCanvas(
     }
   }
 
-  // Layer 2: Relationships
-  for (const ref of schema.refs) {
-    if (!isTableVisible(ref.fromTable) || !isTableVisible(ref.toTable)) continue;
+  // Layer 2: Relationships — precompute arm offsets to stagger overlapping lines
+  const ARM_SPACING = 10;
+  const visibleRefs = schema.refs.filter(
+    (r) => isTableVisible(r.fromTable) && isTableVisible(r.toTable)
+  );
+
+  // Group connections by (tableId:side) and assign staggered offsets
+  const portSlots = new Map<string, { refId: string; targetY: number; role: 'from' | 'to' }[]>();
+  for (const ref of visibleRefs) {
+    const fromNode = nodes.get(ref.fromTable);
+    const toNode = nodes.get(ref.toTable);
+    if (!fromNode || !toNode) continue;
+
+    const { fromSide, toSide } = determineConnectionSide(fromNode, toNode);
+
+    const fKey = `${ref.fromTable}:${fromSide}`;
+    const tKey = `${ref.toTable}:${toSide}`;
+
+    if (!portSlots.has(fKey)) portSlots.set(fKey, []);
+    portSlots.get(fKey)!.push({ refId: ref.id, targetY: toNode.position.y, role: 'from' });
+
+    if (!portSlots.has(tKey)) portSlots.set(tKey, []);
+    portSlots.get(tKey)!.push({ refId: ref.id, targetY: fromNode.position.y, role: 'to' });
+  }
+
+  const armOffsets = new Map<string, { fromOffset: number; toOffset: number }>();
+  for (const ref of visibleRefs) {
+    armOffsets.set(ref.id, { fromOffset: 0, toOffset: 0 });
+  }
+
+  for (const slots of portSlots.values()) {
+    if (slots.length <= 1) continue;
+    slots.sort((a, b) => a.targetY - b.targetY);
+    for (let i = 0; i < slots.length; i++) {
+      const offset = i * ARM_SPACING;
+      const entry = armOffsets.get(slots[i].refId)!;
+      if (slots[i].role === 'from') {
+        entry.fromOffset = offset;
+      } else {
+        entry.toOffset = offset;
+      }
+    }
+  }
+
+  for (const ref of visibleRefs) {
     const isSelected = ref.id === selectedRefId;
     const { highlight, dimmed } = getRefVisuals(ref, explore, hoveredTableId);
-    drawRelationship(ctx, ref, schema.tables, nodes, transform, isSelected, isDark, highlight, dimmed);
+    const offsets = armOffsets.get(ref.id) ?? { fromOffset: 0, toOffset: 0 };
+    drawRelationship(
+      ctx, ref, schema.tables, nodes, transform, isSelected, isDark,
+      highlight, dimmed, explore.collapseMode, offsets.fromOffset, offsets.toOffset
+    );
   }
 
   // Layer 3: Tables
