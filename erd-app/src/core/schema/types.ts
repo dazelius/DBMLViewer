@@ -6,6 +6,8 @@ export interface SchemaColumn {
   isUnique: boolean;
   isNotNull: boolean;
   isIncrement: boolean;
+  isLocalize: boolean;
+  isWarning: boolean;
   defaultValue: string | null;
   note: string | null;
 }

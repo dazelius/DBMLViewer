@@ -107,8 +107,7 @@ function roundedLineTo(ctx: CanvasRenderingContext2D, points: Point[], radius: n
   ctx.stroke();
 }
 
-function drawOrthogonalPath(
-  ctx: CanvasRenderingContext2D,
+function computeOrthogonalPath(
   from: Point,
   to: Point,
   fromSide: 'left' | 'right',
@@ -116,11 +115,10 @@ function drawOrthogonalPath(
   scale: number,
   fromArmOffset: number = 0,
   toArmOffset: number = 0
-) {
+): Point[] {
   const baseArm = Math.max(20 * scale, 15);
   const fromArm = baseArm + fromArmOffset * scale;
   const toArm = baseArm + toArmOffset * scale;
-  const cornerR = Math.min(6 * scale, 12);
 
   const fDir = fromSide === 'right' ? 1 : -1;
   const tDir = toSide === 'left' ? -1 : 1;
@@ -152,8 +150,99 @@ function drawOrthogonalPath(
   }
 
   pts.push({ x: to.x, y: to.y });
+  return pts;
+}
 
+function drawOrthogonalPath(
+  ctx: CanvasRenderingContext2D,
+  from: Point,
+  to: Point,
+  fromSide: 'left' | 'right',
+  toSide: 'left' | 'right',
+  scale: number,
+  fromArmOffset: number = 0,
+  toArmOffset: number = 0
+) {
+  const pts = computeOrthogonalPath(from, to, fromSide, toSide, scale, fromArmOffset, toArmOffset);
+  const cornerR = Math.min(6 * scale, 12);
   roundedLineTo(ctx, pts, cornerR);
+}
+
+function getPathLength(pts: Point[]): number {
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i].x - pts[i - 1].x;
+    const dy = pts[i].y - pts[i - 1].y;
+    len += Math.sqrt(dx * dx + dy * dy);
+  }
+  return len;
+}
+
+function getPointAtDistance(pts: Point[], dist: number): { point: Point; angle: number } | null {
+  let traveled = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i].x - pts[i - 1].x;
+    const dy = pts[i].y - pts[i - 1].y;
+    const segLen = Math.sqrt(dx * dx + dy * dy);
+    if (segLen < 0.1) continue;
+
+    if (traveled + segLen >= dist) {
+      const t = (dist - traveled) / segLen;
+      return {
+        point: { x: pts[i - 1].x + dx * t, y: pts[i - 1].y + dy * t },
+        angle: Math.atan2(dy, dx),
+      };
+    }
+    traveled += segLen;
+  }
+  return null;
+}
+
+function drawFlowChevrons(
+  ctx: CanvasRenderingContext2D,
+  pts: Point[],
+  color: string,
+  scale: number,
+  time: number,
+  alpha: number = 0.6
+) {
+  const totalLen = getPathLength(pts);
+  if (totalLen < 30) return;
+
+  const spacing = Math.max(28 * scale, 18);
+  const chevronSize = Math.max(4 * scale, 3);
+  const speed = 40;
+  const offset = (time * speed * 0.001) % spacing;
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1.5 * scale, 1);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.globalAlpha = alpha;
+
+  const margin = 18 * scale;
+
+  for (let d = offset + margin; d < totalLen - margin; d += spacing) {
+    const result = getPointAtDistance(pts, d);
+    if (!result) continue;
+
+    const { point: p, angle } = result;
+
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(angle);
+
+    ctx.beginPath();
+    ctx.moveTo(-chevronSize, -chevronSize * 0.7);
+    ctx.lineTo(chevronSize * 0.3, 0);
+    ctx.lineTo(-chevronSize, chevronSize * 0.7);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  ctx.restore();
 }
 
 function drawOneSymbol(ctx: CanvasRenderingContext2D, x: number, y: number, side: 'left' | 'right', scale: number) {
@@ -218,7 +307,8 @@ export function drawRelationship(
   dimmed: boolean = false,
   collapseMode: boolean = false,
   fromArmOffset: number = 0,
-  toArmOffset: number = 0
+  toArmOffset: number = 0,
+  showFlow: boolean = false
 ) {
   const fromNode = nodes.get(ref.fromTable);
   const toNode = nodes.get(ref.toTable);
@@ -281,6 +371,13 @@ export function drawRelationship(
   ctx.lineWidth = isHoverHighlight ? 3 : (isSelected ? 2.5 : 2);
   drawEndpoint(ctx, from, fromSide, fromEnd, transform.scale);
   drawEndpoint(ctx, to, toSide, toEnd, transform.scale);
+
+  // Animated flow chevrons
+  if ((showFlow || isHoverHighlight || isSelected) && !dimmed) {
+    const pts = computeOrthogonalPath(from, to, fromSide, toSide, transform.scale, fromArmOffset, toArmOffset);
+    const flowAlpha = isHoverHighlight ? 0.7 : isSelected ? 0.6 : 0.45;
+    drawFlowChevrons(ctx, pts, color, transform.scale, performance.now(), flowAlpha);
+  }
 
   ctx.restore();
 }

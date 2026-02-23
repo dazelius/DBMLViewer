@@ -33,12 +33,20 @@ function resolveRelationType(epToken: string): RelationType {
 }
 
 export function parseDBML(dbml: string): { schema: ParsedSchema | null; errors: ParseError[] } {
+  // 1) Try full parse
   try {
     const db = Parser.parse(dbml, 'dbml');
     const schema = transformDatabase(db);
     return { schema, errors: [] };
-  } catch (err: unknown) {
-    const error = err as { diags?: { message: string; location?: { start?: { line: number; column: number } } }[] ; message?: string };
+  } catch (firstErr: unknown) {
+    // 2) Fallback: strip Ref lines and try again
+    const fallback = tryParseWithoutRefs(dbml);
+    if (fallback) {
+      return fallback;
+    }
+
+    // 3) If even that fails, return original errors
+    const error = firstErr as { diags?: { message: string; location?: { start?: { line: number; column: number } } }[] ; message?: string };
     if (error.diags && Array.isArray(error.diags)) {
       const errors: ParseError[] = error.diags.map((d: { message: string; location?: { start?: { line: number; column: number } } }) => ({
         message: d.message,
@@ -54,6 +62,91 @@ export function parseDBML(dbml: string): { schema: ParsedSchema | null; errors: 
   }
 }
 
+/**
+ * Fallback parser: strips all Ref lines, parses tables/enums/groups,
+ * then manually resolves valid refs from the original DBML text.
+ * Invalid refs are reported as warnings (not blocking errors).
+ */
+function tryParseWithoutRefs(dbml: string): { schema: ParsedSchema; errors: ParseError[] } | null {
+  const lines = dbml.split('\n');
+  const refLineIndices: number[] = [];
+  const strippedLines: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (/^Ref\s*[:{]/i.test(trimmed) || /^Ref\s+\w/i.test(trimmed)) {
+      refLineIndices.push(i);
+      strippedLines.push('// ' + lines[i]);
+    } else {
+      strippedLines.push(lines[i]);
+    }
+  }
+
+  if (refLineIndices.length === 0) return null;
+
+  try {
+    const db = Parser.parse(strippedLines.join('\n'), 'dbml');
+    const schema = transformDatabase(db);
+
+    const tableIds = new Set(schema.tables.map((t) => t.id));
+    const tableColMap = new Map<string, Set<string>>();
+    for (const t of schema.tables) {
+      tableColMap.set(t.id, new Set(t.columns.map((c) => c.name)));
+    }
+
+    const warnings: ParseError[] = [];
+    const REF_PATTERN = /^Ref\s*:?\s*(\w+)\.(\w+)\s*([<>\-]+)\s*(\w+)(?:\.(\w+))?/i;
+
+    for (const idx of refLineIndices) {
+      const line = lines[idx].trim();
+      const m = line.match(REF_PATTERN);
+      if (!m) {
+        warnings.push({ message: `[!] 파싱 불가 Ref: ${line}`, line: idx + 1, column: 1 });
+        continue;
+      }
+
+      const [, fromTable, fromCol, relOp, toTable, toCol] = m;
+      const fromId = `public.${fromTable}`;
+      const toId = `public.${toTable}`;
+
+      const issues: string[] = [];
+      if (!tableIds.has(fromId)) issues.push(`테이블 '${fromTable}' 없음`);
+      else if (!tableColMap.get(fromId)?.has(fromCol)) issues.push(`'${fromTable}.${fromCol}' 컬럼 없음`);
+      if (!tableIds.has(toId)) issues.push(`테이블 '${toTable}' 없음`);
+      else if (toCol && !tableColMap.get(toId)?.has(toCol)) issues.push(`'${toTable}.${toCol}' 컬럼 없음`);
+
+      if (issues.length > 0) {
+        warnings.push({ message: `[!] ${line} — ${issues.join(', ')}`, line: idx + 1, column: 1 });
+        continue;
+      }
+
+      const ref: SchemaRef = {
+        id: `ref_${fromId}_${toId}_${schema.refs.length}`,
+        name: null,
+        fromTable: fromId,
+        fromColumns: [fromCol],
+        toTable: toId,
+        toColumns: toCol ? [toCol] : [],
+        type: resolveRelationType(relOp.includes('<') ? '<' : relOp.includes('>') ? '>' : '-'),
+        onDelete: null,
+        onUpdate: null,
+        color: null,
+      };
+      schema.refs.push(ref);
+
+      const table = schema.tables.find((t) => t.id === fromId);
+      if (table) {
+        const col = table.columns.find((c) => c.name === fromCol);
+        if (col) col.isForeignKey = true;
+      }
+    }
+
+    return { schema, errors: warnings };
+  } catch {
+    return null;
+  }
+}
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function transformDatabase(db: any): ParsedSchema {
   const tables: SchemaTable[] = [];
@@ -66,17 +159,27 @@ function transformDatabase(db: any): ParsedSchema {
     const schemaName = s.name || 'public';
 
     for (const table of s.tables || []) {
-      const columns: SchemaColumn[] = (table.fields || []).map((f: any) => ({
-        name: f.name,
-        type: f.type?.type_name ?? f.type ?? 'unknown',
-        isPrimaryKey: !!f.pk,
-        isForeignKey: false,
-        isUnique: !!f.unique,
-        isNotNull: !!f.not_null,
-        isIncrement: !!f.increment,
-        defaultValue: f.dbdefault?.value ?? null,
-        note: f.note ?? null,
-      }));
+      const columns: SchemaColumn[] = (table.fields || []).map((f: any) => {
+        const rawNote: string | null = f.note ?? null;
+        const hasLocalize = rawNote ? /\[localize\]/i.test(rawNote) : false;
+        const hasWarning = rawNote ? /\[warning\]/i.test(rawNote) : false;
+        const cleanNote = rawNote
+          ? rawNote.replace(/\[localize\]\s*/i, '').replace(/\[warning\]\s*/i, '').trim() || null
+          : null;
+        return {
+          name: f.name,
+          type: f.type?.type_name ?? f.type ?? 'unknown',
+          isPrimaryKey: !!f.pk,
+          isForeignKey: false,
+          isUnique: !!f.unique,
+          isNotNull: !!f.not_null,
+          isIncrement: !!f.increment,
+          isLocalize: hasLocalize,
+          isWarning: hasWarning,
+          defaultValue: f.dbdefault?.value ?? null,
+          note: cleanNote,
+        };
+      });
 
       const indexes: SchemaIndex[] = (table.indexes || []).map((idx: any) => ({
         name: idx.name ?? null,

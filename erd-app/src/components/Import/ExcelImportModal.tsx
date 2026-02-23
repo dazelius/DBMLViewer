@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { excelFilesToDbml } from '../../core/import/excelToDbml.ts';
 import { useEditorStore } from '../../store/useEditorStore.ts';
+import { useCanvasStore } from '../../store/useCanvasStore.ts';
 
 interface ExcelImportModalProps {
   onClose: () => void;
@@ -113,6 +114,10 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
     setStats(result.stats);
     setDbmlResult(result.dbml);
     setState('done');
+
+    if (result.dataRowCounts.size > 0) {
+      useCanvasStore.getState().setHeatmapData(result.dataRowCounts);
+    }
   };
 
   const processMultipleFolders = async (entries: FolderEntry[]) => {

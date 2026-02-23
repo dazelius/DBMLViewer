@@ -1,11 +1,22 @@
 import { create } from 'zustand';
 import type { TableNode, ViewTransform } from '../core/layout/layoutTypes.ts';
+import type { ParsedSchema } from '../core/schema/types.ts';
+import { computeFocusLayout } from '../core/layout/autoLayout.ts';
 
 interface CanvasState {
   nodes: Map<string, TableNode>;
   transform: ViewTransform;
   selectedTableId: string | null;
   selectedRefId: string | null;
+
+  focusActive: boolean;
+  focusTableId: string | null;
+  focusTableIds: Set<string>;
+  savedNodes: Map<string, TableNode> | null;
+  savedTransform: ViewTransform | null;
+
+  heatmapData: Map<string, number>;
+  heatmapEnabled: boolean;
 
   setNodes: (nodes: Map<string, TableNode>) => void;
   updateNodePosition: (tableId: string, x: number, y: number) => void;
@@ -16,13 +27,26 @@ interface CanvasState {
   setSelectedTable: (id: string | null) => void;
   setSelectedRef: (id: string | null) => void;
   resetView: () => void;
+  enterFocusMode: (tableId: string, schema: ParsedSchema, collapsed?: boolean) => void;
+  exitFocusMode: () => void;
+  setHeatmapData: (data: Map<string, number>) => void;
+  toggleHeatmap: () => void;
 }
 
-export const useCanvasStore = create<CanvasState>((set) => ({
+export const useCanvasStore = create<CanvasState>((set, get) => ({
   nodes: new Map(),
   transform: { x: 0, y: 0, scale: 1 },
   selectedTableId: null,
   selectedRefId: null,
+
+  focusActive: false,
+  focusTableId: null,
+  focusTableIds: new Set(),
+  savedNodes: null,
+  savedTransform: null,
+
+  heatmapData: new Map(),
+  heatmapEnabled: false,
 
   setNodes: (nodes) => set({ nodes: new Map(nodes) }),
 
@@ -74,4 +98,35 @@ export const useCanvasStore = create<CanvasState>((set) => ({
   setSelectedTable: (id) => set({ selectedTableId: id, selectedRefId: null }),
   setSelectedRef: (id) => set({ selectedRefId: id, selectedTableId: null }),
   resetView: () => set({ transform: { x: 0, y: 0, scale: 1 } }),
+
+  enterFocusMode: (tableId, schema, collapsed = false) => {
+    const state = get();
+    const { focusTableIds, nodes: focusNodes } = computeFocusLayout(schema, tableId, collapsed);
+    set({
+      focusActive: true,
+      focusTableId: tableId,
+      focusTableIds,
+      savedNodes: new Map(state.nodes),
+      savedTransform: { ...state.transform },
+      nodes: focusNodes,
+      selectedTableId: tableId,
+      selectedRefId: null,
+    });
+  },
+
+  exitFocusMode: () => {
+    const state = get();
+    set({
+      focusActive: false,
+      focusTableId: null,
+      focusTableIds: new Set(),
+      nodes: state.savedNodes ?? state.nodes,
+      transform: state.savedTransform ?? state.transform,
+      savedNodes: null,
+      savedTransform: null,
+    });
+  },
+
+  setHeatmapData: (data) => set({ heatmapData: data, heatmapEnabled: data.size > 0 }),
+  toggleHeatmap: () => set((s) => ({ heatmapEnabled: !s.heatmapEnabled })),
 }));

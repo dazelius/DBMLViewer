@@ -2,7 +2,7 @@ import type { ParsedSchema } from '../../../core/schema/types.ts';
 import type { TableNode, ViewTransform } from '../../../core/layout/layoutTypes.ts';
 import { drawGrid } from './GridRenderer.ts';
 import { drawTableGroups } from './GroupRenderer.ts';
-import { drawTable, drawTableCollapsed } from './TableRenderer.ts';
+import { drawTable, drawTableCollapsed, type HeatmapInfo } from './TableRenderer.ts';
 import { drawRelationship, determineConnectionSide } from './RelationshipRenderer.ts';
 
 export interface ExploreVisuals {
@@ -14,6 +14,9 @@ export interface ExploreVisuals {
   pathFinderPath: string[];
   collapseMode: boolean;
   hiddenGroups: Set<string>;
+  focusActive: boolean;
+  focusTableId: string | null;
+  focusTableIds: Set<string>;
 }
 
 const DEFAULT_EXPLORE: ExploreVisuals = {
@@ -25,6 +28,9 @@ const DEFAULT_EXPLORE: ExploreVisuals = {
   pathFinderPath: [],
   collapseMode: false,
   hiddenGroups: new Set(),
+  focusActive: false,
+  focusTableId: null,
+  focusTableIds: new Set(),
 };
 
 function getTableOpacity(
@@ -92,7 +98,8 @@ export function renderCanvas(
   selectedRefId: string | null,
   hoveredTableId: string | null = null,
   explore: ExploreVisuals = DEFAULT_EXPLORE,
-  hoveredColumn: { tableId: string; columnIndex: number } | null = null
+  hoveredColumn: { tableId: string; columnIndex: number } | null = null,
+  heatmapData: Map<string, number> | null = null
 ) {
   const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
   const bgColor = isDark ? '#0f1117' : '#f8f9fc';
@@ -122,14 +129,15 @@ export function renderCanvas(
     for (const tid of grp.tables) tableGroupMap.set(tid, grp.name);
   }
   const isTableVisible = (tableId: string) => {
+    if (explore.focusActive) return explore.focusTableIds.has(tableId);
     if (explore.hiddenGroups.size === 0) return true;
     const grp = tableGroupMap.get(tableId);
     if (!grp) return true;
     return !explore.hiddenGroups.has(grp);
   };
 
-  // Layer 1: Group bounding boxes
-  if (schema.tableGroups.length > 0) {
+  // Layer 1: Group bounding boxes (skip in focus mode)
+  if (schema.tableGroups.length > 0 && !explore.focusActive) {
     const visibleGroups = schema.tableGroups.filter((g) => !explore.hiddenGroups.has(g.name));
     if (visibleGroups.length > 0) {
       drawTableGroups(ctx, visibleGroups, nodes, transform, isDark);
@@ -184,13 +192,21 @@ export function renderCanvas(
     const isSelected = ref.id === selectedRefId;
     const { highlight, dimmed } = getRefVisuals(ref, explore, hoveredTableId);
     const offsets = armOffsets.get(ref.id) ?? { fromOffset: 0, toOffset: 0 };
+    const showFlow = explore.focusActive;
     drawRelationship(
       ctx, ref, schema.tables, nodes, transform, isSelected, isDark,
-      highlight, dimmed, explore.collapseMode, offsets.fromOffset, offsets.toOffset
+      highlight, dimmed, explore.collapseMode, offsets.fromOffset, offsets.toOffset, showFlow
     );
   }
 
-  // Layer 3: Tables
+  // Layer 3: Tables — precompute heatmap normalization
+  let hmMax = 0;
+  if (heatmapData && heatmapData.size > 0) {
+    for (const v of heatmapData.values()) {
+      if (v > hmMax) hmMax = v;
+    }
+  }
+
   for (const table of schema.tables) {
     if (!isTableVisible(table.id)) continue;
     const node = nodes.get(table.id);
@@ -201,11 +217,21 @@ export function renderCanvas(
     ctx.save();
     if (alpha < 1) ctx.globalAlpha = alpha;
 
+    let hmInfo: HeatmapInfo | null = null;
+    if (heatmapData && heatmapData.size > 0) {
+      const rc = heatmapData.get(table.name.toLowerCase());
+      if (rc !== undefined && hmMax > 0) {
+        hmInfo = { normalized: rc / hmMax, rowCount: rc };
+      } else if (rc !== undefined) {
+        hmInfo = { normalized: 0, rowCount: rc };
+      }
+    }
+
     const hoverColIdx = hoveredColumn && hoveredColumn.tableId === table.id ? hoveredColumn.columnIndex : -1;
     if (explore.collapseMode) {
-      drawTableCollapsed(ctx, table, node, transform, table.id === selectedTableId, isDark);
+      drawTableCollapsed(ctx, table, node, transform, table.id === selectedTableId, isDark, hmInfo);
     } else {
-      drawTable(ctx, table, node, transform, table.id === selectedTableId, isDark, hoverColIdx);
+      drawTable(ctx, table, node, transform, table.id === selectedTableId, isDark, hoverColIdx, hmInfo);
     }
 
     ctx.restore();

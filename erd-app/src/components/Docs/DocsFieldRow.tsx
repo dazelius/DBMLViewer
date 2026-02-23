@@ -20,17 +20,21 @@ export default function DocsFieldRow({ column, onRefClick, refTarget, isLast }: 
       {/* Name + Badges */}
       <td className="px-5 py-3">
         <div className="flex items-center gap-2">
+          {column.isWarning && <WarningIcon />}
           {column.isPrimaryKey && <KeyIcon variant="pk" />}
           {column.isForeignKey && !column.isPrimaryKey && <KeyIcon variant="fk" />}
           <span
             className="text-[12px] font-semibold"
-            style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}
+            style={{ fontFamily: 'var(--font-mono)', color: column.isWarning ? '#f87171' : 'var(--text-primary)' }}
           >
             {column.name}
           </span>
+          {column.isWarning && <Badge label="!" variant="error" />}
           {column.isPrimaryKey && <Badge label="PK" variant="warning" />}
           {column.isForeignKey && <Badge label="FK" variant="accent" />}
+          {column.isNotNull && !column.isPrimaryKey && <Badge label="NN" variant="danger" />}
           {column.isUnique && <Badge label="UQ" variant="success" />}
+          {column.isLocalize && <Badge label="L10n" variant="localize" />}
         </div>
       </td>
 
@@ -103,11 +107,24 @@ function KeyIcon({ variant }: { variant: 'pk' | 'fk' }) {
   );
 }
 
-function Badge({ label, variant }: { label: string; variant: 'warning' | 'accent' | 'success' }) {
+function WarningIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink: 0 }}>
+      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  );
+}
+
+function Badge({ label, variant }: { label: string; variant: 'warning' | 'accent' | 'success' | 'danger' | 'error' | 'localize' }) {
   const styles = {
     warning: { bg: 'var(--warning-muted)', fg: 'var(--warning)' },
     accent: { bg: 'var(--accent-muted)', fg: 'var(--accent)' },
     success: { bg: 'var(--success-muted)', fg: 'var(--success)' },
+    danger: { bg: 'rgba(239, 68, 68, 0.12)', fg: '#f87171' },
+    error: { bg: 'rgba(239, 68, 68, 0.20)', fg: '#ef4444' },
+    localize: { bg: 'rgba(45, 212, 191, 0.12)', fg: '#2dd4bf' },
   };
   const s = styles[variant];
   return (

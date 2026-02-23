@@ -22,7 +22,14 @@ export default function Toolbar() {
   const collapseMode = useExploreStore((s) => s.collapseMode);
   const toggleCollapseMode = useExploreStore((s) => s.toggleCollapseMode);
 
+  const heatmapEnabled = useCanvasStore((s) => s.heatmapEnabled);
+  const heatmapData = useCanvasStore((s) => s.heatmapData);
+  const toggleHeatmap = useCanvasStore((s) => s.toggleHeatmap);
+  const hasHeatmapData = heatmapData.size > 0;
+
   const isEditor = location.pathname.startsWith('/editor') || location.pathname === '/';
+  const isDocs = location.pathname.startsWith('/docs');
+  const isValidation = location.pathname.startsWith('/validation');
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -90,12 +97,19 @@ export default function Toolbar() {
               </svg>
               Editor
             </ModeTab>
-            <ModeTab active={!isEditor} onClick={() => navigate('/docs')}>
+            <ModeTab active={isDocs} onClick={() => navigate('/docs')}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                 <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
                 <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
               </svg>
               Docs
+            </ModeTab>
+            <ModeTab active={isValidation} onClick={() => navigate('/validation')}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <path d="M9 11l3 3L22 4" />
+                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+              </svg>
+              Validation
             </ModeTab>
           </div>
 
@@ -113,61 +127,71 @@ export default function Toolbar() {
 
         {/* Right: Canvas Tools */}
         <div className="flex items-center gap-0.5">
-          <ToolButton onClick={handleAutoArrange} title="Auto-arrange (Ctrl+Shift+A)" disabled={!schema}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <rect x="3" y="3" width="7" height="7" rx="1.5" />
-              <rect x="14" y="3" width="7" height="7" rx="1.5" />
-              <rect x="3" y="14" width="7" height="7" rx="1.5" />
-              <rect x="14" y="14" width="7" height="7" rx="1.5" />
-            </svg>
-            Arrange
-          </ToolButton>
+          {isEditor && (
+            <>
+              <ToolButton onClick={handleAutoArrange} title="Auto-arrange (Ctrl+Shift+A)" disabled={!schema}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <rect x="3" y="3" width="7" height="7" rx="1.5" />
+                  <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                  <rect x="3" y="14" width="7" height="7" rx="1.5" />
+                  <rect x="14" y="14" width="7" height="7" rx="1.5" />
+                </svg>
+                Arrange
+              </ToolButton>
 
-          <ToolButton onClick={handleFitScreen} title="Fit to screen (Ctrl+0)">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-            </svg>
-            Fit
-          </ToolButton>
+              <ToolButton onClick={handleFitScreen} title="Fit to screen (Ctrl+0)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+                </svg>
+                Fit
+              </ToolButton>
 
-          <ToolButton onClick={toggleCollapseMode} title="Toggle collapse mode">
-            {collapseMode ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-                <line x1="3" y1="9" x2="21" y2="9" />
-                <line x1="3" y1="15" x2="21" y2="15" />
-              </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" />
-                <line x1="3" y1="9" x2="21" y2="9" />
-              </svg>
-            )}
-            {collapseMode ? 'Expand' : 'Collapse'}
-          </ToolButton>
+              <ToolButton onClick={toggleCollapseMode} title="Toggle collapse mode">
+                {collapseMode ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                    <line x1="3" y1="9" x2="21" y2="9" />
+                    <line x1="3" y1="15" x2="21" y2="15" />
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                    <line x1="3" y1="9" x2="21" y2="9" />
+                  </svg>
+                )}
+                {collapseMode ? 'Expand' : 'Collapse'}
+              </ToolButton>
 
-          <Divider />
+              <HeatmapToggle
+                enabled={heatmapEnabled}
+                hasData={hasHeatmapData}
+                onToggle={toggleHeatmap}
+              />
 
-          <ToolButton onClick={() => setShowExport(true)} title="Export SQL" disabled={!schema}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-              <line x1="16" y1="13" x2="8" y2="13" />
-              <line x1="16" y1="17" x2="8" y2="17" />
-            </svg>
-            SQL
-          </ToolButton>
+              <Divider />
 
-          <ToolButton onClick={handleExportImage} title="Export as PNG">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-              <circle cx="8.5" cy="8.5" r="1.5" />
-              <polyline points="21 15 16 10 5 21" />
-            </svg>
-            PNG
-          </ToolButton>
+              <ToolButton onClick={() => setShowExport(true)} title="Export SQL" disabled={!schema}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                  <line x1="16" y1="13" x2="8" y2="13" />
+                  <line x1="16" y1="17" x2="8" y2="17" />
+                </svg>
+                SQL
+              </ToolButton>
 
-          <Divider />
+              <ToolButton onClick={handleExportImage} title="Export as PNG">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                  <circle cx="8.5" cy="8.5" r="1.5" />
+                  <polyline points="21 15 16 10 5 21" />
+                </svg>
+                PNG
+              </ToolButton>
+
+              <Divider />
+            </>
+          )}
 
           <button
             onClick={toggleTheme}
@@ -237,6 +261,38 @@ function ModeTab({ active, onClick, children }: { active: boolean; onClick: () =
       }}
     >
       {children}
+    </button>
+  );
+}
+
+function HeatmapToggle({ enabled, hasData, onToggle }: { enabled: boolean; hasData: boolean; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      disabled={!hasData}
+      title={hasData ? (enabled ? 'Heatmap OFF' : 'Heatmap ON (data row count)') : 'Validation 데이터를 먼저 로드하세요'}
+      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium cursor-pointer interactive disabled:opacity-30 disabled:cursor-not-allowed"
+      style={{
+        color: enabled ? '#ef4444' : 'var(--text-secondary)',
+        background: enabled ? 'rgba(239, 68, 68, 0.08)' : 'transparent',
+      }}
+      onMouseEnter={(e) => {
+        if (hasData) {
+          e.currentTarget.style.background = enabled ? 'rgba(239, 68, 68, 0.15)' : 'var(--bg-hover)';
+          e.currentTarget.style.color = enabled ? '#ef4444' : 'var(--text-primary)';
+        }
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = enabled ? 'rgba(239, 68, 68, 0.08)' : 'transparent';
+        e.currentTarget.style.color = enabled ? '#ef4444' : 'var(--text-secondary)';
+      }}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <rect x="3" y="12" width="4" height="9" rx="1" />
+        <rect x="10" y="7" width="4" height="14" rx="1" />
+        <rect x="17" y="3" width="4" height="18" rx="1" />
+      </svg>
+      Heatmap
     </button>
   );
 }

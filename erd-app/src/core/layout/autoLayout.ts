@@ -254,6 +254,58 @@ function groupAwareLayout(
   return result;
 }
 
+export function computeFocusLayout(
+  schema: ParsedSchema,
+  focusTableId: string,
+  collapsed = false
+): { focusTableIds: Set<string>; nodes: Map<string, TableNode> } {
+  const focusIds = new Set<string>([focusTableId]);
+  for (const ref of schema.refs) {
+    if (ref.fromTable === focusTableId) focusIds.add(ref.toTable);
+    if (ref.toTable === focusTableId) focusIds.add(ref.fromTable);
+  }
+
+  const focusTables = schema.tables.filter((t) => focusIds.has(t.id));
+  const focusRefs = schema.refs.filter((r) => focusIds.has(r.fromTable) && focusIds.has(r.toTable));
+
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({
+    rankdir: focusTables.length > 8 ? 'TB' : 'LR',
+    nodesep: 50,
+    ranksep: 100,
+    marginx: 40,
+    marginy: 40,
+  });
+  g.setDefaultEdgeLabel(() => ({}));
+
+  const sizes = new Map<string, { width: number; height: number }>();
+  for (const table of focusTables) {
+    const size = measureTableSize(table, collapsed);
+    sizes.set(table.id, size);
+    g.setNode(table.id, { width: size.width, height: size.height });
+  }
+  for (const ref of focusRefs) {
+    if (g.hasNode(ref.fromTable) && g.hasNode(ref.toTable)) {
+      g.setEdge(ref.fromTable, ref.toTable);
+    }
+  }
+  dagre.layout(g);
+
+  const nodes = new Map<string, TableNode>();
+  for (const table of focusTables) {
+    const nd = g.node(table.id);
+    const size = sizes.get(table.id)!;
+    nodes.set(table.id, {
+      tableId: table.id,
+      position: { x: nd.x - size.width / 2, y: nd.y - size.height / 2 },
+      size,
+      pinned: false,
+    });
+  }
+
+  return { focusTableIds: focusIds, nodes };
+}
+
 function sortBlocksByMetaGraph(
   blocks: { name: string; nodes: Map<string, { lx: number; ly: number }>; w: number; h: number }[],
   crossEdges: Map<string, Set<string>>

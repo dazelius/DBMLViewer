@@ -36,14 +36,16 @@ export default function DBMLEditor() {
       const markers: Monaco.editor.IMarkerData[] = errors.map((err) => {
         const line = Math.max(1, err.line);
         const col = Math.max(1, err.column);
-        const lineContent = model.getLineContent(Math.min(line, model.getLineCount()));
+        const safeLine = Math.min(line, model.getLineCount());
+        const lineContent = model.getLineContent(safeLine);
         const endCol = Math.max(col + 1, lineContent.length + 1);
+        const isWarning = err.message.startsWith('[!]');
 
         return {
-          severity: monaco.MarkerSeverity.Error,
+          severity: isWarning ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Error,
           message: err.message,
           startLineNumber: line,
-          startColumn: col,
+          startColumn: 1,
           endLineNumber: line,
           endColumn: endCol,
         };

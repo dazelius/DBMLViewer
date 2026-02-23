@@ -6,6 +6,7 @@ interface ExcelColumn {
   description: string;
   isPk: boolean;
   isNotNull: boolean;
+  isLocalize: boolean;
   defaultValue: string | null;
   enumType: string | null;
 }
@@ -45,6 +46,7 @@ interface ImportResult {
     notes: number;
   };
   logs: string[];
+  dataRowCounts: Map<string, number>;
 }
 
 function cleanText(text: unknown): string {
@@ -105,13 +107,20 @@ function findDescriptionColumnIndex(headerRow: unknown[]): number {
   return 2;
 }
 
-function findNotNullColumnIndex(headerRow: unknown[]): number {
-  const candidates = ['notnull', 'not null', 'nullable', 'required'];
-  for (const name of candidates) {
+function findNotNullColumnInfo(headerRow: unknown[]): { idx: number; inverted: boolean } {
+  const directCandidates = ['notnull', 'not null', 'required'];
+  for (const name of directCandidates) {
     const idx = findColumnIndex(headerRow, name);
-    if (idx >= 0) return idx;
+    if (idx >= 0) return { idx, inverted: false };
   }
-  return 4;
+
+  const invertedCandidates = ['allowempty', 'allow empty', 'nullable'];
+  for (const name of invertedCandidates) {
+    const idx = findColumnIndex(headerRow, name);
+    if (idx >= 0) return { idx, inverted: true };
+  }
+
+  return { idx: 4, inverted: false };
 }
 
 function findDefaultColumnIndex(headerRow: unknown[]): number {
@@ -121,6 +130,15 @@ function findDefaultColumnIndex(headerRow: unknown[]): number {
     if (idx >= 0) return idx;
   }
   return 10;
+}
+
+function findLocalizeColumnIndex(headerRow: unknown[]): number {
+  const candidates = ['localize', 'localise', 'l10n', 'loc', '번역', '로컬라이즈'];
+  for (const name of candidates) {
+    const idx = findColumnIndex(headerRow, name);
+    if (idx >= 0) return idx;
+  }
+  return -1;
 }
 
 function processDefineSheet(wb: XLSX.WorkBook, filename: string, logs: string[]): {
@@ -151,11 +169,12 @@ function processDefineSheet(wb: XLSX.WorkBook, filename: string, logs: string[])
   const headerRow = data[0] as unknown[];
 
   const descColIdx = findDescriptionColumnIndex(headerRow);
-  const notNullColIdx = findNotNullColumnIndex(headerRow);
+  const notNullInfo = findNotNullColumnInfo(headerRow);
   const defaultColIdx = findDefaultColumnIndex(headerRow);
   const pkColIdx = findPrimaryKeyColumnIndex(headerRow);
   const fkColIdx = findColumnIndex(headerRow, 'foreignkey');
   const enumColIdx = findColumnIndex(headerRow, 'enum');
+  const locColIdx = findLocalizeColumnIndex(headerRow);
 
   const columns: ExcelColumn[] = [];
   const fks: ExcelForeignKey[] = [];
@@ -168,13 +187,24 @@ function processDefineSheet(wb: XLSX.WorkBook, filename: string, logs: string[])
     if (!colName || !colType) continue;
 
     const colDesc = cleanText(row[descColIdx]);
-    const isNotNull = Boolean(row[notNullColIdx]);
+    let isNotNull = false;
+    if (notNullInfo.idx >= 0 && row[notNullInfo.idx] != null) {
+      const val = String(row[notNullInfo.idx]).trim().toUpperCase();
+      const isTruthy = val === 'TRUE' || val === '1' || val === 'Y' || val === 'YES' || val === 'O';
+      isNotNull = notNullInfo.inverted ? !isTruthy : isTruthy;
+    }
     const defaultVal = row[defaultColIdx] ? cleanText(row[defaultColIdx]) : null;
 
     let isPk = false;
     if (pkColIdx >= 0 && row[pkColIdx] != null) {
       const pkVal = String(row[pkColIdx]).trim().toUpperCase();
       isPk = pkVal === 'TRUE' || pkVal === '1' || pkVal === 'Y' || pkVal === 'YES' || pkVal === 'O' || pkVal === 'PK';
+    }
+
+    let isLocalize = false;
+    if (locColIdx >= 0 && row[locColIdx] != null) {
+      const locVal = String(row[locColIdx]).trim().toUpperCase();
+      isLocalize = locVal === 'TRUE' || locVal === '1' || locVal === 'Y' || locVal === 'YES' || locVal === 'O';
     }
 
     if (colDesc) noteCount++;
@@ -192,6 +222,7 @@ function processDefineSheet(wb: XLSX.WorkBook, filename: string, logs: string[])
       description: colDesc,
       isPk,
       isNotNull,
+      isLocalize,
       defaultValue: defaultVal,
       enumType,
     });
@@ -212,7 +243,8 @@ function processDefineSheet(wb: XLSX.WorkBook, filename: string, logs: string[])
   const descHeaderName = headerRow[descColIdx] ? String(headerRow[descColIdx]) : `col[${descColIdx}]`;
   const pkHeaderName = pkColIdx >= 0 ? (headerRow[pkColIdx] ? String(headerRow[pkColIdx]) : `col[${pkColIdx}]`) : 'N/A';
   const pkCount = columns.filter((c) => c.isPk).length;
-  logs.push(`[Table] ${tableName}: ${columns.length} cols, ${pkCount} PKs, ${fks.length} FKs, ${noteCount} notes (pk: "${pkHeaderName}" @col${pkColIdx}, desc: "${descHeaderName}" @col${descColIdx})`);
+  const locCount = columns.filter((c) => c.isLocalize).length;
+  logs.push(`[Table] ${tableName}: ${columns.length} cols, ${pkCount} PKs, ${fks.length} FKs, ${locCount} L10n, ${noteCount} notes (pk: "${pkHeaderName}" @col${pkColIdx}, desc: "${descHeaderName}" @col${descColIdx})`);
 
   return {
     table: { name: tableName, note, headerColor, columns },
@@ -274,10 +306,33 @@ function processTableGroupSheet(wb: XLSX.WorkBook, logs: string[]): ExcelTableGr
   return groups;
 }
 
+const DBML_INVALID_NAME = /[^a-zA-Z0-9_]/;
+const DBML_STARTS_WITH_DIGIT = /^[0-9]/;
+
+function sanitizeDbmlName(name: string): { sanitized: string; wasFixed: boolean } {
+  if (!name) return { sanitized: '_empty_', wasFixed: true };
+  if (name.startsWith('#')) return { sanitized: '//' + name.slice(1), wasFixed: false };
+
+  let fixed = name;
+  let wasFixed = false;
+
+  if (DBML_STARTS_WITH_DIGIT.test(fixed)) {
+    fixed = '_' + fixed;
+    wasFixed = true;
+  }
+  if (DBML_INVALID_NAME.test(fixed)) {
+    fixed = fixed.replace(/[^a-zA-Z0-9_]/g, '_');
+    wasFixed = true;
+  }
+
+  return { sanitized: fixed, wasFixed };
+}
+
 function formatTable(table: ExcelTable): string {
   const lines: string[] = [];
 
-  let header = `Table ${table.name}`;
+  const { sanitized: safeName } = sanitizeDbmlName(table.name);
+  let header = `Table ${safeName}`;
   const attrs: string[] = [];
   if (table.note) {
     attrs.push(`Note: '${processDescription(table.note)}'`);
@@ -293,18 +348,28 @@ function formatTable(table: ExcelTable): string {
   lines.push('{');
 
   for (const col of table.columns) {
+    const { sanitized: safeColName, wasFixed } = sanitizeDbmlName(col.name);
+
+    if (safeColName.startsWith('//')) {
+      lines.push(`  ${safeColName} ${col.type}`);
+      continue;
+    }
+
     const colAttrs: string[] = [];
     if (col.isPk) colAttrs.push('PK');
     if (col.isNotNull) colAttrs.push('not null');
     if (col.defaultValue) colAttrs.push(`default: "${col.defaultValue}"`);
-    if (col.description) {
-      colAttrs.push(`note: '${processDescription(col.description)}'`);
+
+    const noteParts: string[] = [];
+    if (wasFixed) noteParts.push('[warning]');
+    if (col.isLocalize) noteParts.push('[localize]');
+    if (col.description) noteParts.push(processDescription(col.description));
+    const noteStr = noteParts.join(' ');
+    if (noteStr) {
+      colAttrs.push(`note: '${noteStr}'`);
     }
 
-    let colName = col.name;
-    if (colName.startsWith('#')) colName = '//' + colName.slice(1);
-
-    let line = `  ${colName} ${col.type}`;
+    let line = `  ${safeColName} ${col.type}`;
     if (colAttrs.length > 0) {
       line += ` [${colAttrs.join(', ')}]`;
     }
@@ -349,7 +414,10 @@ export function excelFilesToDbml(
   const allFks: ExcelForeignKey[] = [];
   const allEnums: ExcelEnum[] = [];
   const allGroups: ExcelTableGroup[] = [];
+  const dataRowCounts = new Map<string, number>();
   let totalNotes = 0;
+
+  const META_SHEETS = new Set(['define', 'tabledefine', 'enum', 'tablegroup']);
 
   const xlsxFiles = files.filter(
     (f) => f.name.endsWith('.xlsx') && !f.name.startsWith('~$')
@@ -373,9 +441,25 @@ export function excelFilesToDbml(
 
       const groups = processTableGroupSheet(wb, logs);
       allGroups.push(...groups);
+
+      for (const sheetName of wb.SheetNames) {
+        if (META_SHEETS.has(sheetName.toLowerCase())) continue;
+        if (sheetName.includes('#')) continue;
+        const sheet = wb.Sheets[sheetName];
+        if (!sheet) continue;
+        const raw = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
+        const rowCount = Math.max(0, raw.length - 1);
+        if (rowCount > 0) {
+          dataRowCounts.set(sheetName.toLowerCase(), rowCount);
+        }
+      }
     } catch (err) {
       logs.push(`[ERROR] ${file.name}: ${err}`);
     }
+  }
+
+  if (dataRowCounts.size > 0) {
+    logs.push(`[Heatmap] ${dataRowCounts.size} data sheets found, ${[...dataRowCounts.values()].reduce((a, b) => a + b, 0)} total rows`);
   }
 
   const parts: string[] = [];
@@ -435,5 +519,6 @@ export function excelFilesToDbml(
       notes: totalNotes,
     },
     logs,
+    dataRowCounts,
   };
 }

@@ -12,7 +12,11 @@ interface DocsMiniERDProps {
 }
 
 interface TooltipData {
-  text: string;
+  text: string | null;
+  enumName: string | null;
+  enumValues: { name: string; note: string | null }[] | null;
+  isLocalize: boolean;
+  isWarning: boolean;
   x: number;
   y: number;
 }
@@ -86,7 +90,7 @@ export default function DocsMiniERD({ tableId }: DocsMiniERDProps) {
     return {
       tables: schema.tables.filter((t) => relatedIds.has(t.id)),
       refs: relatedRefs,
-      enums: [],
+      enums: schema.enums,
       tableGroups: schema.tableGroups.filter((g) =>
         g.tables.some((tName) => {
           const t = schema.tables.find((tb) => tb.name === tName);
@@ -269,13 +273,16 @@ export default function DocsMiniERD({ tableId }: DocsMiniERDProps) {
     if (!table) { setTooltip(null); return; }
 
     const col = table.columns[hover.columnIndex];
-    if (!col || !col.note) { setTooltip(null); return; }
+    if (!col) { setTooltip(null); return; }
+
+    const enumDef = schema?.enums.find((e) => e.name === col.type);
+    if (!col.note && !enumDef && !col.isLocalize && !col.isWarning) { setTooltip(null); return; }
 
     const containerRect = containerRef.current?.getBoundingClientRect();
     const ox = containerRect ? hover.screenX - containerRect.left : hover.screenX;
     const oy = containerRect ? hover.screenY - containerRect.top : hover.screenY;
 
-    setTooltip({ text: col.note, x: ox + 14, y: oy - 10 });
+    setTooltip({ text: col.note ?? null, enumName: enumDef?.name ?? null, enumValues: enumDef?.values ?? null, isLocalize: col.isLocalize, isWarning: col.isWarning, x: ox + 14, y: oy - 10 });
   }, [transform, miniNodes, miniSchema]);
 
   const onMouseUp = useCallback(() => {
@@ -344,31 +351,51 @@ export default function DocsMiniERD({ tableId }: DocsMiniERDProps) {
         onContextMenu={(e) => e.preventDefault()}
       />
 
-      {/* Column note tooltip */}
+      {/* Column tooltip (note + enum) */}
       {tooltip && (
-        <div
-          className="absolute z-20 pointer-events-none max-w-xs"
-          style={{ left: tooltip.x, top: tooltip.y }}
-        >
-          <div
-            className="px-3 py-2 rounded-lg text-xs leading-relaxed shadow-xl"
-            style={{
-              background: 'var(--bg-surface)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border-color)',
-              backdropFilter: 'blur(12px)',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-            }}
-          >
-            <div className="flex items-center gap-1.5 mb-1">
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-              </svg>
-              <span className="font-semibold" style={{ color: 'var(--accent)', fontSize: '10px' }}>NOTE</span>
-            </div>
-            {tooltip.text}
+        <div className="absolute z-20 pointer-events-none" style={{ left: tooltip.x, top: tooltip.y, maxWidth: 320 }}>
+          <div className="rounded-lg text-xs leading-relaxed shadow-xl overflow-hidden" style={{ background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', backdropFilter: 'blur(12px)' }}>
+            {tooltip.isWarning && (
+              <div className="px-3 py-2 flex items-center gap-1.5" style={{ background: 'rgba(239, 68, 68, 0.06)' }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2.5" strokeLinecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+                <span className="font-semibold" style={{ color: '#f87171', fontSize: '10px' }}>DBML 호환을 위해 이름이 수정됨</span>
+              </div>
+            )}
+            {tooltip.text && (
+              <div className="px-3 py-2" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', ...(tooltip.isWarning ? { borderTop: '1px solid var(--border-color)' } : {}) }}>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
+                  <span className="font-semibold" style={{ color: 'var(--accent)', fontSize: '10px' }}>NOTE</span>
+                </div>
+                {tooltip.text}
+              </div>
+            )}
+            {tooltip.enumValues && tooltip.enumName && (
+              <div className="px-3 py-2" style={(tooltip.text || tooltip.isWarning) ? { borderTop: '1px solid var(--border-color)' } : undefined}>
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round"><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></svg>
+                  <span className="font-semibold" style={{ color: '#a78bfa', fontSize: '10px' }}>ENUM</span>
+                  <span className="font-bold" style={{ color: 'var(--text-primary)', fontSize: '10px', fontFamily: 'var(--font-mono)' }}>{tooltip.enumName}</span>
+                  <span className="text-[9px] tabular-nums" style={{ color: 'var(--text-muted)' }}>({tooltip.enumValues.length})</span>
+                </div>
+                <div className="flex flex-col gap-[1px]">
+                  {tooltip.enumValues.slice(0, 12).map((v) => (
+                    <div key={v.name} className="flex items-baseline gap-2 py-[1px]">
+                      <span className="text-[10px] font-medium" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{v.name}</span>
+                      {v.note && <span className="text-[9px] truncate" style={{ color: 'var(--text-muted)', maxWidth: 160 }}>{v.note}</span>}
+                    </div>
+                  ))}
+                  {tooltip.enumValues.length > 12 && <div className="text-[9px] pt-0.5" style={{ color: 'var(--text-muted)' }}>... 외 {tooltip.enumValues.length - 12}개</div>}
+                </div>
+              </div>
+            )}
+            {tooltip.isLocalize && (
+              <div className="px-3 py-2 flex items-center gap-1.5" style={(tooltip.text || tooltip.enumValues) ? { borderTop: '1px solid var(--border-color)' } : undefined}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></svg>
+                <span className="font-semibold" style={{ color: '#2dd4bf', fontSize: '10px' }}>L10n</span>
+                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>번역 필요 컬럼</span>
+              </div>
+            )}
           </div>
         </div>
       )}
