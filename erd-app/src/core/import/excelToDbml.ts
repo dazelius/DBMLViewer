@@ -1,0 +1,394 @@
+import * as XLSX from 'xlsx';
+
+interface ExcelColumn {
+  name: string;
+  type: string;
+  description: string;
+  isPk: boolean;
+  isNotNull: boolean;
+  defaultValue: string | null;
+  enumType: string | null;
+}
+
+interface ExcelTable {
+  name: string;
+  note: string;
+  headerColor: string;
+  columns: ExcelColumn[];
+}
+
+interface ExcelForeignKey {
+  sourceTable: string;
+  sourceColumn: string;
+  targetTable: string;
+}
+
+interface ExcelEnum {
+  name: string;
+  values: { value: string; description: string }[];
+}
+
+interface ExcelTableGroup {
+  name: string;
+  tables: string[];
+}
+
+interface ImportResult {
+  dbml: string;
+  stats: {
+    files: number;
+    tables: number;
+    columns: number;
+    refs: number;
+    enums: number;
+    groups: number;
+  };
+  logs: string[];
+}
+
+function cleanText(text: unknown): string {
+  if (!text) return '';
+  return String(text)
+    .replace(/\r\n/g, ' ')
+    .replace(/\n/g, ' ')
+    .replace(/\r/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function processDescription(text: unknown): string {
+  if (!text) return '';
+  let clean = cleanText(text);
+  if (!clean.includes('headercolor')) {
+    clean = clean.replace(/#/g, '//');
+  }
+  clean = clean.replace(/-/g, '_');
+  clean = clean.replace(/'/g, "\\'");
+  return clean;
+}
+
+function extractTableName(filename: string): string {
+  return filename
+    .replace(/\.xlsx$/i, '')
+    .replace(/^DataDefine_/i, '')
+    .replace(/_SheetDefine$/i, '');
+}
+
+function findColumnIndex(headerRow: unknown[], name: string): number {
+  for (let i = 0; i < headerRow.length; i++) {
+    const val = headerRow[i];
+    if (val && String(val).toLowerCase().trim().replace(/\s+/g, '') === name.toLowerCase()) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function processDefineSheet(wb: XLSX.WorkBook, filename: string, logs: string[]): {
+  table: ExcelTable | null;
+  fks: ExcelForeignKey[];
+} {
+  const defineSheet = wb.Sheets['Define'];
+  if (!defineSheet) return { table: null, fks: [] };
+
+  const tableName = extractTableName(filename);
+  logs.push(`[Table] ${tableName} from ${filename}`);
+
+  // Table metadata from TableDefine sheet
+  let note = '';
+  let headerColor = '';
+  const tdSheet = wb.Sheets['TableDefine'];
+  if (tdSheet) {
+    const tdData = XLSX.utils.sheet_to_json<unknown[]>(tdSheet, { header: 1 });
+    if (tdData[1]) {
+      const row = tdData[1] as unknown[];
+      if (row[0]) note = cleanText(row[0]);
+      if (row[1]) headerColor = String(row[1]).trim();
+    }
+  }
+
+  const data = XLSX.utils.sheet_to_json<unknown[]>(defineSheet, { header: 1 });
+  if (data.length < 2) return { table: null, fks: [] };
+
+  const headerRow = data[0] as unknown[];
+  const fkColIdx = findColumnIndex(headerRow, 'foreignkey');
+  const enumColIdx = findColumnIndex(headerRow, 'enum');
+
+  const columns: ExcelColumn[] = [];
+  const fks: ExcelForeignKey[] = [];
+
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i] as unknown[];
+    const colName = cleanText(row[0]);
+    const colType = cleanText(row[1]);
+    if (!colName || !colType) continue;
+
+    const colDesc = cleanText(row[2]);
+    const isNotNull = Boolean(row[4]);
+    const defaultVal = row[10] ? cleanText(row[10]) : null;
+
+    let enumType: string | null = null;
+    if (enumColIdx >= 0 && row[enumColIdx]) {
+      enumType = String(row[enumColIdx]).trim();
+    }
+
+    const finalType = (colType.toLowerCase() === 'enum' && enumType) ? enumType : colType;
+
+    columns.push({
+      name: colName,
+      type: finalType,
+      description: colDesc,
+      isPk: colName === 'ID',
+      isNotNull,
+      defaultValue: defaultVal,
+      enumType,
+    });
+
+    // FK processing
+    if (fkColIdx >= 0 && row[fkColIdx]) {
+      const fkValue = String(row[fkColIdx]).trim();
+      const refs = fkValue.includes('&') ? fkValue.split('&') : [fkValue];
+
+      for (const ref of refs) {
+        const target = ref.trim().replace(/^Table\s+/i, '');
+        if (target) {
+          fks.push({ sourceTable: tableName, sourceColumn: colName, targetTable: target });
+        }
+      }
+    }
+  }
+
+  logs.push(`  ${columns.length} columns, ${fks.length} FKs`);
+
+  return {
+    table: { name: tableName, note, headerColor, columns },
+    fks,
+  };
+}
+
+function processEnumSheet(wb: XLSX.WorkBook, logs: string[]): ExcelEnum[] {
+  const sheet = wb.Sheets['Enum'];
+  if (!sheet) return [];
+
+  const data = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
+  const enumMap = new Map<string, { value: string; description: string }[]>();
+
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i] as unknown[];
+    const enumType = cleanText(row[0]);
+    const enumValue = cleanText(row[1]);
+    const enumDesc = cleanText(row[4]);
+
+    if (enumType && enumValue) {
+      if (!enumMap.has(enumType)) enumMap.set(enumType, []);
+      enumMap.get(enumType)!.push({ value: enumValue, description: enumDesc });
+    }
+  }
+
+  const enums: ExcelEnum[] = [];
+  for (const [name, values] of enumMap) {
+    enums.push({ name, values });
+    logs.push(`[Enum] ${name}: ${values.length} values`);
+  }
+  return enums;
+}
+
+function processTableGroupSheet(wb: XLSX.WorkBook, logs: string[]): ExcelTableGroup[] {
+  const sheet = wb.Sheets['TableGroup'];
+  if (!sheet) return [];
+
+  const data = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
+  const groupMap = new Map<string, string[]>();
+
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i] as unknown[];
+    const groupName = cleanText(row[0]);
+    const tableName = cleanText(row[1]).replace(/^Table\s+/i, '');
+
+    if (groupName && tableName) {
+      if (!groupMap.has(groupName)) groupMap.set(groupName, []);
+      groupMap.get(groupName)!.push(tableName);
+    }
+  }
+
+  const groups: ExcelTableGroup[] = [];
+  for (const [name, tables] of groupMap) {
+    groups.push({ name, tables });
+    logs.push(`[Group] ${name}: ${tables.length} tables`);
+  }
+  return groups;
+}
+
+function formatTable(table: ExcelTable): string {
+  const lines: string[] = [];
+
+  // Table header with attributes
+  let header = `Table ${table.name}`;
+  const attrs: string[] = [];
+  if (table.note) {
+    attrs.push(`Note: '${processDescription(table.note)}'`);
+  }
+  if (table.headerColor) {
+    attrs.push(`headercolor: ${table.headerColor}`);
+  }
+  if (attrs.length > 0) {
+    header += ` [${attrs.join(', ')}]`;
+  }
+
+  lines.push(header);
+  lines.push('{');
+
+  for (const col of table.columns) {
+    const colAttrs: string[] = [];
+    if (col.isPk) colAttrs.push('PK');
+    if (col.isNotNull) colAttrs.push('not null');
+    if (col.defaultValue) colAttrs.push(`default: "${col.defaultValue}"`);
+    if (col.description) {
+      colAttrs.push(`note: '${processDescription(col.description)}'`);
+    }
+
+    let colName = col.name;
+    if (colName.startsWith('#')) colName = '//' + colName.slice(1);
+
+    let line = `  ${colName} ${col.type}`;
+    if (colAttrs.length > 0) {
+      line += ` [${colAttrs.join(', ')}]`;
+    }
+    lines.push(line);
+  }
+
+  lines.push('}');
+  return lines.join('\n');
+}
+
+function formatForeignKey(fk: ExcelForeignKey): string {
+  return `Ref: ${fk.sourceTable}.${fk.sourceColumn} < ${fk.targetTable}`;
+}
+
+function formatEnum(en: ExcelEnum): string {
+  const lines = [`enum ${en.name} {`];
+  for (const val of en.values) {
+    let line = `  ${val.value}`;
+    if (val.description) {
+      line += ` [note: '${processDescription(val.description)}']`;
+    }
+    lines.push(line);
+  }
+  lines.push('}');
+  return lines.join('\n');
+}
+
+function formatTableGroup(group: ExcelTableGroup): string {
+  const lines = [`TableGroup ${group.name} {`];
+  for (const table of group.tables) {
+    lines.push(`  ${table}`);
+  }
+  lines.push('}');
+  return lines.join('\n');
+}
+
+/**
+ * Convert a set of Excel files (as ArrayBuffers) to a DBML string.
+ * Mirrors the Python ExportDefineData logic.
+ */
+export function excelFilesToDbml(
+  files: { name: string; data: ArrayBuffer }[]
+): ImportResult {
+  const logs: string[] = [];
+  const tables: ExcelTable[] = [];
+  const allFks: ExcelForeignKey[] = [];
+  const allEnums: ExcelEnum[] = [];
+  const allGroups: ExcelTableGroup[] = [];
+
+  const xlsxFiles = files.filter(
+    (f) => f.name.endsWith('.xlsx') && !f.name.startsWith('~$')
+  );
+
+  logs.push(`Found ${xlsxFiles.length} Excel files`);
+
+  for (const file of xlsxFiles) {
+    try {
+      const wb = XLSX.read(file.data, { type: 'array' });
+
+      // Define sheet → Table + FKs
+      const { table, fks } = processDefineSheet(wb, file.name, logs);
+      if (table && table.columns.length > 0) {
+        tables.push(table);
+        allFks.push(...fks);
+      }
+
+      // Enum sheet
+      const enums = processEnumSheet(wb, logs);
+      allEnums.push(...enums);
+
+      // TableGroup sheet
+      const groups = processTableGroupSheet(wb, logs);
+      allGroups.push(...groups);
+    } catch (err) {
+      logs.push(`[ERROR] ${file.name}: ${err}`);
+    }
+  }
+
+  // Generate DBML
+  const parts: string[] = [];
+
+  // Tables
+  for (const table of tables) {
+    parts.push(formatTable(table));
+  }
+
+  // Refs
+  const validFks = allFks.filter((fk) => {
+    const formatted = formatForeignKey(fk);
+    return formatted !== null;
+  });
+  if (validFks.length > 0) {
+    parts.push('// ─── Relationships ───');
+    for (const fk of validFks) {
+      parts.push(formatForeignKey(fk));
+    }
+  }
+
+  // Enums (deduplicate by name)
+  const uniqueEnums = new Map<string, ExcelEnum>();
+  for (const en of allEnums) {
+    if (!uniqueEnums.has(en.name)) uniqueEnums.set(en.name, en);
+  }
+  if (uniqueEnums.size > 0) {
+    parts.push('// ─── Enums ───');
+    for (const en of uniqueEnums.values()) {
+      parts.push(formatEnum(en));
+    }
+  }
+
+  // TableGroups (deduplicate & merge)
+  const mergedGroups = new Map<string, Set<string>>();
+  for (const grp of allGroups) {
+    if (!mergedGroups.has(grp.name)) mergedGroups.set(grp.name, new Set());
+    for (const t of grp.tables) mergedGroups.get(grp.name)!.add(t);
+  }
+  if (mergedGroups.size > 0) {
+    parts.push('// ─── Table Groups ───');
+    for (const [name, tableSet] of mergedGroups) {
+      parts.push(formatTableGroup({ name, tables: [...tableSet] }));
+    }
+  }
+
+  const dbml = parts.join('\n\n');
+  const totalColumns = tables.reduce((s, t) => s + t.columns.length, 0);
+
+  logs.push(`\nDone: ${tables.length} tables, ${totalColumns} columns, ${validFks.length} refs, ${uniqueEnums.size} enums, ${mergedGroups.size} groups`);
+
+  return {
+    dbml,
+    stats: {
+      files: xlsxFiles.length,
+      tables: tables.length,
+      columns: totalColumns,
+      refs: validFks.length,
+      enums: uniqueEnums.size,
+      groups: mergedGroups.size,
+    },
+    logs,
+  };
+}
