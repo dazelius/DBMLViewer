@@ -21,6 +21,7 @@ export default function ERDCanvas() {
   const hasFittedRef = useRef(false);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const hoveredTableRef = useRef<string | null>(null);
+  const hoveredColumnRef = useRef<{ tableId: string; columnIndex: number } | null>(null);
 
   const schema = useSchemaStore((s) => s.schema);
   const nodes = useCanvasStore((s) => s.nodes);
@@ -66,7 +67,7 @@ export default function ERDCanvas() {
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);
 
-    renderCanvas(ctx, rect.width, rect.height, schema, nodes, transform, selectedTableId, selectedRefId, hoveredTableRef.current, exploreVisuals);
+    renderCanvas(ctx, rect.width, rect.height, schema, nodes, transform, selectedTableId, selectedRefId, hoveredTableRef.current, exploreVisuals, hoveredColumnRef.current);
   }, [schema, nodes, transform, selectedTableId, selectedRefId, exploreVisuals]);
 
   useEffect(() => {
@@ -222,7 +223,13 @@ export default function ERDCanvas() {
 
     const hover: HoverInfo | null = findColumnAtPoint(e.clientX, e.clientY, rect, nodes, transform);
 
-    if (!hover) { setTooltip(null); return; }
+    if (!hover) {
+      hoveredColumnRef.current = null;
+      setTooltip(null);
+      return;
+    }
+
+    hoveredColumnRef.current = { tableId: hover.tableId, columnIndex: hover.columnIndex };
 
     const table = schema.tables.find((t) => t.id === hover.tableId);
     if (!table) { setTooltip(null); return; }
@@ -245,6 +252,7 @@ export default function ERDCanvas() {
     dragRef.current = createInitialDragState();
     setTooltip(null);
     hoveredTableRef.current = null;
+    hoveredColumnRef.current = null;
   }, []);
 
   const onDoubleClick = useCallback(() => {

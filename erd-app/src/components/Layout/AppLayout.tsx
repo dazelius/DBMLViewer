@@ -39,7 +39,7 @@ export default function AppLayout({ editor, canvas, toolbar, sidebar }: AppLayou
       const container = containerRef.current;
       if (!container) return;
       const rect = container.getBoundingClientRect();
-      const sidebarWidth = sidebar ? 210 : 0;
+      const sidebarWidth = sidebar ? 220 : 0;
       const availableWidth = rect.width - sidebarWidth;
       const x = e.clientX - rect.left - sidebarWidth;
       const newRatio = Math.max(
@@ -59,7 +59,6 @@ export default function AppLayout({ editor, canvas, toolbar, sidebar }: AppLayou
     };
   }, [isDragging, sidebar]);
 
-  // Keyboard shortcut: Ctrl+B to toggle editor
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
@@ -84,63 +83,75 @@ export default function AppLayout({ editor, canvas, toolbar, sidebar }: AppLayou
               style={{
                 width: `${ratio * 100}%`,
                 minWidth: MIN_PANEL_WIDTH,
-                transition: isDragging ? 'none' : 'width 0.2s ease',
+                transition: isDragging ? 'none' : 'width 0.25s cubic-bezier(0.16,1,0.3,1)',
               }}
             >
               {editor}
             </div>
+            {/* Resize Handle */}
             <div
-              className="w-1 cursor-col-resize hover:bg-[var(--accent)] transition-colors flex-shrink-0"
-              style={{
-                backgroundColor: isDragging ? 'var(--accent)' : 'var(--border-color)',
-              }}
+              className="flex-shrink-0 cursor-col-resize relative group"
+              style={{ width: 5 }}
               onMouseDown={handleMouseDown}
-            />
+            >
+              <div
+                className="absolute inset-0 interactive"
+                style={{
+                  background: isDragging ? 'var(--accent)' : 'var(--border-color)',
+                  width: isDragging ? 2 : 1,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                }}
+              />
+              <div
+                className="absolute inset-y-0 interactive opacity-0 group-hover:opacity-100"
+                style={{
+                  background: 'var(--accent)',
+                  width: 2,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  boxShadow: 'var(--shadow-glow)',
+                }}
+              />
+            </div>
           </>
         )}
 
         <div className="flex-1 overflow-hidden relative" style={{ minWidth: MIN_PANEL_WIDTH }}>
           {canvas}
 
-          {/* Toggle button pinned to left edge of canvas */}
+          {/* Toggle Editor Button */}
           <button
             onClick={toggleEditor}
             title={editorVisible ? 'Hide editor (Ctrl+B)' : 'Show editor (Ctrl+B)'}
-            className="absolute top-2 left-2 z-10 flex items-center gap-1.5 px-2 py-1.5 rounded text-[11px] font-medium cursor-pointer transition-all"
+            className="absolute top-3 left-3 z-10 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer interactive glass-panel"
             style={{
-              background: 'var(--bg-surface)',
               color: 'var(--text-secondary)',
               border: '1px solid var(--border-color)',
-              backdropFilter: 'blur(8px)',
+              boxShadow: 'var(--shadow-md)',
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'var(--bg-hover)';
               e.currentTarget.style.borderColor = 'var(--accent)';
               e.currentTarget.style.color = 'var(--accent)';
+              e.currentTarget.style.boxShadow = 'var(--shadow-md), var(--shadow-glow)';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'var(--bg-surface)';
               e.currentTarget.style.borderColor = 'var(--border-color)';
               e.currentTarget.style.color = 'var(--text-secondary)';
+              e.currentTarget.style.boxShadow = 'var(--shadow-md)';
             }}
           >
-            {editorVisible ? (
-              <>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="3" y="3" width="18" height="18" rx="2" />
-                  <line x1="9" y1="3" x2="9" y2="21" />
-                </svg>
-                Hide Editor
-              </>
-            ) : (
-              <>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="3" y="3" width="18" height="18" rx="2" />
-                  <line x1="9" y1="3" x2="9" y2="21" />
-                </svg>
-                Show Editor
-              </>
-            )}
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <line x1="9" y1="3" x2="9" y2="21" />
+            </svg>
+            {editorVisible ? 'Hide' : 'Editor'}
+            <kbd
+              className="px-1 py-0.5 rounded text-[9px]"
+              style={{ background: 'var(--bg-surface)', color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}
+            >
+              ⌘B
+            </kbd>
           </button>
         </div>
       </div>

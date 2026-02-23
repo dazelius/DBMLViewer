@@ -42,12 +42,13 @@ interface ImportResult {
     refs: number;
     enums: number;
     groups: number;
+    notes: number;
   };
   logs: string[];
 }
 
 function cleanText(text: unknown): string {
-  if (!text) return '';
+  if (text === null || text === undefined || text === '') return '';
   return String(text)
     .replace(/\r\n/g, ' ')
     .replace(/\n/g, ' ')
@@ -59,6 +60,7 @@ function cleanText(text: unknown): string {
 function processDescription(text: unknown): string {
   if (!text) return '';
   let clean = cleanText(text);
+  if (!clean) return '';
   if (!clean.includes('headercolor')) {
     clean = clean.replace(/#/g, '//');
   }
@@ -75,26 +77,62 @@ function extractTableName(filename: string): string {
 }
 
 function findColumnIndex(headerRow: unknown[], name: string): number {
+  const normalized = name.toLowerCase().replace(/\s+/g, '');
   for (let i = 0; i < headerRow.length; i++) {
     const val = headerRow[i];
-    if (val && String(val).toLowerCase().trim().replace(/\s+/g, '') === name.toLowerCase()) {
+    if (val && String(val).toLowerCase().trim().replace(/\s+/g, '') === normalized) {
       return i;
     }
   }
   return -1;
 }
 
+function findPrimaryKeyColumnIndex(headerRow: unknown[]): number {
+  const candidates = ['primarykey', 'primary key', 'pk', 'ispk', 'is_pk', 'isprimarykey'];
+  for (const name of candidates) {
+    const idx = findColumnIndex(headerRow, name);
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}
+
+function findDescriptionColumnIndex(headerRow: unknown[]): number {
+  const candidates = ['description', 'desc', 'note', '설명', '비고'];
+  for (const name of candidates) {
+    const idx = findColumnIndex(headerRow, name);
+    if (idx >= 0) return idx;
+  }
+  return 2;
+}
+
+function findNotNullColumnIndex(headerRow: unknown[]): number {
+  const candidates = ['notnull', 'not null', 'nullable', 'required'];
+  for (const name of candidates) {
+    const idx = findColumnIndex(headerRow, name);
+    if (idx >= 0) return idx;
+  }
+  return 4;
+}
+
+function findDefaultColumnIndex(headerRow: unknown[]): number {
+  const candidates = ['default', 'defaultvalue', 'default value', '기본값'];
+  for (const name of candidates) {
+    const idx = findColumnIndex(headerRow, name);
+    if (idx >= 0) return idx;
+  }
+  return 10;
+}
+
 function processDefineSheet(wb: XLSX.WorkBook, filename: string, logs: string[]): {
   table: ExcelTable | null;
   fks: ExcelForeignKey[];
+  noteCount: number;
 } {
   const defineSheet = wb.Sheets['Define'];
-  if (!defineSheet) return { table: null, fks: [] };
+  if (!defineSheet) return { table: null, fks: [], noteCount: 0 };
 
   const tableName = extractTableName(filename);
-  logs.push(`[Table] ${tableName} from ${filename}`);
 
-  // Table metadata from TableDefine sheet
   let note = '';
   let headerColor = '';
   const tdSheet = wb.Sheets['TableDefine'];
@@ -108,14 +146,20 @@ function processDefineSheet(wb: XLSX.WorkBook, filename: string, logs: string[])
   }
 
   const data = XLSX.utils.sheet_to_json<unknown[]>(defineSheet, { header: 1 });
-  if (data.length < 2) return { table: null, fks: [] };
+  if (data.length < 2) return { table: null, fks: [], noteCount: 0 };
 
   const headerRow = data[0] as unknown[];
+
+  const descColIdx = findDescriptionColumnIndex(headerRow);
+  const notNullColIdx = findNotNullColumnIndex(headerRow);
+  const defaultColIdx = findDefaultColumnIndex(headerRow);
+  const pkColIdx = findPrimaryKeyColumnIndex(headerRow);
   const fkColIdx = findColumnIndex(headerRow, 'foreignkey');
   const enumColIdx = findColumnIndex(headerRow, 'enum');
 
   const columns: ExcelColumn[] = [];
   const fks: ExcelForeignKey[] = [];
+  let noteCount = 0;
 
   for (let i = 1; i < data.length; i++) {
     const row = data[i] as unknown[];
@@ -123,9 +167,17 @@ function processDefineSheet(wb: XLSX.WorkBook, filename: string, logs: string[])
     const colType = cleanText(row[1]);
     if (!colName || !colType) continue;
 
-    const colDesc = cleanText(row[2]);
-    const isNotNull = Boolean(row[4]);
-    const defaultVal = row[10] ? cleanText(row[10]) : null;
+    const colDesc = cleanText(row[descColIdx]);
+    const isNotNull = Boolean(row[notNullColIdx]);
+    const defaultVal = row[defaultColIdx] ? cleanText(row[defaultColIdx]) : null;
+
+    let isPk = false;
+    if (pkColIdx >= 0 && row[pkColIdx] != null) {
+      const pkVal = String(row[pkColIdx]).trim().toUpperCase();
+      isPk = pkVal === 'TRUE' || pkVal === '1' || pkVal === 'Y' || pkVal === 'YES' || pkVal === 'O' || pkVal === 'PK';
+    }
+
+    if (colDesc) noteCount++;
 
     let enumType: string | null = null;
     if (enumColIdx >= 0 && row[enumColIdx]) {
@@ -138,13 +190,12 @@ function processDefineSheet(wb: XLSX.WorkBook, filename: string, logs: string[])
       name: colName,
       type: finalType,
       description: colDesc,
-      isPk: colName === 'ID',
+      isPk,
       isNotNull,
       defaultValue: defaultVal,
       enumType,
     });
 
-    // FK processing
     if (fkColIdx >= 0 && row[fkColIdx]) {
       const fkValue = String(row[fkColIdx]).trim();
       const refs = fkValue.includes('&') ? fkValue.split('&') : [fkValue];
@@ -158,11 +209,15 @@ function processDefineSheet(wb: XLSX.WorkBook, filename: string, logs: string[])
     }
   }
 
-  logs.push(`  ${columns.length} columns, ${fks.length} FKs`);
+  const descHeaderName = headerRow[descColIdx] ? String(headerRow[descColIdx]) : `col[${descColIdx}]`;
+  const pkHeaderName = pkColIdx >= 0 ? (headerRow[pkColIdx] ? String(headerRow[pkColIdx]) : `col[${pkColIdx}]`) : 'N/A';
+  const pkCount = columns.filter((c) => c.isPk).length;
+  logs.push(`[Table] ${tableName}: ${columns.length} cols, ${pkCount} PKs, ${fks.length} FKs, ${noteCount} notes (pk: "${pkHeaderName}" @col${pkColIdx}, desc: "${descHeaderName}" @col${descColIdx})`);
 
   return {
     table: { name: tableName, note, headerColor, columns },
     fks,
+    noteCount,
   };
 }
 
@@ -222,7 +277,6 @@ function processTableGroupSheet(wb: XLSX.WorkBook, logs: string[]): ExcelTableGr
 function formatTable(table: ExcelTable): string {
   const lines: string[] = [];
 
-  // Table header with attributes
   let header = `Table ${table.name}`;
   const attrs: string[] = [];
   if (table.note) {
@@ -287,10 +341,6 @@ function formatTableGroup(group: ExcelTableGroup): string {
   return lines.join('\n');
 }
 
-/**
- * Convert a set of Excel files (as ArrayBuffers) to a DBML string.
- * Mirrors the Python ExportDefineData logic.
- */
 export function excelFilesToDbml(
   files: { name: string; data: ArrayBuffer }[]
 ): ImportResult {
@@ -299,6 +349,7 @@ export function excelFilesToDbml(
   const allFks: ExcelForeignKey[] = [];
   const allEnums: ExcelEnum[] = [];
   const allGroups: ExcelTableGroup[] = [];
+  let totalNotes = 0;
 
   const xlsxFiles = files.filter(
     (f) => f.name.endsWith('.xlsx') && !f.name.startsWith('~$')
@@ -310,18 +361,16 @@ export function excelFilesToDbml(
     try {
       const wb = XLSX.read(file.data, { type: 'array' });
 
-      // Define sheet → Table + FKs
-      const { table, fks } = processDefineSheet(wb, file.name, logs);
+      const { table, fks, noteCount } = processDefineSheet(wb, file.name, logs);
       if (table && table.columns.length > 0) {
         tables.push(table);
         allFks.push(...fks);
+        totalNotes += noteCount;
       }
 
-      // Enum sheet
       const enums = processEnumSheet(wb, logs);
       allEnums.push(...enums);
 
-      // TableGroup sheet
       const groups = processTableGroupSheet(wb, logs);
       allGroups.push(...groups);
     } catch (err) {
@@ -329,15 +378,12 @@ export function excelFilesToDbml(
     }
   }
 
-  // Generate DBML
   const parts: string[] = [];
 
-  // Tables
   for (const table of tables) {
     parts.push(formatTable(table));
   }
 
-  // Refs
   const validFks = allFks.filter((fk) => {
     const formatted = formatForeignKey(fk);
     return formatted !== null;
@@ -349,7 +395,6 @@ export function excelFilesToDbml(
     }
   }
 
-  // Enums (deduplicate by name)
   const uniqueEnums = new Map<string, ExcelEnum>();
   for (const en of allEnums) {
     if (!uniqueEnums.has(en.name)) uniqueEnums.set(en.name, en);
@@ -361,7 +406,6 @@ export function excelFilesToDbml(
     }
   }
 
-  // TableGroups (deduplicate & merge)
   const mergedGroups = new Map<string, Set<string>>();
   for (const grp of allGroups) {
     if (!mergedGroups.has(grp.name)) mergedGroups.set(grp.name, new Set());
@@ -377,7 +421,7 @@ export function excelFilesToDbml(
   const dbml = parts.join('\n\n');
   const totalColumns = tables.reduce((s, t) => s + t.columns.length, 0);
 
-  logs.push(`\nDone: ${tables.length} tables, ${totalColumns} columns, ${validFks.length} refs, ${uniqueEnums.size} enums, ${mergedGroups.size} groups`);
+  logs.push(`\nDone: ${tables.length} tables, ${totalColumns} columns, ${totalNotes} notes, ${validFks.length} refs, ${uniqueEnums.size} enums, ${mergedGroups.size} groups`);
 
   return {
     dbml,
@@ -388,6 +432,7 @@ export function excelFilesToDbml(
       refs: validFks.length,
       enums: uniqueEnums.size,
       groups: mergedGroups.size,
+      notes: totalNotes,
     },
     logs,
   };

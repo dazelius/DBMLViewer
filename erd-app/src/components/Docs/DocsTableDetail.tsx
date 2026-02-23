@@ -39,33 +39,44 @@ export default function DocsTableDetail({ tableId, onNavigate }: DocsTableDetail
     }
   }
 
-  const groupColor = table.groupColor ?? '#89b4fa';
-  const isHexColor = groupColor.startsWith('#');
+  const groupColor = table.groupColor ?? 'var(--accent)';
+  const pkCount = table.columns.filter((c) => c.isPrimaryKey).length;
+  const fkCount = table.columns.filter((c) => c.isForeignKey).length;
 
   return (
-    <div className="p-10 docs-fade-in" style={{ maxWidth: 1000, margin: '0 auto' }}>
+    <div className="p-8 lg:p-10 docs-fade-in" style={{ maxWidth: 1600, margin: '0 auto' }}>
       {/* Header */}
       <div className="mb-8">
         {table.groupName && (
           <div className="mb-3">
             <span
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider"
               style={{
-                background: isHexColor ? `${groupColor}18` : 'rgba(137,180,250,0.12)',
+                background: groupColor.startsWith('#') ? `${groupColor}12` : 'var(--accent-muted)',
                 color: groupColor,
+                border: `1px solid ${groupColor.startsWith('#') ? groupColor + '20' : 'var(--border-color)'}`,
               }}
             >
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: groupColor }} />
+              <span className="w-[6px] h-[6px] rounded-full" style={{ background: groupColor }} />
               {table.groupName}
             </span>
           </div>
         )}
-        <h1 className="text-2xl font-bold mb-1" style={{ color: 'var(--text-primary)' }}>
+        <h1 className="text-[24px] font-bold mb-1.5 tracking-tight" style={{ color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
           {table.name}
         </h1>
         {table.note && (
-          <p className="text-[13px] mt-2 leading-relaxed" style={{ color: 'var(--text-muted)' }}>{table.note}</p>
+          <p className="text-[13px] mt-2 leading-relaxed max-w-2xl" style={{ color: 'var(--text-muted)' }}>{table.note}</p>
         )}
+
+        {/* Quick summary chips */}
+        <div className="flex items-center gap-2 mt-4 flex-wrap">
+          <SummaryChip label={`${table.columns.length} columns`} />
+          {pkCount > 0 && <SummaryChip label={`${pkCount} primary key${pkCount > 1 ? 's' : ''}`} color="var(--warning)" />}
+          {fkCount > 0 && <SummaryChip label={`${fkCount} foreign key${fkCount > 1 ? 's' : ''}`} color="var(--accent)" />}
+          {allRefs.length > 0 && <SummaryChip label={`${allRefs.length} reference${allRefs.length > 1 ? 's' : ''}`} />}
+          {table.indexes.length > 0 && <SummaryChip label={`${table.indexes.length} index${table.indexes.length > 1 ? 'es' : ''}`} />}
+        </div>
       </div>
 
       {/* Fields */}
@@ -77,8 +88,8 @@ export default function DocsTableDetail({ tableId, onNavigate }: DocsTableDetail
                 {['Name', 'Type', 'Constraints', 'References', 'Note'].map((h) => (
                   <th
                     key={h}
-                    className="text-left px-5 py-3 text-[11px] font-semibold uppercase tracking-wider"
-                    style={{ color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)' }}
+                    className="text-left px-5 py-3 text-[10px] font-bold uppercase tracking-wider"
+                    style={{ color: 'var(--text-muted)', borderBottom: '2px solid var(--border-color)' }}
                   >
                     {h}
                   </th>
@@ -86,12 +97,13 @@ export default function DocsTableDetail({ tableId, onNavigate }: DocsTableDetail
               </tr>
             </thead>
             <tbody>
-              {table.columns.map((col) => (
+              {table.columns.map((col, i) => (
                 <DocsFieldRow
                   key={col.name}
                   column={col}
                   onRefClick={onNavigate}
                   refTarget={refTargetMap.get(col.name) ?? null}
+                  isLast={i === table.columns.length - 1}
                 />
               ))}
             </tbody>
@@ -109,8 +121,8 @@ export default function DocsTableDetail({ tableId, onNavigate }: DocsTableDetail
                   {['Columns', 'Type', 'Properties'].map((h) => (
                     <th
                       key={h}
-                      className="text-left px-5 py-3 text-[11px] font-semibold uppercase tracking-wider"
-                      style={{ color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)' }}
+                      className="text-left px-5 py-3 text-[10px] font-bold uppercase tracking-wider"
+                      style={{ color: 'var(--text-muted)', borderBottom: '2px solid var(--border-color)' }}
                     >
                       {h}
                     </th>
@@ -119,20 +131,32 @@ export default function DocsTableDetail({ tableId, onNavigate }: DocsTableDetail
               </thead>
               <tbody>
                 {table.indexes.map((idx, i) => (
-                  <tr key={i} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                    <td className="px-5 py-3.5 font-mono text-xs" style={{ color: 'var(--text-primary)' }}>
-                      ({idx.columns.join(', ')})
-                    </td>
-                    <td className="px-5 py-3.5 text-xs" style={{ color: 'var(--text-muted)' }}>
-                      {idx.type ?? 'btree'}
+                  <tr
+                    key={i}
+                    style={{ borderBottom: i < table.indexes.length - 1 ? '1px solid var(--border-color)' : 'none' }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-hover)'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                  >
+                    <td className="px-5 py-3.5">
+                      <code
+                        className="text-[11px] px-2 py-0.5 rounded-md inline-block"
+                        style={{ fontFamily: 'var(--font-mono)', background: 'var(--bg-surface)', color: 'var(--text-primary)' }}
+                      >
+                        ({idx.columns.join(', ')})
+                      </code>
                     </td>
                     <td className="px-5 py-3.5">
-                      <div className="flex gap-2">
+                      <span className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>
+                        {idx.type ?? 'btree'}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3.5">
+                      <div className="flex gap-1.5">
                         {idx.isPrimaryKey && (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold" style={{ background: 'rgba(250,179,135,0.15)', color: 'var(--warning)' }}>PK</span>
+                          <span className="px-2 py-0.5 rounded-md text-[9px] font-bold tracking-wide" style={{ background: 'var(--warning-muted)', color: 'var(--warning)' }}>PK</span>
                         )}
                         {idx.isUnique && (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold" style={{ background: 'rgba(166,227,161,0.15)', color: 'var(--success)' }}>UNIQUE</span>
+                          <span className="px-2 py-0.5 rounded-md text-[9px] font-bold tracking-wide" style={{ background: 'var(--success-muted)', color: 'var(--success)' }}>UNIQUE</span>
                         )}
                       </div>
                     </td>
@@ -161,7 +185,7 @@ export default function DocsTableDetail({ tableId, onNavigate }: DocsTableDetail
       {/* Mini ERD */}
       {allRefs.length > 0 && (
         <Section title="Table References">
-          <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border-color)', height: 380 }}>
+          <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border-color)', height: 550 }}>
             <DocsMiniERD tableId={tableId} />
           </div>
         </Section>
@@ -170,14 +194,29 @@ export default function DocsTableDetail({ tableId, onNavigate }: DocsTableDetail
   );
 }
 
+function SummaryChip({ label, color }: { label: string; color?: string }) {
+  return (
+    <span
+      className="text-[10px] font-semibold px-2.5 py-1 rounded-lg"
+      style={{
+        background: color ? `${color}12` : 'var(--bg-surface)',
+        color: color ?? 'var(--text-muted)',
+        border: `1px solid ${color ? color + '20' : 'var(--border-color)'}`,
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
 function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
   return (
-    <div className="mb-8">
+    <div className="mb-10">
       <div className="flex items-center gap-2.5 mb-4">
-        <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>{title}</h2>
+        <h2 className="text-[15px] font-bold tracking-tight" style={{ color: 'var(--text-primary)' }}>{title}</h2>
         {count !== undefined && (
           <span
-            className="text-[10px] px-2 py-0.5 rounded font-semibold"
+            className="text-[10px] px-2 py-0.5 rounded-md font-bold tabular-nums"
             style={{ background: 'var(--bg-surface)', color: 'var(--text-muted)' }}
           >
             {count}
@@ -211,33 +250,50 @@ function RefRow({ ref_, direction, tables, onNavigate }: {
 
   return (
     <div
-      className="flex items-center gap-3 px-5 py-3 rounded-lg transition-colors"
-      style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}
+      className="flex items-center gap-3 px-4 py-3 rounded-xl"
+      style={{
+        background: 'var(--bg-secondary)',
+        border: '1px solid var(--border-color)',
+        transition: 'border-color 0.15s, box-shadow 0.15s',
+      }}
+      onMouseEnter={(e) => {
+        const c = isOut ? 'var(--accent)' : 'var(--success)';
+        e.currentTarget.style.borderColor = c;
+        e.currentTarget.style.boxShadow = `0 0 0 1px ${isOut ? 'var(--accent)' : 'var(--success)'}15`;
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = 'var(--border-color)';
+        e.currentTarget.style.boxShadow = 'none';
+      }}
     >
       <span
-        className="px-2 py-0.5 rounded text-[10px] font-bold flex-shrink-0"
+        className="px-2 py-0.5 rounded-md text-[9px] font-bold flex-shrink-0 tracking-wide"
         style={{
-          background: isOut ? 'rgba(137,180,250,0.12)' : 'rgba(166,227,161,0.12)',
+          background: isOut ? 'var(--accent-muted)' : 'var(--success-muted)',
           color: isOut ? 'var(--accent)' : 'var(--success)',
         }}
       >
         {isOut ? 'OUT' : 'IN'}
       </span>
       <span
-        className="font-mono text-[12px] flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap"
-        style={{ color: 'var(--text-secondary)' }}
+        className="text-[12px] flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap"
+        style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}
       >
         {label}
       </span>
-      <span className="text-[10px] font-medium flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+      <span className="text-[10px] font-medium flex-shrink-0 tabular-nums px-2 py-0.5 rounded-md" style={{ background: 'var(--bg-surface)', color: 'var(--text-muted)' }}>
         {typeLabel}
       </span>
       <button
         onClick={() => onNavigate(targetId)}
-        className="text-[11px] font-semibold cursor-pointer transition-colors flex-shrink-0 px-2.5 py-1 rounded"
-        style={{ color: 'var(--accent)', background: 'rgba(137,180,250,0.1)' }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(137,180,250,0.2)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(137,180,250,0.1)'; }}
+        className="text-[11px] font-semibold cursor-pointer flex-shrink-0 px-2.5 py-1 rounded-lg"
+        style={{
+          color: 'var(--accent)',
+          background: 'var(--accent-muted)',
+          transition: 'background 0.15s, color 0.15s',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.color = '#fff'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--accent-muted)'; e.currentTarget.style.color = 'var(--accent)'; }}
       >
         {targetTable.name} &rarr;
       </button>

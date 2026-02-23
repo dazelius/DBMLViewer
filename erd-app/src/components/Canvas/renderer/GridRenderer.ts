@@ -10,8 +10,8 @@ export function drawGrid(
   const gridSize = 24;
   const majorGridSize = gridSize * 5;
 
-  const minorColor = isDark ? 'rgba(60, 62, 80, 0.20)' : 'rgba(180, 185, 210, 0.25)';
-  const majorColor = isDark ? 'rgba(60, 62, 80, 0.40)' : 'rgba(160, 165, 190, 0.40)';
+  const minorColor = isDark ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.04)';
+  const majorColor = isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.07)';
 
   const scaledGrid = gridSize * transform.scale;
   const scaledMajorGrid = majorGridSize * transform.scale;

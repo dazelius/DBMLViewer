@@ -25,35 +25,35 @@ interface ThemeColors {
 }
 
 const DARK: ThemeColors = {
-  tableBg: '#1e1f2e',
-  tableHeaderBg: '#2a2b3d',
-  tableHeaderText: '#e2e4f0',
-  tableBorder: '#3a3b50',
-  tableBorderSelected: '#89b4fa',
-  colText: '#c8cad8',
-  colTypeText: '#6e7191',
-  pkBg: 'rgba(250, 179, 135, 0.18)',
-  pkText: '#fab387',
-  fkBg: 'rgba(137, 180, 250, 0.15)',
-  fkText: '#89b4fa',
-  rowAltBg: 'rgba(255,255,255,0.02)',
-  ungroupedAccent: '#555672',
+  tableBg: '#161821',
+  tableHeaderBg: '#1c1e2a',
+  tableHeaderText: '#e2e4ed',
+  tableBorder: 'rgba(255,255,255,0.08)',
+  tableBorderSelected: '#6c8eef',
+  colText: '#a0a4b8',
+  colTypeText: '#5c6078',
+  pkBg: 'rgba(224, 166, 99, 0.15)',
+  pkText: '#e0a663',
+  fkBg: 'rgba(108, 142, 239, 0.12)',
+  fkText: '#6c8eef',
+  rowAltBg: 'rgba(255,255,255,0.015)',
+  ungroupedAccent: '#5c6078',
 };
 
 const LIGHT: ThemeColors = {
   tableBg: '#ffffff',
-  tableHeaderBg: '#f4f5f9',
-  tableHeaderText: '#1a1b2e',
-  tableBorder: '#d8dae5',
-  tableBorderSelected: '#2563eb',
-  colText: '#2e3044',
-  colTypeText: '#8b8fa8',
-  pkBg: 'rgba(234, 88, 12, 0.10)',
-  pkText: '#c2410c',
-  fkBg: 'rgba(37, 99, 232, 0.08)',
-  fkText: '#1d4ed8',
-  rowAltBg: 'rgba(0,0,0,0.018)',
-  ungroupedAccent: '#c0c2d0',
+  tableHeaderBg: '#f8f9fc',
+  tableHeaderText: '#1a1c24',
+  tableBorder: 'rgba(0,0,0,0.08)',
+  tableBorderSelected: '#4a6fe5',
+  colText: '#5a5e72',
+  colTypeText: '#8c90a4',
+  pkBg: 'rgba(196, 133, 14, 0.08)',
+  pkText: '#c4850e',
+  fkBg: 'rgba(74, 111, 229, 0.08)',
+  fkText: '#4a6fe5',
+  rowAltBg: 'rgba(0,0,0,0.015)',
+  ungroupedAccent: '#8c90a4',
 };
 
 function getTheme(isDark: boolean): ThemeColors {
@@ -107,14 +107,15 @@ export function drawTable(
   node: TableNode,
   transform: ViewTransform,
   isSelected: boolean,
-  isDark: boolean
+  isDark: boolean,
+  hoverColumnIndex: number = -1
 ) {
   const s = transform.scale;
 
   if (s < LOD_MINIMAP_THRESHOLD) {
     drawTableMinimap(ctx, table, node, transform, isSelected, isDark);
   } else {
-    drawTableFull(ctx, table, node, transform, isSelected, isDark);
+    drawTableFull(ctx, table, node, transform, isSelected, isDark, hoverColumnIndex);
   }
 }
 
@@ -190,9 +191,9 @@ function drawTableMinimap(
   const barLeft = sx + stripeW + barPadX;
   const barMaxW = sw - stripeW - barPadX * 2;
 
-  const pkBarColor = isDark ? '#fab387' : '#ea580c';
-  const fkBarColor = isDark ? '#89b4fa' : '#2563eb';
-  const normalBarColor = isDark ? 'rgba(200,202,216,0.18)' : 'rgba(46,48,68,0.10)';
+  const pkBarColor = isDark ? '#e0a663' : '#c4850e';
+  const fkBarColor = isDark ? '#6c8eef' : '#4a6fe5';
+  const normalBarColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
   const nameBarRatio = 0.55;
 
   table.columns.forEach((col: SchemaColumn, i: number) => {
@@ -236,7 +237,8 @@ function drawTableFull(
   node: TableNode,
   transform: ViewTransform,
   isSelected: boolean,
-  isDark: boolean
+  isDark: boolean,
+  hoverColumnIndex: number = -1
 ) {
   const theme = getTheme(isDark);
   const s = transform.scale;
@@ -348,8 +350,12 @@ function drawTableFull(
 
   table.columns.forEach((col: SchemaColumn, i: number) => {
     const rowY = sy + headerH + i * rowH;
+    const isHovered = i === hoverColumnIndex;
 
-    if (i % 2 === 1) {
+    if (isHovered) {
+      ctx.fillStyle = isDark ? 'rgba(108, 142, 239, 0.12)' : 'rgba(74, 111, 229, 0.10)';
+      ctx.fillRect(contentLeft, rowY, sw - stripeW, rowH);
+    } else if (i % 2 === 1) {
       ctx.fillStyle = theme.rowAltBg;
       ctx.fillRect(contentLeft, rowY, sw - stripeW, rowH);
     }

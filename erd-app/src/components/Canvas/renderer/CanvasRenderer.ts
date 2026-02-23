@@ -91,10 +91,11 @@ export function renderCanvas(
   selectedTableId: string | null,
   selectedRefId: string | null,
   hoveredTableId: string | null = null,
-  explore: ExploreVisuals = DEFAULT_EXPLORE
+  explore: ExploreVisuals = DEFAULT_EXPLORE,
+  hoveredColumn: { tableId: string; columnIndex: number } | null = null
 ) {
   const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
-  const bgColor = isDark ? '#16161e' : '#f0f1f5';
+  const bgColor = isDark ? '#0f1117' : '#f8f9fc';
 
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = bgColor;
@@ -105,7 +106,7 @@ export function renderCanvas(
   if (!schema) {
     const fontSize = 14;
     ctx.font = `400 ${fontSize}px 'Inter', system-ui, sans-serif`;
-    ctx.fillStyle = isDark ? '#6c7086' : '#9ca3af';
+    ctx.fillStyle = isDark ? '#5c6078' : '#8c90a4';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('Write DBML code on the left to see the diagram', width / 2, height / 2);
@@ -200,10 +201,11 @@ export function renderCanvas(
     ctx.save();
     if (alpha < 1) ctx.globalAlpha = alpha;
 
+    const hoverColIdx = hoveredColumn && hoveredColumn.tableId === table.id ? hoveredColumn.columnIndex : -1;
     if (explore.collapseMode) {
       drawTableCollapsed(ctx, table, node, transform, table.id === selectedTableId, isDark);
     } else {
-      drawTable(ctx, table, node, transform, table.id === selectedTableId, isDark);
+      drawTable(ctx, table, node, transform, table.id === selectedTableId, isDark, hoverColIdx);
     }
 
     ctx.restore();
