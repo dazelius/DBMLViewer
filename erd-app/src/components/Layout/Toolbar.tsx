@@ -82,14 +82,14 @@ export default function Toolbar() {
               </svg>
             </div>
             <span className="font-bold text-[15px] tracking-tight" style={{ color: 'var(--text-primary)' }}>
-              SchemaLens
+              TableMaster
             </span>
           </div>
 
           {/* Mode Switch */}
           <div className="flex items-center gap-1">
-            <ModeTab active={isEditor} onClick={() => navigate('/editor')}>Editor</ModeTab>
-            <ModeTab active={isDocs} onClick={() => navigate('/docs')}>Docs</ModeTab>
+            <ModeTab active={isEditor} onClick={() => navigate('/editor')}>ERD</ModeTab>
+            <ModeTab active={isDocs} onClick={() => navigate('/docs')}>Define</ModeTab>
             <ModeTab active={isDiff} onClick={() => navigate('/diff')}>Diff</ModeTab>
             <ModeTab active={isValidation} onClick={() => navigate('/validation')}>Validation</ModeTab>
           </div>
@@ -222,8 +222,12 @@ function ModeTab({ active, onClick, children }: { active: boolean; onClick: () =
   return (
     <button
       onClick={onClick}
-      className="px-4 py-1.5 text-[13px] font-semibold rounded-lg cursor-pointer"
+      className="text-[13px] font-semibold rounded-lg cursor-pointer text-center"
       style={{
+        minWidth: 72,
+        padding: '0 16px',
+        height: 32,
+        lineHeight: '32px',
         background: active ? 'var(--accent)' : 'transparent',
         color: active ? '#fff' : 'var(--text-muted)',
         boxShadow: active ? '0 2px 8px rgba(0,0,0,0.3), var(--shadow-glow)' : 'none',

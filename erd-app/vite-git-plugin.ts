@@ -1,8 +1,11 @@
 import type { Plugin } from 'vite'
-import { execSync, execFileSync } from 'child_process'
+import { execSync, execFileSync, execFile } from 'child_process'
 import { existsSync, readdirSync, readFileSync, mkdirSync } from 'fs'
 import { join, resolve } from 'path'
+import { promisify } from 'util'
 import type { IncomingMessage, ServerResponse } from 'http'
+
+const execFileAsync = promisify(execFile)
 
 interface GitPluginOptions {
   repoUrl: string
@@ -43,6 +46,8 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on('end', () => resolve(body))
   })
 }
+
+const fileCache = new Map<string, { commit: string; count: number; files: { name: string; path: string; base64: string }[] }>()
 
 export default function gitPlugin(options: GitPluginOptions): Plugin {
   const { localDir } = options
@@ -205,31 +210,45 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
 
             const commit = url.searchParams.get('commit') || 'HEAD'
             const dirPath = url.searchParams.get('path') || ''
+            const cacheKey = `${commit}:${dirPath}`
+
+            const cached = fileCache.get(cacheKey)
+            if (cached) { sendJson(res, 200, cached); return }
 
             try {
-              // List .xlsx files at the given commit & path
+              // List ALL files at commit, then filter case-insensitively
               const lsArgs = ['ls-tree', '-r', '--name-only', commit]
-              if (dirPath) lsArgs.push('--', dirPath)
               const listing = execFileSync('git', lsArgs, {
                 cwd: localDir, encoding: 'utf-8', timeout: 60_000,
                 stdio: ['pipe', 'pipe', 'pipe'],
               }).trim()
 
-              const allFiles = listing.split('\n').filter(
-                (f) => f.endsWith('.xlsx') && !f.includes('~$')
-              )
-
-              const files = allFiles.map((filePath) => {
-                const buf = execFileSync('git', ['show', `${commit}:${filePath}`], {
-                  cwd: localDir, timeout: 60_000,
-                  stdio: ['pipe', 'pipe', 'pipe'],
-                  encoding: 'buffer' as any,
-                }) as unknown as Buffer
-                const name = filePath.split('/').pop()!
-                return { name, path: filePath, base64: buf.toString('base64') }
+              const dirLower = dirPath.toLowerCase()
+              const allFiles = listing.split('\n').filter((f) => {
+                if (!f.endsWith('.xlsx') || f.includes('~$')) return false
+                if (dirLower && !f.toLowerCase().startsWith(dirLower + '/') && !f.toLowerCase().startsWith(dirLower + '\\')) return false
+                return true
               })
 
-              sendJson(res, 200, { commit, count: files.length, files })
+              const CONCURRENCY = 8
+              const files: { name: string; path: string; base64: string }[] = []
+
+              for (let i = 0; i < allFiles.length; i += CONCURRENCY) {
+                const batch = allFiles.slice(i, i + CONCURRENCY)
+                const results = await Promise.all(batch.map(async (filePath) => {
+                  const { stdout } = await execFileAsync('git', ['show', `${commit}:${filePath}`], {
+                    cwd: localDir, timeout: 60_000,
+                    encoding: 'buffer' as any,
+                  })
+                  const name = filePath.split('/').pop()!
+                  return { name, path: filePath, base64: (stdout as unknown as Buffer).toString('base64') }
+                }))
+                files.push(...results)
+              }
+
+              const result = { commit, count: files.length, files }
+              if (files.length > 0) fileCache.set(cacheKey, result)
+              sendJson(res, 200, result)
             } catch (err: any) {
               sendJson(res, 500, { error: err.stderr?.toString() || err.message || String(err) })
             }

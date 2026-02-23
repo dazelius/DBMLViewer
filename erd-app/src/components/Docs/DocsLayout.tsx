@@ -91,14 +91,14 @@ export default function DocsLayout({ activeTableId, activeEnumName }: DocsLayout
               </svg>
             </div>
             <span className="font-bold text-[15px] tracking-tight" style={{ color: 'var(--text-primary)' }}>
-              SchemaLens
+              TableMaster
             </span>
           </div>
 
           {/* Mode Switch */}
           <div className="flex items-center gap-1">
-            <ModeTab active={false} onClick={() => navigate('/editor')}>Editor</ModeTab>
-            <ModeTab active={true} onClick={() => navigate('/docs')}>Docs</ModeTab>
+            <ModeTab active={false} onClick={() => navigate('/editor')}>ERD</ModeTab>
+            <ModeTab active={true} onClick={() => navigate('/docs')}>Define</ModeTab>
             <ModeTab active={false} onClick={() => navigate('/diff')}>Diff</ModeTab>
             <ModeTab active={false} onClick={() => navigate('/validation')}>Validation</ModeTab>
           </div>
@@ -227,7 +227,7 @@ export default function DocsLayout({ activeTableId, activeEnumName }: DocsLayout
                   </svg>
                 </div>
                 <p className="text-[14px] font-semibold mb-1.5" style={{ color: 'var(--text-secondary)' }}>No schema loaded</p>
-                <p className="text-[12px]" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>Write DBML in the Editor first</p>
+                <p className="text-[12px]" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>ERD에서 스키마를 먼저 불러오세요</p>
                 <button
                   onClick={() => navigate('/editor')}
                   className="mt-4 text-[12px] font-semibold px-4 py-2 rounded-lg cursor-pointer"
@@ -239,7 +239,7 @@ export default function DocsLayout({ activeTableId, activeEnumName }: DocsLayout
                   onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
                 >
-                  Go to Editor
+                  ERD로 이동
                 </button>
               </div>
             </div>
@@ -256,8 +256,12 @@ function ModeTab({ active, onClick, children }: { active: boolean; onClick: () =
   return (
     <button
       onClick={onClick}
-      className="px-4 py-1.5 text-[13px] font-semibold rounded-lg cursor-pointer"
+      className="text-[13px] font-semibold rounded-lg cursor-pointer text-center"
       style={{
+        minWidth: 72,
+        padding: '0 16px',
+        height: 32,
+        lineHeight: '32px',
         background: active ? 'var(--accent)' : 'transparent',
         color: active ? '#fff' : 'var(--text-muted)',
         boxShadow: active ? '0 2px 8px rgba(0,0,0,0.3), var(--shadow-glow)' : 'none',

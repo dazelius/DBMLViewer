@@ -14,6 +14,16 @@ const DATA_PATH = 'GameData/Data';
 
 type DiffTab = 'schema' | 'data';
 
+const fetchCache = new Map<string, { name: string; data: ArrayBuffer }[]>();
+async function cachedFilesAtCommit(commit: string, path: string) {
+  const key = `${commit}:${path}`;
+  const cached = fetchCache.get(key);
+  if (cached && cached.length > 0) return cached;
+  const result = await gitFilesAtCommit(commit, path);
+  if (result.length > 0) fetchCache.set(key, result);
+  return result;
+}
+
 export default function DiffLayout() {
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [loading, setLoading] = useState(true);
@@ -26,6 +36,8 @@ export default function DiffLayout() {
   const [schemaDiff, setSchemaDiff] = useState<SchemaDiffResult | null>(null);
   const [dataDiff, setDataDiff] = useState<DataDiffResult | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
+  const [diffProgress, setDiffProgress] = useState({ step: 0, total: 5, label: '' });
+  const [diffDebug, setDiffDebug] = useState('');
   const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set());
 
   type SheetData = { headers: string[]; rows: Record<string, string>[] };
@@ -53,32 +65,59 @@ export default function DiffLayout() {
     computedRef.current = key;
 
     setDiffLoading(true);
+    setDiffProgress({ step: 0, total: 5, label: '준비 중...' });
+    setDiffDebug('');
     setSchemaDiff(null);
     setDataDiff(null);
     setExpandedTables(new Set());
     setFromSheets(new Map());
     setToSheets(new Map());
+    fetchCache.clear();
+
+    const tick = async (step: number, label: string) => {
+      setDiffProgress({ step, total: 5, label });
+      await new Promise((r) => setTimeout(r, 0));
+    };
 
     try {
+      await tick(1, 'Git에서 Excel 파일 가져오는 중...');
       const [fromSchemaFiles, toSchemaFiles, fromDataFiles, toDataFiles] = await Promise.all([
-        gitFilesAtCommit(fromCommit, SCHEMA_PATH),
-        gitFilesAtCommit(toCommit, SCHEMA_PATH),
-        gitFilesAtCommit(fromCommit, DATA_PATH).catch(() => []),
-        gitFilesAtCommit(toCommit, DATA_PATH).catch(() => []),
+        cachedFilesAtCommit(fromCommit, SCHEMA_PATH),
+        cachedFilesAtCommit(toCommit, SCHEMA_PATH),
+        cachedFilesAtCommit(fromCommit, DATA_PATH).catch(() => []),
+        cachedFilesAtCommit(toCommit, DATA_PATH).catch(() => []),
       ]);
 
+      await tick(2, 'FROM 버전 Excel 파싱 중...');
       const fromImport = excelFilesToDbml([...fromSchemaFiles, ...fromDataFiles]);
+
+      await tick(3, 'TO 버전 Excel 파싱 중...');
       const toImport = excelFilesToDbml([...toSchemaFiles, ...toDataFiles]);
 
-      const fromSchema = parseDBML(fromImport.dbml).schema;
-      const toSchema = parseDBML(toImport.dbml).schema;
+      await tick(4, '스키마 · 데이터 비교 분석 중...');
+      const fromParsed = parseDBML(fromImport.dbml);
+      const toParsed = parseDBML(toImport.dbml);
+      const fromSchema = fromParsed.schema;
+      const toSchema = toParsed.schema;
+
+      const dbg: string[] = [];
+      dbg.push(`FROM: ${fromSchemaFiles.length} schema files, ${fromDataFiles.length} data files → ${fromImport.stats.tables} tables parsed`);
+      dbg.push(`TO: ${toSchemaFiles.length} schema files, ${toDataFiles.length} data files → ${toImport.stats.tables} tables parsed`);
+      if (fromParsed.errors.length > 0) dbg.push(`FROM DBML errors: ${fromParsed.errors.map(e => e.message).join('; ')}`);
+      if (toParsed.errors.length > 0) dbg.push(`TO DBML errors: ${toParsed.errors.map(e => e.message).join('; ')}`);
+      dbg.push(`FROM schema: ${fromSchema?.tables.length ?? 0} tables after DBML parse`);
+      dbg.push(`TO schema: ${toSchema?.tables.length ?? 0} tables after DBML parse`);
+      if (fromSchemaFiles.length > 0) dbg.push(`FROM files: ${fromSchemaFiles.map(f => f.name).slice(0, 5).join(', ')}${fromSchemaFiles.length > 5 ? ` ... (${fromSchemaFiles.length})` : ''}`);
+      if (toSchemaFiles.length > 0) dbg.push(`TO files: ${toSchemaFiles.map(f => f.name).slice(0, 5).join(', ')}${toSchemaFiles.length > 5 ? ` ... (${toSchemaFiles.length})` : ''}`);
+      setDiffDebug(dbg.join('\n'));
+      console.log('[Diff Debug]\n' + dbg.join('\n'));
 
       const sr = diffSchemas(fromSchema, toSchema);
       setSchemaDiff(sr);
-
       const dr = diffData(fromImport.dataRowCounts, toImport.dataRowCounts);
       setDataDiff(dr);
 
+      await tick(5, '결과 정리 중...');
       const normSheets = (m: Map<string, SheetData>) => {
         const out = new Map<string, SheetData>();
         for (const [k, v] of m) out.set(k.toLowerCase(), v);
@@ -128,20 +167,14 @@ export default function DiffLayout() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Top bar */}
-      <div className="flex items-center gap-4 px-6 py-3 flex-shrink-0" style={{ borderBottom: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round">
-            <circle cx="12" cy="12" r="4" /><line x1="1.05" y1="12" x2="7" y2="12" /><line x1="17.01" y1="12" x2="22.96" y2="12" />
-          </svg>
-          <span className="text-[12px] font-bold" style={{ color: 'var(--text-primary)' }}>Diff</span>
-        </div>
+      <div className="flex items-center gap-5 px-8 py-4 flex-shrink-0" style={{ borderBottom: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}>
         <CommitSelect label="FROM" value={fromCommit} commits={commits} onChange={(v) => { computedRef.current = ''; setFromCommit(v); }} />
         <Arrow />
         <CommitSelect label="TO" value={toCommit} commits={commits} onChange={(v) => { computedRef.current = ''; setToCommit(v); }} />
       </div>
 
       {/* Sub-tabs */}
-      <div className="flex items-center gap-1 px-6 py-2 flex-shrink-0" style={{ borderBottom: '1px solid var(--border-color)' }}>
+      <div className="flex flex-shrink-0" style={{ borderBottom: '1px solid var(--border-color)' }}>
         <SubTab active={activeTab === 'schema'} onClick={() => setActiveTab('schema')} count={schemaDiff ? schemaDiff.tableDiffs.length + schemaDiff.enumDiffs.length : 0}>
           Schema Diff
         </SubTab>
@@ -155,7 +188,20 @@ export default function DiffLayout() {
         {diffLoading && (
           <CenterMessage>
             <Spinner />
-            <span className="text-[12px]">두 버전의 Excel을 파싱하여 비교 중...</span>
+            <span className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>두 버전의 Excel을 파싱하여 비교 중</span>
+            <span className="text-[13px]" style={{ color: 'var(--accent)' }}>{diffProgress.label}</span>
+            <div className="w-72 mt-2 mx-auto text-center">
+              <div className="h-2 rounded-full overflow-hidden mb-2" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}>
+                <div className="h-full rounded-full" style={{
+                  width: `${(diffProgress.step / diffProgress.total) * 100}%`,
+                  background: 'var(--accent)',
+                  transition: 'width 0.3s ease',
+                }} />
+              </div>
+              <span className="text-[11px] tabular-nums" style={{ color: 'var(--text-muted)' }}>
+                {diffProgress.step} / {diffProgress.total} 단계 · <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{Math.round((diffProgress.step / diffProgress.total) * 100)}%</span>
+              </span>
+            </div>
           </CenterMessage>
         )}
 
@@ -166,6 +212,7 @@ export default function DiffLayout() {
             onToggle={toggleExpand}
             fromLabel={fromLabel?.short ?? ''}
             toLabel={toLabel?.short ?? ''}
+            debug={diffDebug}
           />
         )}
 
@@ -181,23 +228,33 @@ export default function DiffLayout() {
 
 /* ═══════════════ SCHEMA TAB ═══════════════ */
 
-function SchemaTabContent({ result, expanded, onToggle, fromLabel, toLabel }: {
+function SchemaTabContent({ result, expanded, onToggle, fromLabel, toLabel, debug }: {
   result: SchemaDiffResult; expanded: Set<string>; onToggle: (n: string) => void;
-  fromLabel: string; toLabel: string;
+  fromLabel: string; toLabel: string; debug: string;
 }) {
   const s = result.summary;
   const isEmpty = result.tableDiffs.length === 0 && result.enumDiffs.length === 0;
+  const allAdded = s.tablesAdded > 0 && s.tablesRemoved === 0 && s.tablesModified === 0;
+  const allRemoved = s.tablesRemoved > 0 && s.tablesAdded === 0 && s.tablesModified === 0;
 
   if (isEmpty) return <EmptyMessage text="스키마 변경 사항 없음" />;
 
   return (
-    <div className="max-w-6xl mx-auto px-6 py-5 space-y-2">
+    <div className="max-w-[95vw] mx-auto px-8 py-6 space-y-3">
+      {(allAdded || allRemoved) && (
+        <DebugBanner
+          title={allAdded
+            ? `FROM 버전에서 스키마 테이블이 0개 감지됨 (전체 ${s.tablesAdded}개 ADD)`
+            : `TO 버전에서 스키마 테이블이 0개 감지됨 (전체 ${s.tablesRemoved}개 DEL)`}
+          debug={debug}
+        />
+      )}
       {/* Summary */}
-      <div className="flex items-center gap-4 mb-4 text-[11px] font-medium">
+      <div className="flex items-center gap-5 mb-5 text-[13px] font-medium">
         {s.tablesAdded > 0 && <span style={{ color: CL.added }}>+{s.tablesAdded} tables</span>}
         {s.tablesRemoved > 0 && <span style={{ color: CL.removed }}>-{s.tablesRemoved} tables</span>}
         {s.tablesModified > 0 && <span style={{ color: CL.modified }}>~{s.tablesModified} tables</span>}
-        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
           columns: +{s.columnsAdded} / -{s.columnsRemoved} / ~{s.columnsModified}
         </span>
       </div>
@@ -226,13 +283,13 @@ function SchemaTableCard({ diff, expanded, onToggle, fromLabel, toLabel }: {
   return (
     <div className="rounded-lg overflow-hidden" style={{ border: `1px solid ${borderColor}` }}>
       {/* Header */}
-      <button onClick={onToggle} className="w-full flex items-center gap-3 px-4 py-2.5 cursor-pointer"
+      <button onClick={onToggle} className="w-full flex items-center gap-4 px-6 py-4 cursor-pointer"
         style={{ background: accent + '08' }}
         onMouseEnter={(e) => { e.currentTarget.style.background = accent + '12'; }}
         onMouseLeave={(e) => { e.currentTarget.style.background = accent + '08'; }}>
         <Chevron open={expanded} color={accent} />
         <KindBadge kind={diff.kind} />
-        <span className="text-[12px] font-bold" style={{ color: 'var(--text-primary)' }}>{diff.tableName}</span>
+        <span className="text-[15px] font-bold" style={{ color: 'var(--text-primary)' }}>{diff.tableName}</span>
         {diff.group && <Tag>{diff.group}</Tag>}
         <span className="flex-1" />
         <ColSummary diffs={diff.columnDiffs} />
@@ -244,10 +301,10 @@ function SchemaTableCard({ diff, expanded, onToggle, fromLabel, toLabel }: {
           <table className="w-full" style={{ borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: 'var(--bg-surface)' }}>
-                <ThCell w="50px" />
-                <ThCell w="170px">컬럼명</ThCell>
-                <ThCell w="130px" align="center" accent>{fromLabel} (Before)</ThCell>
-                <ThCell w="130px" align="center" accent>{toLabel} (After)</ThCell>
+                <ThCell w="60px" />
+                <ThCell w="200px">컬럼명</ThCell>
+                <ThCell align="center" accent>{fromLabel} (Before)</ThCell>
+                <ThCell align="center" accent>{toLabel} (After)</ThCell>
                 <ThCell>속성 변경</ThCell>
               </tr>
             </thead>
@@ -273,35 +330,30 @@ function BeforeAfterRow({ col }: { col: ColumnDiff }) {
     <tr style={{ background: rowBg, borderBottom: '1px solid var(--border-color)' }}
       onMouseEnter={(e) => { if (col.kind !== 'unchanged') e.currentTarget.style.filter = 'brightness(1.15)'; }}
       onMouseLeave={(e) => { e.currentTarget.style.filter = 'none'; }}>
-      {/* Status */}
-      <td className="px-3 py-1.5 text-center">
+      <td className="px-5 py-3 text-center">
         {col.kind !== 'unchanged' && <KindBadge kind={col.kind} small />}
       </td>
-      {/* Name */}
-      <td className="px-3 py-1.5">
-        <span className="text-[11px] font-semibold" style={{
+      <td className="px-5 py-3">
+        <span className="text-[14px] font-semibold" style={{
           color: col.kind === 'removed' ? CL.removed : 'var(--text-primary)',
           textDecoration: col.kind === 'removed' ? 'line-through' : 'none',
         }}>{col.name}</span>
       </td>
-      {/* Before */}
-      <td className="px-3 py-1.5 text-center">
+      <td className="px-5 py-3 text-center">
         {old ? <ColTypeCell col={old} highlight={col.kind === 'removed'} color={col.kind === 'removed' ? CL.removed : undefined} /> : (
-          <span className="text-[10px] italic" style={{ color: 'var(--text-muted)', opacity: 0.4 }}>—</span>
+          <span className="text-[13px] italic" style={{ color: 'var(--text-muted)', opacity: 0.4 }}>—</span>
         )}
       </td>
-      {/* After */}
-      <td className="px-3 py-1.5 text-center">
+      <td className="px-5 py-3 text-center">
         {nw ? <ColTypeCell col={nw} highlight={col.kind === 'added'} color={col.kind === 'added' ? CL.added : undefined} /> : (
-          <span className="text-[10px] italic" style={{ color: 'var(--text-muted)', opacity: 0.4 }}>—</span>
+          <span className="text-[13px] italic" style={{ color: 'var(--text-muted)', opacity: 0.4 }}>—</span>
         )}
       </td>
-      {/* Changes */}
-      <td className="px-3 py-1.5">
+      <td className="px-5 py-3">
         {col.details && col.details.length > 0 && (
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-2">
             {col.details.map((d, i) => (
-              <span key={i} className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: CL.modified + '18', color: CL.modified }}>{d}</span>
+              <span key={i} className="text-[12px] px-2.5 py-1 rounded" style={{ background: CL.modified + '18', color: CL.modified }}>{d}</span>
             ))}
           </div>
         )}
@@ -313,9 +365,9 @@ function BeforeAfterRow({ col }: { col: ColumnDiff }) {
 function ColTypeCell({ col, highlight, color }: { col: SchemaColumn; highlight?: boolean; color?: string }) {
   const c = color || 'var(--text-secondary)';
   return (
-    <div className="flex items-center justify-center gap-1 flex-wrap">
-      <span className="text-[10px] font-mono font-medium" style={{ color: c }}>{col.type}</span>
-      <div className="flex gap-0.5">
+    <div className="flex items-center justify-center gap-2 flex-wrap">
+      <span className="text-[13px] font-mono font-medium" style={{ color: c }}>{col.type}</span>
+      <div className="flex gap-1">
         {col.isPrimaryKey && <MicroBadge label="PK" color="#60a5fa" />}
         {col.isForeignKey && <MicroBadge label="FK" color="#a78bfa" />}
         {col.isNotNull && <MicroBadge label="NN" color="#f59e0b" />}
@@ -425,8 +477,8 @@ function DataTabContent({ result, fromLabel, toLabel, fromSheets, toSheets, expa
   if (changed.length === 0) return <EmptyMessage text="데이터 행 수 변경 없음" />;
 
   return (
-    <div className="max-w-[95vw] mx-auto px-6 py-5">
-      <div className="grid grid-cols-4 gap-3 mb-5">
+    <div className="max-w-[95vw] mx-auto px-8 py-6">
+      <div className="grid grid-cols-4 gap-4 mb-6">
         <StatCard label="Before 총 행" value={s.totalOld.toLocaleString()} />
         <StatCard label="After 총 행" value={s.totalNew.toLocaleString()} />
         <StatCard label="변화량" value={(s.totalDelta >= 0 ? '+' : '') + s.totalDelta.toLocaleString()} color={s.totalDelta > 0 ? CL.added : s.totalDelta < 0 ? CL.removed : undefined} />
@@ -502,22 +554,22 @@ function DataTableCard({ diff, expanded, onToggle, fromLabel, toLabel, fromSheet
         onClick={onToggle}
         role="button"
         tabIndex={0}
-        className="flex items-center gap-3 px-4 py-2.5 cursor-pointer select-none"
+        className="flex items-center gap-4 px-6 py-4 cursor-pointer select-none"
         style={{ background: accent + '08' }}
         onMouseEnter={(e) => { e.currentTarget.style.background = accent + '12'; }}
         onMouseLeave={(e) => { e.currentTarget.style.background = accent + '08'; }}
         onKeyDown={(e) => { if (e.key === 'Enter') onToggle(); }}>
         <Chevron open={expanded} color={accent} />
         <KindBadge kind={diff.kind} />
-        <span className="text-[12px] font-bold" style={{ color: 'var(--text-primary)' }}>{diff.tableName}</span>
+        <span className="text-[15px] font-bold" style={{ color: 'var(--text-primary)' }}>{diff.tableName}</span>
         <span className="flex-1" />
-        <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-muted)' }}>
+        <span className="text-[14px] tabular-nums" style={{ color: 'var(--text-muted)' }}>
           {diff.oldRowCount.toLocaleString()} → {diff.newRowCount.toLocaleString()}
         </span>
-        <span className="text-[10px] font-bold tabular-nums ml-2" style={{ color: accent }}>
+        <span className="text-[14px] font-bold tabular-nums ml-3" style={{ color: accent }}>
           {diff.rowDelta > 0 ? '+' : ''}{diff.rowDelta.toLocaleString()}
         </span>
-        <span className="text-[9px] tabular-nums ml-1" style={{ color: accent }}>
+        <span className="text-[13px] tabular-nums ml-1" style={{ color: accent }}>
           ({pct >= 0 ? '+' : ''}{pct.toFixed(1)}%)
         </span>
       </div>
@@ -533,7 +585,7 @@ function DataTableCard({ diff, expanded, onToggle, fromLabel, toLabel, fromSheet
 
           {hasData && rowDiff && (
             <>
-              <div className="flex items-center gap-4 px-4 py-2 text-[10px] font-medium" style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-color)' }}>
+              <div className="flex items-center gap-5 px-5 py-3 text-[13px] font-medium" style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-color)' }}>
                 {addedRows > 0 && <span style={{ color: CL.added }}>+{addedRows} 행 추가</span>}
                 {removedRows > 0 && <span style={{ color: CL.removed }}>-{removedRows} 행 삭제</span>}
                 {modifiedRows > 0 && <span style={{ color: CL.modified }}>~{modifiedRows} 행 변경</span>}
@@ -545,9 +597,9 @@ function DataTableCard({ diff, expanded, onToggle, fromLabel, toLabel, fromSheet
                   <table className="w-full" style={{ borderCollapse: 'collapse', minWidth: rowDiff.headers.length * 100 }}>
                     <thead>
                       <tr style={{ background: 'var(--bg-surface)', position: 'sticky', top: 0, zIndex: 1 }}>
-                        <th className="px-2 py-1.5 text-[8px] font-bold text-center uppercase tracking-wider" style={{ color: 'var(--text-muted)', width: '40px', borderBottom: '1px solid var(--border-color)' }}>상태</th>
+                        <th className="px-3 py-2.5 text-[11px] font-bold text-center uppercase tracking-wider" style={{ color: 'var(--text-muted)', width: '50px', borderBottom: '1px solid var(--border-color)' }}>상태</th>
                         {rowDiff.headers.map((h) => (
-                          <th key={h} className="px-2 py-1.5 text-[8px] font-bold text-left uppercase tracking-wider whitespace-nowrap" style={{ color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)' }}>{h}</th>
+                          <th key={h} className="px-3 py-2.5 text-[11px] font-bold text-left uppercase tracking-wider whitespace-nowrap" style={{ color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)' }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
@@ -577,28 +629,27 @@ function DataRowDiffTr({ rd, headers }: { rd: RowDiff; headers: string[] }) {
 
   return (
     <tr style={{ background: bg, borderBottom: '1px solid var(--border-color)' }}>
-      <td className="px-2 py-1 text-center"><KindBadge kind={rd.kind} small /></td>
+      <td className="px-3 py-2.5 text-center"><KindBadge kind={rd.kind} small /></td>
       {headers.map((h) => {
         const isChanged = rd.changedCols.has(h);
         const oldVal = rd.oldRow?.[h] ?? '';
         const newVal = rd.newRow?.[h] ?? '';
 
         if (rd.kind === 'added') {
-          return <td key={h} className="px-2 py-1"><span className="text-[10px]" style={{ color: CL.added }}>{newVal}</span></td>;
+          return <td key={h} className="px-3 py-2.5"><span className="text-[13px]" style={{ color: CL.added }}>{newVal}</span></td>;
         }
         if (rd.kind === 'removed') {
-          return <td key={h} className="px-2 py-1"><span className="text-[10px] line-through" style={{ color: CL.removed, opacity: 0.6 }}>{oldVal}</span></td>;
+          return <td key={h} className="px-3 py-2.5"><span className="text-[13px] line-through" style={{ color: CL.removed, opacity: 0.6 }}>{oldVal}</span></td>;
         }
-        // modified
         return (
-          <td key={h} className="px-2 py-1" style={{ background: isChanged ? CL.modified + '15' : undefined }}>
+          <td key={h} className="px-3 py-2.5" style={{ background: isChanged ? CL.modified + '15' : undefined }}>
             {isChanged ? (
-              <div className="flex flex-col">
-                <span className="text-[9px] line-through" style={{ color: CL.removed, opacity: 0.7 }}>{oldVal || '(empty)'}</span>
-                <span className="text-[10px] font-medium" style={{ color: CL.added }}>{newVal || '(empty)'}</span>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[12px] line-through" style={{ color: CL.removed, opacity: 0.7 }}>{oldVal || '(empty)'}</span>
+                <span className="text-[13px] font-medium" style={{ color: CL.added }}>{newVal || '(empty)'}</span>
               </div>
             ) : (
-              <span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>{newVal}</span>
+              <span className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>{newVal}</span>
             )}
           </td>
         );
@@ -609,9 +660,9 @@ function DataRowDiffTr({ rd, headers }: { rd: RowDiff; headers: string[] }) {
 
 function StatCard({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
-    <div className="rounded-lg p-3" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}>
-      <div className="text-[9px] font-bold uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>{label}</div>
-      <div className="text-[18px] font-bold tabular-nums" style={{ color: color ?? 'var(--text-primary)' }}>{value}</div>
+    <div className="rounded-lg p-4" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}>
+      <div className="text-[11px] font-bold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>{label}</div>
+      <div className="text-[22px] font-bold tabular-nums" style={{ color: color ?? 'var(--text-primary)' }}>{value}</div>
     </div>
   );
 }
@@ -629,15 +680,15 @@ function CommitSelect({ label, value, commits, onChange }: {
   label: string; value: string; commits: GitCommit[]; onChange: (v: string) => void;
 }) {
   return (
-    <div className="flex items-center gap-2 flex-1 min-w-0">
-      <span className="text-[9px] font-bold uppercase tracking-wider flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{label}</span>
+    <div className="flex items-center gap-3 flex-1 min-w-0">
+      <span className="text-[11px] font-bold uppercase tracking-wider flex-shrink-0 px-2 py-1 rounded" style={{ color: 'var(--accent)', background: 'var(--accent)' + '15' }}>{label}</span>
       <select value={value} onChange={(e) => onChange(e.target.value)}
-        className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-[10px] outline-none cursor-pointer interactive"
-        style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)' }}
+        className="flex-1 min-w-0 px-3 py-2 rounded-lg text-[13px] outline-none cursor-pointer"
+        style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', transition: 'border-color 0.15s' }}
         onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; }}
         onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border-color)'; }}>
         {commits.map((c) => (
-          <option key={c.hash} value={c.hash}>{c.short} — {c.message.substring(0, 40)} ({fmtDate(c.date)})</option>
+          <option key={c.hash} value={c.hash}>{c.short} — {c.message.substring(0, 60)} ({fmtDate(c.date)})</option>
         ))}
       </select>
     </div>
@@ -647,19 +698,20 @@ function CommitSelect({ label, value, commits, onChange }: {
 function SubTab({ active, onClick, children, count }: { active: boolean; onClick: () => void; children: React.ReactNode; count: number }) {
   return (
     <button onClick={onClick}
-      className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-semibold cursor-pointer interactive"
+      className="flex-1 flex items-center justify-center gap-2 py-3 text-[14px] font-semibold cursor-pointer"
       style={{
-        background: active ? 'var(--accent)' : 'transparent',
-        color: active ? '#fff' : 'var(--text-muted)',
-        boxShadow: active ? 'var(--shadow-glow)' : 'none',
+        background: active ? 'transparent' : 'transparent',
+        color: active ? 'var(--accent)' : 'var(--text-muted)',
+        borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+        transition: 'all 0.15s ease',
       }}
       onMouseEnter={(e) => { if (!active) { e.currentTarget.style.background = 'var(--bg-hover)'; e.currentTarget.style.color = 'var(--text-primary)'; } }}
-      onMouseLeave={(e) => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; } }}>
+      onMouseLeave={(e) => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = active ? 'var(--accent)' : 'var(--text-muted)'; } }}>
       {children}
       {count > 0 && (
-        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{
-          background: active ? 'rgba(255,255,255,0.2)' : 'var(--bg-surface)',
-          color: active ? '#fff' : 'var(--text-muted)',
+        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{
+          background: active ? 'var(--accent)' + '20' : 'var(--bg-surface)',
+          color: active ? 'var(--accent)' : 'var(--text-muted)',
         }}>{count}</span>
       )}
     </button>
@@ -674,16 +726,16 @@ function KindBadge({ kind, small }: { kind: ChangeKind; small?: boolean }) {
     unchanged: { label: '—', color: CL.unchanged },
   };
   const info = m[kind] || m.unchanged;
-  const sz = small ? 'text-[7px] px-1 py-px' : 'text-[8px] px-1.5 py-0.5';
+  const sz = small ? 'text-[8px] px-1.5 py-0.5' : 'text-[10px] px-2 py-1';
   return <span className={`${sz} rounded font-bold flex-shrink-0`} style={{ color: info.color, background: info.color + '18' }}>{info.label}</span>;
 }
 
 function MicroBadge({ label, color }: { label: string; color: string }) {
-  return <span className="text-[7px] font-bold px-1 py-px rounded" style={{ background: color + '18', color }}>{label}</span>;
+  return <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ background: color + '18', color }}>{label}</span>;
 }
 
 function Tag({ children }: { children: React.ReactNode }) {
-  return <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-surface)', color: 'var(--text-muted)' }}>{children}</span>;
+  return <span className="text-[11px] px-2 py-1 rounded" style={{ background: 'var(--bg-surface)', color: 'var(--text-muted)' }}>{children}</span>;
 }
 
 function ColSummary({ diffs }: { diffs: ColumnDiff[] }) {
@@ -691,7 +743,7 @@ function ColSummary({ diffs }: { diffs: ColumnDiff[] }) {
   const r = diffs.filter((c) => c.kind === 'removed').length;
   const m = diffs.filter((c) => c.kind === 'modified').length;
   return (
-    <span className="text-[10px] font-medium flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+    <span className="text-[14px] font-medium flex items-center gap-3" style={{ color: 'var(--text-muted)' }}>
       {a > 0 && <span style={{ color: CL.added }}>+{a}</span>}
       {r > 0 && <span style={{ color: CL.removed }}>-{r}</span>}
       {m > 0 && <span style={{ color: CL.modified }}>~{m}</span>}
@@ -701,7 +753,7 @@ function ColSummary({ diffs }: { diffs: ColumnDiff[] }) {
 
 function Chevron({ open, color }: { open: boolean; color: string }) {
   return (
-    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="3" strokeLinecap="round"
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round"
       style={{ transform: open ? 'rotate(90deg)' : 'rotate(0)', transition: 'transform 0.15s' }}>
       <polyline points="9 18 15 12 9 6" />
     </svg>
@@ -710,7 +762,7 @@ function Chevron({ open, color }: { open: boolean; color: string }) {
 
 function Arrow() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" className="flex-shrink-0 opacity-60">
       <polyline points="9 18 15 12 9 6" />
     </svg>
   );
@@ -718,8 +770,8 @@ function Arrow() {
 
 function ThCell({ children, w, align, accent }: { children?: React.ReactNode; w?: string; align?: string; accent?: boolean }) {
   return (
-    <th className={`px-3 py-2 text-[9px] font-bold uppercase tracking-wider ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'}`}
-      style={{ color: accent ? 'var(--accent)' : 'var(--text-muted)', width: w }}>
+    <th className={`px-5 py-3 text-[12px] font-bold uppercase tracking-wider ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'}`}
+      style={{ color: accent ? 'var(--accent)' : 'var(--text-muted)', width: w, borderBottom: '1px solid var(--border-color)' }}>
       {children}
     </th>
   );
@@ -730,7 +782,24 @@ function Spinner() {
 }
 
 function CenterMessage({ children }: { children: React.ReactNode }) {
-  return <div className="flex-1 flex flex-col items-center justify-center gap-3 py-20">{children}</div>;
+  return <div className="flex flex-col items-center justify-center gap-3" style={{ minHeight: 'calc(100vh - 180px)' }}>{children}</div>;
+}
+
+function DebugBanner({ title, debug }: { title: string; debug: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-lg mb-3 overflow-hidden" style={{ background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.25)' }}>
+      <div className="flex items-center gap-3 px-5 py-3 cursor-pointer" onClick={() => setOpen(!open)}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+        <span className="text-[13px] font-semibold" style={{ color: '#fbbf24' }}>{title}</span>
+        <span className="flex-1" />
+        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{open ? '진단 숨기기' : '진단 정보 보기'}</span>
+      </div>
+      {open && debug && (
+        <pre className="px-5 py-3 text-[12px] font-mono whitespace-pre-wrap" style={{ color: 'var(--text-secondary)', borderTop: '1px solid rgba(251,191,36,0.15)', background: 'rgba(0,0,0,0.15)' }}>{debug}</pre>
+      )}
+    </div>
+  );
 }
 
 function EmptyMessage({ text }: { text: string }) {
