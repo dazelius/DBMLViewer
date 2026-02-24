@@ -529,6 +529,7 @@ async function streamClaude(
   const blocks: Record<number, ContentBlock & { _inputStr?: string }> = {};
   let stopReason: ClaudeResponse['stop_reason'] = 'end_turn';
   let buf = '';
+  let lastEventType = ''; // SSE event: 타입 추적
 
   while (true) {
     const { done, value } = await reader.read();
@@ -539,12 +540,27 @@ async function streamClaude(
     buf = lines.pop() ?? '';
 
     for (const line of lines) {
+      // SSE event: 타입 추적 (error 이벤트 감지용)
+      if (line.startsWith('event: ')) {
+        lastEventType = line.slice(7).trim();
+        continue;
+      }
+
       if (!line.startsWith('data: ')) continue;
       const raw = line.slice(6).trim();
       if (!raw || raw === '[DONE]') continue;
 
       let ev: Record<string, unknown>;
       try { ev = JSON.parse(raw); } catch { continue; }
+
+      // Anthropic SSE 에러 이벤트 처리
+      if (lastEventType === 'error' || ev.type === 'error') {
+        const errObj = ev.error as { type?: string; message?: string } | undefined;
+        const msg = errObj?.message ?? JSON.stringify(ev);
+        console.error('[streamClaude] SSE error event:', msg);
+        throw new Error(`Claude API 오류: ${msg}`);
+      }
+      lastEventType = '';
 
       switch (ev.type) {
         case 'content_block_start': {
@@ -658,6 +674,7 @@ export async function sendChatMessage(
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     accumulatedText = '';
+    console.log(`[Chat] 이터레이션 ${i + 1}/${MAX_ITERATIONS} 시작, messages: ${messages.length}`);
 
     // 529 재시도 포함 스트리밍 호출
     let data: ClaudeResponse | null = null;
@@ -683,6 +700,7 @@ export async function sendChatMessage(
       }
     }
     if (!data) throw new Error('Claude API 연결 실패');
+    console.log(`[Chat] 이터레이션 ${i + 1} 완료: stop_reason=${data.stop_reason}, blocks=${data.content.length}, text="${accumulatedText.slice(0, 60)}"`);
 
     // ── 최종 답변 ──
     if (data.stop_reason === 'end_turn' || data.stop_reason === 'stop_sequence') {
@@ -928,6 +946,7 @@ export async function sendChatMessage(
         toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: resultStr });
       }
 
+      console.log(`[Chat] 툴 처리 완료: ${toolBlocks.map(t => t.name).join(', ')}`);
       messages.push({ role: 'user', content: toolResults });
       continue;
     }

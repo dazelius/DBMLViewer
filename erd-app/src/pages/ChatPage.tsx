@@ -1512,6 +1512,12 @@ function DataQueryCard({ tc, index }: { tc: DataQueryResult; index: number }) {
 // ── 로딩 인디케이터 ──────────────────────────────────────────────────────────
 
 function ThinkingIndicator({ liveToolCalls }: { liveToolCalls?: ToolCallResult[] }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setElapsed(s => s + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
   return (
     <div className="flex flex-col gap-2">
       {/* 실시간 tool calls */}
@@ -1531,8 +1537,8 @@ function ThinkingIndicator({ liveToolCalls }: { liveToolCalls?: ToolCallResult[]
         </div>
         <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
           {liveToolCalls && liveToolCalls.length > 0
-            ? `데이터 분석 중... (${liveToolCalls.length}번 조회)`
-            : '생각하는 중...'}
+            ? `데이터 분석 중... (${liveToolCalls.length}번 조회, ${elapsed}초)`
+            : `응답 대기 중... (${elapsed}초)`}
         </span>
       </div>
     </div>
@@ -1794,10 +1800,11 @@ export default function ChatPage() {
       );
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
+      console.error('[Chat] sendMessage 오류:', errMsg);
       setMessages((prev) =>
         prev.map((m) =>
           m.id === loadingId
-            ? { ...m, content: '오류가 발생했습니다.', error: errMsg, isLoading: false, liveToolCalls: undefined }
+            ? { ...m, content: `오류: ${errMsg}`, error: errMsg, isLoading: false, liveToolCalls: undefined, artifactProgress: undefined }
             : m,
         ),
       );
