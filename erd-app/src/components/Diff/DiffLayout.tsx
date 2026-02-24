@@ -4,7 +4,6 @@ import {
   type GitCommit,
 } from '../../core/import/gitlabService.ts';
 import { excelFilesToDbml } from '../../core/import/excelToDbml.ts';
-import { parseDBML } from '../../core/parser/parseDBML.ts';
 import { diffSchemas, type SchemaDiffResult, type TableDiff, type ColumnDiff, type EnumDiff, type ChangeKind } from '../../core/diff/schemaDiff.ts';
 import { diffData, type DataDiffResult, type DataTableDiff } from '../../core/diff/dataDiff.ts';
 import type { SchemaColumn } from '../../core/schema/types.ts';
@@ -37,7 +36,6 @@ export default function DiffLayout() {
   const [dataDiff, setDataDiff] = useState<DataDiffResult | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffProgress, setDiffProgress] = useState({ step: 0, total: 5, label: '' });
-  const [diffDebug, setDiffDebug] = useState('');
   const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set());
 
   type SheetData = { headers: string[]; rows: Record<string, string>[] };
@@ -66,7 +64,6 @@ export default function DiffLayout() {
 
     setDiffLoading(true);
     setDiffProgress({ step: 0, total: 5, label: '준비 중...' });
-    setDiffDebug('');
     setSchemaDiff(null);
     setDataDiff(null);
     setExpandedTables(new Set());
@@ -95,22 +92,10 @@ export default function DiffLayout() {
       const toImport = excelFilesToDbml([...toSchemaFiles, ...toDataFiles]);
 
       await tick(4, '스키마 · 데이터 비교 분석 중...');
-      const fromParsed = parseDBML(fromImport.dbml);
-      const toParsed = parseDBML(toImport.dbml);
-      const fromSchema = fromParsed.schema;
-      const toSchema = toParsed.schema;
+      const fromSchema = fromImport.directSchema;
+      const toSchema = toImport.directSchema;
 
-      const dbg: string[] = [];
-      dbg.push(`FROM: ${fromSchemaFiles.length} schema files, ${fromDataFiles.length} data files → ${fromImport.stats.tables} tables parsed`);
-      dbg.push(`TO: ${toSchemaFiles.length} schema files, ${toDataFiles.length} data files → ${toImport.stats.tables} tables parsed`);
-      if (fromParsed.errors.length > 0) dbg.push(`FROM DBML errors: ${fromParsed.errors.map(e => e.message).join('; ')}`);
-      if (toParsed.errors.length > 0) dbg.push(`TO DBML errors: ${toParsed.errors.map(e => e.message).join('; ')}`);
-      dbg.push(`FROM schema: ${fromSchema?.tables.length ?? 0} tables after DBML parse`);
-      dbg.push(`TO schema: ${toSchema?.tables.length ?? 0} tables after DBML parse`);
-      if (fromSchemaFiles.length > 0) dbg.push(`FROM files: ${fromSchemaFiles.map(f => f.name).slice(0, 5).join(', ')}${fromSchemaFiles.length > 5 ? ` ... (${fromSchemaFiles.length})` : ''}`);
-      if (toSchemaFiles.length > 0) dbg.push(`TO files: ${toSchemaFiles.map(f => f.name).slice(0, 5).join(', ')}${toSchemaFiles.length > 5 ? ` ... (${toSchemaFiles.length})` : ''}`);
-      setDiffDebug(dbg.join('\n'));
-      console.log('[Diff Debug]\n' + dbg.join('\n'));
+      console.log(`[Diff] FROM: ${fromSchemaFiles.length} files → ${fromSchema.tables.length} tables | TO: ${toSchemaFiles.length} files → ${toSchema.tables.length} tables`);
 
       const sr = diffSchemas(fromSchema, toSchema);
       setSchemaDiff(sr);
@@ -212,7 +197,6 @@ export default function DiffLayout() {
             onToggle={toggleExpand}
             fromLabel={fromLabel?.short ?? ''}
             toLabel={toLabel?.short ?? ''}
-            debug={diffDebug}
           />
         )}
 
@@ -228,9 +212,9 @@ export default function DiffLayout() {
 
 /* ═══════════════ SCHEMA TAB ═══════════════ */
 
-function SchemaTabContent({ result, expanded, onToggle, fromLabel, toLabel, debug }: {
+function SchemaTabContent({ result, expanded, onToggle, fromLabel, toLabel }: {
   result: SchemaDiffResult; expanded: Set<string>; onToggle: (n: string) => void;
-  fromLabel: string; toLabel: string; debug: string;
+  fromLabel: string; toLabel: string;
 }) {
   const s = result.summary;
   const isEmpty = result.tableDiffs.length === 0 && result.enumDiffs.length === 0;
@@ -242,12 +226,12 @@ function SchemaTabContent({ result, expanded, onToggle, fromLabel, toLabel, debu
   return (
     <div className="max-w-[95vw] mx-auto px-8 py-6 space-y-3">
       {(allAdded || allRemoved) && (
-        <DebugBanner
-          title={allAdded
-            ? `FROM 버전에서 스키마 테이블이 0개 감지됨 (전체 ${s.tablesAdded}개 ADD)`
-            : `TO 버전에서 스키마 테이블이 0개 감지됨 (전체 ${s.tablesRemoved}개 DEL)`}
-          debug={debug}
-        />
+        <div className="flex items-center gap-3 px-5 py-3 rounded-lg mb-3" style={{ background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.25)' }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+          <span className="text-[13px]" style={{ color: '#fbbf24' }}>
+            {allAdded ? `FROM 버전에 해당 테이블이 없습니다 (${s.tablesAdded}개 신규)` : `TO 버전에 해당 테이블이 없습니다 (${s.tablesRemoved}개 삭제)`}
+          </span>
+        </div>
       )}
       {/* Summary */}
       <div className="flex items-center gap-5 mb-5 text-[13px] font-medium">
@@ -785,22 +769,6 @@ function CenterMessage({ children }: { children: React.ReactNode }) {
   return <div className="flex flex-col items-center justify-center gap-3" style={{ minHeight: 'calc(100vh - 180px)' }}>{children}</div>;
 }
 
-function DebugBanner({ title, debug }: { title: string; debug: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="rounded-lg mb-3 overflow-hidden" style={{ background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.25)' }}>
-      <div className="flex items-center gap-3 px-5 py-3 cursor-pointer" onClick={() => setOpen(!open)}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
-        <span className="text-[13px] font-semibold" style={{ color: '#fbbf24' }}>{title}</span>
-        <span className="flex-1" />
-        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{open ? '진단 숨기기' : '진단 정보 보기'}</span>
-      </div>
-      {open && debug && (
-        <pre className="px-5 py-3 text-[12px] font-mono whitespace-pre-wrap" style={{ color: 'var(--text-secondary)', borderTop: '1px solid rgba(251,191,36,0.15)', background: 'rgba(0,0,0,0.15)' }}>{debug}</pre>
-      )}
-    </div>
-  );
-}
 
 function EmptyMessage({ text }: { text: string }) {
   return (

@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import type { ParsedSchema, SchemaTable, SchemaColumn, SchemaEnum, SchemaRef, SchemaTableGroup } from '../schema/types.ts';
 
 interface ExcelColumn {
   name: string;
@@ -36,6 +37,7 @@ interface ExcelTableGroup {
 
 interface ImportResult {
   dbml: string;
+  directSchema: ParsedSchema;
   stats: {
     files: number;
     tables: number;
@@ -575,10 +577,90 @@ export function excelFilesToDbml(
   const dbml = parts.join('\n\n');
   const totalColumns = tables.reduce((s, t) => s + t.columns.length, 0);
 
+  // Build ParsedSchema directly from Excel data (bypasses DBML parser)
+  const GROUP_PALETTE = [
+    '#e06c75', '#61afef', '#98c379', '#e5c07b', '#c678dd', '#56b6c2',
+    '#d19a66', '#ff6b9d', '#48d1cc', '#ffb347', '#87ceeb', '#dda0dd',
+  ];
+
+  const fkTargets = new Set<string>();
+  for (const fk of validFks) {
+    fkTargets.add(`${fk.sourceTable}.${fk.sourceColumn}`.toLowerCase());
+  }
+
+  const schemaTables: SchemaTable[] = tables.map((t) => ({
+    id: `public.${t.name}`,
+    name: t.name,
+    schema: 'public',
+    alias: null,
+    columns: t.columns.map((c): SchemaColumn => ({
+      name: c.name,
+      type: c.type,
+      isPrimaryKey: c.isPk,
+      isForeignKey: fkTargets.has(`${t.name}.${c.name}`.toLowerCase()),
+      isUnique: false,
+      isNotNull: c.isNotNull,
+      isIncrement: false,
+      isLocalize: c.isLocalize,
+      isWarning: false,
+      defaultValue: c.defaultValue,
+      note: c.description || null,
+    })),
+    indexes: [],
+    note: t.note || null,
+    headerColor: t.headerColor || null,
+    groupName: null,
+    groupColor: null,
+  }));
+
+  const schemaRefs: SchemaRef[] = validFks.map((fk, i): SchemaRef => ({
+    id: `ref_${fk.sourceTable}_${fk.targetTable}_${i}`,
+    name: null,
+    fromTable: `public.${fk.sourceTable}`,
+    fromColumns: [fk.sourceColumn],
+    toTable: `public.${fk.targetTable}`,
+    toColumns: [],
+    type: 'many-to-one',
+    onDelete: null,
+    onUpdate: null,
+    color: null,
+  }));
+
+  const schemaEnums: SchemaEnum[] = [...uniqueEnums.values()].map((en) => ({
+    name: en.name,
+    schema: 'public',
+    values: en.values.map((v) => ({ name: v.value, note: v.description || null })),
+  }));
+
+  const schemaGroups: SchemaTableGroup[] = [];
+  let gi = 0;
+  for (const [gname, tableSet] of mergedGroups) {
+    const color = GROUP_PALETTE[gi % GROUP_PALETTE.length];
+    schemaGroups.push({
+      name: gname,
+      tables: [...tableSet].map((tn) => `public.${tn}`),
+      color,
+      note: null,
+    });
+    for (const tn of tableSet) {
+      const tbl = schemaTables.find((st) => st.name === tn);
+      if (tbl) { tbl.groupName = gname; tbl.groupColor = color; }
+    }
+    gi++;
+  }
+
+  const directSchema: ParsedSchema = {
+    tables: schemaTables,
+    refs: schemaRefs,
+    enums: schemaEnums,
+    tableGroups: schemaGroups,
+  };
+
   logs.push(`\nDone: ${tables.length} tables, ${totalColumns} columns, ${totalNotes} notes, ${validFks.length} refs, ${uniqueEnums.size} enums, ${mergedGroups.size} groups`);
 
   return {
     dbml,
+    directSchema,
     stats: {
       files: xlsxFiles.length,
       tables: tables.length,
