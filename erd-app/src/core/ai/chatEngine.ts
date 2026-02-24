@@ -301,8 +301,10 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 및 채팅 임베드 (아이콘, UI 이미지 찾기 요청 시 사용)');
   lines.push('- create_artifact: 수집된 데이터로 완성된 HTML 문서/보고서 생성 (전체화면 프리뷰, PDF 저장 가능)');
   lines.push('');
-  lines.push('[아티팩트 생성 규칙]');
+  lines.push('[아티팩트 생성 규칙 — 반드시 준수]');
   lines.push('- "정리해줘", "문서로", "보고서", "시트 만들어줘", "뽑아줘" 등 요청 시 create_artifact를 호출하세요.');
+  lines.push('- 데이터 수집이 끝나면 "생성하겠습니다" 같은 텍스트를 출력하지 말고 즉시 create_artifact를 호출하세요.');
+  lines.push('- ⚠️ 절대로 "아티팩트를 만들겠습니다", "HTML을 생성하겠습니다" 등의 선언 후 멈추지 마세요. 선언 없이 즉시 툴을 호출하세요.');
   lines.push('- 반드시 먼저 다른 툴로 데이터를 충분히 수집한 후 create_artifact를 마지막에 호출하세요.');
   lines.push('- HTML에서 이미지 경로: <img src="/api/images/file?path=Texture/Skill/icon_skill_active_vanguard_01.png">');
   lines.push('- HTML은 다크 테마(#0f1117 배경, #e2e8f0 텍스트), 한국어, 전문적인 게임 문서 스타일로 작성하세요.');
@@ -505,7 +507,7 @@ export async function sendChatMessage(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: 'claude-opus-4-5',
-          max_tokens: 4096,
+          max_tokens: 8192,
           system: systemPrompt,
           tools: TOOLS,
           messages,
@@ -529,6 +531,25 @@ export async function sendChatMessage(
         .filter((b): b is TextBlock => b.type === 'text')
         .map((b) => b.text)
         .join('\n');
+
+      // 아티팩트 선언만 하고 툴을 호출하지 않은 경우 → 강제로 재요청
+      const ARTIFACT_INTENT = /생성하겠습니다|만들겠습니다|작성하겠습니다|뽑겠습니다|정리하겠습니다/;
+      const hasArtifactIntent = ARTIFACT_INTENT.test(text);
+      const alreadyHasArtifact = allToolCalls.some(tc => tc.kind === 'artifact');
+      const userWantsArtifact = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘/.test(
+        messages.find(m => m.role === 'user')?.content as string ?? ''
+      );
+
+      if (hasArtifactIntent && !alreadyHasArtifact && userWantsArtifact && allToolCalls.length > 0) {
+        // Claude가 선언만 하고 멈춤 → 재촉
+        messages.push({ role: 'assistant', content: data.content });
+        messages.push({
+          role: 'user',
+          content: '지금 바로 create_artifact 툴을 호출하여 HTML 문서를 생성해주세요. 텍스트 설명 없이 즉시 툴을 호출하세요.',
+        });
+        continue;
+      }
+
       return { content: text, toolCalls: allToolCalls };
     }
 
