@@ -468,9 +468,46 @@ function historyToMessages(history: ChatTurn[]): ClaudeMsg[] {
 
 // ── SSE 스트리밍 파서 ────────────────────────────────────────────────────────
 
+// partial JSON 에서 html_content 값을 추출 (완성되지 않은 JSON도 처리)
+function extractHtmlFromPartialJson(partialJson: string): { title: string; html: string } | null {
+  const titleMatch = partialJson.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  const htmlStartMatch = partialJson.match(/"html_content"\s*:\s*"/);
+  if (!htmlStartMatch) return null;
+
+  const htmlStart = htmlStartMatch.index! + htmlStartMatch[0].length;
+  let raw = partialJson.slice(htmlStart);
+
+  // 닫히지 않은 JSON 문자열이므로 끝 따옴표 전까지만
+  let result = '';
+  let i = 0;
+  while (i < raw.length) {
+    if (raw[i] === '\\' && i + 1 < raw.length) {
+      const esc = raw[i + 1];
+      if (esc === 'n') result += '\n';
+      else if (esc === 't') result += '\t';
+      else if (esc === 'r') result += '\r';
+      else if (esc === '"') result += '"';
+      else if (esc === '\\') result += '\\';
+      else result += raw[i + 1];
+      i += 2;
+    } else if (raw[i] === '"') {
+      break; // 문자열 종료
+    } else {
+      result += raw[i];
+      i++;
+    }
+  }
+
+  return {
+    title: titleMatch ? titleMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"') : '',
+    html: result,
+  };
+}
+
 async function streamClaude(
   requestBody: object,
   onTextDelta: (delta: string) => void,
+  onArtifactProgress?: (html: string, title: string, charCount: number) => void,
 ): Promise<ClaudeResponse> {
   const response = await fetch('/api/claude', {
     method: 'POST',
@@ -528,8 +565,16 @@ async function streamClaude(
             (b as TextBlock).text = ((b as TextBlock).text || '') + (delta.text ?? '');
             onTextDelta(delta.text ?? '');
           } else if (delta.type === 'input_json_delta' && b.type === 'tool_use') {
-            (b as ContentBlock & { _inputStr: string })._inputStr =
-              ((b as ContentBlock & { _inputStr: string })._inputStr || '') + (delta.partial_json ?? '');
+            const tb = b as ContentBlock & { _inputStr: string };
+            tb._inputStr = (tb._inputStr || '') + (delta.partial_json ?? '');
+
+            // create_artifact 스트리밍 진행 상황 전달
+            if ((b as ToolUseBlock).name === 'create_artifact' && onArtifactProgress) {
+              const parsed = extractHtmlFromPartialJson(tb._inputStr);
+              if (parsed) {
+                onArtifactProgress(parsed.html, parsed.title, parsed.html.length);
+              }
+            }
           }
           break;
         }
@@ -575,6 +620,7 @@ export async function sendChatMessage(
   tableData: TableDataMap,
   onToolCall?: (tc: ToolCallResult, index: number) => void,
   onTextDelta?: (delta: string, fullText: string) => void,
+  onArtifactProgress?: (html: string, title: string, charCount: number) => void,
 ): Promise<{ content: string; toolCalls: ToolCallResult[] }> {
   // 컴포넌트가 아직 로딩 중일 때 schema가 null일 수 있으므로 스토어에서 fallback
   const effectiveSchema = schema ?? useSchemaStore.getState().schema;
@@ -610,6 +656,7 @@ export async function sendChatMessage(
             accumulatedText += delta;
             onTextDelta?.(delta, accumulatedText);
           },
+          onArtifactProgress,
         );
         break;
       } catch (err) {

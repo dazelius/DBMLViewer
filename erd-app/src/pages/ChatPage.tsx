@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Toolbar from '../components/Layout/Toolbar.tsx';
 import { useSchemaStore } from '../store/useSchemaStore.ts';
@@ -41,6 +41,7 @@ interface Message {
   isLoading?: boolean;
   error?: string;
   liveToolCalls?: ToolCallResult[]; // 스트리밍 중 실시간 tool_calls
+  artifactProgress?: { html: string; title: string; charCount: number }; // 아티팩트 생성 진행
 }
 
 // ── localStorage 캐시 키 ──────────────────────────────────────────────────────
@@ -1085,6 +1086,76 @@ function ImageCard({ tc }: { tc: ImageResult }) {
 
 // ── ToolCall 카드 디스패처 ───────────────────────────────────────────────────
 
+// ── 아티팩트 생성 진행 카드 ───────────────────────────────────────────────────
+
+function ArtifactProgressCard({ html, title, charCount }: { html: string; title: string; charCount: number }) {
+  const blobUrl = useMemo(() => {
+    if (!html || html.length < 20) return null;
+    const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
+<style>body{font-family:sans-serif;line-height:1.6;color:#e2e8f0;background:#0f1117;margin:16px;font-size:13px;}
+h1,h2,h3{color:#fff;margin-top:.8em}table{width:100%;border-collapse:collapse}
+th,td{border:1px solid #334155;padding:6px;font-size:12px}th{background:#1e293b}</style>
+</head><body>${html}</body></html>`;
+    return URL.createObjectURL(new Blob([fullHtml], { type: 'text/html' }));
+  }, [html]);
+
+  // blob URL 정리
+  useEffect(() => { return () => { if (blobUrl) URL.revokeObjectURL(blobUrl); }; }, [blobUrl]);
+
+  return (
+    <div className="rounded-xl overflow-hidden mb-2" style={{ border: '1px solid rgba(99,102,241,0.5)', boxShadow: '0 0 20px rgba(99,102,241,0.1)' }}>
+      {/* 헤더 */}
+      <div className="px-3 py-2.5 flex items-center gap-2" style={{ background: 'rgba(99,102,241,0.15)' }}>
+        {/* 펄스 점 */}
+        <span className="relative flex h-2.5 w-2.5">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ background: 'var(--accent)' }} />
+          <span className="relative inline-flex rounded-full h-2.5 w-2.5" style={{ background: 'var(--accent)' }} />
+        </span>
+        <span className="font-bold text-[12px]" style={{ color: 'var(--text-primary)' }}>
+          아티팩트 작성 중{title ? `: ${title}` : ''}
+        </span>
+        <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--accent)', opacity: 0.8 }}>
+          {charCount.toLocaleString()}자
+        </span>
+      </div>
+
+      {/* 라이브 미리보기 */}
+      <div className="relative" style={{ background: 'var(--bg-surface)' }}>
+        {blobUrl ? (
+          <div className="relative overflow-hidden" style={{ height: 200 }}>
+            <iframe
+              key={blobUrl}
+              src={blobUrl}
+              title="preview"
+              className="w-full border-none pointer-events-none"
+              style={{ height: 400, transform: 'scale(0.5)', transformOrigin: 'top left', width: '200%' }}
+              sandbox="allow-scripts allow-same-origin"
+            />
+            {/* 하단 페이드 아웃 */}
+            <div className="absolute inset-x-0 bottom-0 h-16" style={{ background: 'linear-gradient(to bottom, transparent, var(--bg-surface))' }} />
+          </div>
+        ) : (
+          <div className="flex items-center justify-center h-16 gap-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+            HTML 구조 생성 중...
+          </div>
+        )}
+
+        {/* 타이핑 효과 텍스트 */}
+        <div className="px-3 py-1.5 flex items-center gap-1.5 border-t" style={{ borderColor: 'var(--border-color)' }}>
+          <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--accent)' }}>
+            <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+          </svg>
+          <span className="text-[10px] font-mono truncate" style={{ color: 'var(--text-muted)', maxWidth: 320 }}>
+            {html.slice(-80).replace(/\s+/g, ' ')}
+            <span className="inline-block w-[2px] h-[10px] ml-0.5 rounded-sm animate-pulse align-middle" style={{ background: 'var(--accent)' }} />
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── 아티팩트 카드 ─────────────────────────────────────────────────────────────
 
 function ArtifactCard({ tc }: { tc: ArtifactResult }) {
@@ -1476,7 +1547,7 @@ function MessageBubble({ msg }: { msg: Message }) {
         >
           {msg.isLoading && !msg.content ? (
             <ThinkingIndicator liveToolCalls={msg.liveToolCalls} />
-          ) : msg.isLoading && msg.content ? (
+          ) : msg.isLoading && (msg.content || msg.artifactProgress || (msg.liveToolCalls && msg.liveToolCalls.length > 0)) ? (
             // 스트리밍 중 — 텍스트 실시간 표시 + 커서
             <div className="space-y-0.5">
               {msg.liveToolCalls && msg.liveToolCalls.length > 0 && (
@@ -1484,13 +1555,23 @@ function MessageBubble({ msg }: { msg: Message }) {
                   {msg.liveToolCalls.map((tc, i) => <ToolCallCard key={i} tc={tc} index={i} />)}
                 </div>
               )}
-              <div className="text-[13px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-                {renderMarkdown(msg.content)}
-                <span
-                  className="inline-block ml-0.5 w-[2px] h-[14px] rounded-sm align-middle animate-pulse"
-                  style={{ background: 'var(--accent)', verticalAlign: 'middle' }}
+              {/* 아티팩트 실시간 생성 카드 */}
+              {msg.artifactProgress && (
+                <ArtifactProgressCard
+                  html={msg.artifactProgress.html}
+                  title={msg.artifactProgress.title}
+                  charCount={msg.artifactProgress.charCount}
                 />
-              </div>
+              )}
+              {msg.content && (
+                <div className="text-[13px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                  {renderMarkdown(msg.content)}
+                  <span
+                    className="inline-block ml-0.5 w-[2px] h-[14px] rounded-sm align-middle animate-pulse"
+                    style={{ background: 'var(--accent)', verticalAlign: 'middle' }}
+                  />
+                </div>
+              )}
             </div>
           ) : isUser ? (
             <p className="text-[13px] whitespace-pre-wrap" style={{ color: '#fff' }}>
@@ -1651,6 +1732,16 @@ export default function ChatPage() {
             ),
           );
         },
+        (html, title, charCount) => {
+          // 아티팩트 실시간 생성 진행
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === loadingId
+                ? { ...m, artifactProgress: { html, title, charCount }, isLoading: true }
+                : m,
+            ),
+          );
+        },
       );
 
       // history 갱신
@@ -1664,7 +1755,7 @@ export default function ChatPage() {
       setMessages((prev) =>
         prev.map((m) =>
           m.id === loadingId
-            ? { ...m, content, toolCalls, isLoading: false, liveToolCalls: undefined }
+            ? { ...m, content, toolCalls, isLoading: false, liveToolCalls: undefined, artifactProgress: undefined }
             : m,
         ),
       );
