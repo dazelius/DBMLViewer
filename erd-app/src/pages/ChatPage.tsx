@@ -197,7 +197,9 @@ function renderMarkdown(text: string): React.ReactNode[] {
                       className="px-3 py-2"
                       style={{ color: ci === 0 ? 'var(--text-primary)' : 'var(--text-secondary)' }}
                     >
-                      {inlineMarkdown(cell)}
+                      {looksLikeFilename(cell)
+                        ? <InlineImageCell text={cell} />
+                        : inlineMarkdown(cell)}
                     </td>
                   ))}
                 </tr>
@@ -235,6 +237,51 @@ function renderMarkdown(text: string): React.ReactNode[] {
   }
 
   return nodes;
+}
+
+// ── 인라인 이미지 썸네일 (테이블 셀 파일명 자동 감지) ────────────────────────
+
+// 모듈 레벨 캐시: filename → { relPath, url } | null
+const _imgCache = new Map<string, { relPath: string; url: string } | null>();
+
+function looksLikeFilename(text: string): boolean {
+  if (text.length < 4 || text.includes(' ') || text.includes('.')) return false;
+  return /^[a-zA-Z][a-zA-Z0-9_]{3,}$/.test(text);
+}
+
+function InlineImageCell({ text }: { text: string }) {
+  const [img, setImg] = useState<{ relPath: string; url: string } | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (!looksLikeFilename(text)) { setImg(null); return; }
+    if (_imgCache.has(text)) { setImg(_imgCache.get(text)!); return; }
+    fetch(`/api/images/list?q=${encodeURIComponent(text)}`)
+      .then(r => r.json())
+      .then((data: { results: { name: string; relPath: string }[] }) => {
+        // 정확히 이름이 일치하는 것 우선, 없으면 첫 번째
+        const exact = data.results.find(r => r.name.toLowerCase() === text.toLowerCase());
+        const hit = exact ?? data.results[0] ?? null;
+        const result = hit ? { relPath: hit.relPath, url: `/api/images/file?path=${encodeURIComponent(hit.relPath)}` } : null;
+        _imgCache.set(text, result);
+        setImg(result);
+      })
+      .catch(() => { _imgCache.set(text, null); setImg(null); });
+  }, [text]);
+
+  if (!img) return <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)', fontSize: 11 }}>{text}</span>;
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span
+        className="inline-flex items-center justify-center rounded overflow-hidden flex-shrink-0"
+        style={{ width: 28, height: 28, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)' }}
+        title={img.relPath}
+      >
+        <img src={img.url} alt={text} style={{ width: 26, height: 26, objectFit: 'contain' }} onError={(e) => { (e.currentTarget.parentElement!.style.display = 'none'); }} />
+      </span>
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)', fontSize: 11 }}>{text}</span>
+    </span>
+  );
 }
 
 function inlineMarkdown(text: string): React.ReactNode {
