@@ -450,20 +450,28 @@ export async function sendChatMessage(
   const MAX_ITERATIONS = 10;
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
-    const response = await fetch('/api/claude', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-opus-4-5',
-        max_tokens: 4096,
-        system: systemPrompt,
-        tools: TOOLS,
-        messages,
-      }),
-    });
+    // 529 과부하 시 최대 3회 재시도
+    let response: Response | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt)); // 3s, 6s
+      response = await fetch('/api/claude', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-opus-4-5',
+          max_tokens: 4096,
+          system: systemPrompt,
+          tools: TOOLS,
+          messages,
+        }),
+      });
+      if (response.status !== 529) break;
+    }
+    if (!response) throw new Error('Claude API 연결 실패');
 
     if (!response.ok) {
       const errText = await response.text();
+      if (response.status === 529) throw new Error('Claude 서버가 일시적으로 과부하 상태입니다. 잠시 후 다시 시도해 주세요.');
       throw new Error(`Claude API 오류 (${response.status}): ${errText}`);
     }
 

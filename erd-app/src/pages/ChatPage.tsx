@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Toolbar from '../components/Layout/Toolbar.tsx';
 import { useSchemaStore } from '../store/useSchemaStore.ts';
 import { useCanvasStore } from '../store/useCanvasStore.ts';
@@ -197,9 +198,11 @@ function renderMarkdown(text: string): React.ReactNode[] {
                       className="px-3 py-2"
                       style={{ color: ci === 0 ? 'var(--text-primary)' : 'var(--text-secondary)' }}
                     >
-                      {looksLikeFilename(cell)
-                        ? <InlineImageCell text={cell} />
-                        : inlineMarkdown(cell)}
+                      {looksLikeTableName(cell)
+                        ? <TableNameLink name={cell} />
+                        : looksLikeFilename(cell)
+                          ? <InlineImageCell text={cell} />
+                          : inlineMarkdown(cell)}
                     </td>
                   ))}
                 </tr>
@@ -237,6 +240,54 @@ function renderMarkdown(text: string): React.ReactNode[] {
   }
 
   return nodes;
+}
+
+// ── 테이블명 링크 (Docs 페이지로 이동) ──────────────────────────────────────
+
+function TableNameLink({ name }: { name: string }) {
+  const navigate = useNavigate();
+  const schema = useSchemaStore((s) => s.schema);
+
+  const findTableId = (n: string) => {
+    if (!schema) return null;
+    const norm = n.trim().toLowerCase();
+    return schema.tables.find((t) => t.name.toLowerCase() === norm)?.id ?? null;
+  };
+
+  // "Weapon / WeaponStat" 처럼 슬래시로 여러 개인 경우 분리
+  const parts = name.split(/\s*\/\s*/);
+  const nodes = parts.map((part, i) => {
+    const tid = findTableId(part);
+    return (
+      <span key={i}>
+        {i > 0 && <span style={{ color: 'var(--text-muted)', margin: '0 4px' }}>/</span>}
+        {tid ? (
+          <button
+            onClick={() => navigate(`/docs/${tid}`)}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-medium hover:opacity-80 transition-opacity"
+            style={{ background: 'rgba(99,102,241,0.12)', color: 'var(--accent)', fontSize: 11, fontFamily: 'var(--font-mono)' }}
+            title={`Docs: ${part}`}
+          >
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink: 0 }}>
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="M3 9h18M3 15h18M9 3v18" />
+            </svg>
+            {part}
+          </button>
+        ) : (
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{part}</span>
+        )}
+      </span>
+    );
+  });
+
+  return <span className="inline-flex items-center flex-wrap gap-0.5">{nodes}</span>;
+}
+
+function looksLikeTableName(text: string): boolean {
+  // PascalCase, 공백 없음, 슬래시로 구분된 경우도 포함
+  const parts = text.split(/\s*\/\s*/);
+  return parts.every(p => /^[A-Z][a-zA-Z0-9]{2,}$/.test(p.trim()));
 }
 
 // ── 인라인 이미지 썸네일 (테이블 셀 파일명 자동 감지) ────────────────────────
