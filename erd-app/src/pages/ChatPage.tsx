@@ -192,19 +192,27 @@ function renderMarkdown(text: string): React.ReactNode[] {
                     background: ri % 2 === 0 ? 'transparent' : 'var(--bg-hover)',
                   }}
                 >
-                  {row.map((cell, ci) => (
-                    <td
-                      key={ci}
-                      className="px-3 py-2"
-                      style={{ color: ci === 0 ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-                    >
-                      {looksLikeTableName(cell)
-                        ? <TableNameLink name={cell} />
-                        : looksLikeFilename(cell)
-                          ? <InlineImageCell text={cell} />
-                          : inlineMarkdown(cell)}
-                    </td>
-                  ))}
+                  {row.map((cell, ci) => {
+                    // 백틱/볼드 등 인라인 마크다운 제거 후 실제 값으로 감지
+                    const rawCell = cell
+                      .replace(/^`(.+)`$/, '$1')
+                      .replace(/^\*\*(.+)\*\*$/, '$1')
+                      .replace(/^\*(.+)\*$/, '$1')
+                      .trim();
+                    return (
+                      <td
+                        key={ci}
+                        className="px-3 py-2"
+                        style={{ color: ci === 0 ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                      >
+                        {looksLikeTableName(rawCell)
+                          ? <TableNameLink name={rawCell} />
+                          : looksLikeFilename(rawCell)
+                            ? <InlineImageCell text={rawCell} />
+                            : inlineMarkdown(cell)}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
