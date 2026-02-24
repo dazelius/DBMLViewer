@@ -556,7 +556,12 @@ async function streamClaude(
 
   const contentArray = Object.entries(blocks)
     .sort(([a], [b]) => Number(a) - Number(b))
-    .map(([, b]) => b as ContentBlock);
+    .map(([, b]) => {
+      // _inputStr은 내부 누적용 임시 필드 → API 재전송 시 제거
+      const { _inputStr: _unused, ...clean } = b as ContentBlock & { _inputStr?: string };
+      void _unused;
+      return clean as ContentBlock;
+    });
 
   return { content: contentArray, stop_reason: stopReason };
 }
