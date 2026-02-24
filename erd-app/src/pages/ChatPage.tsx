@@ -792,6 +792,64 @@ function DiffCard({ tc }: { tc: RevisionDiffResult }) {
   );
 }
 
+// ── 이미지 썸네일 (개별 로딩 상태 관리) ─────────────────────────────────────
+
+function ImageThumb({
+  img,
+  selected,
+  onClick,
+}: {
+  img: { name: string; url: string; relPath: string; isAtlas?: boolean };
+  selected: boolean;
+  onClick: () => void;
+}) {
+  const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
+
+  return (
+    <button
+      onClick={onClick}
+      className="flex flex-col items-center gap-1 p-1 rounded-lg"
+      style={{
+        background: selected ? 'rgba(52,211,153,0.15)' : 'var(--bg-hover)',
+        border: selected ? '1px solid #34d399' : '1px solid var(--border-color)',
+        transition: 'all 0.12s',
+      }}
+      title={img.relPath}
+    >
+      <div className="w-full rounded flex items-center justify-center overflow-hidden" style={{ height: 64, background: 'rgba(255,255,255,0.04)' }}>
+        {status !== 'error' ? (
+          <img
+            src={img.url}
+            alt={img.name}
+            className="w-full h-full"
+            style={{ objectFit: 'contain', display: status === 'ok' ? 'block' : 'none' }}
+            onLoad={() => setStatus('ok')}
+            onError={() => setStatus('error')}
+          />
+        ) : null}
+        {status === 'loading' && (
+          <div className="w-5 h-5 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'var(--border-color)', borderTopColor: 'transparent' }} />
+        )}
+        {status === 'error' && (
+          <div className="flex flex-col items-center gap-0.5 px-1">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: 'var(--text-muted)', opacity: 0.5 }}>
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" stroke="none" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+            {img.isAtlas && (
+              <span className="text-[7px] text-center leading-tight" style={{ color: 'var(--text-muted)' }}>Atlas</span>
+            )}
+          </div>
+        )}
+      </div>
+      <span className="text-[9px] truncate w-full text-center" style={{ color: 'var(--text-muted)' }}>
+        {img.name}
+      </span>
+    </button>
+  );
+}
+
 // ── 이미지 검색 카드 ─────────────────────────────────────────────────────────
 
 function ImageCard({ tc }: { tc: ImageResult }) {
@@ -836,28 +894,12 @@ function ImageCard({ tc }: { tc: ImageResult }) {
           {/* 썸네일 그리드 */}
           <div className="p-2 grid gap-1.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))' }}>
             {tc.images.map((img) => (
-              <button
+              <ImageThumb
                 key={img.relPath}
+                img={img}
+                selected={selected?.url === img.url}
                 onClick={() => setSelected(selected?.url === img.url ? null : img)}
-                className="flex flex-col items-center gap-1 p-1 rounded-lg"
-                style={{
-                  background: selected?.url === img.url ? 'rgba(52,211,153,0.15)' : 'var(--bg-hover)',
-                  border: selected?.url === img.url ? '1px solid #34d399' : '1px solid var(--border-color)',
-                  transition: 'all 0.12s',
-                }}
-                title={img.relPath}
-              >
-                <img
-                  src={img.url}
-                  alt={img.name}
-                  className="w-full rounded"
-                  style={{ height: 64, objectFit: 'contain', background: 'transparent' }}
-                  onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
-                />
-                <span className="text-[9px] truncate w-full text-center" style={{ color: 'var(--text-muted)' }}>
-                  {img.name}
-                </span>
-              </button>
+              />
             ))}
           </div>
 

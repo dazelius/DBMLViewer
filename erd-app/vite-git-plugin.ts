@@ -135,10 +135,22 @@ function createGitMiddleware(options: GitPluginOptions) {
       const q = (url.searchParams.get('q') || '').toLowerCase().trim()
       const all: { name: string; path: string; relPath: string }[] = []
       walkImages(IMAGES_DIR, '', all)
+
+      // Atlas 폴더는 Unity 스프라이트시트라 브라우저에서 아이콘처럼 안 보임 → 후순위로
+      const isAtlas = (f: { relPath: string }) => f.relPath.toLowerCase().startsWith('atlas/')
       const matched = q
         ? all.filter(f => f.name.toLowerCase().includes(q) || f.relPath.toLowerCase().includes(q))
-        : all.slice(0, 200)
-      sendJson(res, 200, { total: all.length, results: matched.slice(0, 50).map(f => ({ name: f.name, relPath: f.relPath })) })
+        : all
+
+      // Atlas 제외 우선, 그 다음 Atlas 포함
+      const nonAtlas = matched.filter(f => !isAtlas(f))
+      const atlasOnly = matched.filter(f => isAtlas(f))
+      const sorted = [...nonAtlas, ...atlasOnly]
+
+      sendJson(res, 200, {
+        total: all.length,
+        results: sorted.slice(0, 50).map(f => ({ name: f.name, relPath: f.relPath, isAtlas: isAtlas(f) })),
+      })
       return
     }
 

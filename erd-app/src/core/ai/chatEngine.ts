@@ -119,7 +119,7 @@ export interface RevisionDiffResult {
 export interface ImageResult {
   kind: 'image_search';
   query: string;
-  images: { name: string; relPath: string; url: string }[];
+  images: { name: string; relPath: string; url: string; isAtlas?: boolean }[];
   total: number;
   error?: string;
 }
@@ -638,10 +638,11 @@ export async function sendChatMessage(
             const resp = await fetch(`/api/images/list?q=${encodeURIComponent(query)}`);
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json() as { total: number; results: { name: string; relPath: string }[] };
-            const images = data.results.map((r) => ({
+            const images = data.results.map((r: { name: string; relPath: string; isAtlas?: boolean }) => ({
               name: r.name,
               relPath: r.relPath,
               url: `/api/images/file?path=${encodeURIComponent(r.relPath)}`,
+              isAtlas: r.isAtlas ?? false,
             }));
             tc = { kind: 'image_search', query, images, total: data.total } as ImageResult;
             resultStr = images.length > 0
