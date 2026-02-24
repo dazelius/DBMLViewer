@@ -23,6 +23,8 @@ export default function Toolbar() {
   const isDocs       = location.pathname.startsWith('/docs');
   const isDiff       = location.pathname.startsWith('/diff');
   const isValidation = location.pathname.startsWith('/validation');
+  const isQuery      = location.pathname.startsWith('/query');
+  const isChat       = location.pathname.startsWith('/chat');
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -60,6 +62,8 @@ export default function Toolbar() {
             <ModeTab active={isDocs}       onClick={() => navigate('/docs')}>Data</ModeTab>
             <ModeTab active={isDiff}       onClick={() => navigate('/diff')}>Diff</ModeTab>
             <ModeTab active={isValidation} onClick={() => navigate('/validation')}>Validation</ModeTab>
+            <ModeTab active={isQuery}      onClick={() => navigate('/query')}>Query</ModeTab>
+            <ModeTab active={isChat}       onClick={() => navigate('/chat')}>ChatBot</ModeTab>
           </div>
 
           <Divider />

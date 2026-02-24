@@ -15,6 +15,7 @@ export default defineConfig(({ mode }) => {
         repoUrl: env.GITLAB_REPO_URL || 'http://13.209.114.157/projectaegis/projectaegisdata.git',
         localDir: resolve(process.cwd(), '.git-repo'),
         token: env.GITLAB_TOKEN || '',
+        claudeApiKey: env.CLAUDE_API_KEY || '',
       }),
     ],
     base: '/TableMaster',

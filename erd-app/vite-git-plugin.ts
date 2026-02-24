@@ -11,6 +11,7 @@ interface GitPluginOptions {
   repoUrl: string
   localDir: string
   token?: string
+  claudeApiKey?: string
 }
 
 function buildAuthUrl(repoUrl: string, token?: string): string {
@@ -63,6 +64,37 @@ function broadcastPresence() {
 function createGitMiddleware(options: GitPluginOptions) {
   const { localDir } = options
   return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+
+    // ── /api/claude : Anthropic API 프록시 (dev & preview 공용) ────────────
+    if (req.url === '/api/claude' && req.method === 'POST') {
+      const apiKey = options.claudeApiKey || process.env.CLAUDE_API_KEY || ''
+      if (!apiKey) {
+        sendJson(res, 400, { error: 'CLAUDE_API_KEY 환경변수가 설정되지 않았습니다.' })
+        return
+      }
+      const body = await readBody(req)
+      try {
+        const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body,
+        })
+        const data = await claudeRes.text()
+        res.writeHead(claudeRes.status, {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        })
+        res.end(data)
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        sendJson(res, 500, { error: msg })
+      }
+      return
+    }
 
     // ── /api/presence : SSE 접속자 추적 ────────────────────────────────────
     if (req.url === '/api/presence') {
@@ -157,26 +189,63 @@ function createGitMiddleware(options: GitPluginOptions) {
             const isCloned = existsSync(join(localDir, '.git'))
             if (!isCloned) { sendJson(res, 200, { commits: [] }); return }
 
-            const count = url.searchParams.get('count') || '20'
+            const count = url.searchParams.get('count') || '30'
             const filterPath = url.searchParams.get('path') || ''
+            const includeFiles = url.searchParams.get('include_files') === 'true'
             const SEP = '|||'
-            const args = ['log', `-${count}`, `--format=%H${SEP}%h${SEP}%ci${SEP}%an${SEP}%s`]
-            if (filterPath) { args.push('--'); args.push(filterPath) }
+            const COMMIT_MARK = '__COMMIT__'
+
             try {
-              const raw = execFileSync('git', args, {
-                cwd: localDir, encoding: 'utf-8', timeout: 120_000,
-                stdio: ['pipe', 'pipe', 'pipe'],
-              }).trim()
-              const commits = raw.split('\n').filter(Boolean).map((line) => {
-                const parts = line.split(SEP)
-                return {
-                  hash: parts[0] || '',
-                  short: parts[1] || '',
-                  date: parts[2] || '',
-                  author: parts[3] || '',
-                  message: parts.slice(4).join(SEP),
-                }
-              })
+              let commits: object[]
+
+              if (includeFiles) {
+                // --name-only 포함: COMMIT_MARK 구분자로 분리 파싱
+                const args = [
+                  'log', `-${count}`,
+                  `--pretty=format:${COMMIT_MARK}%H${SEP}%h${SEP}%ci${SEP}%an${SEP}%s`,
+                  '--name-only',
+                ]
+                if (filterPath) { args.push('--'); args.push(filterPath) }
+                const raw = execFileSync('git', args, {
+                  cwd: localDir, encoding: 'utf-8', timeout: 120_000,
+                  stdio: ['pipe', 'pipe', 'pipe'],
+                }).trim()
+
+                // 블록 단위로 분리
+                const blocks = raw.split(new RegExp(`(?=${COMMIT_MARK})`)).filter(Boolean)
+                commits = blocks.map((block) => {
+                  const lines = block.split('\n').filter(Boolean)
+                  const header = lines[0].replace(COMMIT_MARK, '')
+                  const parts = header.split(SEP)
+                  const files = lines.slice(1).filter((l) => l && !l.startsWith(COMMIT_MARK))
+                  return {
+                    hash: parts[0] || '',
+                    short: parts[1] || '',
+                    date: parts[2] || '',
+                    author: parts[3] || '',
+                    message: parts.slice(4).join(SEP),
+                    files,
+                  }
+                })
+              } else {
+                const args = ['log', `-${count}`, `--format=%H${SEP}%h${SEP}%ci${SEP}%an${SEP}%s`]
+                if (filterPath) { args.push('--'); args.push(filterPath) }
+                const raw = execFileSync('git', args, {
+                  cwd: localDir, encoding: 'utf-8', timeout: 120_000,
+                  stdio: ['pipe', 'pipe', 'pipe'],
+                }).trim()
+                commits = raw.split('\n').filter(Boolean).map((line) => {
+                  const parts = line.split(SEP)
+                  return {
+                    hash: parts[0] || '',
+                    short: parts[1] || '',
+                    date: parts[2] || '',
+                    author: parts[3] || '',
+                    message: parts.slice(4).join(SEP),
+                  }
+                })
+              }
+
               sendJson(res, 200, { commits })
             } catch (err: any) {
               sendJson(res, 500, { error: err.stderr || err.message || String(err) })
@@ -226,6 +295,102 @@ function createGitMiddleware(options: GitPluginOptions) {
             } catch { /* binary or missing */ }
 
             sendJson(res, 200, { diff })
+            return
+          }
+
+          // ── commit-diff: 특정 커밋의 변경 내용 파싱 반환 ────────────────────
+          if (route === 'commit-diff' && req.method === 'GET') {
+            const isCloned = existsSync(join(localDir, '.git'))
+            if (!isCloned) { sendJson(res, 200, { commit: null, files: [] }); return }
+
+            const hash = url.searchParams.get('hash')
+            if (!hash) { sendJson(res, 400, { error: 'hash param required' }); return }
+            const filterFile = url.searchParams.get('file') || ''
+
+            try {
+              // 커밋 메타 정보
+              const SEP = '|||'
+              const metaRaw = execFileSync('git', [
+                'log', '-1', `--format=%H${SEP}%h${SEP}%ci${SEP}%an${SEP}%ae${SEP}%s`, hash
+              ], { cwd: localDir, encoding: 'utf-8', timeout: 30_000, stdio: ['pipe','pipe','pipe'] }).trim()
+              const metaParts = metaRaw.split(SEP)
+              const commitMeta = {
+                hash: metaParts[0] || hash,
+                short: metaParts[1] || hash.slice(0, 8),
+                date: metaParts[2] || '',
+                author: metaParts[3] || '',
+                email: metaParts[4] || '',
+                message: metaParts.slice(5).join(SEP),
+              }
+
+              // 부모 해시 (초기 커밋은 부모 없음)
+              let parentHash = ''
+              try {
+                parentHash = execFileSync('git', ['rev-parse', `${hash}^`], {
+                  cwd: localDir, encoding: 'utf-8', timeout: 10_000, stdio: ['pipe','pipe','pipe']
+                }).trim()
+              } catch { /* initial commit */ }
+
+              // unified diff 생성
+              const diffArgs = parentHash
+                ? ['diff', '--unified=3', parentHash, hash]
+                : ['show', '--unified=3', '--format=', hash]
+              if (filterFile) { diffArgs.push('--'); diffArgs.push(filterFile) }
+
+              const diffRaw = execFileSync('git', diffArgs, {
+                cwd: localDir, encoding: 'utf-8', timeout: 60_000, stdio: ['pipe','pipe','pipe'],
+                maxBuffer: 4 * 1024 * 1024,
+              }).trim()
+
+              // 통합 diff 파싱 → 파일 배열
+              interface DiffLine { type: 'context' | 'add' | 'del'; content: string }
+              interface DiffHunk { header: string; lines: DiffLine[] }
+              interface DiffFile { path: string; oldPath: string; status: string; additions: number; deletions: number; hunks: DiffHunk[]; binary: boolean }
+              const files: DiffFile[] = []
+              let cur: DiffFile | null = null
+              let curHunk: DiffHunk | null = null
+
+              for (const rawLine of diffRaw.split('\n')) {
+                if (rawLine.startsWith('diff --git ')) {
+                  if (cur) files.push(cur)
+                  cur = { path: '', oldPath: '', status: 'M', additions: 0, deletions: 0, hunks: [], binary: false }
+                  curHunk = null
+                  const m = rawLine.match(/diff --git a\/(.*) b\/(.*)/)
+                  if (m && cur) { cur.oldPath = m[1]; cur.path = m[2] }
+                } else if (rawLine.startsWith('new file mode') && cur) {
+                  cur.status = 'A'
+                } else if (rawLine.startsWith('deleted file mode') && cur) {
+                  cur.status = 'D'
+                } else if (rawLine.startsWith('rename to ') && cur) {
+                  cur.path = rawLine.slice(10)
+                  cur.status = 'R'
+                } else if (rawLine.startsWith('Binary files') && cur) {
+                  cur.binary = true
+                } else if (rawLine.startsWith('+++ b/') && cur && !cur.path) {
+                  cur.path = rawLine.slice(6)
+                } else if (rawLine.startsWith('@@ ') && cur) {
+                  curHunk = { header: rawLine.split(' @@')[0] + ' @@', lines: [] }
+                  cur.hunks.push(curHunk)
+                } else if (curHunk && cur) {
+                  if (rawLine.startsWith('+') && !rawLine.startsWith('+++')) {
+                    curHunk.lines.push({ type: 'add', content: rawLine.slice(1) })
+                    cur.additions++
+                  } else if (rawLine.startsWith('-') && !rawLine.startsWith('---')) {
+                    curHunk.lines.push({ type: 'del', content: rawLine.slice(1) })
+                    cur.deletions++
+                  } else if (!rawLine.startsWith('\\')) {
+                    curHunk.lines.push({ type: 'context', content: rawLine.slice(1) })
+                  }
+                }
+              }
+              if (cur) files.push(cur)
+
+              // 파일 수가 많으면 최대 20개로 제한 (채팅 임베드용)
+              const MAX_FILES = filterFile ? files.length : Math.min(files.length, 20)
+              sendJson(res, 200, { commit: commitMeta, files: files.slice(0, MAX_FILES), totalFiles: files.length })
+            } catch (err: any) {
+              sendJson(res, 500, { error: err.stderr || err.message || String(err) })
+            }
             return
           }
 

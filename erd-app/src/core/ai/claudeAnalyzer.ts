@@ -1,4 +1,5 @@
 import type { ParsedSchema } from '../schema/types.ts';
+import { buildDataQueryContext, type TableDataMap } from '../query/schemaQueryEngine.ts';
 
 function buildSchemaPrompt(schema: ParsedSchema): string {
   const { tables, refs, enums, tableGroups } = schema;
@@ -50,6 +51,47 @@ export interface AIInsight {
   severity: 'good' | 'advice' | 'warning';
 }
 
+// ── 실제 데이터 자연어 → SQL 변환 ────────────────────────────────────────────
+export async function generateDataSQL(
+  naturalLanguage: string,
+  tableData: TableDataMap,
+  schema?: ParsedSchema,
+): Promise<string> {
+  const context = buildDataQueryContext(tableData, schema);
+
+  const system = `당신은 SQL 전문가입니다. 사용자의 자연어 질문을 아래 실제 데이터 테이블에 맞는 SELECT 문으로 변환하세요.
+
+${context}
+
+규칙:
+1. SELECT 문만 생성하세요.
+2. 테이블명은 위에 나열된 이름 그대로 사용하세요 (대소문자 구분 없음).
+3. JOIN 시 위의 관계 정보를 적극 활용하세요.
+4. 컬럼명은 위에 나열된 헤더를 정확히 사용하세요.
+5. 모든 값은 문자열이므로 숫자 비교에도 따옴표 또는 CAST를 사용하세요.
+6. SQL 코드만 출력하세요. 설명, 마크다운, 코드블록 없이 순수 SQL만.`;
+
+  const response = await fetch('/api/claude', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 2048,
+      system,
+      messages: [{ role: 'user', content: naturalLanguage }],
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Claude API 오류 (${response.status}): ${errText}`);
+  }
+
+  const data = await response.json();
+  return (data.content?.[0]?.text ?? '').trim();
+}
+
+// ── 스키마 메타 자연어 → SQL 변환 (기존) ─────────────────────────────────────
 export async function analyzeSchemaWithAI(schema: ParsedSchema): Promise<AIInsight[]> {
   const schemaText = buildSchemaPrompt(schema);
 
