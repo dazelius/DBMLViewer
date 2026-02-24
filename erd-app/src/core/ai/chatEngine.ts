@@ -124,7 +124,16 @@ export interface ImageResult {
   error?: string;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult;
+export interface ArtifactResult {
+  kind: 'artifact';
+  title: string;
+  html: string;
+  description: string;
+  duration?: number;
+  error?: string;
+}
+
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -247,6 +256,35 @@ const TOOLS = [
       required: ['query'],
     },
   },
+  {
+    name: 'create_artifact',
+    description:
+      '수집된 데이터를 기반으로 완전한 HTML 문서(보고서, 캐릭터 시트, 밸런스 표, 릴리즈 노트 등)를 생성합니다. ' +
+      '사용자가 "정리해줘", "문서로 만들어줘", "보고서", "뽑아줘", "시트 만들어줘" 등을 요청할 때 호출하세요. ' +
+      '먼저 query_game_data, show_table_schema 등으로 필요한 데이터를 모두 수집한 후 이 툴을 마지막에 호출하세요.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description: '문서 제목 (예: "프리드웬 캐릭터 시트", "스킬 밸런스 보고서")',
+        },
+        description: {
+          type: 'string',
+          description: '생성된 문서에 대한 한 줄 설명',
+        },
+        html: {
+          type: 'string',
+          description:
+            '완전한 self-contained HTML 문서. 반드시 <!DOCTYPE html>부터 시작하는 완전한 HTML이어야 합니다. ' +
+            '스타일은 <style> 태그 안에 포함. 이미지는 <img src="/api/images/file?path=경로"> 형식으로 참조. ' +
+            '@media print 스타일 포함으로 PDF 출력 가능하게 하세요. ' +
+            '다크 테마 기반, 한국어, 표/카드 레이아웃으로 전문적인 게임 데이터 문서 스타일로 작성하세요.',
+        },
+      },
+      required: ['title', 'description', 'html'],
+    },
+  },
 ];
 
 // ── 시스템 프롬프트 빌더 ─────────────────────────────────────────────────────
@@ -261,6 +299,14 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- query_git_history: 변경 이력 조회 (언제 무엇이 바뀌었는지)');
   lines.push('- show_revision_diff: 특정 커밋의 상세 변경 내용(DIFF) 시각화 (리비전 차이 확인 시 사용)');
   lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 및 채팅 임베드 (아이콘, UI 이미지 찾기 요청 시 사용)');
+  lines.push('- create_artifact: 수집된 데이터로 완성된 HTML 문서/보고서 생성 (전체화면 프리뷰, PDF 저장 가능)');
+  lines.push('');
+  lines.push('[아티팩트 생성 규칙]');
+  lines.push('- "정리해줘", "문서로", "보고서", "시트 만들어줘", "뽑아줘" 등 요청 시 create_artifact를 호출하세요.');
+  lines.push('- 반드시 먼저 다른 툴로 데이터를 충분히 수집한 후 create_artifact를 마지막에 호출하세요.');
+  lines.push('- HTML에서 이미지 경로: <img src="/api/images/file?path=Texture/Skill/icon_skill_active_vanguard_01.png">');
+  lines.push('- HTML은 다크 테마(#0f1117 배경, #e2e8f0 텍스트), 한국어, 전문적인 게임 문서 스타일로 작성하세요.');
+  lines.push('- @media print 스타일을 포함해 PDF 출력이 깔끔하게 되도록 하세요.');
   lines.push('');
   lines.push('[중요] "관계도 보여줘", "ERD 보여줘" 요청에는 가장 핵심이 되는 테이블 1개만 show_table_schema를 호출하세요.');
   lines.push('       ERD 카드 안에 연결 테이블이 모두 표시되므로 관련 테이블을 여러 번 반복 호출하지 마세요.');
@@ -661,7 +707,26 @@ export async function sendChatMessage(
             tc = { kind: 'image_search', query, images: [], total: 0, error: msg } as ImageResult;
             resultStr = `이미지 검색 오류: ${msg}`;
           }
-        } else {
+        }
+
+        // ── create_artifact ──
+        else if (tb.name === 'create_artifact') {
+          const title = String(inp.title ?? '문서');
+          const description = String(inp.description ?? '');
+          const html = String(inp.html ?? '');
+          const t0 = performance.now();
+
+          if (!html || html.length < 50) {
+            tc = { kind: 'artifact', title, description, html: '', error: 'HTML 내용이 없습니다.', duration: 0 } as ArtifactResult;
+            resultStr = 'HTML 생성 실패: 내용이 비어있음';
+          } else {
+            const duration = performance.now() - t0;
+            tc = { kind: 'artifact', title, description, html, duration } as ArtifactResult;
+            resultStr = `아티팩트 "${title}" 생성 완료 (${html.length}자). 사용자 화면에 전체화면 프리뷰와 PDF 저장 버튼이 표시됩니다.`;
+          }
+        }
+
+        else {
           continue;
         }
 

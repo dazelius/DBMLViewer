@@ -14,6 +14,7 @@ import {
   type GitHistoryResult,
   type RevisionDiffResult,
   type ImageResult,
+  type ArtifactResult,
   type DiffFile,
   type DiffHunk,
 } from '../core/ai/chatEngine.ts';
@@ -1084,11 +1085,226 @@ function ImageCard({ tc }: { tc: ImageResult }) {
 
 // ── ToolCall 카드 디스패처 ───────────────────────────────────────────────────
 
+// ── 아티팩트 카드 ─────────────────────────────────────────────────────────────
+
+function ArtifactCard({ tc }: { tc: ArtifactResult }) {
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const previewRef = useRef<HTMLIFrameElement>(null);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+
+  // HTML에 <base> 태그를 주입하여 상대 경로(이미지 등)가 서버를 기준으로 해석되게 함
+  const getInjectedHtml = () => {
+    const origin = window.location.origin;
+    const base = `<base href="${origin}/">`;
+    // <head> 또는 <html> 뒤에 base 삽입
+    if (tc.html.includes('<head>')) {
+      return tc.html.replace('<head>', `<head>${base}`);
+    } else if (tc.html.includes('<head ')) {
+      return tc.html.replace(/<head(\s[^>]*)>/, `<head$1>${base}`);
+    }
+    return tc.html.replace('<!DOCTYPE html>', `<!DOCTYPE html><base href="${origin}/">`);
+  };
+
+  useEffect(() => {
+    if (!tc.html) return;
+    const injected = getInjectedHtml();
+    const blob = new Blob([injected], { type: 'text/html; charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    setBlobUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [tc.html]);
+
+  // ESC 키로 전체화면 닫기
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setIsFullscreen(false); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isFullscreen]);
+
+  const handlePrint = () => {
+    const iframe = isFullscreen ? iframeRef.current : previewRef.current;
+    if (!iframe?.contentWindow) return;
+    iframe.contentWindow.focus();
+    iframe.contentWindow.print();
+  };
+
+  if (tc.error) {
+    return (
+      <div className="rounded-lg p-3 my-2 text-[12px]" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444' }}>
+        아티팩트 생성 실패: {tc.error}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {/* 아티팩트 카드 */}
+      <div
+        className="rounded-xl my-3 overflow-hidden"
+        style={{ border: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}
+      >
+        {/* 헤더 */}
+        <div
+          className="flex items-center justify-between px-4 py-3"
+          style={{ background: 'linear-gradient(135deg, rgba(99,102,241,0.15) 0%, rgba(139,92,246,0.1) 100%)', borderBottom: '1px solid var(--border-color)' }}
+        >
+          <div className="flex items-center gap-2">
+            <div
+              className="flex items-center justify-center rounded-lg flex-shrink-0"
+              style={{ width: 32, height: 32, background: 'rgba(99,102,241,0.2)' }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--accent)' }}>
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+                <polyline points="10 9 9 9 8 9" />
+              </svg>
+            </div>
+            <div>
+              <div className="font-semibold text-[13px]" style={{ color: 'var(--text-primary)' }}>{tc.title}</div>
+              <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{tc.description}</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* PDF 저장 */}
+            <button
+              onClick={handlePrint}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all hover:opacity-80"
+              style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}
+              title="PDF로 저장"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              PDF 저장
+            </button>
+            {/* 전체화면 */}
+            <button
+              onClick={() => setIsFullscreen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all hover:opacity-80"
+              style={{ background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.3)', color: 'var(--accent)' }}
+              title="전체화면으로 열기"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <polyline points="15 3 21 3 21 9" />
+                <polyline points="9 21 3 21 3 15" />
+                <line x1="21" y1="3" x2="14" y2="10" />
+                <line x1="3" y1="21" x2="10" y2="14" />
+              </svg>
+              전체화면
+            </button>
+          </div>
+        </div>
+
+        {/* 미리보기 iframe (축소 스케일) */}
+        <div className="relative overflow-hidden" style={{ height: 280 }}>
+          {blobUrl ? (
+            <iframe
+              ref={previewRef}
+              src={blobUrl}
+              className="absolute top-0 left-0 border-0 pointer-events-none"
+              style={{ width: '166.67%', height: '166.67%', transformOrigin: 'top left', transform: 'scale(0.6)' }}
+              title={tc.title}
+              sandbox="allow-same-origin allow-scripts"
+            />
+          ) : (
+            <div className="flex items-center justify-center h-full" style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+              <svg className="animate-spin mr-2" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+              </svg>
+              문서 렌더링 중...
+            </div>
+          )}
+          {/* 클릭 오버레이 → 전체화면 */}
+          <div
+            className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity cursor-pointer"
+            style={{ background: 'rgba(0,0,0,0.4)' }}
+            onClick={() => setIsFullscreen(true)}
+          >
+            <span className="flex items-center gap-2 text-[13px] font-medium text-white">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <polyline points="15 3 21 3 21 9" />
+                <polyline points="9 21 3 21 3 15" />
+                <line x1="21" y1="3" x2="14" y2="10" />
+                <line x1="3" y1="21" x2="10" y2="14" />
+              </svg>
+              전체화면으로 보기
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* 전체화면 모달 */}
+      {isFullscreen && (
+        <div
+          className="fixed inset-0 flex flex-col"
+          style={{ zIndex: 9999, background: '#0a0a0f' }}
+        >
+          {/* 전체화면 툴바 */}
+          <div
+            className="flex items-center justify-between px-5 py-3 flex-shrink-0"
+            style={{ background: 'rgba(15,17,23,0.95)', borderBottom: '1px solid var(--border-color)', backdropFilter: 'blur(8px)' }}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-2 h-2 rounded-full" style={{ background: 'var(--accent)' }} />
+              <span className="font-semibold text-[14px]" style={{ color: 'var(--text-primary)' }}>{tc.title}</span>
+              <span className="text-[11px] px-2 py-0.5 rounded" style={{ background: 'rgba(99,102,241,0.12)', color: 'var(--accent)' }}>
+                HTML 문서
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handlePrint}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all hover:opacity-80"
+                style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                PDF 저장
+              </button>
+              <button
+                onClick={() => setIsFullscreen(false)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all hover:opacity-80"
+                style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444' }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+                닫기 (ESC)
+              </button>
+            </div>
+          </div>
+
+          {/* 전체화면 iframe */}
+          {blobUrl && (
+            <iframe
+              ref={iframeRef}
+              src={blobUrl}
+              className="flex-1 border-0 w-full"
+              title={tc.title}
+              sandbox="allow-same-origin allow-scripts allow-modals"
+            />
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
 function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'schema_card') return <TableSchemaCard tc={tc} />;
   if (tc.kind === 'git_history') return <GitHistoryCard tc={tc} />;
   if (tc.kind === 'revision_diff') return <DiffCard tc={tc} />;
   if (tc.kind === 'image_search') return <ImageCard tc={tc} />;
+  if (tc.kind === 'artifact') return <ArtifactCard tc={tc} />;
   return <DataQueryCard tc={tc} index={index} />;
 }
 
