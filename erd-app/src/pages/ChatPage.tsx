@@ -296,21 +296,34 @@ function looksLikeTableName(text: string): boolean {
 const _imgCache = new Map<string, { relPath: string; url: string } | null>();
 
 function looksLikeFilename(text: string): boolean {
-  if (text.length < 4 || text.includes(' ') || text.includes('.')) return false;
-  return /^[a-zA-Z][a-zA-Z0-9_]{3,}$/.test(text);
+  if (text.length < 5 || text.includes(' ') || text.includes('.')) return false;
+  // snake_case 이면서 언더스코어가 2개 이상이거나, 알려진 이미지 접두사로 시작하는 경우
+  const lower = text.toLowerCase();
+  const knownPrefix = ['icon_', 'fullbody_', 'portrait_', 'bg_', 'texture_', 'ui_', 'sprite_', 'fx_', 'vfx_', 'img_'];
+  if (knownPrefix.some(p => lower.startsWith(p))) return true;
+  // 언더스코어 2개 이상이고 전체 소문자 + 숫자 + 언더스코어로만 이루어진 경우
+  const underscoreCount = (text.match(/_/g) || []).length;
+  return underscoreCount >= 2 && /^[a-z][a-z0-9_]+$/.test(text);
 }
 
 function InlineImageCell({ text }: { text: string }) {
-  const [img, setImg] = useState<{ relPath: string; url: string } | null | undefined>(undefined);
+  // undefined = 검색중, null = 없음, {..} = 찾음
+  const [img, setImg] = useState<{ relPath: string; url: string } | null | undefined>(
+    _imgCache.has(text) ? (_imgCache.get(text) ?? null) : undefined
+  );
 
   useEffect(() => {
     if (!looksLikeFilename(text)) { setImg(null); return; }
-    if (_imgCache.has(text)) { setImg(_imgCache.get(text)!); return; }
+    if (_imgCache.has(text)) { setImg(_imgCache.get(text) ?? null); return; }
     fetch(`/api/images/list?q=${encodeURIComponent(text)}`)
       .then(r => r.json())
       .then((data: { results: { name: string; relPath: string }[] }) => {
-        // 정확히 이름이 일치하는 것 우선, 없으면 첫 번째
-        const exact = data.results.find(r => r.name.toLowerCase() === text.toLowerCase());
+        // 정확히 이름이 일치하는 것 우선 (확장자 제거 후 비교), 없으면 첫 번째
+        const normText = text.toLowerCase();
+        const exact = data.results.find(r =>
+          r.name.toLowerCase() === normText ||
+          r.name.toLowerCase().replace(/\.png$/i, '') === normText
+        );
         const hit = exact ?? data.results[0] ?? null;
         const result = hit ? { relPath: hit.relPath, url: `/api/images/file?path=${encodeURIComponent(hit.relPath)}` } : null;
         _imgCache.set(text, result);
@@ -319,8 +332,24 @@ function InlineImageCell({ text }: { text: string }) {
       .catch(() => { _imgCache.set(text, null); setImg(null); });
   }, [text]);
 
-  if (!img) return <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)', fontSize: 11 }}>{text}</span>;
+  const monoStyle: React.CSSProperties = { fontFamily: 'var(--font-mono)', color: 'var(--accent)', fontSize: 11 };
 
+  // 검색 중 → 로딩 스피너 + 텍스트
+  if (img === undefined) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <svg className="animate-spin flex-shrink-0" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ color: 'var(--text-muted)', opacity: 0.5 }}>
+          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+        </svg>
+        <span style={monoStyle}>{text}</span>
+      </span>
+    );
+  }
+
+  // 이미지 없음 → 평문
+  if (!img) return <span style={monoStyle}>{text}</span>;
+
+  // 이미지 있음 → 썸네일 + 텍스트
   return (
     <span className="inline-flex items-center gap-1.5">
       <span
@@ -328,9 +357,14 @@ function InlineImageCell({ text }: { text: string }) {
         style={{ width: 28, height: 28, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)' }}
         title={img.relPath}
       >
-        <img src={img.url} alt={text} style={{ width: 26, height: 26, objectFit: 'contain' }} onError={(e) => { (e.currentTarget.parentElement!.style.display = 'none'); }} />
+        <img
+          src={img.url}
+          alt={text}
+          style={{ width: 26, height: 26, objectFit: 'contain' }}
+          onError={(e) => { (e.currentTarget.parentElement!.style.display = 'none'); }}
+        />
       </span>
-      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)', fontSize: 11 }}>{text}</span>
+      <span style={monoStyle}>{text}</span>
     </span>
   );
 }
