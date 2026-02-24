@@ -1164,17 +1164,50 @@ function ArtifactCard({ tc }: { tc: ArtifactResult }) {
   const previewRef = useRef<HTMLIFrameElement>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
 
-  // HTML에 <base> 태그를 주입하여 상대 경로(이미지 등)가 서버를 기준으로 해석되게 함
+  // HTML에 <base> 태그 주입 + body-only HTML은 전체 문서로 래핑
   const getInjectedHtml = () => {
     const origin = window.location.origin;
     const base = `<base href="${origin}/">`;
-    // <head> 또는 <html> 뒤에 base 삽입
-    if (tc.html.includes('<head>')) {
-      return tc.html.replace('<head>', `<head>${base}`);
-    } else if (tc.html.includes('<head ')) {
-      return tc.html.replace(/<head(\s[^>]*)>/, `<head$1>${base}`);
+    const html = tc.html ?? '';
+
+    // 완전한 HTML 문서인 경우 → <head>에 base만 주입
+    if (html.includes('<!DOCTYPE') || html.includes('<html')) {
+      if (html.includes('<head>')) return html.replace('<head>', `<head>${base}`);
+      if (html.includes('<head ')) return html.replace(/<head(\s[^>]*)>/, `<head$1>${base}`);
+      return html.replace('<!DOCTYPE html>', `<!DOCTYPE html>${base}`);
     }
-    return tc.html.replace('<!DOCTYPE html>', `<!DOCTYPE html><base href="${origin}/">`);
+
+    // body-only HTML → 완전한 문서로 래핑
+    return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  ${base}
+  <title>${tc.title ?? '문서'}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 16px; font-family: 'Segoe UI', sans-serif; font-size: 13px;
+           background: #0f1117; color: #e2e8f0; line-height: 1.6; }
+    h1,h2,h3,h4 { color: #fff; margin: 0.8em 0 0.4em; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 1em; }
+    th, td { border: 1px solid #334155; padding: 6px 10px; text-align: left; font-size: 12px; }
+    th { background: #1e293b; color: #94a3b8; font-weight: 600; }
+    tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    img { max-width: 100%; height: auto; }
+    @media print {
+      body { background: #fff; color: #000; }
+      th { background: #f1f5f9; }
+      .card { border: 1px solid #cbd5e1; }
+    }
+  </style>
+</head>
+<body>
+${html}
+</body>
+</html>`;
   };
 
   useEffect(() => {

@@ -276,10 +276,11 @@ const TOOLS = [
         html: {
           type: 'string',
           description:
-            '완전한 self-contained HTML 문서. 반드시 <!DOCTYPE html>부터 시작하는 완전한 HTML이어야 합니다. ' +
-            '스타일은 <style> 태그 안에 포함. 이미지는 <img src="/api/images/file?path=경로"> 형식으로 참조. ' +
-            '@media print 스타일 포함으로 PDF 출력 가능하게 하세요. ' +
-            '다크 테마 기반, 한국어, 표/카드 레이아웃으로 전문적인 게임 데이터 문서 스타일로 작성하세요.',
+            '<body> 태그 안에 들어갈 HTML 내용만 작성하세요 (<!DOCTYPE html>, <html>, <head>, <body> 태그 불필요). ' +
+            '필요한 CSS는 <style> 태그로 html 값 안에 포함 가능. ' +
+            '이미지는 <img src="/api/images/file?path=Texture/폴더/파일명.png"> 형식으로 참조. ' +
+            '다크 테마(--bg:#0f1117, --text:#e2e8f0, --accent:#6366f1), 한국어, 표/카드 레이아웃. ' +
+            '가능한 간결하게 핵심 정보만 담아 500줄 이내로 작성하세요.',
         },
       },
       required: ['title', 'description', 'html'],
@@ -306,9 +307,9 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- 데이터 수집이 끝나면 "생성하겠습니다" 같은 텍스트를 출력하지 말고 즉시 create_artifact를 호출하세요.');
   lines.push('- ⚠️ 절대로 "아티팩트를 만들겠습니다", "HTML을 생성하겠습니다" 등의 선언 후 멈추지 마세요. 선언 없이 즉시 툴을 호출하세요.');
   lines.push('- 반드시 먼저 다른 툴로 데이터를 충분히 수집한 후 create_artifact를 마지막에 호출하세요.');
-  lines.push('- HTML에서 이미지 경로: <img src="/api/images/file?path=Texture/Skill/icon_skill_active_vanguard_01.png">');
-  lines.push('- HTML은 다크 테마(#0f1117 배경, #e2e8f0 텍스트), 한국어, 전문적인 게임 문서 스타일로 작성하세요.');
-  lines.push('- @media print 스타일을 포함해 PDF 출력이 깔끔하게 되도록 하세요.');
+  lines.push('- html 파라미터: <!DOCTYPE html> 없이 <body> 내용만 작성 (간결하게 500줄 이내).');
+  lines.push('- 이미지: <img src="/api/images/file?path=Texture/.../파일명.png">');
+  lines.push('- 스타일: 다크 테마(배경 #0f1117, 텍스트 #e2e8f0, 포인트 #6366f1), 표/카드 레이아웃.');
   lines.push('');
   lines.push('[중요] "관계도 보여줘", "ERD 보여줘" 요청에는 가장 핵심이 되는 테이블 1개만 show_table_schema를 호출하세요.');
   lines.push('       ERD 카드 안에 연결 테이블이 모두 표시되므로 관련 테이블을 여러 번 반복 호출하지 마세요.');
@@ -468,10 +469,10 @@ function historyToMessages(history: ChatTurn[]): ClaudeMsg[] {
 
 // ── SSE 스트리밍 파서 ────────────────────────────────────────────────────────
 
-// partial JSON 에서 html_content 값을 추출 (완성되지 않은 JSON도 처리)
+// partial JSON 에서 html 값을 추출 (완성되지 않은 JSON도 처리)
 function extractHtmlFromPartialJson(partialJson: string): { title: string; html: string } | null {
   const titleMatch = partialJson.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-  const htmlStartMatch = partialJson.match(/"html_content"\s*:\s*"/);
+  const htmlStartMatch = partialJson.match(/"html"\s*:\s*"/);
   if (!htmlStartMatch) return null;
 
   const htmlStart = htmlStartMatch.index! + htmlStartMatch[0].length;
@@ -582,11 +583,24 @@ async function streamClaude(
           const idx = ev.index as number;
           const b = blocks[idx];
           if (b?.type === 'tool_use') {
+            const rawStr = (b as ContentBlock & { _inputStr: string })._inputStr || '{}';
             try {
-              (b as ToolUseBlock).input = JSON.parse(
-                (b as ContentBlock & { _inputStr: string })._inputStr || '{}'
-              );
-            } catch { (b as ToolUseBlock).input = {}; }
+              (b as ToolUseBlock).input = JSON.parse(rawStr);
+            } catch {
+              // JSON 파싱 실패 (max_tokens로 잘린 경우) → 부분 복구 시도
+              const partial = extractHtmlFromPartialJson(rawStr);
+              if (partial && (b as ToolUseBlock).name === 'create_artifact') {
+                const titleMatch = rawStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+                const descMatch = rawStr.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+                (b as ToolUseBlock).input = {
+                  title: titleMatch?.[1] ?? partial.title ?? '문서',
+                  description: descMatch?.[1] ?? '',
+                  html: partial.html + '\n<!-- (일부 잘림) -->',
+                };
+              } else {
+                (b as ToolUseBlock).input = {};
+              }
+            }
           }
           break;
         }
