@@ -116,7 +116,15 @@ export interface RevisionDiffResult {
   duration?: number;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult;
+export interface ImageResult {
+  kind: 'image_search';
+  query: string;
+  images: { name: string; relPath: string; url: string }[];
+  total: number;
+  error?: string;
+}
+
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -218,6 +226,27 @@ const TOOLS = [
       required: ['commit_hash'],
     },
   },
+  {
+    name: 'find_resource_image',
+    description:
+      '게임 리소스 이미지(PNG)를 이름으로 검색하여 채팅창에 임베드합니다. ' +
+      '아이콘, UI 이미지, 스프라이트 등을 찾을 때 사용하세요. ' +
+      '예: 캐릭터 아이콘, 스킬 아이콘, 버튼 이미지 등.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: '검색할 이미지 이름 또는 키워드 (예: "character_icon", "skill_btn", "vanguard")',
+        },
+        reason: {
+          type: 'string',
+          description: '이 이미지를 찾는 이유.',
+        },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 // ── 시스템 프롬프트 빌더 ─────────────────────────────────────────────────────
@@ -231,6 +260,7 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- show_table_schema: 테이블 구조/관계도를 ERD 카드로 시각화. 테이블 설명 시 반드시 호출. 관계도 요청 시 관련 테이블 여러 개 연속 호출 가능');
   lines.push('- query_git_history: 변경 이력 조회 (언제 무엇이 바뀌었는지)');
   lines.push('- show_revision_diff: 특정 커밋의 상세 변경 내용(DIFF) 시각화 (리비전 차이 확인 시 사용)');
+  lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 및 채팅 임베드 (아이콘, UI 이미지 찾기 요청 시 사용)');
   lines.push('');
   lines.push('[중요] "관계도 보여줘", "ERD 보여줘" 요청에는 가장 핵심이 되는 테이블 1개만 show_table_schema를 호출하세요.');
   lines.push('       ERD 카드 안에 연결 테이블이 모두 표시되므로 관련 테이블을 여러 번 반복 호출하지 마세요.');
@@ -598,6 +628,29 @@ export async function sendChatMessage(
               tc = { kind: 'revision_diff', reason, commit: undefined, files: [], totalFiles: 0, filterFile: filePath, error: msg, duration: performance.now() - t0 } as RevisionDiffResult;
               resultStr = `DIFF 조회 오류: ${msg}`;
             }
+          }
+        }
+        // ── find_resource_image ──
+        else if (tb.name === 'find_resource_image') {
+          const query = String(inp.query ?? '');
+          const reason = inp.reason ? String(inp.reason) : undefined;
+          try {
+            const resp = await fetch(`/api/images/list?q=${encodeURIComponent(query)}`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json() as { total: number; results: { name: string; relPath: string }[] };
+            const images = data.results.map((r) => ({
+              name: r.name,
+              relPath: r.relPath,
+              url: `/api/images/file?path=${encodeURIComponent(r.relPath)}`,
+            }));
+            tc = { kind: 'image_search', query, images, total: data.total } as ImageResult;
+            resultStr = images.length > 0
+              ? `${images.length}개 이미지 발견: ${images.map((i) => i.name).join(', ')}`
+              : `"${query}" 이미지 없음 (전체 ${data.total}개 중)`;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            tc = { kind: 'image_search', query, images: [], total: 0, error: msg } as ImageResult;
+            resultStr = `이미지 검색 오류: ${msg}`;
           }
         } else {
           continue;

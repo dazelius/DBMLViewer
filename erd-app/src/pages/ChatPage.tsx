@@ -12,6 +12,7 @@ import {
   type SchemaCardResult,
   type GitHistoryResult,
   type RevisionDiffResult,
+  type ImageResult,
   type DiffFile,
   type DiffHunk,
 } from '../core/ai/chatEngine.ts';
@@ -791,12 +792,121 @@ function DiffCard({ tc }: { tc: RevisionDiffResult }) {
   );
 }
 
+// ── 이미지 검색 카드 ─────────────────────────────────────────────────────────
+
+function ImageCard({ tc }: { tc: ImageResult }) {
+  const [expanded, setExpanded] = useState(true);
+  const [selected, setSelected] = useState<{ name: string; url: string } | null>(null);
+
+  if (tc.error) {
+    return (
+      <div className="rounded-lg px-3 py-2 mb-2 text-[11px]" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}>
+        이미지 검색 오류: {tc.error}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl overflow-hidden mb-2" style={{ border: '1px solid var(--border-color)', background: 'var(--bg-surface)' }}>
+      {/* 헤더 */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-2.5 text-left"
+        style={{ background: 'rgba(52,211,153,0.1)' }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: '#34d399', flexShrink: 0 }}>
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
+          <polyline points="21 15 16 10 5 21" />
+        </svg>
+        <span className="font-semibold text-[12px] flex-1" style={{ color: 'var(--text-primary)' }}>
+          이미지 &quot;{tc.query}&quot;
+        </span>
+        <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'rgba(52,211,153,0.15)', color: '#34d399' }}>
+          {tc.images.length}개 발견
+        </span>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+          style={{ color: 'var(--text-muted)', transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', flexShrink: 0 }}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {expanded && tc.images.length > 0 && (
+        <div>
+          {/* 썸네일 그리드 */}
+          <div className="p-2 grid gap-1.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))' }}>
+            {tc.images.map((img) => (
+              <button
+                key={img.relPath}
+                onClick={() => setSelected(selected?.url === img.url ? null : img)}
+                className="flex flex-col items-center gap-1 p-1 rounded-lg"
+                style={{
+                  background: selected?.url === img.url ? 'rgba(52,211,153,0.15)' : 'var(--bg-hover)',
+                  border: selected?.url === img.url ? '1px solid #34d399' : '1px solid var(--border-color)',
+                  transition: 'all 0.12s',
+                }}
+                title={img.relPath}
+              >
+                <img
+                  src={img.url}
+                  alt={img.name}
+                  className="w-full rounded"
+                  style={{ height: 64, objectFit: 'contain', background: 'transparent' }}
+                  onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
+                />
+                <span className="text-[9px] truncate w-full text-center" style={{ color: 'var(--text-muted)' }}>
+                  {img.name}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {/* 선택된 이미지 확대 뷰 */}
+          {selected && (
+            <div className="mx-2 mb-2 p-3 rounded-lg" style={{ background: 'var(--bg-hover)', border: '1px solid var(--border-color)' }}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-[11px] font-medium flex-1" style={{ color: 'var(--text-primary)' }}>{selected.name}</span>
+                <a
+                  href={selected.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] px-2 py-0.5 rounded"
+                  style={{ background: 'var(--bg-secondary)', color: 'var(--accent)' }}
+                >
+                  원본 열기
+                </a>
+                <button onClick={() => setSelected(null)} className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}>
+                  닫기
+                </button>
+              </div>
+              <div className="flex justify-center rounded overflow-hidden" style={{ background: 'repeating-conic-gradient(#808080 0% 25%, transparent 0% 50%) 0 0 / 12px 12px' }}>
+                <img
+                  src={selected.url}
+                  alt={selected.name}
+                  style={{ maxWidth: '100%', maxHeight: 300, objectFit: 'contain' }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {expanded && tc.images.length === 0 && (
+        <div className="px-3 py-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          &quot;{tc.query}&quot; 에 해당하는 이미지를 찾지 못했습니다.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ToolCall 카드 디스패처 ───────────────────────────────────────────────────
 
 function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'schema_card') return <TableSchemaCard tc={tc} />;
   if (tc.kind === 'git_history') return <GitHistoryCard tc={tc} />;
   if (tc.kind === 'revision_diff') return <DiffCard tc={tc} />;
+  if (tc.kind === 'image_search') return <ImageCard tc={tc} />;
   return <DataQueryCard tc={tc} index={index} />;
 }
 

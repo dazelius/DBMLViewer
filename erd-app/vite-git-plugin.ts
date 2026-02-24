@@ -1,9 +1,25 @@
 import type { Plugin } from 'vite'
 import { execSync, execFileSync, execFile } from 'child_process'
 import { existsSync, readdirSync, readFileSync, mkdirSync } from 'fs'
-import { join, resolve } from 'path'
+import { join, resolve, extname } from 'path'
 import { promisify } from 'util'
 import type { IncomingMessage, ServerResponse } from 'http'
+
+// ── 로컬 이미지 디렉토리 (sync_ui_images.ps1 로 동기화) ──────────────────────
+const IMAGES_DIR = 'C:\\TableMaster\\images'
+
+function walkImages(dir: string, base: string, results: { name: string; path: string; relPath: string }[]) {
+  if (!existsSync(dir)) return
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    const rel = base ? `${base}/${entry.name}` : entry.name
+    if (entry.isDirectory()) {
+      walkImages(full, rel, results)
+    } else if (entry.isFile() && extname(entry.name).toLowerCase() === '.png') {
+      results.push({ name: entry.name.replace(/\.png$/i, ''), path: full, relPath: rel })
+    }
+  }
+}
 
 const execFileAsync = promisify(execFile)
 
@@ -110,6 +126,35 @@ function createGitMiddleware(options: GitPluginOptions) {
         presenceClients.delete(res)
         broadcastPresence()             // 퇴장 알림
       })
+      return
+    }
+
+    // ── /api/images/list : 이미지 목록 검색 ────────────────────────────────
+    if (req.url?.startsWith('/api/images/list')) {
+      const url = new URL(req.url, 'http://localhost')
+      const q = (url.searchParams.get('q') || '').toLowerCase().trim()
+      const all: { name: string; path: string; relPath: string }[] = []
+      walkImages(IMAGES_DIR, '', all)
+      const matched = q
+        ? all.filter(f => f.name.toLowerCase().includes(q) || f.relPath.toLowerCase().includes(q))
+        : all.slice(0, 200)
+      sendJson(res, 200, { total: all.length, results: matched.slice(0, 50).map(f => ({ name: f.name, relPath: f.relPath })) })
+      return
+    }
+
+    // ── /api/images/file : 이미지 파일 서빙 ────────────────────────────────
+    if (req.url?.startsWith('/api/images/file')) {
+      const url = new URL(req.url, 'http://localhost')
+      const relPath = url.searchParams.get('path') || ''
+      if (!relPath) { res.writeHead(400); res.end('path required'); return }
+      // 경로 traversal 방지
+      const safePath = join(IMAGES_DIR, relPath.replace(/\.\./g, ''))
+      if (!safePath.startsWith(IMAGES_DIR) || !existsSync(safePath)) {
+        res.writeHead(404); res.end('not found'); return
+      }
+      const buf = readFileSync(safePath)
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' })
+      res.end(buf)
       return
     }
 
