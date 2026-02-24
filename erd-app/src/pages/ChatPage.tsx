@@ -1474,8 +1474,24 @@ function MessageBubble({ msg }: { msg: Message }) {
             borderTopLeftRadius: isUser ? 16 : 4,
           }}
         >
-          {msg.isLoading ? (
+          {msg.isLoading && !msg.content ? (
             <ThinkingIndicator liveToolCalls={msg.liveToolCalls} />
+          ) : msg.isLoading && msg.content ? (
+            // 스트리밍 중 — 텍스트 실시간 표시 + 커서
+            <div className="space-y-0.5">
+              {msg.liveToolCalls && msg.liveToolCalls.length > 0 && (
+                <div className="mb-3 space-y-1">
+                  {msg.liveToolCalls.map((tc, i) => <ToolCallCard key={i} tc={tc} index={i} />)}
+                </div>
+              )}
+              <div className="text-[13px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                {renderMarkdown(msg.content)}
+                <span
+                  className="inline-block ml-0.5 w-[2px] h-[14px] rounded-sm align-middle animate-pulse"
+                  style={{ background: 'var(--accent)', verticalAlign: 'middle' }}
+                />
+              </div>
+            </div>
           ) : isUser ? (
             <p className="text-[13px] whitespace-pre-wrap" style={{ color: '#fff' }}>
               {msg.content}
@@ -1621,6 +1637,16 @@ export default function ChatPage() {
             prev.map((m) =>
               m.id === loadingId
                 ? { ...m, liveToolCalls: [...(m.liveToolCalls ?? []), tc] }
+                : m,
+            ),
+          );
+        },
+        (_, fullText) => {
+          // 실시간 텍스트 스트리밍 업데이트
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === loadingId
+                ? { ...m, content: fullText, isLoading: true }
                 : m,
             ),
           );

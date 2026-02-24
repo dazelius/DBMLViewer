@@ -81,14 +81,17 @@ function createGitMiddleware(options: GitPluginOptions) {
   const { localDir } = options
   return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
 
-    // ── /api/claude : Anthropic API 프록시 (dev & preview 공용) ────────────
+    // ── /api/claude : Anthropic API 프록시 (dev & preview 공용, 스트리밍 지원) ──
     if (req.url === '/api/claude' && req.method === 'POST') {
       const apiKey = options.claudeApiKey || process.env.CLAUDE_API_KEY || ''
       if (!apiKey) {
         sendJson(res, 400, { error: 'CLAUDE_API_KEY 환경변수가 설정되지 않았습니다.' })
         return
       }
-      const body = await readBody(req)
+      const rawBody = await readBody(req)
+      let isStream = false
+      try { isStream = JSON.parse(rawBody || '{}').stream === true } catch {}
+
       try {
         const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
@@ -97,14 +100,37 @@ function createGitMiddleware(options: GitPluginOptions) {
             'x-api-key': apiKey,
             'anthropic-version': '2023-06-01',
           },
-          body,
+          body: rawBody,
         })
-        const data = await claudeRes.text()
-        res.writeHead(claudeRes.status, {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        })
-        res.end(data)
+
+        if (isStream && claudeRes.body) {
+          // SSE 스트리밍: 응답을 그대로 파이프
+          res.writeHead(claudeRes.status, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+            'Transfer-Encoding': 'chunked',
+          })
+          const reader = claudeRes.body.getReader()
+          const pump = async () => {
+            try {
+              while (true) {
+                const { done, value } = await reader.read()
+                if (done) { res.end(); break }
+                res.write(value)
+              }
+            } catch { res.end() }
+          }
+          pump()
+        } else {
+          const data = await claudeRes.text()
+          res.writeHead(claudeRes.status, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+          })
+          res.end(data)
+        }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         sendJson(res, 500, { error: msg })

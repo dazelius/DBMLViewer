@@ -324,9 +324,10 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
     );
     lines.push('');
 
-    lines.push('## 테이블 목록 (그룹별)');
+    lines.push('## 테이블 목록');
     const nameById = new Map(schema.tables.map((t) => [t.id, t.name]));
 
+    // 경량화: 테이블명 + PK만 표시 (컬럼 상세 제거)
     const groupMap = new Map<string, typeof schema.tables>();
     for (const t of schema.tables) {
       const g = t.groupName ?? '(미분류)';
@@ -335,40 +336,29 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
     }
 
     for (const [grp, tables] of groupMap) {
-      lines.push(`### [${grp}]`);
-      for (const t of tables) {
-        const colStr = t.columns
-          .slice(0, 10)
-          .map((c) => {
-            let s = c.name;
-            if (c.isPrimaryKey) s += '(PK)';
-            else if (c.isForeignKey) s += '(FK)';
-            return s;
-          })
-          .join(', ');
-        const more = t.columns.length > 10 ? ` ...+${t.columns.length - 10}` : '';
-        lines.push(`- ${t.name}: ${colStr}${more}`);
-      }
-      lines.push('');
+      const names = tables.map(t => {
+        const pk = t.columns.find(c => c.isPrimaryKey)?.name ?? '';
+        return pk ? `${t.name}(pk:${pk})` : t.name;
+      }).join(', ');
+      lines.push(`[${grp}] ${names}`);
     }
+    lines.push('');
 
     if (schema.refs.length > 0) {
-      lines.push('## 주요 관계 (JOIN 힌트)');
-      for (const r of schema.refs.slice(0, 60)) {
+      lines.push('## 주요 관계');
+      for (const r of schema.refs.slice(0, 40)) {
         const from = nameById.get(r.fromTable) ?? r.fromTable;
         const to = nameById.get(r.toTable) ?? r.toTable;
-        lines.push(
-          `- ${from}.${r.fromColumns.join(',')} → ${to}.${r.toColumns.join(',')} (${r.type})`,
-        );
+        lines.push(`${from}.${r.fromColumns[0]} → ${to}.${r.toColumns[0]}`);
       }
-      if (schema.refs.length > 60) lines.push(`- ... 외 ${schema.refs.length - 60}개`);
+      if (schema.refs.length > 40) lines.push(`... 외 ${schema.refs.length - 40}개`);
       lines.push('');
     }
 
-    if (schema.enums.length > 0) {
-      lines.push('## Enum 타입');
-      for (const e of schema.enums.slice(0, 30)) {
-        lines.push(`- ${e.name}: ${e.values.map((v) => v.name).join(', ')}`);
+    if (schema.enums.length > 0 && schema.enums.length <= 20) {
+      lines.push('## Enum');
+      for (const e of schema.enums.slice(0, 15)) {
+        lines.push(`${e.name}: ${e.values.slice(0, 8).map((v) => v.name).join(', ')}`);
       }
       lines.push('');
     }
@@ -476,6 +466,101 @@ function historyToMessages(history: ChatTurn[]): ClaudeMsg[] {
   return history.map((t) => ({ role: t.role, content: t.content }));
 }
 
+// ── SSE 스트리밍 파서 ────────────────────────────────────────────────────────
+
+async function streamClaude(
+  requestBody: object,
+  onTextDelta: (delta: string) => void,
+): Promise<ClaudeResponse> {
+  const response = await fetch('/api/claude', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...requestBody, stream: true }),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    if (response.status === 529) throw new Error('Claude 서버가 일시적으로 과부하 상태입니다. 잠시 후 다시 시도해 주세요.');
+    throw new Error(`Claude API 오류 (${response.status}): ${err}`);
+  }
+
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+
+  // 블록별 누적
+  const blocks: Record<number, ContentBlock & { _inputStr?: string }> = {};
+  let stopReason: ClaudeResponse['stop_reason'] = 'end_turn';
+  let buf = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const raw = line.slice(6).trim();
+      if (!raw || raw === '[DONE]') continue;
+
+      let ev: Record<string, unknown>;
+      try { ev = JSON.parse(raw); } catch { continue; }
+
+      switch (ev.type) {
+        case 'content_block_start': {
+          const idx = ev.index as number;
+          const cb = ev.content_block as ContentBlock;
+          if (cb.type === 'tool_use') {
+            blocks[idx] = { ...cb, _inputStr: '' } as ContentBlock & { _inputStr: string };
+          } else {
+            blocks[idx] = { ...cb } as ContentBlock;
+          }
+          break;
+        }
+        case 'content_block_delta': {
+          const idx = ev.index as number;
+          const delta = ev.delta as { type: string; text?: string; partial_json?: string };
+          const b = blocks[idx];
+          if (!b) break;
+          if (delta.type === 'text_delta' && b.type === 'text') {
+            (b as TextBlock).text = ((b as TextBlock).text || '') + (delta.text ?? '');
+            onTextDelta(delta.text ?? '');
+          } else if (delta.type === 'input_json_delta' && b.type === 'tool_use') {
+            (b as ContentBlock & { _inputStr: string })._inputStr =
+              ((b as ContentBlock & { _inputStr: string })._inputStr || '') + (delta.partial_json ?? '');
+          }
+          break;
+        }
+        case 'content_block_stop': {
+          const idx = ev.index as number;
+          const b = blocks[idx];
+          if (b?.type === 'tool_use') {
+            try {
+              (b as ToolUseBlock).input = JSON.parse(
+                (b as ContentBlock & { _inputStr: string })._inputStr || '{}'
+              );
+            } catch { (b as ToolUseBlock).input = {}; }
+          }
+          break;
+        }
+        case 'message_delta': {
+          const delta = ev.delta as { stop_reason?: string };
+          if (delta.stop_reason) stopReason = delta.stop_reason as ClaudeResponse['stop_reason'];
+          break;
+        }
+      }
+    }
+  }
+
+  const contentArray = Object.entries(blocks)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, b]) => b as ContentBlock);
+
+  return { content: contentArray, stop_reason: stopReason };
+}
+
 // ── 메인 함수 ────────────────────────────────────────────────────────────────
 
 export async function sendChatMessage(
@@ -484,6 +569,7 @@ export async function sendChatMessage(
   schema: ParsedSchema | null,
   tableData: TableDataMap,
   onToolCall?: (tc: ToolCallResult, index: number) => void,
+  onTextDelta?: (delta: string, fullText: string) => void,
 ): Promise<{ content: string; toolCalls: ToolCallResult[] }> {
   // 컴포넌트가 아직 로딩 중일 때 schema가 null일 수 있으므로 스토어에서 fallback
   const effectiveSchema = schema ?? useSchemaStore.getState().schema;
@@ -496,34 +582,41 @@ export async function sendChatMessage(
 
   const allToolCalls: ToolCallResult[] = [];
   const MAX_ITERATIONS = 10;
+  let accumulatedText = '';
+
+  const requestBase = {
+    model: 'claude-opus-4-5',
+    max_tokens: 8192,
+    system: systemPrompt,
+    tools: TOOLS,
+  };
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
-    // 529 과부하 시 최대 3회 재시도
-    let response: Response | null = null;
+    accumulatedText = '';
+
+    // 529 재시도 포함 스트리밍 호출
+    let data: ClaudeResponse | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt)); // 3s, 6s
-      response = await fetch('/api/claude', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-opus-4-5',
-          max_tokens: 8192,
-          system: systemPrompt,
-          tools: TOOLS,
-          messages,
-        }),
-      });
-      if (response.status !== 529) break;
+      if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt));
+      try {
+        data = await streamClaude(
+          { ...requestBase, messages },
+          (delta) => {
+            accumulatedText += delta;
+            onTextDelta?.(delta, accumulatedText);
+          },
+        );
+        break;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('529') || msg.includes('과부하')) {
+          if (attempt === 2) throw err;
+        } else {
+          throw err;
+        }
+      }
     }
-    if (!response) throw new Error('Claude API 연결 실패');
-
-    if (!response.ok) {
-      const errText = await response.text();
-      if (response.status === 529) throw new Error('Claude 서버가 일시적으로 과부하 상태입니다. 잠시 후 다시 시도해 주세요.');
-      throw new Error(`Claude API 오류 (${response.status}): ${errText}`);
-    }
-
-    const data: ClaudeResponse = await response.json();
+    if (!data) throw new Error('Claude API 연결 실패');
 
     // ── 최종 답변 ──
     if (data.stop_reason === 'end_turn' || data.stop_reason === 'stop_sequence') {
@@ -560,7 +653,11 @@ export async function sendChatMessage(
 
       const toolResults: { type: 'tool_result'; tool_use_id: string; content: string }[] = [];
 
-      for (const tb of toolBlocks) {
+      // 툴 병렬 처리
+      const toolResultsMap = new Map<string, string>();
+      const toolCallsMap = new Map<string, ToolCallResult>();
+
+      await Promise.all(toolBlocks.map(async (tb) => {
         const inp = tb.input as Record<string, unknown>;
         let resultStr = '';
         let tc: ToolCallResult;
@@ -748,9 +845,18 @@ export async function sendChatMessage(
         }
 
         else {
-          continue;
+          return; // 알 수 없는 툴 → 건너뜀
         }
 
+        toolCallsMap.set(tb.id, tc!);
+        toolResultsMap.set(tb.id, resultStr);
+      }));
+
+      // 원래 순서대로 결과 수집 및 콜백 호출
+      for (const tb of toolBlocks) {
+        const tc = toolCallsMap.get(tb.id);
+        const resultStr = toolResultsMap.get(tb.id) ?? '';
+        if (!tc) continue;
         allToolCalls.push(tc);
         onToolCall?.(tc, allToolCalls.length - 1);
         toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: resultStr });
