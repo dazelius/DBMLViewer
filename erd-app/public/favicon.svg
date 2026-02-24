@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <defs>
+    <!-- Background gradient: deep navy-purple -->
+    <linearGradient id="bg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1a0f3c"/>
+      <stop offset="1" stop-color="#080618"/>
+    </linearGradient>
+    <!-- Table 1: violet -->
+    <linearGradient id="g1" x1="3" y1="5" x2="3" y2="17" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#5b21b6"/>
+    </linearGradient>
+    <!-- Table 2: indigo -->
+    <linearGradient id="g2" x1="15" y1="15" x2="15" y2="27" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#3730a3"/>
+    </linearGradient>
+    <!-- Glow filter -->
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="1.2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- ── Background ── -->
+  <rect width="32" height="32" rx="7" fill="url(#bg)"/>
+
+  <!-- Ambient glow behind tables -->
+  <ellipse cx="13" cy="13" rx="9" ry="8" fill="#7c3aed" opacity="0.14"/>
+  <ellipse cx="21" cy="21" rx="7" ry="6" fill="#4f46e5" opacity="0.12"/>
+
+  <!-- ── Connection line (drawn first, behind tables) ── -->
+  <path d="M16 11 Q19 11 19 16" stroke="#a78bfa" stroke-width="1.3"
+        stroke-linecap="round" opacity="0.75" filter="url(#glow)"/>
+
+  <!-- ── Table 1: top-left ── -->
+  <rect x="3" y="5" width="14" height="12" rx="2.5" fill="#1e1b4b" opacity="0.6"/>
+  <rect x="3" y="5" width="14" height="12" rx="2.5" fill="url(#g1)"/>
+  <!-- header divider -->
+  <rect x="3" y="9" width="14" height="0.6" fill="rgba(255,255,255,0.15)"/>
+  <!-- PK key symbol -->
+  <circle cx="8" cy="7" r="1.2" fill="rgba(255,255,255,0.55)"/>
+  <rect x="9.4" y="6.5" width="2.6" height="1" rx="0.5" fill="rgba(255,255,255,0.55)"/>
+  <!-- content rows -->
+  <rect x="5.5" y="11" width="5.5" height="1.1" rx="0.55" fill="rgba(255,255,255,0.35)"/>
+  <rect x="5.5" y="13.2" width="8" height="1.1" rx="0.55" fill="rgba(255,255,255,0.22)"/>
+
+  <!-- ── Table 2: bottom-right ── -->
+  <rect x="15" y="15" width="14" height="12" rx="2.5" fill="#1e1b4b" opacity="0.6"/>
+  <rect x="15" y="15" width="14" height="12" rx="2.5" fill="url(#g2)"/>
+  <!-- header divider -->
+  <rect x="15" y="19" width="14" height="0.6" fill="rgba(255,255,255,0.15)"/>
+  <!-- FK key symbol -->
+  <circle cx="20" cy="17" r="1.2" fill="rgba(255,255,255,0.45)"/>
+  <rect x="21.4" y="16.5" width="2.6" height="1" rx="0.5" fill="rgba(255,255,255,0.45)"/>
+  <!-- content rows -->
+  <rect x="17.5" y="21" width="5" height="1.1" rx="0.55" fill="rgba(255,255,255,0.32)"/>
+  <rect x="17.5" y="23.2" width="7.5" height="1.1" rx="0.55" fill="rgba(255,255,255,0.2)"/>
+
+  <!-- ── Connection endpoints (glow dots) ── -->
+  <circle cx="16" cy="11" r="1.8" fill="#c4b5fd" opacity="0.9" filter="url(#glow)"/>
+  <circle cx="19" cy="16" r="1.5" fill="#a5b4fc" opacity="0.85" filter="url(#glow)"/>
+</svg>
