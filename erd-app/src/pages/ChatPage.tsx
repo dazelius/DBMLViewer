@@ -268,8 +268,9 @@ function inlineMarkdown(text: string): React.ReactNode {
 // ── 테이블 스키마 카드 (ERD 노드 스타일 + 미니 ERD 임베드) ──────────────────
 
 function TableSchemaCard({ tc }: { tc: SchemaCardResult }) {
-  const [expanded, setExpanded] = useState(true);
-  const [showERD, setShowERD] = useState(false);
+  const [expanded, setExpanded] = useState(true);       // 카드 전체 (열림)
+  const [showCols, setShowCols] = useState(false);      // 컬럼 목록 (접힘)
+  const [showERD, setShowERD] = useState(true);         // ERD (자동 펼침)
   const info = tc.tableInfo;
 
   if (tc.error || !info) {
@@ -322,49 +323,69 @@ function TableSchemaCard({ tc }: { tc: SchemaCardResult }) {
             </div>
           )}
 
-          {/* 컬럼 목록 */}
-          <div>
-            {info.columns.map((col, i) => (
-              <div
-                key={col.name}
-                className="flex items-center gap-2 px-3 py-1.5"
-                style={{
-                  borderBottom: i < info.columns.length - 1 ? '1px solid var(--border-color)' : 'none',
-                  background: col.isPK ? 'rgba(251,191,36,0.04)' : 'transparent',
-                }}
-              >
-                {/* PK/FK 아이콘 */}
-                <span className="w-4 flex-shrink-0 text-center">
-                  {col.isPK ? (
-                    <span style={{ color: '#fbbf24', fontSize: 10 }}>🔑</span>
-                  ) : col.isFK ? (
-                    <span style={{ color: '#60a5fa', fontSize: 10 }}>🔗</span>
-                  ) : (
-                    <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: 'var(--border-color)' }} />
-                  )}
-                </span>
-                <span
-                  className="text-[12px] font-mono flex-1 min-w-0 truncate"
-                  style={{ color: col.isPK ? '#fbbf24' : col.isFK ? '#60a5fa' : 'var(--text-primary)' }}
-                >
-                  {col.name}
-                </span>
-                <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                  {col.type}
-                </span>
-                <div className="flex gap-1 flex-shrink-0">
-                  {col.isPK && <Badge label="PK" color="#fbbf24" />}
-                  {col.isFK && <Badge label="FK" color="#60a5fa" />}
-                  {col.isNotNull && <Badge label="NN" color="#a78bfa" />}
-                  {col.isUnique && <Badge label="UQ" color="#34d399" />}
-                </div>
-                {col.note && (
-                  <span className="text-[10px] flex-shrink-0 truncate max-w-[100px]" style={{ color: 'var(--text-muted)' }} title={col.note}>
-                    {col.note}
-                  </span>
-                )}
+          {/* 컬럼 목록 (토글) */}
+          <div style={{ borderBottom: '1px solid var(--border-color)' }}>
+            <button
+              onClick={() => setShowCols(!showCols)}
+              className="w-full flex items-center gap-2 px-3 py-1.5"
+              style={{ background: 'var(--bg-hover)' }}
+            >
+              <span className="text-[10px] font-semibold uppercase tracking-wider flex-1 text-left" style={{ color: 'var(--text-muted)' }}>
+                컬럼 ({info.columns.length})
+              </span>
+              <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
+                {info.columns.filter(c => c.isPK).length > 0 && `PK ${info.columns.filter(c => c.isPK).length} `}
+                {info.columns.filter(c => c.isFK).length > 0 && `FK ${info.columns.filter(c => c.isFK).length}`}
+              </span>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                style={{ color: 'var(--text-muted)', transform: showCols ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', flexShrink: 0 }}>
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            {showCols && (
+              <div>
+                {info.columns.map((col, i) => (
+                  <div
+                    key={col.name}
+                    className="flex items-center gap-2 px-3 py-1.5"
+                    style={{
+                      borderTop: '1px solid var(--border-color)',
+                      background: col.isPK ? 'rgba(251,191,36,0.04)' : 'transparent',
+                    }}
+                  >
+                    <span className="w-4 flex-shrink-0 text-center">
+                      {col.isPK ? (
+                        <span style={{ color: '#fbbf24', fontSize: 10 }}>🔑</span>
+                      ) : col.isFK ? (
+                        <span style={{ color: '#60a5fa', fontSize: 10 }}>🔗</span>
+                      ) : (
+                        <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: 'var(--border-color)' }} />
+                      )}
+                    </span>
+                    <span
+                      className="text-[12px] font-mono flex-1 min-w-0 truncate"
+                      style={{ color: col.isPK ? '#fbbf24' : col.isFK ? '#60a5fa' : 'var(--text-primary)' }}
+                    >
+                      {col.name}
+                    </span>
+                    <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                      {col.type}
+                    </span>
+                    <div className="flex gap-1 flex-shrink-0">
+                      {col.isPK && <Badge label="PK" color="#fbbf24" />}
+                      {col.isFK && <Badge label="FK" color="#60a5fa" />}
+                      {col.isNotNull && <Badge label="NN" color="#a78bfa" />}
+                      {col.isUnique && <Badge label="UQ" color="#34d399" />}
+                    </div>
+                    {col.note && (
+                      <span className="text-[10px] flex-shrink-0 truncate max-w-[100px]" style={{ color: 'var(--text-muted)' }} title={col.note}>
+                        {col.note}
+                      </span>
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
 
           {/* 관계 */}
@@ -392,15 +413,12 @@ function TableSchemaCard({ tc }: { tc: SchemaCardResult }) {
             </div>
           )}
 
-          {/* ERD 임베드 토글 */}
+          {/* ERD 다이어그램 (기본 펼침, 닫기 가능) */}
           {tc.tableId && (
             <div style={{ borderTop: '1px solid var(--border-color)' }}>
-              <button
-                onClick={() => setShowERD(!showERD)}
-                className="w-full flex items-center gap-2 px-3 py-2"
-                style={{ background: showERD ? 'rgba(99,102,241,0.08)' : 'transparent', transition: 'background 0.15s' }}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+              {/* 미니 헤더 */}
+              <div className="flex items-center gap-2 px-3 py-1.5" style={{ background: 'var(--bg-hover)' }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
                   style={{ color: 'var(--accent)', flexShrink: 0 }}>
                   <rect x="3" y="3" width="6" height="6" rx="1" />
                   <rect x="15" y="3" width="6" height="6" rx="1" />
@@ -408,32 +426,25 @@ function TableSchemaCard({ tc }: { tc: SchemaCardResult }) {
                   <path d="M6 9v3a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V9" />
                   <line x1="12" y1="12" x2="12" y2="15" />
                 </svg>
-                <span className="text-[11px] font-medium flex-1 text-left" style={{ color: 'var(--accent)' }}>
-                  {showERD ? 'ERD 닫기' : 'ERD 다이어그램 보기'}
+                <span className="text-[10px] font-semibold uppercase tracking-wider flex-1" style={{ color: 'var(--text-muted)' }}>
+                  ERD {info.relations.length > 0 && `· 연결 ${info.relations.length}개`}
                 </span>
-                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                  {info.relations.length > 0 ? `연결 테이블 ${info.relations.length}개` : '단독 테이블'}
-                </span>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                  style={{ color: 'var(--text-muted)', transform: showERD ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', flexShrink: 0 }}>
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </button>
-              {showERD && (
-                <div
-                  style={{
-                    height: 320,
-                    borderTop: '1px solid var(--border-color)',
-                    background: 'var(--bg-primary)',
-                    position: 'relative',
-                  }}
+                <button
+                  onClick={() => setShowERD(!showERD)}
+                  className="text-[10px] px-2 py-0.5 rounded"
+                  style={{ color: 'var(--text-muted)', background: 'var(--bg-secondary)' }}
                 >
+                  {showERD ? '접기' : '펼치기'}
+                </button>
+              </div>
+              {showERD && (
+                <div style={{ height: 340, borderTop: '1px solid var(--border-color)', background: 'var(--bg-primary)', position: 'relative' }}>
                   <DocsMiniERD tableId={tc.tableId} />
                   <div
-                    className="absolute top-2 left-2 text-[9px] px-2 py-1 rounded select-none pointer-events-none"
-                    style={{ background: 'var(--bg-surface)', color: 'var(--text-muted)', border: '1px solid var(--border-color)', opacity: 0.85 }}
+                    className="absolute bottom-2 right-2 text-[9px] px-2 py-1 rounded select-none pointer-events-none"
+                    style={{ background: 'var(--bg-surface)', color: 'var(--text-muted)', border: '1px solid var(--border-color)', opacity: 0.8 }}
                   >
-                    드래그·스크롤로 탐색 · 더블클릭으로 맞춤
+                    드래그·휠줌·더블클릭(맞춤)
                   </div>
                 </div>
               )}

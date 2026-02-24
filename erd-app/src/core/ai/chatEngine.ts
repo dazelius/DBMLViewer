@@ -232,7 +232,8 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- query_git_history: 변경 이력 조회 (언제 무엇이 바뀌었는지)');
   lines.push('- show_revision_diff: 특정 커밋의 상세 변경 내용(DIFF) 시각화 (리비전 차이 확인 시 사용)');
   lines.push('');
-  lines.push('[중요] "관계도 보여줘", "ERD 보여줘" 같은 요청에는 관련 테이블들을 특정하여 show_table_schema를 호출하세요.');
+  lines.push('[중요] "관계도 보여줘", "ERD 보여줘" 요청에는 가장 핵심이 되는 테이블 1개만 show_table_schema를 호출하세요.');
+  lines.push('       ERD 카드 안에 연결 테이블이 모두 표시되므로 관련 테이블을 여러 번 반복 호출하지 마세요.');
   lines.push('답변은 반드시 한국어로 작성하세요.');
   lines.push('단순 나열이 아닌, 의미있는 해석과 함께 친절하게 설명하세요.');
   lines.push('');
