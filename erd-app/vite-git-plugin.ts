@@ -1333,7 +1333,9 @@ function createGitMiddleware(options: GitPluginOptions) {
               : msg
             sendJson(res, apiRespV1.status, { error: hint, raw: errBody })
           } else {
-            sendJson(res, 200, await apiRespV1.json())
+            const body = await apiRespV1.json() as Record<string,unknown>
+            // 클라이언트에서 절대 URL 생성에 필요한 base URL 포함
+            sendJson(res, 200, { ...body, _baseUrl: confluenceUrl })
           }
           return
         }

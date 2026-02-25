@@ -3223,7 +3223,13 @@ function ConfluenceSearchCard({ tc }: { tc: ConfluenceSearchResult }) {
               <div key={p.id} className="flex items-center gap-2 px-2 py-2 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
                 <span style={{ fontSize: 12 }}>{p.type === 'blogpost' ? '📝' : '📄'}</span>
                 <div className="flex-1 min-w-0">
-                  <div className="text-[12px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{p.title}</div>
+                  {p.url ? (
+                    <a href={p.url} target="_blank" rel="noopener noreferrer"
+                      className="text-[12px] font-semibold truncate block hover:underline"
+                      style={{ color: '#67e8f9' }}>{p.title}</a>
+                  ) : (
+                    <div className="text-[12px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{p.title}</div>
+                  )}
                   <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Space: {p.space} · ID: {p.id}</div>
                 </div>
               </div>

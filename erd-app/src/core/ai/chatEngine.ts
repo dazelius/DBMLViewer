@@ -2209,18 +2209,35 @@ function showTab(id){
               resultStr = `Confluence 검색 실패 (${resp.status}): ${String((data2 as Record<string,unknown>).error ?? data2)}`;
               tc = { kind: 'confluence_search', cql, pages: [], total: 0, error: resultStr, duration } as ConfluenceSearchResult;
             } else {
-              type ConfluencePage = { id: string; title: string; type: string; space?: Record<string,unknown>; version?: Record<string,unknown>; _links?: Record<string,unknown> };
-              const results = (Array.isArray((data2 as Record<string,unknown>).results) ? (data2 as Record<string,unknown>).results : []) as ConfluencePage[];
+              // Confluence Search API 응답: 실제 id/type/_links는 result.content 안에 있음
+              type ConfluenceSearchHit = {
+                content?: { id?: string; type?: string; _links?: Record<string,unknown>; space?: Record<string,unknown> };
+                title?: string;
+                url?: string;
+                resultGlobalContainer?: { title?: string; displayUrl?: string };
+              };
+              const baseUrl = String((data2 as Record<string,unknown>)._baseUrl ?? '');
+              const results = (Array.isArray((data2 as Record<string,unknown>).results) ? (data2 as Record<string,unknown>).results : []) as ConfluenceSearchHit[];
               const total = Number((data2 as Record<string,unknown>).totalSize ?? results.length);
-              const summaryLines = results.map((p) => `[${p.id}] ${p.title} (Space: ${p.space?.key ?? '-'})`);
+              const summaryLines = results.map((p) => {
+                const pageId = p.content?.id ?? '';
+                const spaceKey = (p.content?.space as Record<string,unknown>)?.key ?? p.resultGlobalContainer?.title ?? '-';
+                return `[${pageId}] ${p.title ?? '(제목 없음)'} (Space: ${spaceKey})`;
+              });
               resultStr = `Confluence 검색: "${cql}" → ${total}건 (${duration.toFixed(0)}ms)\n` +
                 (summaryLines.length > 0 ? summaryLines.join('\n') : '결과 없음') +
                 '\n\n페이지 내용이 필요하면 get_confluence_page(pageId) 호출';
-              tc = { kind: 'confluence_search', cql, pages: results.map(p => ({
-                id: p.id, title: p.title, type: p.type,
-                space: String(p.space?.key ?? ''),
-                url: String((p._links as Record<string,unknown>)?.webui ?? ''),
-              })), total, duration } as ConfluenceSearchResult;
+              tc = { kind: 'confluence_search', cql, pages: results.map(p => {
+                const relUrl = String(p.content?._links?.webui ?? p.url ?? '');
+                const fullUrl = relUrl.startsWith('http') ? relUrl : (baseUrl ? `${baseUrl}/wiki${relUrl}` : relUrl);
+                return {
+                  id: p.content?.id ?? '',
+                  title: p.title ?? '',
+                  type: p.content?.type ?? 'page',
+                  space: String((p.content?.space as Record<string,unknown>)?.key ?? p.resultGlobalContainer?.title ?? ''),
+                  url: fullUrl,
+                };
+              }), total, duration } as ConfluenceSearchResult;
             }
           } catch (e) {
             resultStr = `Confluence 검색 오류: ${String(e)}`;
