@@ -2704,13 +2704,13 @@ export default function ChatPage() {
 
   const hasData = tableData.size > 0;
 
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, displayText?: string) => {
     if (!text.trim() || isLoading) return;
 
     const userMsg: Message = {
       id: genId(),
       role: 'user',
-      content: text.trim(),
+      content: displayText !== undefined ? displayText : text.trim(),
       timestamp: new Date(),
     };
 
@@ -3126,15 +3126,17 @@ export default function ChatPage() {
                 if (!artifactPanel.finalTc) return;
                 const currentHtml = artifactPanel.finalTc.html ?? '';
                 const title = artifactPanel.finalTc.title ?? '문서';
-                // 현재 아티팩트 HTML(embed 태그 포함 원본)을 컨텍스트에 주입
-                const editMessage =
+                // Claude에게 전달할 전체 컨텍스트 (HTML 포함)
+                const fullMessage =
                   `[아티팩트 수정 요청]\n` +
                   `제목: ${title}\n\n` +
                   `현재 아티팩트 HTML:\n\`\`\`html\n${currentHtml}\n\`\`\`\n\n` +
                   `수정 요청: ${prompt}\n\n` +
                   `위 HTML을 수정하여 즉시 create_artifact 툴을 호출해주세요. ` +
                   `수정되지 않은 섹션은 그대로 유지하고, 요청된 부분만 변경해주세요.`;
-                sendMessage(editMessage);
+                // 채팅에는 사용자가 입력한 텍스트만 표시
+                const displayText = `✏️ [${title}] ${prompt}`;
+                sendMessage(fullMessage, displayText);
               }}
             />
           </div>
