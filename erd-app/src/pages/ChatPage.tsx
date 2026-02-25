@@ -18,6 +18,8 @@ import {
   type ArtifactResult,
   type ArtifactPatchResult,
   type CharacterProfileResult,
+  type CodeSearchResult,
+  type CodeFileResult,
   type DiffFile,
   type DiffHunk,
 } from '../core/ai/chatEngine.ts';
@@ -2301,6 +2303,179 @@ ${resolved}
   );
 }
 
+// ── 코드 검색 카드 ────────────────────────────────────────────────────────────
+function CodeSearchCard({ tc }: { tc: CodeSearchResult }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasResults = (tc.results?.length ?? 0) > 0 || (tc.contentHits?.length ?? 0) > 0;
+
+  return (
+    <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left"
+        style={{ background: 'transparent' }}
+      >
+        {/* 코드 아이콘 */}
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: '#22d3ee', flexShrink: 0 }}>
+          <polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" />
+        </svg>
+        <span className="text-[11px] font-medium flex-1 min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
+          코드 검색: &quot;{tc.query}&quot;
+          {tc.searchType === 'content' ? ' (전문검색)' : ' (인덱스)'}
+        </span>
+        <span className="text-[10px] px-2 py-0.5 rounded-full flex-shrink-0" style={{
+          background: tc.error ? 'rgba(239,68,68,0.15)' : 'rgba(34,211,238,0.15)',
+          color: tc.error ? '#f87171' : '#22d3ee',
+        }}>
+          {tc.error ? '오류' : tc.searchType === 'content'
+            ? `${tc.contentHits?.length ?? 0}개 파일`
+            : `${tc.results?.length ?? 0}/${tc.total ?? 0}`}
+        </span>
+        {tc.duration != null && (
+          <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{tc.duration.toFixed(0)}ms</span>
+        )}
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="flex-shrink-0"
+          style={{ color: 'var(--text-muted)', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-3">
+          {tc.error ? (
+            <div className="text-[11px] px-3 py-2 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>{tc.error}</div>
+          ) : tc.searchType === 'content' ? (
+            /* 전문 검색 결과 */
+            <div className="space-y-2">
+              {(tc.contentHits ?? []).map((hit, i) => (
+                <div key={i} className="rounded-md overflow-hidden" style={{ border: '1px solid var(--border-color)' }}>
+                  <div className="px-3 py-1.5 flex items-center gap-2" style={{ background: 'var(--bg-tertiary)' }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#22d3ee', flexShrink: 0 }}>
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
+                    </svg>
+                    <span className="text-[10px] font-mono" style={{ color: 'var(--text-primary)' }}>{hit.path}</span>
+                  </div>
+                  <div className="px-3 py-2">
+                    {hit.matches.slice(0, 5).map((m, j) => (
+                      <div key={j} className="flex gap-2 mb-1">
+                        <span className="text-[10px] font-mono flex-shrink-0 w-8 text-right" style={{ color: 'var(--text-muted)' }}>L{m.line}</span>
+                        <span className="text-[10px] font-mono" style={{ color: 'var(--text-secondary)' }}>{m.lineContent}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {!hasResults && <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>검색 결과 없음</p>}
+            </div>
+          ) : (
+            /* 인덱스 검색 결과 */
+            <div className="space-y-1.5">
+              {(tc.results ?? []).map((entry, i) => (
+                <div key={i} className="rounded-md px-3 py-2" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#22d3ee', flexShrink: 0 }}>
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
+                    </svg>
+                    <span className="text-[11px] font-mono font-medium" style={{ color: 'var(--text-primary)' }}>{entry.name}</span>
+                    {entry.size != null && (
+                      <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{(entry.size / 1024).toFixed(1)}KB</span>
+                    )}
+                  </div>
+                  <div className="text-[9px] font-mono mb-0.5" style={{ color: 'var(--text-muted)' }}>{entry.path}</div>
+                  {entry.namespaces?.length > 0 && (
+                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      <span style={{ color: '#a78bfa' }}>ns </span>{entry.namespaces.join(', ')}
+                    </div>
+                  )}
+                  {entry.classes?.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {entry.classes.map((c, ci) => (
+                        <span key={ci} className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(34,211,238,0.1)', color: '#22d3ee' }}>{c}</span>
+                      ))}
+                    </div>
+                  )}
+                  {entry.methods?.slice(0, 8).length > 0 && (
+                    <div className="mt-1 text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>
+                      {entry.methods.slice(0, 8).join(' · ')}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {!hasResults && <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>검색 결과 없음</p>}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 코드 파일 뷰어 카드 ───────────────────────────────────────────────────────
+function CodeFileCard({ tc }: { tc: CodeFileResult }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left"
+        style={{ background: 'transparent' }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: '#22d3ee', flexShrink: 0 }}>
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
+          <line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" />
+        </svg>
+        <span className="text-[11px] font-medium flex-1 min-w-0 truncate font-mono" style={{ color: 'var(--text-secondary)' }}>
+          {tc.path || '코드 파일'}
+        </span>
+        {tc.truncated && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24' }}>잘림</span>
+        )}
+        <span className="text-[10px] px-2 py-0.5 rounded-full flex-shrink-0" style={{
+          background: tc.error ? 'rgba(239,68,68,0.15)' : 'rgba(34,211,238,0.15)',
+          color: tc.error ? '#f87171' : '#22d3ee',
+        }}>
+          {tc.error ? '오류' : `${(tc.size / 1024).toFixed(1)}KB`}
+        </span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="flex-shrink-0"
+          style={{ color: 'var(--text-muted)', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-3">
+          {tc.error ? (
+            <div className="text-[11px] px-3 py-2 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>{tc.error}</div>
+          ) : (
+            <>
+              {/* 메타 정보 */}
+              {(tc.classes?.length || tc.namespaces?.length) ? (
+                <div className="mb-2 flex flex-wrap gap-1">
+                  {tc.namespaces?.map((n, i) => (
+                    <span key={i} className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(167,139,250,0.15)', color: '#a78bfa' }}>ns:{n}</span>
+                  ))}
+                  {tc.classes?.map((c, i) => (
+                    <span key={i} className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(34,211,238,0.1)', color: '#22d3ee' }}>{c}</span>
+                  ))}
+                </div>
+              ) : null}
+              {/* 코드 내용 */}
+              <pre className="text-[10px] font-mono overflow-auto rounded-md p-3 max-h-96"
+                style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', whiteSpace: 'pre', tabSize: 4 }}>
+                {tc.content}
+              </pre>
+              {tc.truncated && (
+                <p className="text-[10px] mt-1" style={{ color: '#fbbf24' }}>⚠️ 파일이 크거나 잘렸습니다 (100KB 제한)</p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'schema_card') return <TableSchemaCard tc={tc} />;
   if (tc.kind === 'git_history') return <GitHistoryCard tc={tc} />;
@@ -2308,6 +2483,8 @@ function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'image_search') return <ImageCard tc={tc} />;
   if (tc.kind === 'artifact') return <ArtifactCard tc={tc} />;
   if (tc.kind === 'character_profile') return <CharacterProfileCard tc={tc} />;
+  if (tc.kind === 'code_search') return <CodeSearchCard tc={tc} />;
+  if (tc.kind === 'code_file') return <CodeFileCard tc={tc} />;
   return <DataQueryCard tc={tc} index={index} />;
 }
 

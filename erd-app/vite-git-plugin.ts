@@ -1,12 +1,48 @@
 import type { Plugin } from 'vite'
 import { execSync, execFileSync, execFile } from 'child_process'
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'fs'
 import { join, resolve, extname } from 'path'
 import { promisify } from 'util'
 import type { IncomingMessage, ServerResponse } from 'http'
 
 // ── 로컬 이미지 디렉토리 (sync_ui_images.ps1 로 동기화) ──────────────────────
 const IMAGES_DIR = 'C:\\TableMaster\\images'
+
+// ── C# 소스코드 디렉토리 (sync_cs_files.ps1 로 동기화) ───────────────────────
+const CODE_DIR = 'C:\\TableMaster\\code'
+const CODE_INDEX_PATH = join(CODE_DIR, '.code_index.json')
+
+interface CodeIndexEntry {
+  path: string        // 상대 경로
+  name: string        // 파일명
+  size: number
+  namespaces: string[]
+  classes: string[]
+  methods: string[]
+}
+
+let _codeIndex: CodeIndexEntry[] | null = null
+function loadCodeIndex(): CodeIndexEntry[] {
+  if (_codeIndex) return _codeIndex
+  if (!existsSync(CODE_INDEX_PATH)) return []
+  try {
+    _codeIndex = JSON.parse(readFileSync(CODE_INDEX_PATH, 'utf-8')) as CodeIndexEntry[]
+    return _codeIndex
+  } catch { return [] }
+}
+
+function walkCode(dir: string, base: string, results: { name: string; path: string; relPath: string }[]) {
+  if (!existsSync(dir)) return
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    const rel = base ? `${base}/${entry.name}` : entry.name
+    if (entry.isDirectory()) {
+      walkCode(full, rel, results)
+    } else if (entry.isFile() && extname(entry.name).toLowerCase() === '.cs') {
+      results.push({ name: entry.name, path: full, relPath: rel })
+    }
+  }
+}
 
 // ── 출판 문서 저장 디렉토리 ──────────────────────────────────────────────────
 const PUBLISHED_DIR = resolve(process.cwd(), 'published')
@@ -253,6 +289,140 @@ function createGitMiddleware(options: GitPluginOptions) {
       const buf = readFileSync(match.path)
       res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600', 'X-Resolved-Path': match.relPath })
       res.end(buf)
+      return
+    }
+
+    // ── /api/code/list : C# 파일 목록·검색 ──────────────────────────────────────
+    if (req.url?.startsWith('/api/code/list')) {
+      const url = new URL(req.url, 'http://localhost')
+      const q = (url.searchParams.get('q') || '').toLowerCase().trim()
+      const type = (url.searchParams.get('type') || '').toLowerCase() // 'class'|'method'|'file'|''
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '30', 10), 100)
+      const index = loadCodeIndex()
+
+      let results = index
+      if (q) {
+        results = index.filter(e => {
+          if (type === 'class')  return e.classes.some(c => c.toLowerCase().includes(q))
+          if (type === 'method') return e.methods.some(m => m.toLowerCase().includes(q))
+          if (type === 'file')   return e.name.toLowerCase().includes(q) || e.path.toLowerCase().includes(q)
+          // 전체 검색 (이름, 클래스, 네임스페이스, 메서드)
+          return e.name.toLowerCase().includes(q)
+            || e.path.toLowerCase().includes(q)
+            || e.classes.some(c => c.toLowerCase().includes(q))
+            || e.namespaces.some(n => n.toLowerCase().includes(q))
+            || e.methods.some(m => m.toLowerCase().includes(q))
+        })
+      }
+
+      sendJson(res, 200, {
+        total: index.length,
+        matched: results.length,
+        results: results.slice(0, limit).map(e => ({
+          path: e.path,
+          name: e.name,
+          size: e.size,
+          namespaces: e.namespaces,
+          classes: e.classes,
+          methods: e.methods.slice(0, 10),
+        })),
+      })
+      return
+    }
+
+    // ── /api/code/file : C# 파일 내용 읽기 ──────────────────────────────────────
+    if (req.url?.startsWith('/api/code/file')) {
+      const url = new URL(req.url, 'http://localhost')
+      const relPath = (url.searchParams.get('path') || '').replace(/\.\./g, '')
+      if (!relPath) { res.writeHead(400); res.end('path required'); return }
+
+      const safePath = join(CODE_DIR, relPath.replace(/\//g, '\\'))
+      if (!safePath.startsWith(CODE_DIR) || !existsSync(safePath)) {
+        res.writeHead(404); res.end('not found'); return
+      }
+      const stat = statSync(safePath)
+      // 100KB 이상이면 앞뒤만 반환 (토큰 절약)
+      const MAX_SIZE = 100 * 1024
+      let content = readFileSync(safePath, 'utf-8')
+      let truncated = false
+      if (content.length > MAX_SIZE) {
+        content = content.slice(0, MAX_SIZE)
+        truncated = true
+      }
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
+      res.end(JSON.stringify({ path: relPath, size: stat.size, truncated, content }))
+      return
+    }
+
+    // ── /api/code/search : 파일 내용 전문 검색 (grep) ───────────────────────────
+    if (req.url?.startsWith('/api/code/search')) {
+      const url = new URL(req.url, 'http://localhost')
+      const q = (url.searchParams.get('q') || '').toLowerCase()
+      const scope = (url.searchParams.get('scope') || '').toLowerCase() // 특정 파일/폴더로 제한
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '20', 10), 50)
+      if (!q) { sendJson(res, 400, { error: 'q required' }); return }
+
+      const all: { name: string; path: string; relPath: string }[] = []
+      walkCode(CODE_DIR, '', all)
+
+      const filtered = scope
+        ? all.filter(f => f.relPath.toLowerCase().includes(scope))
+        : all
+
+      const hits: { path: string; line: number; lineContent: string }[] = []
+      for (const f of filtered) {
+        if (hits.length >= limit * 5) break
+        try {
+          const lines = readFileSync(f.path, 'utf-8').split('\n')
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].toLowerCase().includes(q)) {
+              hits.push({ path: f.relPath, line: i + 1, lineContent: lines[i].trim().slice(0, 200) })
+              if (hits.length >= limit * 5) break
+            }
+          }
+        } catch { /* skip */ }
+      }
+
+      // 파일별로 그룹핑
+      const grouped: Record<string, { line: number; lineContent: string }[]> = {}
+      for (const h of hits.slice(0, limit * 5)) {
+        if (!grouped[h.path]) grouped[h.path] = []
+        grouped[h.path].push({ line: h.line, lineContent: h.lineContent })
+      }
+
+      sendJson(res, 200, {
+        query: q,
+        totalFiles: Object.keys(grouped).length,
+        results: Object.entries(grouped).slice(0, limit).map(([path, matches]) => ({ path, matches })),
+      })
+      return
+    }
+
+    // ── /api/code/stats : 코드 통계 ─────────────────────────────────────────────
+    if (req.url?.startsWith('/api/code/stats')) {
+      const index = loadCodeIndex()
+      const totalFiles = index.length
+      const totalSize = index.reduce((a, e) => a + e.size, 0)
+      const namespaceMap: Record<string, number> = {}
+      const classCount = index.reduce((a, e) => a + e.classes.length, 0)
+      index.forEach(e => e.namespaces.forEach(n => { namespaceMap[n] = (namespaceMap[n] || 0) + 1 }))
+      const topNamespaces = Object.entries(namespaceMap)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 20)
+        .map(([ns, count]) => ({ ns, count }))
+
+      // 폴더별 파일 수
+      const folderMap: Record<string, number> = {}
+      index.forEach(e => {
+        const folder = e.path.split('/').slice(0, -1).join('/')
+        folderMap[folder] = (folderMap[folder] || 0) + 1
+      })
+      const topFolders = Object.entries(folderMap)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 15)
+        .map(([folder, count]) => ({ folder, count }))
+
+      sendJson(res, 200, { totalFiles, totalSize, classCount, topNamespaces, topFolders })
       return
     }
 

@@ -146,6 +146,41 @@ export interface ArtifactPatchResult {
   error?: string;
 }
 
+// ── 코드 분석 결과 ────────────────────────────────────────────────────────────
+
+export interface CodeFileEntry {
+  path: string;
+  name: string;
+  size?: number;
+  namespaces: string[];
+  classes: string[];
+  methods: string[];
+}
+
+export interface CodeSearchResult {
+  kind: 'code_search';
+  query: string;
+  searchType: 'index' | 'content';
+  total?: number;
+  results: CodeFileEntry[];
+  contentHits?: { path: string; matches: { line: number; lineContent: string }[] }[];
+  error?: string;
+  duration?: number;
+}
+
+export interface CodeFileResult {
+  kind: 'code_file';
+  path: string;
+  content: string;
+  size: number;
+  truncated: boolean;
+  namespaces?: string[];
+  classes?: string[];
+  methods?: string[];
+  error?: string;
+  duration?: number;
+}
+
 // ── 캐릭터 프로파일 (FK 자동 탐색) ──────────────────────────────────────────
 
 export interface CharacterProfileNode {
@@ -170,7 +205,7 @@ export interface CharacterProfileResult {
   duration?: number;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult;
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -317,6 +352,57 @@ const TOOLS = [
     },
   },
   {
+    name: 'search_code',
+    description:
+      '게임 클라이언트 C# 소스코드를 검색합니다. ' +
+      '특정 클래스·메서드·로직이 어떻게 구현되어 있는지, 어떤 파일에 있는지 찾을 때 사용하세요. ' +
+      'type="class"로 클래스명 검색, type="method"로 메서드 검색, type="content"로 파일 내용 전문 검색.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: '검색할 키워드 (클래스명, 메서드명, 변수명 등). 예: "CharacterSkill", "OnDamage", "StatusEffect"',
+        },
+        type: {
+          type: 'string',
+          enum: ['class', 'method', 'file', 'content', ''],
+          description: '검색 타입: class=클래스명, method=메서드명, file=파일명/경로, content=파일내용 전문검색. 비워두면 전체 검색.',
+        },
+        scope: {
+          type: 'string',
+          description: '검색 범위를 특정 폴더/파일로 한정 (예: "Combat", "Character/Skill"). 전체 검색 시 생략.',
+        },
+        reason: {
+          type: 'string',
+          description: '이 코드를 검색하는 이유.',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'read_code_file',
+    description:
+      '특정 C# 소스 파일의 전체 내용을 읽습니다. ' +
+      'search_code로 파일 경로를 찾은 후, 상세 구현 내용이 필요할 때 호출하세요. ' +
+      '100KB 이상 파일은 앞부분만 반환됩니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'search_code 결과에서 얻은 파일 상대 경로 (예: "Combat/DamageSystem.cs")',
+        },
+        reason: {
+          type: 'string',
+          description: '이 파일을 읽는 이유.',
+        },
+      },
+      required: ['path'],
+    },
+  },
+  {
     name: 'patch_artifact',
     description:
       '⭐ [아티팩트 수정 요청] 메시지에 반드시 사용하세요. create_artifact 대신 이 툴을 사용하면 출력 토큰이 90% 절약됩니다. ' +
@@ -401,6 +487,9 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 및 채팅 임베드 (아이콘, UI 이미지 찾기 요청 시 사용)');
   lines.push('- create_artifact: 수집된 데이터로 완성된 HTML 문서/보고서 생성 (전체화면 프리뷰, PDF 저장 가능)');
   lines.push('- patch_artifact: ⭐ 기존 아티팩트 수정 시 사용 (find/replace 패치만 반환 → 토큰 90% 절약)');
+  lines.push('- search_code: C# 게임 클라이언트 소스코드 검색 (클래스/메서드/파일명/내용 전문검색). 코드 구현 방식, 로직, 버그 분석 시 사용.');
+  lines.push('- read_code_file: 특정 .cs 파일 전체 내용 읽기. search_code로 경로 확인 후 호출.');
+  lines.push('');
   lines.push('');
   lines.push('[캐릭터 기획서/프로파일/데이터 시트뷰 — 반드시 준수]');
   lines.push('- "캐릭터 기획서", "[캐릭터명] 기획서", "프로파일", "캐릭터 카드", "개요" 요청 시: build_character_profile 먼저 → create_artifact 순서.');
@@ -420,6 +509,14 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- ⚠️ 절대로 "아티팩트를 만들겠습니다", "HTML을 생성하겠습니다" 등의 선언 후 멈추지 마세요. 선언 없이 즉시 툴을 호출하세요.');
   lines.push('- 반드시 먼저 다른 툴로 데이터를 충분히 수집한 후 create_artifact를 마지막에 호출하세요.');
   lines.push('- html 파라미터: <!DOCTYPE html> 없이 <body> 내용만 작성 (간결하게 500줄 이내).');
+  lines.push('[C# 코드 분석 규칙]');
+  lines.push('- 코드 관련 질문 (구현 방식, 로직, 버그, 특정 시스템 동작): search_code → 필요 시 read_code_file 순서로 호출.');
+  lines.push('- 클래스 검색: search_code(query="ClassName", type="class")');
+  lines.push('- 메서드 검색: search_code(query="MethodName", type="method")');
+  lines.push('- 내용 전문검색: search_code(query="keyword", type="content")');
+  lines.push('- 코드와 데이터 연계 분석: query_game_data + search_code 함께 사용 가능.');
+  lines.push('- 아직 동기화 안 된 경우: sync_cs_files.ps1 실행 안내 (C:\\TableMaster\\sync_cs_files.ps1).');
+  lines.push('');
   lines.push('[이미지 경로 규칙]');
   lines.push('- 이미지 경로가 정확히 알려진 경우: /api/images/file?path=Texture/Character/icon_hero_striker.png');
   lines.push('- 이미지 경로가 불확실하거나 폴더를 모르는 경우: /api/images/smart?name=icon_hero_striker.png');
@@ -1408,6 +1505,117 @@ function showTab(id){
 </script>
 위 방식으로 각 연결 테이블마다 탭을 추가하세요.`;
               }
+            }
+          }
+        }
+
+        // ── search_code ──
+        else if (tb.name === 'search_code') {
+          const query = String(inp.query ?? '');
+          const searchType = String(inp.type ?? '');
+          const scope = inp.scope ? String(inp.scope) : '';
+          const isContentSearch = searchType === 'content';
+          const t0 = performance.now();
+          try {
+            const params = new URLSearchParams({ q: query, limit: '30' });
+            if (searchType) params.set('type', searchType);
+
+            const endpoint = isContentSearch
+              ? `/api/code/search?q=${encodeURIComponent(query)}&limit=20${scope ? `&scope=${encodeURIComponent(scope)}` : ''}`
+              : `/api/code/list?${params.toString()}${scope ? `&scope=${encodeURIComponent(scope)}` : ''}`;
+
+            const resp = await fetch(endpoint);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const rawData = await resp.json() as Record<string, unknown>;
+
+            const duration = performance.now() - t0;
+
+            if (isContentSearch) {
+              type ContentHit = { path: string; matches: { line: number; lineContent: string }[] };
+              const totalFiles = typeof rawData.totalFiles === 'number' ? rawData.totalFiles : 0;
+              const contentHits = (Array.isArray(rawData.results) ? rawData.results : []) as ContentHit[];
+              tc = {
+                kind: 'code_search',
+                query,
+                searchType: 'content',
+                contentHits,
+                results: [],
+                duration,
+              } as CodeSearchResult;
+              resultStr = totalFiles > 0
+                ? `"${query}" 발견: ${totalFiles}개 파일\n` + contentHits.slice(0, 5).map(r =>
+                    `  📄 ${r.path}\n` + r.matches.slice(0, 3).map(m => `    L${m.line}: ${m.lineContent}`).join('\n')
+                  ).join('\n')
+                : `"${query}" 코드에서 찾을 수 없음`;
+            } else {
+              const total = typeof rawData.total === 'number' ? rawData.total : 0;
+              const indexResults = (Array.isArray(rawData.results) ? rawData.results : []) as CodeFileEntry[];
+              tc = {
+                kind: 'code_search',
+                query,
+                searchType: 'index',
+                total,
+                results: indexResults,
+                duration,
+              } as CodeSearchResult;
+              resultStr = indexResults.length > 0
+                ? `"${query}" 검색 결과 ${indexResults.length}개:\n` + indexResults.slice(0, 10).map(r =>
+                    `  📄 ${r.path}\n     클래스: ${r.classes.join(', ') || '없음'} | 네임스페이스: ${r.namespaces.join(', ') || '없음'}`
+                  ).join('\n')
+                : `"${query}" 코드 파일에서 찾을 수 없음 (전체 인덱스 ${total}개 파일)`;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const noSync = msg.includes('not found') || msg.includes('404');
+            tc = {
+              kind: 'code_search',
+              query,
+              searchType: isContentSearch ? 'content' : 'index',
+              results: [],
+              error: noSync ? 'C# 코드가 아직 동기화되지 않았습니다. sync_cs_files.ps1을 실행하세요.' : msg,
+              duration: performance.now() - t0,
+            } as CodeSearchResult;
+            resultStr = `코드 검색 오류: ${(tc as CodeSearchResult).error}`;
+          }
+        }
+
+        // ── read_code_file ──
+        else if (tb.name === 'read_code_file') {
+          const filePath = String(inp.path ?? '');
+          const t0 = performance.now();
+          if (!filePath) {
+            tc = { kind: 'code_file', path: '', content: '', size: 0, truncated: false, error: 'path가 필요합니다.' } as CodeFileResult;
+            resultStr = '오류: path 파라미터 없음';
+          } else {
+            try {
+              const resp = await fetch(`/api/code/file?path=${encodeURIComponent(filePath)}`);
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+              const raw = await resp.text();
+              const fileData = JSON.parse(raw) as { path: string; size: number; truncated: boolean; content: string };
+              const duration = performance.now() - t0;
+
+              // 인덱스에서 메타 정보 가져오기
+              const indexEntry = await fetch(`/api/code/list?q=${encodeURIComponent(filePath.split('/').pop() ?? '')}&type=file&limit=5`)
+                .then(r => r.ok ? r.json() : { results: [] })
+                .then((d: { results?: CodeFileEntry[] }) => (d.results ?? []).find((e: CodeFileEntry) => e.path === filePath) ?? null)
+                .catch(() => null) as CodeFileEntry | null;
+
+              tc = {
+                kind: 'code_file',
+                path: fileData.path,
+                content: fileData.content,
+                size: fileData.size,
+                truncated: fileData.truncated,
+                namespaces: indexEntry?.namespaces,
+                classes: indexEntry?.classes,
+                methods: indexEntry?.methods,
+                duration,
+              } as CodeFileResult;
+              resultStr = `파일: ${fileData.path} (${(fileData.size / 1024).toFixed(1)}KB${fileData.truncated ? ', 잘림' : ''})\n\n${fileData.content}`;
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              tc = { kind: 'code_file', path: filePath, content: '', size: 0, truncated: false, error: msg, duration: performance.now() - t0 } as CodeFileResult;
+              resultStr = `파일 읽기 오류: ${msg}`;
             }
           }
         }
