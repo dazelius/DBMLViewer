@@ -92,6 +92,9 @@ interface GitPluginOptions {
   localDir: string
   token?: string
   claudeApiKey?: string
+  jiraBaseUrl?: string
+  jiraUserEmail?: string
+  jiraApiToken?: string
 }
 
 function buildAuthUrl(repoUrl: string, token?: string): string {
@@ -1185,30 +1188,30 @@ function createGitMiddleware(options: GitPluginOptions) {
     // ── /api/jira/* : Jira / Confluence 프록시 ──────────────────────────────────
     if (req.url?.startsWith('/api/jira/') || req.url?.startsWith('/api/confluence/')) {
       try {
-        // jira-config.json 로드 (없으면 404)
-        const jiraCfgPath = join(process.cwd(), '..', '..', 'jira-config.json')
-        if (!existsSync(jiraCfgPath)) {
-          sendJson(res, 503, { error: 'jira-config.json not found. Create C:\\TableMaster\\jira-config.json first.' })
+        // .env 파일의 환경 변수에서 읽기 (JIRA_BASE_URL, JIRA_USER_EMAIL, JIRA_API_TOKEN)
+        const jiraToken = options.jiraApiToken || ''
+        const jiraEmail = options.jiraUserEmail || ''
+        const jiraBase  = options.jiraBaseUrl   || ''
+
+        if (!jiraToken) {
+          sendJson(res, 503, { error: 'JIRA_API_TOKEN not set. Add it to .env file: JIRA_API_TOKEN=your_token' })
           return
         }
-        const cfgRaw = readFileSync(jiraCfgPath, 'utf-8')
-        const cfg = JSON.parse(cfgRaw) as { baseUrl: string; apiToken: string; userEmail: string }
-
-        if (!cfg.apiToken) {
-          sendJson(res, 503, { error: 'apiToken not set in jira-config.json' })
+        if (!jiraBase) {
+          sendJson(res, 503, { error: 'JIRA_BASE_URL not set. Add it to .env file: JIRA_BASE_URL=https://krafton.atlassian.net' })
           return
         }
 
         // Authorization 헤더 구성
         // Jira Cloud: Basic auth (email:token) 또는 Bearer (PAT)
         let authHeader: string
-        if (cfg.userEmail) {
-          authHeader = 'Basic ' + Buffer.from(`${cfg.userEmail}:${cfg.apiToken}`).toString('base64')
+        if (jiraEmail) {
+          authHeader = 'Basic ' + Buffer.from(`${jiraEmail}:${jiraToken}`).toString('base64')
         } else {
-          authHeader = 'Bearer ' + cfg.apiToken
+          authHeader = 'Bearer ' + jiraToken
         }
 
-        const baseUrl = cfg.baseUrl.replace(/\/$/, '')
+        const baseUrl = jiraBase.replace(/\/$/, '')
         const url2 = new URL(req.url, 'http://localhost')
 
         // ── /api/jira/search?jql=...&maxResults=20 ─────────────────────────
