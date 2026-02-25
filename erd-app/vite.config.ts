@@ -17,6 +17,7 @@ export default defineConfig(({ mode }) => {
         token: env.GITLAB_TOKEN || '',
         claudeApiKey: env.CLAUDE_API_KEY || '',
         jiraBaseUrl: env.JIRA_BASE_URL || '',
+        confluenceBaseUrl: env.CONFLUENCE_BASE_URL || env.JIRA_BASE_URL || '',
         jiraUserEmail: env.JIRA_USER_EMAIL || '',
         jiraApiToken: env.JIRA_API_TOKEN || '',
       }),

@@ -93,6 +93,7 @@ interface GitPluginOptions {
   token?: string
   claudeApiKey?: string
   jiraBaseUrl?: string
+  confluenceBaseUrl?: string
   jiraUserEmail?: string
   jiraApiToken?: string
 }
@@ -1192,18 +1193,18 @@ function createGitMiddleware(options: GitPluginOptions) {
         const jiraToken = options.jiraApiToken || ''
         const jiraEmail = options.jiraUserEmail || ''
         const jiraBase  = options.jiraBaseUrl   || ''
+        const confluenceBase = options.confluenceBaseUrl || jiraBase  // 별도 설정 없으면 jiraBase 사용
 
         if (!jiraToken) {
           sendJson(res, 503, { error: 'JIRA_API_TOKEN not set. Add it to .env file: JIRA_API_TOKEN=your_token' })
           return
         }
         if (!jiraBase) {
-          sendJson(res, 503, { error: 'JIRA_BASE_URL not set. Add it to .env file: JIRA_BASE_URL=https://krafton.atlassian.net' })
+          sendJson(res, 503, { error: 'JIRA_BASE_URL not set. Add it to .env file: JIRA_BASE_URL=https://cloud.jira.krafton.com' })
           return
         }
 
-        // Authorization 헤더 구성
-        // Jira Cloud: Basic auth (email:token) 또는 Bearer (PAT)
+        // Authorization 헤더 구성 (Jira & Confluence 동일 토큰 사용)
         let authHeader: string
         if (jiraEmail) {
           authHeader = 'Basic ' + Buffer.from(`${jiraEmail}:${jiraToken}`).toString('base64')
@@ -1211,14 +1212,34 @@ function createGitMiddleware(options: GitPluginOptions) {
           authHeader = 'Bearer ' + jiraToken
         }
 
-        const baseUrl = jiraBase.replace(/\/$/, '')
+        const baseUrl     = jiraBase.replace(/\/$/, '')        // Jira 전용
+        const confluenceUrl = confluenceBase.replace(/\/$/, '') // Confluence 전용
         const url2 = new URL(req.url, 'http://localhost')
 
         // ── /api/jira/search?jql=...&maxResults=20 ─────────────────────────
         if (req.url.startsWith('/api/jira/search')) {
-          const jql = url2.searchParams.get('jql') || ''
+          let jql = url2.searchParams.get('jql') || ''
           const maxResults = parseInt(url2.searchParams.get('maxResults') || '20', 10)
           const fields = url2.searchParams.get('fields') || 'summary,status,assignee,priority,issuetype,created,updated,description,comment,labels,components,fixVersions,reporter'
+
+          // Jira Cloud는 project 조건 없는 JQL을 400으로 차단함.
+          // JQL에 project 조건이 없으면 자동으로 전체 프로젝트 목록을 조회해 추가.
+          const hasProjectClause = /\bproject\b/i.test(jql)
+          if (!hasProjectClause) {
+            try {
+              const projResp = await fetch(`${baseUrl}/rest/api/3/project/search?maxResults=100&orderBy=name`, {
+                headers: { Authorization: authHeader, Accept: 'application/json' }
+              })
+              if (projResp.ok) {
+                const projData = await projResp.json() as { values?: { key: string }[] }
+                const keys = (projData.values ?? []).map((p: { key: string }) => p.key).filter(Boolean)
+                if (keys.length > 0) {
+                  const projectFilter = `project IN (${keys.map(k => `"${k}"`).join(',')}) AND `
+                  jql = projectFilter + (jql || 'ORDER BY created DESC')
+                }
+              }
+            } catch { /* 프로젝트 조회 실패 시 원래 JQL 사용 */ }
+          }
 
           const apiUrl = `${baseUrl}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${encodeURIComponent(fields)}`
 
@@ -1269,16 +1290,33 @@ function createGitMiddleware(options: GitPluginOptions) {
           const limit = parseInt(url2.searchParams.get('limit') || '10', 10)
           const expand = 'body.storage,version,space,ancestors'
 
-          const apiUrl = `${baseUrl}/wiki/rest/api/search?cql=${encodeURIComponent(cql)}&limit=${limit}&expand=${encodeURIComponent(expand)}`
-
-          const apiResp = await fetch(apiUrl, {
+          // v1 API 먼저 시도 (Confluence 전용 URL 사용)
+          const apiUrlV1 = `${confluenceUrl}/wiki/rest/api/search?cql=${encodeURIComponent(cql)}&limit=${limit}&expand=${encodeURIComponent(expand)}`
+          const apiRespV1 = await fetch(apiUrlV1, {
             headers: { Authorization: authHeader, Accept: 'application/json', 'X-Atlassian-Token': 'no-check' }
           })
-          const data = await apiResp.json()
-          if (!apiResp.ok) {
-            sendJson(res, apiResp.status, { error: data?.message ?? `Confluence API ${apiResp.status}`, raw: data })
+
+          // v1 403/404 → v2 API 시도
+          if (!apiRespV1.ok && (apiRespV1.status === 403 || apiRespV1.status === 404)) {
+            const apiUrlV2 = `${confluenceUrl}/wiki/api/v2/pages?limit=${limit}`
+            const apiRespV2 = await fetch(apiUrlV2, {
+              headers: { Authorization: authHeader, Accept: 'application/json' }
+            })
+            if (!apiRespV2.ok) {
+              const errV1 = await apiRespV1.json().catch(() => ({})) as Record<string,unknown>
+              const msg = (errV1?.message as string) ?? `Confluence API ${apiRespV1.status}: 계정에 Confluence 접근 권한이 없습니다. Atlassian 관리자에게 권한 요청이 필요합니다.`
+              sendJson(res, apiRespV1.status, { error: msg })
+            } else {
+              const data = await apiRespV2.json()
+              sendJson(res, 200, data)
+            }
           } else {
-            sendJson(res, 200, data)
+            const data = await apiRespV1.json()
+            if (!apiRespV1.ok) {
+              sendJson(res, apiRespV1.status, { error: (data as Record<string,unknown>)?.message ?? `Confluence API ${apiRespV1.status}` })
+            } else {
+              sendJson(res, 200, data)
+            }
           }
           return
         }
@@ -1286,7 +1324,7 @@ function createGitMiddleware(options: GitPluginOptions) {
         // ── /api/confluence/page/:id ────────────────────────────────────────
         if (req.url.startsWith('/api/confluence/page/')) {
           const pageId = url2.pathname.replace('/api/confluence/page/', '').split('?')[0]
-          const apiUrl = `${baseUrl}/wiki/rest/api/content/${pageId}?expand=body.storage,version,space,ancestors,children.page`
+          const apiUrl = `${confluenceUrl}/wiki/rest/api/content/${pageId}?expand=body.storage,version,space,ancestors,children.page`
 
           const apiResp = await fetch(apiUrl, {
             headers: { Authorization: authHeader, Accept: 'application/json' }
