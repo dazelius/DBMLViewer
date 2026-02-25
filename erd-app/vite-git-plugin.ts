@@ -97,6 +97,8 @@ interface GitPluginOptions {
   jiraUserEmail?: string
   jiraApiToken?: string
   jiraDefaultProject?: string
+  confluenceUserEmail?: string
+  confluenceApiToken?: string
 }
 
 function buildAuthUrl(repoUrl: string, token?: string): string {
@@ -1190,11 +1192,15 @@ function createGitMiddleware(options: GitPluginOptions) {
     // ── /api/jira/* : Jira / Confluence 프록시 ──────────────────────────────────
     if (req.url?.startsWith('/api/jira/') || req.url?.startsWith('/api/confluence/')) {
       try {
-        // .env 파일의 환경 변수에서 읽기 (JIRA_BASE_URL, JIRA_USER_EMAIL, JIRA_API_TOKEN)
-        const jiraToken = options.jiraApiToken || ''
-        const jiraEmail = options.jiraUserEmail || ''
-        const jiraBase  = options.jiraBaseUrl   || ''
-        const confluenceBase = options.confluenceBaseUrl || jiraBase  // 별도 설정 없으면 jiraBase 사용
+        // .env 파일의 환경 변수에서 읽기
+        const jiraToken      = options.jiraApiToken       || ''
+        const jiraEmail      = options.jiraUserEmail      || ''
+        const jiraBase       = options.jiraBaseUrl        || ''
+        const confluenceBase = options.confluenceBaseUrl  || jiraBase
+
+        // Confluence 전용 토큰 (없으면 Jira 토큰 사용)
+        const confToken = options.confluenceApiToken || jiraToken
+        const confEmail = options.confluenceUserEmail || jiraEmail
 
         if (!jiraToken) {
           sendJson(res, 503, { error: 'JIRA_API_TOKEN not set. Add it to .env file: JIRA_API_TOKEN=your_token' })
@@ -1205,15 +1211,17 @@ function createGitMiddleware(options: GitPluginOptions) {
           return
         }
 
-        // Authorization 헤더 구성 (Jira & Confluence 동일 토큰 사용)
-        let authHeader: string
-        if (jiraEmail) {
-          authHeader = 'Basic ' + Buffer.from(`${jiraEmail}:${jiraToken}`).toString('base64')
-        } else {
-          authHeader = 'Bearer ' + jiraToken
-        }
+        // Jira 인증 헤더
+        const authHeader: string = jiraEmail
+          ? 'Basic ' + Buffer.from(`${jiraEmail}:${jiraToken}`).toString('base64')
+          : 'Bearer ' + jiraToken
 
-        const baseUrl     = jiraBase.replace(/\/$/, '')        // Jira 전용
+        // Confluence 인증 헤더 (별도 토큰이 있으면 사용)
+        const confAuthHeader: string = confEmail
+          ? 'Basic ' + Buffer.from(`${confEmail}:${confToken}`).toString('base64')
+          : 'Bearer ' + confToken
+
+        const baseUrl      = jiraBase.replace(/\/$/, '')        // Jira 전용
         const confluenceUrl = confluenceBase.replace(/\/$/, '') // Confluence 전용
         const url2 = new URL(req.url, 'http://localhost')
 
@@ -1245,12 +1253,24 @@ function createGitMiddleware(options: GitPluginOptions) {
 
             if (projectKeys.length > 0) {
               const trimmedJql = jql.trim()
-              const projectPart = `project IN (${projectKeys.map(k => `"${k}"`).join(',')})`
-              if (!trimmedJql || trimmedJql.toUpperCase().startsWith('ORDER BY')) {
-                // 조건 없거나 ORDER BY만 있으면: project IN (...) ORDER BY ...
-                jql = `${projectPart} ${trimmedJql || 'ORDER BY created DESC'}`.trim()
+              // JQL에서 프로젝트 키는 따옴표 없이 사용 (쌍따옴표는 Jira Cloud에서 오류 발생)
+              const projectPart = projectKeys.length === 1
+                ? `project = ${projectKeys[0]}`
+                : `project IN (${projectKeys.join(',')})`
+
+              // ORDER BY만 있거나 완전히 비어있는 경우
+              const upperJql = trimmedJql.toUpperCase()
+              const orderByIdx = upperJql.indexOf('ORDER BY')
+              if (!trimmedJql) {
+                jql = `${projectPart} ORDER BY created DESC`
+              } else if (upperJql.startsWith('ORDER BY')) {
+                jql = `${projectPart} ${trimmedJql}`
+              } else if (orderByIdx > 0) {
+                // 조건 + ORDER BY 혼합: 조건 앞에만 project 추가
+                const condPart = trimmedJql.substring(0, orderByIdx).trim()
+                const orderPart = trimmedJql.substring(orderByIdx)
+                jql = `${projectPart} AND ${condPart} ${orderPart}`.trim()
               } else {
-                // 기존 조건 앞에 project 조건 추가
                 jql = `${projectPart} AND ${trimmedJql}`
               }
             }
@@ -1305,33 +1325,20 @@ function createGitMiddleware(options: GitPluginOptions) {
           const limit = parseInt(url2.searchParams.get('limit') || '10', 10)
           const expand = 'body.storage,version,space,ancestors'
 
-          // v1 API 먼저 시도 (Confluence 전용 URL 사용)
+          // Confluence REST API v1
+          const confHeaders = { Authorization: confAuthHeader, Accept: 'application/json', 'X-Atlassian-Token': 'no-check' }
           const apiUrlV1 = `${confluenceUrl}/wiki/rest/api/search?cql=${encodeURIComponent(cql)}&limit=${limit}&expand=${encodeURIComponent(expand)}`
-          const apiRespV1 = await fetch(apiUrlV1, {
-            headers: { Authorization: authHeader, Accept: 'application/json', 'X-Atlassian-Token': 'no-check' }
-          })
+          const apiRespV1 = await fetch(apiUrlV1, { headers: confHeaders })
 
-          // v1 403/404 → v2 API 시도
-          if (!apiRespV1.ok && (apiRespV1.status === 403 || apiRespV1.status === 404)) {
-            const apiUrlV2 = `${confluenceUrl}/wiki/api/v2/pages?limit=${limit}`
-            const apiRespV2 = await fetch(apiUrlV2, {
-              headers: { Authorization: authHeader, Accept: 'application/json' }
-            })
-            if (!apiRespV2.ok) {
-              const errV1 = await apiRespV1.json().catch(() => ({})) as Record<string,unknown>
-              const msg = (errV1?.message as string) ?? `Confluence API ${apiRespV1.status}: 계정에 Confluence 접근 권한이 없습니다. Atlassian 관리자에게 권한 요청이 필요합니다.`
-              sendJson(res, apiRespV1.status, { error: msg })
-            } else {
-              const data = await apiRespV2.json()
-              sendJson(res, 200, data)
-            }
+          if (!apiRespV1.ok) {
+            const errBody = await apiRespV1.json().catch(() => ({})) as Record<string,unknown>
+            const msg = (errBody?.message as string) ?? `Confluence 검색 실패 (${apiRespV1.status})`
+            const hint = apiRespV1.status === 403
+              ? `${msg} — CONFLUENCE_API_TOKEN 또는 CONFLUENCE_USER_EMAIL을 .env에 별도로 설정하세요.`
+              : msg
+            sendJson(res, apiRespV1.status, { error: hint, raw: errBody })
           } else {
-            const data = await apiRespV1.json()
-            if (!apiRespV1.ok) {
-              sendJson(res, apiRespV1.status, { error: (data as Record<string,unknown>)?.message ?? `Confluence API ${apiRespV1.status}` })
-            } else {
-              sendJson(res, 200, data)
-            }
+            sendJson(res, 200, await apiRespV1.json())
           }
           return
         }
@@ -1342,7 +1349,7 @@ function createGitMiddleware(options: GitPluginOptions) {
           const apiUrl = `${confluenceUrl}/wiki/rest/api/content/${pageId}?expand=body.storage,version,space,ancestors,children.page`
 
           const apiResp = await fetch(apiUrl, {
-            headers: { Authorization: authHeader, Accept: 'application/json' }
+            headers: { Authorization: confAuthHeader, Accept: 'application/json' }
           })
           const data = await apiResp.json()
           if (!apiResp.ok) {

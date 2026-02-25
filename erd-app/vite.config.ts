@@ -21,6 +21,8 @@ export default defineConfig(({ mode }) => {
         jiraUserEmail: env.JIRA_USER_EMAIL || '',
         jiraApiToken: env.JIRA_API_TOKEN || '',
         jiraDefaultProject: env.JIRA_DEFAULT_PROJECT || '',
+        confluenceUserEmail: env.CONFLUENCE_USER_EMAIL || '',
+        confluenceApiToken: env.CONFLUENCE_API_TOKEN || '',
       }),
     ],
     base: '/TableMaster',
