@@ -319,7 +319,7 @@ const TOOLS = [
           description:
             '<body> 태그 안에 들어갈 HTML 내용만 작성하세요 (<!DOCTYPE html>, <html>, <head>, <body> 태그 불필요). ' +
             '필요한 CSS는 <style> 태그로 html 값 안에 포함 가능. ' +
-            '이미지는 <img src="/api/images/file?path=Texture/폴더/파일명.png"> 형식으로 참조. ' +
+            '이미지는 반드시 find_resource_image 도구로 검색한 relPath를 사용: <img src="/api/images/file?path={relPath}">. 경로 직접 추측 금지. ' +
             '다크 테마(--bg:#0f1117, --text:#e2e8f0, --accent:#6366f1), 한국어, 표/카드 레이아웃. ' +
             '가능한 간결하게 핵심 정보만 담아 500줄 이내로 작성하세요.',
         },
@@ -355,7 +355,9 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- ⚠️ 절대로 "아티팩트를 만들겠습니다", "HTML을 생성하겠습니다" 등의 선언 후 멈추지 마세요. 선언 없이 즉시 툴을 호출하세요.');
   lines.push('- 반드시 먼저 다른 툴로 데이터를 충분히 수집한 후 create_artifact를 마지막에 호출하세요.');
   lines.push('- html 파라미터: <!DOCTYPE html> 없이 <body> 내용만 작성 (간결하게 500줄 이내).');
-  lines.push('- 이미지: <img src="/api/images/file?path=Texture/.../파일명.png">');
+  lines.push('- ⚠️ 이미지 경로 규칙: 반드시 find_resource_image 도구로 검색한 결과의 relPath만 사용하세요. 경로를 직접 추측하거나 Icon/ 같은 폴더를 임의로 추가하지 마세요.');
+  lines.push('  올바른 예: find_resource_image 결과 relPath가 "Texture/Skill/icon_skill_passive_striker_01.png"이면 → <img src="/api/images/file?path=Texture/Skill/icon_skill_passive_striker_01.png">');
+  lines.push('  틀린 예: Texture/Icon/Skill/... (Icon/ 폴더 없음), Texture/Icons/... (없는 경로 추측 금지)');
   lines.push('- 스타일: 다크 테마(배경 #0f1117, 텍스트 #e2e8f0, 포인트 #6366f1), 표/카드 레이아웃.');
   lines.push('');
   lines.push('[중요] "관계도 보여줘", "ERD 보여줘" 요청에는 가장 핵심이 되는 테이블 1개만 show_table_schema를 호출하세요.');
