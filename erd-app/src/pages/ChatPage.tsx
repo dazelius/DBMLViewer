@@ -1704,97 +1704,84 @@ hr{border:none;border-top:1px solid #334155;margin:16px 0}
 // base href 를 parent origin 으로 설정
 try{document.getElementById('dynbase').href=parent.location.origin+'/';}catch(e){}
 </script>
-<script type="module" id="__fbx_viewer_init__"></script>
+<script id="__fbx_viewer_init__"></script>
 </head><body></body></html>`;
 
-// ── FBX 인라인 뷰어 스크립트 ─────────────────────────────────────────────────
-// 아티팩트 HTML 안의 <a href="*.fbx"> 또는 <div class="fbx-viewer" data-src="...">를
-// Three.js CDN으로 인라인 3D 뷰어로 교체한다.
+// ── FBX postMessage 클릭 가로채기 스크립트 ────────────────────────────────────
+// sandbox iframe 안에서 FBX 링크 클릭 시 parent.postMessage로 전달
+// (type=module / CDN import 불필요 - 단순 inline script로 작동)
 const FBX_VIEWER_SCRIPT = `
 (function(){
-  var THREE_CDN   = 'https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js';
-  var FBX_CDN     = 'https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/loaders/FBXLoader.js';
-  var INFLATE_CDN = 'https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/libs/fflate.module.js';
-  var ORBIT_CDN   = 'https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/controls/OrbitControls.js';
-
-  function makePlaceholder(url, label) {
-    var d = document.createElement('div');
-    d.style.cssText = 'background:#0f1117;border:1px solid #334155;border-radius:8px;overflow:hidden;margin:8px 0;';
-    d.innerHTML =
-      '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#1e293b;">' +
-        '<span style="color:#818cf8;font-size:12px;font-family:monospace;">' + (label||url.split('/').pop().split('?').pop()) + '</span>' +
-        '<button data-fbx-url="'+url+'" style="background:#6366f1;color:#fff;border:none;border-radius:5px;padding:4px 12px;font-size:11px;cursor:pointer;">▶ 3D 뷰어</button>' +
-      '</div>' +
-      '<div class="fbx-canvas-wrap" style="display:none;height:380px;position:relative;"></div>';
-    return d;
+  function toApiUrl(href) {
+    if (!href) return null;
+    // 이미 API URL인 경우
+    if (href.includes('/api/assets/')) return href;
+    // *.fbx 경로면 api url로 변환
+    if (/\\.fbx/i.test(href)) {
+      var clean = href.replace(/^[./]+/, '');
+      return '/api/assets/file?path=' + encodeURIComponent(clean);
+    }
+    return null;
   }
 
-  function initViewer(wrap, url) {
-    wrap.style.display = 'block';
-    import(THREE_CDN).then(function(THREE) {
-      var scene    = new THREE.Scene(); scene.background = new THREE.Color(0x1a1b26);
-      var camera   = new THREE.PerspectiveCamera(60, wrap.clientWidth/380, 0.1, 10000);
-      camera.position.set(0,150,300);
-      var renderer = new THREE.WebGLRenderer({antialias:true});
-      renderer.setPixelRatio(window.devicePixelRatio);
-      renderer.setSize(wrap.clientWidth, 380);
-      wrap.appendChild(renderer.domElement);
-      scene.add(new THREE.AmbientLight(0xffffff,0.8));
-      var dl = new THREE.DirectionalLight(0xffffff,0.6); dl.position.set(1,2,1); scene.add(dl);
-      Promise.all([import(FBX_CDN), import(ORBIT_CDN)]).then(function(mods){
-        var FBXLoader     = mods[0].FBXLoader;
-        var OrbitControls = mods[1].OrbitControls;
-        var ctrl = new OrbitControls(camera, renderer.domElement);
-        ctrl.enableDamping = true;
-        new FBXLoader().load(url, function(obj){
-          var box = new THREE.Box3().setFromObject(obj);
-          var c   = box.getCenter(new THREE.Vector3());
-          var s   = box.getSize(new THREE.Vector3());
-          var sc  = 150/Math.max(s.x,s.y,s.z);
-          obj.scale.setScalar(sc); obj.position.sub(c.multiplyScalar(sc));
-          scene.add(obj);
-          camera.position.set(0, s.y*sc*0.6, s.z*sc*1.8);
-          ctrl.target.set(0,0,0); ctrl.update();
-          (function animate(){ requestAnimationFrame(animate); ctrl.update(); renderer.render(scene,camera); })();
-        }, undefined, function(e){ wrap.innerHTML='<div style="color:#f87171;padding:12px;font-size:12px;">FBX 로드 실패: '+e.message+'</div>'; });
-      });
-    });
+  function labelFrom(el) {
+    return el.getAttribute('data-label') ||
+           el.getAttribute('title') ||
+           (el.textContent||'').trim().replace(/^[▶👁️\\s]+/,'').replace(/[\\(\\)]/g,'').trim() ||
+           el.getAttribute('href')||'';
   }
 
-  function convertLinks() {
-    // 1) <a href="...fbx..."> → placeholder
-    document.querySelectorAll('a[href*=".fbx"], a[href*="assets/file"]').forEach(function(a){
-      var href = a.getAttribute('href');
-      if (!href || !href.match(/\\.fbx|assets\\/file/i)) return;
-      var label = a.textContent.trim() || a.querySelector('img')? (a.querySelector('img')? '' : a.textContent) : '';
-      var ph = makePlaceholder(href, a.title || label || null);
-      a.parentNode.replaceChild(ph, a);
+  function makeFbxButton(url, label) {
+    var btn = document.createElement('button');
+    btn.setAttribute('data-fbx-url', url);
+    btn.style.cssText =
+      'display:inline-flex;align-items:center;gap:6px;background:#3730a3;color:#e0e7ff;' +
+      'border:1px solid #4f46e5;border-radius:6px;padding:5px 12px;font-size:12px;' +
+      'cursor:pointer;font-family:monospace;margin:2px 0;';
+    var name = url.split('/').pop().split('?')[0] || label;
+    btn.innerHTML =
+      '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+        '<path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>' +
+      '</svg>' +
+      '<span>3D 뷰어</span>' +
+      '<span style="opacity:.6;font-size:10px;">' + name + '</span>';
+    btn.addEventListener('click', function(e){
+      e.preventDefault(); e.stopPropagation();
+      try { parent.postMessage({ type: 'openFbx', url: url, label: name }, '*'); } catch(ex){}
     });
-    // 2) <div class="fbx-viewer" data-src="..."> → placeholder
-    document.querySelectorAll('.fbx-viewer[data-src], div[data-fbx]').forEach(function(d){
-      var url = d.getAttribute('data-src') || d.getAttribute('data-fbx');
-      if (!url) return;
-      var ph = makePlaceholder(url, d.getAttribute('data-label') || null);
-      d.parentNode.replaceChild(ph, d);
+    return btn;
+  }
+
+  function processAll() {
+    // 1) <a href="...fbx..."> 링크 → 버튼으로 교체
+    document.querySelectorAll('a').forEach(function(a){
+      var href = a.getAttribute('href') || '';
+      var apiUrl = toApiUrl(href);
+      if (!apiUrl) return;
+      var btn = makeFbxButton(apiUrl, labelFrom(a));
+      try { a.parentNode.replaceChild(btn, a); } catch(ex){}
     });
-    // 버튼 클릭 이벤트
-    document.addEventListener('click', function(e){
-      var btn = e.target.closest('button[data-fbx-url]');
-      if (!btn) return;
-      var url  = btn.getAttribute('data-fbx-url');
-      var wrap = btn.closest('div').nextElementSibling;
-      if (wrap && wrap.classList.contains('fbx-canvas-wrap')) {
-        btn.style.display = 'none';
-        initViewer(wrap, url);
-      }
+    // 2) <div class="fbx-viewer" data-src="..."> → 버튼
+    document.querySelectorAll('.fbx-viewer[data-src],[data-fbx]').forEach(function(d){
+      var src = d.getAttribute('data-src') || d.getAttribute('data-fbx');
+      if (!src) return;
+      var apiUrl = toApiUrl(src) || src;
+      var wrap = document.createElement('div');
+      wrap.style.cssText = 'background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 14px;margin:8px 0;';
+      wrap.appendChild(makeFbxButton(apiUrl, d.getAttribute('data-label')||''));
+      try { d.parentNode.replaceChild(wrap, d); } catch(ex){}
     });
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', convertLinks);
+    document.addEventListener('DOMContentLoaded', processAll);
   } else {
-    convertLinks();
+    processAll();
   }
+  // body 변경 감지 (스트리밍 중 innerHTML 갱신 대응)
+  new MutationObserver(function(){ processAll(); }).observe(
+    document.documentElement, { childList: true, subtree: true }
+  );
 })();
 `;
 
@@ -1851,6 +1838,21 @@ function ArtifactSidePanel({
   // html 이 빨리 와도 iframe 이 아직 로드 전일 수 있으므로 ref 에 최신 값 캐시
   const pendingHtmlRef = useRef('');
 
+  // ── FBX 모달 (postMessage로 iframe → 부모 전달) ──────────────────────────────
+  const [fbxModalUrl, setFbxModalUrl] = useState<string | null>(null);
+  const [fbxModalLabel, setFbxModalLabel] = useState('');
+
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type === 'openFbx' && e.data.url) {
+        setFbxModalUrl(e.data.url);
+        setFbxModalLabel(e.data.label || '');
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
   const handleStreamIframeLoad = useCallback(() => {
     setStreamIframeReady(true);
     // 로드 완료 시 이미 쌓인 html 이 있으면 즉시 반영
@@ -1858,6 +1860,9 @@ function ArtifactSidePanel({
     if (doc?.body && pendingHtmlRef.current) {
       doc.body.innerHTML = pendingHtmlRef.current;
     }
+    // FBX 스크립트 주입
+    const existing = doc?.getElementById('__fbx_viewer_init__');
+    if (existing && !existing.textContent) existing.textContent = FBX_VIEWER_SCRIPT;
   }, []);
 
   // html prop 이 바뀔 때마다 iframe body 직접 갱신 (React 가상DOM 우회)
@@ -1883,7 +1888,7 @@ function ArtifactSidePanel({
     const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
     const fullHtml = resolved.includes('<!DOCTYPE') || resolved.includes('<html')
       ? resolved
-      : `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">${base}<title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}ul,ol{padding-left:1.4em;margin:.4em 0}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script><script type="module">${FBX_VIEWER_SCRIPT}</script>${MERMAID_INIT_SCRIPT}</head><body>${resolved}</body></html>`;
+      : `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">${base}<title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}ul,ol{padding-left:1.4em;margin:.4em 0}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script><script>${FBX_VIEWER_SCRIPT}</script>${MERMAID_INIT_SCRIPT}</head><body>${resolved}</body></html>`;
     const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     setCompleteBlobUrl(url);
@@ -2064,6 +2069,24 @@ function ArtifactSidePanel({
           </svg>
         </button>
       </div>
+
+      {/* ── FBX 모달 오버레이 (postMessage from iframe) ── */}
+      {fbxModalUrl && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.8)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: '80vw', maxWidth: 900, background: '#0f1117', borderRadius: 12, overflow: 'hidden', border: '1px solid #334155', boxShadow: '0 24px 64px rgba(0,0,0,0.7)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', background: '#1e293b', borderBottom: '1px solid #334155' }}>
+              <span style={{ color: '#818cf8', fontSize: 13, fontFamily: 'monospace' }}>🧊 {fbxModalLabel || fbxModalUrl.split('/').pop()}</span>
+              <button
+                onClick={() => setFbxModalUrl(null)}
+                style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6, padding: '3px 10px', fontSize: 12, cursor: 'pointer' }}
+              >✕ 닫기</button>
+            </div>
+            <div style={{ height: '65vh' }}>
+              <FbxViewerLazy url={fbxModalUrl} filename={fbxModalLabel} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── 콘텐츠 영역 ── */}
       <div className="flex-1 overflow-hidden flex flex-col relative min-h-0">
