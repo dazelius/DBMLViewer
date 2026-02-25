@@ -36,18 +36,30 @@ const ALASQL_RESERVED_AS_TABLE = new Set([
 ]);
 
 /**
- * 등록된 테이블명 중 alasql 예약어와 겹치는 것을 백틱으로 이스케이프합니다.
- * FROM/JOIN/INTO 뒤, 혹은 단독으로 나타나는 경우를 처리합니다.
+ * 예약어 테이블명 → 안전한 내부명 변환 (alasql이 파싱조차 못하므로 백틱도 소용없음)
+ * 예) Enum → __u_enum,  Index → __u_index
  */
-function escapeReservedTableNames(sql: string, knownTableNames: string[]): string {
+function safeInternalName(name: string): string {
+  return `__u_${name.toLowerCase()}`;
+}
+
+/**
+ * SQL 내 예약어 테이블명을 안전한 내부명으로 치환합니다.
+ * 백틱/큰따옴표/대괄호로 이미 감싸진 것도 포함하여 모두 치환합니다.
+ */
+function remapReservedTableNames(sql: string, remap: Map<string, string>): string {
   let result = sql;
-  for (const name of knownTableNames) {
-    if (!ALASQL_RESERVED_AS_TABLE.has(name.toUpperCase())) continue;
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // 이미 백틱/큰따옴표로 감싸진 것은 건너뜀, 단어 경계 기준으로 치환
+  for (const [original, internal] of remap) {
+    const esc = original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // 이미 따옴표 계열로 감싸진 형태 먼저 치환
+    result = result
+      .replace(new RegExp(`\`${esc}\``, 'gi'), internal)
+      .replace(new RegExp(`"${esc}"`, 'gi'), internal)
+      .replace(new RegExp(`\\[${esc}\\]`, 'gi'), internal);
+    // 날 identifier (단어 경계)
     result = result.replace(
-      new RegExp(`(?<!['\`"])\\b${escaped}\\b(?!['\`"])`, 'gi'),
-      `\`${name}\``,
+      new RegExp(`(?<!['\`"\\[])\\b${esc}\\b(?!['\`"\\]])`, 'gi'),
+      internal,
     );
   }
   return result;
@@ -60,23 +72,22 @@ function escapeReservedTableNames(sql: string, knownTableNames: string[]): strin
  *     effect_type AS 효과타입  →  effect_type
  */
 function stripKoreanAliases(sql: string): string {
-  // AS 뒤에 한글이 포함된 별칭을 제거 (문자열 리터럴 내부는 제외)
-  // 패턴: \bAS\b 뒤 공백 + 한글 포함 식별자 (백틱/따옴표 없는 경우만)
   return sql.replace(/\bAS\s+([^\s,)\]`'"]+[\uAC00-\uD7A3\u3131-\u318E][^\s,)\]`'"]*)/gi, '');
 }
 
 /**
  * SQL 식별자를 alasql 호환 형태로 변환합니다.
- * 1) "큰따옴표 식별자" → `백틱 식별자`   예) c."#char_memo" → c.`#char_memo`
- * 2) 따옴표 없는 #컬럼명 → `#컬럼명`     예) s.#name_memo  → s.`#name_memo`
- * 3) AS 뒤 한글 별칭 제거 (alasql 파싱 오류 방지)
+ * 1) "큰따옴표 식별자" → `백틱 식별자`
+ * 2) 따옴표 없는 #컬럼명 → `#컬럼명`
+ * 3) AS 뒤 한글 별칭 제거
+ * 4) 예약어 테이블명 → 안전한 내부명 (remap)
  */
-function normalizeIdentifiers(sql: string, knownTableNames?: string[]): string {
+function normalizeIdentifiers(sql: string, remap?: Map<string, string>): string {
   let result = sql.replace(/"([^"]+)"/g, '`$1`');
   result = result.replace(/(?<!`)#(\w+)/g, '`#$1`');
   result = stripKoreanAliases(result);
-  if (knownTableNames && knownTableNames.length > 0) {
-    result = escapeReservedTableNames(result, knownTableNames);
+  if (remap && remap.size > 0) {
+    result = remapReservedTableNames(result, remap);
   }
   return result;
 }
@@ -229,11 +240,13 @@ export function executeDataSQL(
       for (const t of schema.tables) properNameMap.set(t.name.toLowerCase(), t.name);
     }
 
-    // alasql 테이블 등록 + 등록된 테이블 이름 수집
-    const registeredTableNames: string[] = [];
+    // alasql 테이블 등록
+    // 예약어와 겹치는 테이블명은 안전한 내부명(__u_xxx)으로 등록하고
+    // SQL 실행 전 치환 맵(remap)에 기록한다.
+    const remap = new Map<string, string>(); // 원본명 → 내부명
+
     for (const [key, { rows }] of tableData) {
       const name = properNameMap.get(key) ?? key;
-      registeredTableNames.push(name);
 
       // 컬럼명 소문자 정규화 (alasql 식별자 처리 방식 대응)
       const normalizedRows = rows.map(row => {
@@ -242,10 +255,18 @@ export function executeDataSQL(
         return r;
       });
 
-      // 소문자 · 원본명 · 대문자 세 가지 변형 모두 등록 (대소문자 구분 방지)
-      for (const tName of new Set([name.toLowerCase(), name, name.toUpperCase()])) {
-        if (!alasql.tables[tName]) alasql(`CREATE TABLE IF NOT EXISTS \`${tName}\``);
-        alasql.tables[tName].data = normalizedRows;
+      if (ALASQL_RESERVED_AS_TABLE.has(name.toUpperCase())) {
+        // 예약어 테이블: 안전한 내부명으로 등록
+        const internal = safeInternalName(name);
+        remap.set(name, internal);
+        if (!alasql.tables[internal]) alasql(`CREATE TABLE IF NOT EXISTS \`${internal}\``);
+        alasql.tables[internal].data = normalizedRows;
+      } else {
+        // 일반 테이블: 소문자·원본·대문자 세 변형 모두 등록
+        for (const tName of new Set([name.toLowerCase(), name, name.toUpperCase()])) {
+          if (!alasql.tables[tName]) alasql(`CREATE TABLE IF NOT EXISTS \`${tName}\``);
+          alasql.tables[tName].data = normalizedRows;
+        }
       }
     }
 
@@ -263,9 +284,8 @@ export function executeDataSQL(
     const stmts = splitStatements(stripped);
 
     if (stmts.length > 1) {
-      // 각 구문을 전처리 후 실행 (예약어 테이블명 이스케이프 포함)
       const multiResults: SingleResult[] = stmts.map(stmt => {
-        const processed = normalizeIdentifiers(stmt, registeredTableNames);
+        const processed = normalizeIdentifiers(stmt, remap);
         return execOne(processed);
       });
       const totalRows = multiResults.reduce((s, r) => s + r.rowCount, 0);
@@ -276,8 +296,8 @@ export function executeDataSQL(
       };
     }
 
-    // 단일 구문 (예약어 테이블명 이스케이프 포함)
-    const processed = normalizeIdentifiers(stmts[0], registeredTableNames);
+    // 단일 구문
+    const processed = normalizeIdentifiers(stmts[0], remap);
     const result = alasql(processed) as Row[];
 
     if (!Array.isArray(result)) {
