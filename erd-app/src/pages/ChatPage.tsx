@@ -1320,6 +1320,26 @@ th,td{border:1px solid #334155;padding:6px;font-size:12px}th{background:#1e293b}
 // ── 아티팩트 사이드 패널 (우측 절반 스트리밍 뷰) ────────────────────────────
 
 // iframe이 한 번만 로드되는 수신기 HTML (postMessage로 innerHTML 업데이트)
+// 이미지 onerror smart fallback 스크립트 (경로 틀려도 파일명으로 재시도)
+const IMG_ONERROR_SCRIPT = `
+document.addEventListener('error', function(e) {
+  var img = e.target;
+  if (!img || img.tagName !== 'IMG') return;
+  var src = img.getAttribute('src') || '';
+  if (!src.includes('/api/images/') || img.dataset.smartRetried) return;
+  img.dataset.smartRetried = '1';
+  var filename = src.split('/').pop().split('?')[0];
+  if (!filename) return;
+  // path 파라미터에서 파일명만 추출
+  var pathParam = src.match(/[?&]path=([^&]+)/);
+  if (pathParam) {
+    var parts = decodeURIComponent(pathParam[1]).split('/');
+    filename = parts[parts.length - 1];
+  }
+  img.src = '/api/images/smart?name=' + encodeURIComponent(filename);
+}, true);
+`;
+
 const STREAM_RECEIVER_SRCDOC = `<!DOCTYPE html>
 <html lang="ko"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -1344,6 +1364,7 @@ const STREAM_RECEIVER_SRCDOC = `<!DOCTYPE html>
 </head>
 <body>
 <script>
+  ${IMG_ONERROR_SCRIPT}
   window.addEventListener('message', function(e) {
     if (e.data && e.data.type === 'artifact-update') {
       document.body.innerHTML = e.data.html;
@@ -1556,7 +1577,7 @@ function ArtifactCard({ tc }: { tc: ArtifactResult }) {
     *, *::before, *::after { box-sizing: border-box; }
     body { margin: 16px; font-family: 'Segoe UI', sans-serif; font-size: 13px;
            background: #0f1117; color: #e2e8f0; line-height: 1.6; }
-    h1,h2,h3,h4 { color: #fff; margin: 0.8em 0 0.4em; }
+    h1,h2,h3,h4,h5,h6 { color: #fff; margin: 0.8em 0 0.4em; }
     table { width: 100%; border-collapse: collapse; margin-bottom: 1em; }
     th, td { border: 1px solid #334155; padding: 6px 10px; text-align: left; font-size: 12px; }
     th { background: #1e293b; color: #94a3b8; font-weight: 600; }
@@ -1574,6 +1595,7 @@ function ArtifactCard({ tc }: { tc: ArtifactResult }) {
       .embed-table td { color: #1e293b; }
     }
   </style>
+  <script>${IMG_ONERROR_SCRIPT}</script>
 </head>
 <body>
 ${resolved}

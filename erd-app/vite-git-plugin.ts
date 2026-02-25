@@ -188,10 +188,42 @@ function createGitMiddleware(options: GitPluginOptions) {
       // 경로 traversal 방지
       const safePath = join(IMAGES_DIR, relPath.replace(/\.\./g, ''))
       if (!safePath.startsWith(IMAGES_DIR) || !existsSync(safePath)) {
+        // 경로를 찾지 못했을 때 파일명만으로 smart fallback
+        const basename = relPath.split('/').pop() ?? ''
+        if (basename) {
+          const all: { name: string; path: string; relPath: string }[] = []
+          walkImages(IMAGES_DIR, '', all)
+          const match = all.find(f => f.name.toLowerCase() === basename.toLowerCase().replace(/\.png$/i, ''))
+            ?? all.find(f => f.relPath.toLowerCase().endsWith('/' + basename.toLowerCase()))
+          if (match) {
+            const buf = readFileSync(match.path)
+            res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600', 'X-Resolved-Path': match.relPath })
+            res.end(buf)
+            return
+          }
+        }
         res.writeHead(404); res.end('not found'); return
       }
       const buf = readFileSync(safePath)
       res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' })
+      res.end(buf)
+      return
+    }
+
+    // ── /api/images/smart : 파일명으로 스마트 검색 (폴더 몰라도 됨) ──────────────
+    if (req.url?.startsWith('/api/images/smart')) {
+      const url = new URL(req.url, 'http://localhost')
+      const name = (url.searchParams.get('name') || '').toLowerCase().replace(/\.png$/i, '')
+      if (!name) { res.writeHead(400); res.end('name required'); return }
+      const all: { name: string; path: string; relPath: string }[] = []
+      walkImages(IMAGES_DIR, '', all)
+      // 정확한 파일명 우선, 부분 일치 후순위
+      const match = all.find(f => f.name.toLowerCase() === name)
+        ?? all.find(f => f.name.toLowerCase().includes(name))
+        ?? all.find(f => name.includes(f.name.toLowerCase()))
+      if (!match) { res.writeHead(404); res.end('not found'); return }
+      const buf = readFileSync(match.path)
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600', 'X-Resolved-Path': match.relPath })
       res.end(buf)
       return
     }

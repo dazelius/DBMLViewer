@@ -323,7 +323,7 @@ const TOOLS = [
           description:
             '<body> 태그 안에 들어갈 HTML 내용만 작성하세요 (<!DOCTYPE html>, <html>, <head>, <body> 태그 불필요). ' +
             '필요한 CSS는 <style> 태그로 html 값 안에 포함 가능. ' +
-            '이미지는 반드시 find_resource_image 도구로 검색한 relPath를 사용: <img src="/api/images/file?path={relPath}">. 경로 직접 추측 금지. ' +
+            '이미지: 경로 알면 /api/images/file?path=Texture/폴더/파일명.png, 불확실하면 /api/images/smart?name=파일명.png (폴더 몰라도 자동 검색). ' +
             '다크 테마(--bg:#0f1117, --text:#e2e8f0, --accent:#6366f1), 한국어, 표/카드 레이아웃. ' +
             '가능한 간결하게 핵심 정보만 담아 500줄 이내로 작성하세요.',
         },
@@ -359,9 +359,12 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- ⚠️ 절대로 "아티팩트를 만들겠습니다", "HTML을 생성하겠습니다" 등의 선언 후 멈추지 마세요. 선언 없이 즉시 툴을 호출하세요.');
   lines.push('- 반드시 먼저 다른 툴로 데이터를 충분히 수집한 후 create_artifact를 마지막에 호출하세요.');
   lines.push('- html 파라미터: <!DOCTYPE html> 없이 <body> 내용만 작성 (간결하게 500줄 이내).');
-  lines.push('- ⚠️ 이미지 경로 규칙: 반드시 find_resource_image 도구로 검색한 결과의 relPath만 사용하세요. 경로를 직접 추측하거나 Icon/ 같은 폴더를 임의로 추가하지 마세요.');
-  lines.push('  올바른 예: find_resource_image 결과 relPath가 "Texture/Skill/icon_skill_passive_striker_01.png"이면 → <img src="/api/images/file?path=Texture/Skill/icon_skill_passive_striker_01.png">');
-  lines.push('  틀린 예: Texture/Icon/Skill/... (Icon/ 폴더 없음), Texture/Icons/... (없는 경로 추측 금지)');
+  lines.push('[이미지 경로 규칙]');
+  lines.push('- 이미지 경로가 정확히 알려진 경우: /api/images/file?path=Texture/Character/icon_hero_striker.png');
+  lines.push('- 이미지 경로가 불확실하거나 폴더를 모르는 경우: /api/images/smart?name=icon_hero_striker.png');
+  lines.push('  → /api/images/smart 는 파일명만 알면 서버가 전체 디렉토리에서 자동 검색 (경로 추측 불필요)');
+  lines.push('- find_resource_image 툴 결과의 relPath가 있으면 file?path= 사용, 없으면 smart?name= 사용 권장');
+  lines.push('- Texture 하위 폴더: Character, Skill, Class, Weapon, BG, Profile, Rank, Synergy, TacticalPassive, Tier, Ingame, Coin, Clan, Map');
   lines.push('- 스타일: 다크 테마(배경 #0f1117, 텍스트 #e2e8f0, 포인트 #6366f1), 표/카드 레이아웃.');
   lines.push('');
   lines.push('[데이터 임베드 태그 — 컨텍스트 절약 및 실시간 데이터 표시]');
