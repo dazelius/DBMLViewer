@@ -818,7 +818,12 @@ function createGitMiddleware(options: GitPluginOptions) {
 <script type="module">
 import * as THREE from 'three';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { TGALoader } from 'three/addons/loaders/TGALoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// TGA 로더 전역 등록 (FBXLoader 내부 텍스처 로드에도 대응)
+const tgaLoader = new TGALoader();
+THREE.DefaultLoadingManager.addHandler(/\.tga$/i, tgaLoader);
 
 function buildViewer(container, fbxUrl, label) {
   container.style.cssText = 'position:relative;background:#111827;border-radius:10px;overflow:hidden;border:1px solid #334155;margin:8px 0;';
@@ -905,6 +910,12 @@ function buildViewer(container, fbxUrl, label) {
       ctrl.target.set(0,0,0); ctrl.maxDistance = dist * 5; ctrl.update();
 
       const texLoader = new THREE.TextureLoader();
+      // TGA/일반 텍스처 자동 선택 로더
+      const loadTex = (url, onLoad) => {
+        const loader = /\.tga$/i.test(url) ? tgaLoader : texLoader;
+        loader.load(url, onLoad, undefined, (e) => console.warn('tex load fail:', url, e));
+      };
+
       fbx.traverse(child => {
         if (!child.isMesh) return;
         child.castShadow = true; child.receiveShadow = true;
@@ -914,10 +925,10 @@ function buildViewer(container, fbxUrl, label) {
         const m = entry ? matMap[entry] : Object.values(matMap)[0];
         const mat = new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, roughness: 0.75, metalness: 0.1 });
         if (m && m.albedo) {
-          texLoader.load(m.albedo, t => { t.colorSpace = THREE.SRGBColorSpace; t.flipY = true; mat.map = t; mat.needsUpdate = true; });
+          loadTex(m.albedo, t => { t.colorSpace = THREE.SRGBColorSpace; t.flipY = true; mat.map = t; mat.needsUpdate = true; });
         } else { mat.color.set(0x8899bb); }
         if (m && m.normal) {
-          texLoader.load(m.normal, t => { t.flipY = true; mat.normalMap = t; mat.normalScale.set(1,-1); mat.needsUpdate = true; });
+          loadTex(m.normal, t => { t.flipY = true; mat.normalMap = t; mat.normalScale.set(1,-1); mat.needsUpdate = true; });
         }
         child.material = mat;
       });
