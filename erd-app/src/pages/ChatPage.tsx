@@ -1599,6 +1599,8 @@ function ArtifactSidePanel({
   isComplete,
   finalTc,
   onClose,
+  initialPublishedUrl,
+  onPublished,
 }: {
   html: string;
   title: string;
@@ -1606,6 +1608,8 @@ function ArtifactSidePanel({
   isComplete: boolean;
   finalTc?: ArtifactResult;
   onClose: () => void;
+  initialPublishedUrl?: string;
+  onPublished?: (url: string) => void;
 }) {
   // 완료 상태 전체화면 iframe용 blobUrl
   const schema = useSchemaStore((s) => s.schema);
@@ -1647,10 +1651,24 @@ function ArtifactSidePanel({
     if (completeBlobUrl) window.open(completeBlobUrl)?.print();
   }, [completeBlobUrl]);
 
-  // 출판 상태
-  const [publishState, setPublishState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
-  const [publishedUrl, setPublishedUrl] = useState<string | null>(null);
+  // 출판 상태 — initialPublishedUrl이 있으면 이미 출판된 상태로 초기화
+  const [publishState, setPublishState] = useState<'idle' | 'loading' | 'done' | 'error'>(
+    () => (initialPublishedUrl ? 'done' : 'idle')
+  );
+  const [publishedUrl, setPublishedUrl] = useState<string | null>(initialPublishedUrl ?? null);
   const [publishCopied, setPublishCopied] = useState(false);
+
+  // initialPublishedUrl prop이 바뀔 때 (다른 아티팩트로 전환) 상태 동기화
+  useEffect(() => {
+    if (initialPublishedUrl) {
+      setPublishState('done');
+      setPublishedUrl(initialPublishedUrl);
+    } else {
+      setPublishState('idle');
+      setPublishedUrl(null);
+    }
+    setPublishCopied(false);
+  }, [initialPublishedUrl]);
 
   const handlePublish = useCallback(async () => {
     if (!finalTc || publishState === 'loading') return;
@@ -1669,12 +1687,13 @@ function ArtifactSidePanel({
       const url = `${origin}${data.url}`;
       setPublishedUrl(url);
       setPublishState('done');
+      onPublished?.(url); // 부모에 URL 전달 → savedArtifacts에 저장
     } catch (e) {
       console.error('Publish failed:', e);
       setPublishState('error');
       setTimeout(() => setPublishState('idle'), 3000);
     }
-  }, [finalTc, schema, tableData, publishState]);
+  }, [finalTc, schema, tableData, publishState, onPublished]);
 
   const handleCopyUrl = useCallback(() => {
     if (!publishedUrl) return;
@@ -2534,14 +2553,15 @@ export default function ChatPage() {
     charCount: number;
     isComplete: boolean;
     finalTc?: ArtifactResult;
+    artifactId?: string; // 저장된 아티팩트 id (출판 URL 연결용)
   } | null>(null);
 
   // 생성된 아티팩트 목록 (사이드바용) — localStorage 복원
-  const [savedArtifacts, setSavedArtifacts] = useState<{ id: string; title: string; tc: ArtifactResult; createdAt: Date }[]>(() => {
+  const [savedArtifacts, setSavedArtifacts] = useState<{ id: string; title: string; tc: ArtifactResult; createdAt: Date; publishedUrl?: string }[]>(() => {
     try {
       const raw = localStorage.getItem(ARTIFACTS_CACHE_KEY);
       if (!raw) return [];
-      const parsed = JSON.parse(raw) as { id: string; title: string; tc: ArtifactResult; createdAt: string }[];
+      const parsed = JSON.parse(raw) as { id: string; title: string; tc: ArtifactResult; createdAt: string; publishedUrl?: string }[];
       return parsed.map((a) => ({ ...a, createdAt: new Date(a.createdAt) }));
     } catch { return []; }
   });
@@ -2693,11 +2713,13 @@ export default function ChatPage() {
       // 아티팩트 패널: 완료 처리
       const artifactTc = toolCalls?.find((tc) => tc.kind === 'artifact') as ArtifactResult | undefined;
       if (artifactTc) {
+        const artifactId = `artifact-${Date.now()}`;
         setArtifactPanel((prev) =>
-          prev ? { ...prev, isComplete: true, finalTc: artifactTc } : { html: artifactTc.html ?? '', title: artifactTc.title ?? '', charCount: (artifactTc.html ?? '').length, isComplete: true, finalTc: artifactTc },
+          prev
+            ? { ...prev, isComplete: true, finalTc: artifactTc, artifactId }
+            : { html: artifactTc.html ?? '', title: artifactTc.title ?? '', charCount: (artifactTc.html ?? '').length, isComplete: true, finalTc: artifactTc, artifactId },
         );
         // 사이드바 목록에도 저장
-        const artifactId = `artifact-${Date.now()}`;
         setSavedArtifacts((prev) => [
           { id: artifactId, title: artifactTc.title ?? '문서', tc: artifactTc, createdAt: new Date() },
           ...prev,
@@ -2793,7 +2815,7 @@ export default function ChatPage() {
                 {savedArtifacts.map((art) => (
                   <button
                     key={art.id}
-                    onClick={() => setArtifactPanel({ html: art.tc.html ?? '', title: art.title, charCount: (art.tc.html ?? '').length, isComplete: true, finalTc: art.tc })}
+                    onClick={() => setArtifactPanel({ html: art.tc.html ?? '', title: art.title, charCount: (art.tc.html ?? '').length, isComplete: true, finalTc: art.tc, artifactId: art.id })}
                     className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left interactive group"
                     style={{ background: artifactPanel?.finalTc === art.tc ? 'rgba(99,102,241,0.15)' : 'transparent' }}
                     title={art.title}
@@ -2806,6 +2828,14 @@ export default function ChatPage() {
                     <span className="text-[11px] truncate flex-1" style={{ color: 'var(--text-secondary)' }}>
                       {art.title}
                     </span>
+                    {/* 출판됨 뱃지 */}
+                    {art.publishedUrl && (
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                           style={{ color: '#fbbf24', flexShrink: 0 }}>
+                        <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/>
+                        <line x1="4" y1="22" x2="4" y2="15"/>
+                      </svg>
+                    )}
                     <span className="text-[9px] flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
                           style={{ color: 'var(--text-muted)' }}>
                       {art.createdAt.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
@@ -2996,6 +3026,17 @@ export default function ChatPage() {
               isComplete={artifactPanel.isComplete}
               finalTc={artifactPanel.finalTc}
               onClose={() => setArtifactPanel(null)}
+              initialPublishedUrl={
+                artifactPanel.artifactId
+                  ? savedArtifacts.find(a => a.id === artifactPanel.artifactId)?.publishedUrl
+                  : undefined
+              }
+              onPublished={(url) => {
+                if (!artifactPanel.artifactId) return;
+                setSavedArtifacts(prev =>
+                  prev.map(a => a.id === artifactPanel.artifactId ? { ...a, publishedUrl: url } : a)
+                );
+              }}
             />
           </div>
         )}
