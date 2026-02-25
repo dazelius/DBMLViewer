@@ -22,8 +22,16 @@ export function useAutoLoad() {
       try {
         setSyncing();
 
-        // 1) git sync (clone if first time, pull if already cloned)
-        const syncResult = await gitSync(undefined, undefined, BRANCH);
+        // 1) git sync - aegisdata (데이터 저장소) + aegis (코드 저장소) 병렬 sync
+        const [syncResult] = await Promise.all([
+          gitSync(undefined, undefined, BRANCH),
+          // aegis 코드 저장소도 sync (데이터는 로드하지 않음, git log/diff용)
+          fetch('/api/git/sync?repo=aegis', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ branch: BRANCH }),
+          }).catch(() => null), // 실패해도 무시 (repo2 미설정 시 정상)
+        ]);
         setDone(syncResult.status, syncResult.commit ?? '');
 
         // 2) Load schema + data files

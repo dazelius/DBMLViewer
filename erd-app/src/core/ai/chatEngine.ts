@@ -70,6 +70,7 @@ export interface GitHistoryResult {
   reason?: string;
   commits: GitCommit[];
   filterPath?: string;
+  repo?: string;
   error?: string;
   duration?: number;
 }
@@ -112,6 +113,7 @@ export interface RevisionDiffResult {
   files: DiffFile[];
   totalFiles: number;
   filterFile?: string;
+  repo?: string;
   error?: string;
   duration?: number;
 }
@@ -332,7 +334,8 @@ const TOOLS = [
   {
     name: 'query_git_history',
     description:
-      'Git 커밋 히스토리를 조회합니다. 어떤 파일/테이블이 언제 변경됐는지, 최근 변경 이력을 알고 싶을 때 사용하세요.',
+      'Git 커밋 히스토리를 조회합니다. 어떤 파일/테이블이 언제 변경됐는지, 최근 변경 이력을 알고 싶을 때 사용하세요. ' +
+      '두 개의 저장소를 지원합니다: "data"(aegisdata, 기본값), "aegis"(aegis 코드 저장소).',
     input_schema: {
       type: 'object',
       properties: {
@@ -343,6 +346,11 @@ const TOOLS = [
         filter_path: {
           type: 'string',
           description: '특정 파일/폴더 경로로 필터링 (예: "ExcelFiles/Character.xlsx")',
+        },
+        repo: {
+          type: 'string',
+          enum: ['data', 'aegis'],
+          description: '조회할 저장소: "data"=aegisdata(게임 데이터, 기본값), "aegis"=aegis(코드 저장소)',
         },
         reason: {
           type: 'string',
@@ -366,6 +374,11 @@ const TOOLS = [
         file_path: {
           type: 'string',
           description: '특정 파일만 보려면 경로 지정 (예: "ExcelFiles/Character.xlsx"). 생략 시 전체 변경 파일.',
+        },
+        repo: {
+          type: 'string',
+          enum: ['data', 'aegis'],
+          description: '조회할 저장소: "data"=aegisdata(기본값), "aegis"=aegis 코드 저장소',
         },
         reason: {
           type: 'string',
@@ -691,8 +704,8 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- search_confluence: Confluence 문서 CQL 검색 (기획서/스펙/회의록 등)');
   lines.push('- get_confluence_page: Confluence 페이지 전체 내용 조회 (pageId 필요)');
   lines.push('- build_character_profile: 캐릭터명 → FK 연결 모든 데이터 자동 수집. 이름 검색 실패 시 전체 목록 반환 → character_id로 재호출. 캐릭터 기획서/프로파일 요청 시 반드시 먼저 호출.');
-  lines.push('- query_git_history: 변경 이력 조회 (언제 무엇이 바뀌었는지)');
-  lines.push('- show_revision_diff: 특정 커밋의 상세 변경 내용(DIFF) 시각화 (리비전 차이 확인 시 사용)');
+  lines.push('- query_git_history: 변경 이력 조회 (언제 무엇이 바뀌었는지). repo="data"(aegisdata 데이터 저장소, 기본값) 또는 repo="aegis"(aegis 코드 저장소) 선택 가능');
+  lines.push('- show_revision_diff: 특정 커밋의 상세 변경 내용(DIFF) 시각화 (리비전 차이 확인 시 사용). repo 파라미터로 저장소 지정 가능');
   lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 및 채팅 임베드 (아이콘, UI 이미지 찾기 요청 시 사용)');
   lines.push('- create_artifact: 수집된 데이터로 완성된 HTML 문서/보고서 생성 (전체화면 프리뷰, PDF 저장 가능)');
   lines.push('- patch_artifact: ⭐ 기존 아티팩트 수정 시 사용 (find/replace 패치만 반환 → 토큰 90% 절약)');
@@ -1012,12 +1025,13 @@ function resolveTableSchema(tableName: string, schema: ParsedSchema): TableSchem
 
 // ── Git 히스토리 조회 ────────────────────────────────────────────────────────
 
-async function fetchGitHistory(count: number, filterPath?: string): Promise<GitCommit[]> {
+async function fetchGitHistory(count: number, filterPath?: string, repo?: string): Promise<GitCommit[]> {
   const params = new URLSearchParams({
     count: String(count),
     include_files: 'true',
   });
   if (filterPath) params.set('path', filterPath);
+  if (repo && repo !== 'data') params.set('repo', repo);
 
   const res = await fetch(`/api/git/log?${params}`);
   if (!res.ok) throw new Error(`Git log 조회 실패: ${res.status}`);
@@ -1466,14 +1480,16 @@ export async function sendChatMessage(
         else if (tb.name === 'query_git_history') {
           const count = typeof inp.count === 'number' ? inp.count : 30;
           const filterPath = inp.filter_path ? String(inp.filter_path) : undefined;
+          const repo = inp.repo ? String(inp.repo) : 'data';
           const reason = inp.reason ? String(inp.reason) : undefined;
           const t0 = performance.now();
 
           try {
-            const commits = await fetchGitHistory(count, filterPath);
+            const commits = await fetchGitHistory(count, filterPath, repo);
             const duration = performance.now() - t0;
-            tc = { kind: 'git_history', reason, commits, filterPath, duration };
+            tc = { kind: 'git_history', reason, commits, filterPath, repo, duration };
             resultStr = JSON.stringify({
+              repo,
               count: commits.length,
               commits: commits.map((c) => ({
                 short: c.short,
@@ -1485,7 +1501,7 @@ export async function sendChatMessage(
             });
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            tc = { kind: 'git_history', reason, commits: [], filterPath, error: msg, duration: performance.now() - t0 };
+            tc = { kind: 'git_history', reason, commits: [], filterPath, repo, error: msg, duration: performance.now() - t0 };
             resultStr = `Git 히스토리 조회 오류: ${msg}`;
           }
         }
@@ -1493,6 +1509,7 @@ export async function sendChatMessage(
         else if (tb.name === 'show_revision_diff') {
           const commitHash = String(inp.commit_hash || '');
           const filePath = inp.file_path ? String(inp.file_path) : undefined;
+          const repo = inp.repo ? String(inp.repo) : 'data';
           const reason = inp.reason ? String(inp.reason) : undefined;
           const t0 = performance.now();
 
@@ -1503,6 +1520,7 @@ export async function sendChatMessage(
             try {
               const params = new URLSearchParams({ hash: commitHash });
               if (filePath) params.append('file', filePath);
+              if (repo && repo !== 'data') params.append('repo', repo);
               const resp = await fetch(`/api/git/commit-diff?${params.toString()}`);
               if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
               const data = await resp.json();
@@ -1514,6 +1532,7 @@ export async function sendChatMessage(
                 files: data.files || [],
                 totalFiles: data.totalFiles || 0,
                 filterFile: filePath,
+                repo,
                 duration,
               } as RevisionDiffResult;
               resultStr = JSON.stringify({

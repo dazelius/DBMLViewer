@@ -92,6 +92,11 @@ interface GitPluginOptions {
   localDir: string
   token?: string
   claudeApiKey?: string
+  // 두 번째 git 저장소 (aegis)
+  repo2Url?: string
+  repo2LocalDir?: string
+  repo2Token?: string
+  // Jira / Confluence
   jiraBaseUrl?: string
   confluenceBaseUrl?: string
   jiraUserEmail?: string
@@ -1615,34 +1620,39 @@ document.addEventListener('DOMContentLoaded', () => {
         const url = new URL(req.url, 'http://localhost')
         const route = url.pathname.replace('/api/git/', '')
 
+        // ?repo=aegis 이면 두 번째 저장소 디렉토리 사용
+        const repoParam = url.searchParams.get('repo') || 'data'
+        const isRepo2 = repoParam === 'aegis' && !!options.repo2LocalDir
+        const activeDir = isRepo2 ? options.repo2LocalDir! : localDir
+        const activeRepoUrl = isRepo2 ? (options.repo2Url || options.repoUrl) : options.repoUrl
+        const activeToken = isRepo2 ? (options.repo2Token || options.token) : options.token
+
         try {
           if (route === 'sync' && req.method === 'POST') {
             const raw = await readBody(req)
             const body = raw ? JSON.parse(raw) : {}
-            const repoUrl = body.repoUrl || options.repoUrl
-            const token = body.token || options.token
+            const repoUrl = body.repoUrl || activeRepoUrl
+            const token = body.token || activeToken
             const branch = body.branch || 'main'
             const authUrl = buildAuthUrl(repoUrl, token)
 
-            const isCloned = existsSync(join(localDir, '.git'))
+            const isCloned = existsSync(join(activeDir, '.git'))
 
             if (!isCloned) {
-              mkdirSync(localDir, { recursive: true })
-              runGit(`git clone --branch ${branch} "${authUrl}" .`, localDir)
+              mkdirSync(activeDir, { recursive: true })
+              runGit(`git clone --branch ${branch} "${authUrl}" .`, activeDir)
               sendJson(res, 200, { status: 'cloned', message: 'Repository cloned successfully' })
             } else {
-              // Set remote URL (in case token changed)
-              runGit(`git remote set-url origin "${authUrl}"`, localDir)
-              // Fetch branch with explicit refspec
-              runGit(`git fetch origin ${branch}:refs/remotes/origin/${branch}`, localDir)
-              const localHead = runGit('git rev-parse HEAD', localDir)
-              const remoteHead = runGit(`git rev-parse origin/${branch}`, localDir)
+              runGit(`git remote set-url origin "${authUrl}"`, activeDir)
+              runGit(`git fetch origin ${branch}:refs/remotes/origin/${branch}`, activeDir)
+              const localHead = runGit('git rev-parse HEAD', activeDir)
+              const remoteHead = runGit(`git rev-parse origin/${branch}`, activeDir)
 
               if (localHead === remoteHead) {
                 sendJson(res, 200, { status: 'up-to-date', message: 'Already up to date', commit: localHead.substring(0, 8) })
               } else {
-                runGit(`git reset --hard origin/${branch}`, localDir)
-                const newHead = runGit('git rev-parse HEAD', localDir)
+                runGit(`git reset --hard origin/${branch}`, activeDir)
+                const newHead = runGit('git rev-parse HEAD', activeDir)
                 sendJson(res, 200, { status: 'updated', message: 'Pulled latest changes', commit: newHead.substring(0, 8) })
               }
             }
@@ -1650,21 +1660,21 @@ document.addEventListener('DOMContentLoaded', () => {
           }
 
           if (route === 'status' && req.method === 'GET') {
-            const isCloned = existsSync(join(localDir, '.git'))
+            const isCloned = existsSync(join(activeDir, '.git'))
             if (!isCloned) {
               sendJson(res, 200, { cloned: false })
               return
             }
-            const head = runGit('git rev-parse --short HEAD', localDir)
-            const date = runGit('git log -1 --format=%ci', localDir)
-            const msg = runGit('git log -1 --format=%s', localDir)
+            const head = runGit('git rev-parse --short HEAD', activeDir)
+            const date = runGit('git log -1 --format=%ci', activeDir)
+            const msg = runGit('git log -1 --format=%s', activeDir)
             sendJson(res, 200, { cloned: true, commit: head, date, message: msg })
             return
           }
 
           if (route === 'files' && req.method === 'GET') {
             const dirPath = url.searchParams.get('path') || ''
-            const fullDir = resolve(localDir, dirPath)
+            const fullDir = resolve(activeDir, dirPath)
 
             if (!existsSync(fullDir)) {
               sendJson(res, 404, { error: `Directory not found: ${dirPath}` })
@@ -1683,7 +1693,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
 
           if (route === 'log' && req.method === 'GET') {
-            const isCloned = existsSync(join(localDir, '.git'))
+            const isCloned = existsSync(join(activeDir, '.git'))
             if (!isCloned) { sendJson(res, 200, { commits: [] }); return }
 
             const count = url.searchParams.get('count') || '30'
@@ -1704,7 +1714,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ]
                 if (filterPath) { args.push('--'); args.push(filterPath) }
                 const raw = execFileSync('git', args, {
-                  cwd: localDir, encoding: 'utf-8', timeout: 120_000,
+                  cwd: activeDir, encoding: 'utf-8', timeout: 120_000,
                   stdio: ['pipe', 'pipe', 'pipe'],
                 }).trim()
 
@@ -1722,13 +1732,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     author: parts[3] || '',
                     message: parts.slice(4).join(SEP),
                     files,
+                    repo: repoParam,
                   }
                 })
               } else {
                 const args = ['log', `-${count}`, `--format=%H${SEP}%h${SEP}%ci${SEP}%an${SEP}%s`]
                 if (filterPath) { args.push('--'); args.push(filterPath) }
                 const raw = execFileSync('git', args, {
-                  cwd: localDir, encoding: 'utf-8', timeout: 120_000,
+                  cwd: activeDir, encoding: 'utf-8', timeout: 120_000,
                   stdio: ['pipe', 'pipe', 'pipe'],
                 }).trim()
                 commits = raw.split('\n').filter(Boolean).map((line) => {
@@ -1739,11 +1750,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     date: parts[2] || '',
                     author: parts[3] || '',
                     message: parts.slice(4).join(SEP),
+                    repo: repoParam,
                   }
                 })
               }
 
-              sendJson(res, 200, { commits })
+              sendJson(res, 200, { commits, repo: repoParam })
             } catch (err: any) {
               sendJson(res, 500, { error: err.stderr || err.message || String(err) })
             }
@@ -1751,7 +1763,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
 
           if (route === 'diff' && req.method === 'GET') {
-            const isCloned = existsSync(join(localDir, '.git'))
+            const isCloned = existsSync(join(activeDir, '.git'))
             if (!isCloned) { sendJson(res, 200, { changes: [] }); return }
 
             const from = url.searchParams.get('from') || 'HEAD~1'
@@ -1760,7 +1772,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const pathArg = path ? ` -- "${path}"` : ''
             const raw = runGit(
               `git diff --name-status ${from} ${to}${pathArg}`,
-              localDir
+              activeDir
             )
             const changes = raw.split('\n').filter(Boolean).map((line) => {
               const [status, ...rest] = line.split('\t')
@@ -1770,7 +1782,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Get stat summary
             let statSummary = ''
             try {
-              statSummary = runGit(`git diff --stat ${from} ${to}${pathArg}`, localDir)
+              statSummary = runGit(`git diff --stat ${from} ${to}${pathArg}`, activeDir)
             } catch { /* ignore */ }
 
             sendJson(res, 200, { from, to, changes, statSummary })
@@ -1778,7 +1790,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
 
           if (route === 'diff-detail' && req.method === 'GET') {
-            const isCloned = existsSync(join(localDir, '.git'))
+            const isCloned = existsSync(join(activeDir, '.git'))
             if (!isCloned) { sendJson(res, 200, { diff: '' }); return }
 
             const from = url.searchParams.get('from') || 'HEAD~1'
@@ -1788,7 +1800,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             let diff = ''
             try {
-              diff = runGit(`git diff ${from} ${to} -- "${filePath}"`, localDir)
+              diff = runGit(`git diff ${from} ${to} -- "${filePath}"`, activeDir)
             } catch { /* binary or missing */ }
 
             sendJson(res, 200, { diff })
@@ -1797,7 +1809,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
           // ── commit-diff: 특정 커밋의 변경 내용 파싱 반환 ────────────────────
           if (route === 'commit-diff' && req.method === 'GET') {
-            const isCloned = existsSync(join(localDir, '.git'))
+            const isCloned = existsSync(join(activeDir, '.git'))
             if (!isCloned) { sendJson(res, 200, { commit: null, files: [] }); return }
 
             const hash = url.searchParams.get('hash')
@@ -1809,7 +1821,7 @@ document.addEventListener('DOMContentLoaded', () => {
               const SEP = '|||'
               const metaRaw = execFileSync('git', [
                 'log', '-1', `--format=%H${SEP}%h${SEP}%ci${SEP}%an${SEP}%ae${SEP}%s`, hash
-              ], { cwd: localDir, encoding: 'utf-8', timeout: 30_000, stdio: ['pipe','pipe','pipe'] }).trim()
+              ], { cwd: activeDir, encoding: 'utf-8', timeout: 30_000, stdio: ['pipe','pipe','pipe'] }).trim()
               const metaParts = metaRaw.split(SEP)
               const commitMeta = {
                 hash: metaParts[0] || hash,
@@ -1824,7 +1836,7 @@ document.addEventListener('DOMContentLoaded', () => {
               let parentHash = ''
               try {
                 parentHash = execFileSync('git', ['rev-parse', `${hash}^`], {
-                  cwd: localDir, encoding: 'utf-8', timeout: 10_000, stdio: ['pipe','pipe','pipe']
+                  cwd: activeDir, encoding: 'utf-8', timeout: 10_000, stdio: ['pipe','pipe','pipe']
                 }).trim()
               } catch { /* initial commit */ }
 
@@ -1835,7 +1847,7 @@ document.addEventListener('DOMContentLoaded', () => {
               if (filterFile) { diffArgs.push('--'); diffArgs.push(filterFile) }
 
               const diffRaw = execFileSync('git', diffArgs, {
-                cwd: localDir, encoding: 'utf-8', timeout: 60_000, stdio: ['pipe','pipe','pipe'],
+                cwd: activeDir, encoding: 'utf-8', timeout: 60_000, stdio: ['pipe','pipe','pipe'],
                 maxBuffer: 4 * 1024 * 1024,
               }).trim()
 
@@ -1892,12 +1904,12 @@ document.addEventListener('DOMContentLoaded', () => {
           }
 
           if (route === 'files-at-commit' && req.method === 'GET') {
-            const isCloned = existsSync(join(localDir, '.git'))
+            const isCloned = existsSync(join(activeDir, '.git'))
             if (!isCloned) { sendJson(res, 200, { files: [] }); return }
 
             const commit = url.searchParams.get('commit') || 'HEAD'
             const dirPath = url.searchParams.get('path') || ''
-            const cacheKey = `${commit}:${dirPath}`
+            const cacheKey = `${repoParam}:${commit}:${dirPath}`
 
             const cached = fileCache.get(cacheKey)
             if (cached) { sendJson(res, 200, cached); return }
@@ -1906,7 +1918,7 @@ document.addEventListener('DOMContentLoaded', () => {
               // List ALL files at commit, then filter case-insensitively
               const lsArgs = ['ls-tree', '-r', '--name-only', commit]
               const listing = execFileSync('git', lsArgs, {
-                cwd: localDir, encoding: 'utf-8', timeout: 60_000,
+                cwd: activeDir, encoding: 'utf-8', timeout: 60_000,
                 stdio: ['pipe', 'pipe', 'pipe'],
               }).trim()
 
@@ -1924,7 +1936,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const batch = allFiles.slice(i, i + CONCURRENCY)
                 const results = await Promise.all(batch.map(async (filePath) => {
                   const { stdout } = await execFileAsync('git', ['show', `${commit}:${filePath}`], {
-                    cwd: localDir, timeout: 60_000,
+                    cwd: activeDir, timeout: 60_000,
                     encoding: 'buffer' as any,
                   })
                   const name = filePath.split('/').pop()!
