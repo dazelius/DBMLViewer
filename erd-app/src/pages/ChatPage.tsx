@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect } from 'react';
 import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import Toolbar from '../components/Layout/Toolbar.tsx';
@@ -21,6 +21,7 @@ import {
   type CodeSearchResult,
   type CodeFileResult,
   type CodeGuideResult,
+  type AssetSearchResult,
   type DiffFile,
   type DiffHunk,
 } from '../core/ai/chatEngine.ts';
@@ -2675,6 +2676,112 @@ function CodeGuideCard({ tc }: { tc: CodeGuideResult }) {
   );
 }
 
+// ── AssetSearchCard ────────────────────────────────────────────────────────────
+function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
+  const [fbxUrl, setFbxUrl] = useState<string | null>(null);
+  const [fbxName, setFbxName] = useState<string>('');
+  const hasError = !!tc.error;
+
+  const fbxFiles = tc.files.filter(f => f.ext === '.fbx');
+  const otherFiles = tc.files.filter(f => f.ext !== '.fbx');
+
+  return (
+    <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${hasError ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.3)'}` }}>
+      {/* 헤더 */}
+      <div className="flex items-center gap-2 px-3 py-2" style={{ background: hasError ? 'rgba(239,68,68,0.08)' : 'rgba(99,102,241,0.08)' }}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={hasError ? '#f87171' : '#818cf8'} strokeWidth="2">
+          <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
+        </svg>
+        <span className="text-[12px] font-semibold" style={{ color: hasError ? '#f87171' : '#818cf8' }}>
+          {tc.label}
+        </span>
+        {!hasError && (
+          <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+            {tc.total}개 {tc.ext ? `[.${tc.ext}]` : ''}
+          </span>
+        )}
+      </div>
+
+      {/* FBX 뷰어 */}
+      {fbxUrl && (
+        <div className="p-3">
+          {/* lazy import로 FbxViewer 렌더링 */}
+          <FbxViewerLazy url={fbxUrl} filename={fbxName} />
+        </div>
+      )}
+
+      {/* FBX 파일 목록 */}
+      {fbxFiles.length > 0 && (
+        <div className="px-3 pt-2 pb-1">
+          <div className="text-[11px] mb-1.5 font-semibold" style={{ color: '#818cf8' }}>
+            FBX 3D 모델 ({fbxFiles.length})
+          </div>
+          <div className="space-y-1">
+            {fbxFiles.map((f, i) => (
+              <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2">
+                  <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                </svg>
+                <span className="flex-1 text-[11px] font-mono truncate" style={{ color: 'var(--text-secondary)' }} title={f.path}>
+                  {f.path}
+                </span>
+                <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+                  {(f.size / 1024).toFixed(0)} KB
+                </span>
+                <button
+                  onClick={() => { setFbxUrl(`/api/assets/file?path=${encodeURIComponent(f.path)}`); setFbxName(f.name); }}
+                  className="flex-shrink-0 text-[10px] px-2 py-0.5 rounded"
+                  style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)' }}
+                >
+                  3D 뷰
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 기타 파일 목록 */}
+      {otherFiles.length > 0 && (
+        <div className="px-3 pt-2 pb-3">
+          <div className="text-[11px] mb-1.5 font-semibold" style={{ color: 'var(--text-muted)' }}>
+            기타 에셋 ({otherFiles.length})
+          </div>
+          <div className="space-y-0.5 max-h-48 overflow-y-auto">
+            {otherFiles.map((f, i) => (
+              <div key={i} className="flex items-center gap-2 px-2 py-1 rounded" style={{ background: 'var(--bg-primary)' }}>
+                <span className="text-[10px] font-mono w-8 flex-shrink-0 text-center rounded" style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}>
+                  {f.ext.replace('.', '')}
+                </span>
+                <span className="flex-1 text-[11px] font-mono truncate" style={{ color: 'var(--text-secondary)' }} title={f.path}>
+                  {f.path}
+                </span>
+                <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+                  {(f.size / 1024).toFixed(0)} KB
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {hasError && (
+        <div className="px-3 pb-3 text-[11px]" style={{ color: '#f87171' }}>{tc.error}</div>
+      )}
+    </div>
+  );
+}
+
+// FbxViewer lazy wrapper (Three.js는 무거우므로 필요할 때만 렌더)
+function FbxViewerLazy({ url, filename }: { url: string; filename: string }) {
+  const [Comp, setComp] = useState<React.ComponentType<{ url: string; filename?: string }> | null>(null);
+  useEffect(() => {
+    import('../components/FbxViewer').then(m => setComp(() => m.FbxViewer));
+  }, []);
+  if (!Comp) return <div className="flex items-center justify-center h-24 text-[12px]" style={{ color: 'var(--text-muted)' }}>3D 뷰어 로딩 중...</div>;
+  return <Comp url={url} filename={filename} />;
+}
+
 function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'schema_card') return <TableSchemaCard tc={tc} />;
   if (tc.kind === 'git_history') return <GitHistoryCard tc={tc} />;
@@ -2685,7 +2792,9 @@ function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'code_search') return <CodeSearchCard tc={tc} />;
   if (tc.kind === 'code_file') return <CodeFileCard tc={tc} />;
   if (tc.kind === 'code_guide') return <CodeGuideCard tc={tc} />;
-  return <DataQueryCard tc={tc} index={index} />;
+  if (tc.kind === 'asset_search') return <AssetSearchCard tc={tc} />;
+  if (tc.kind === 'artifact_patch') return null;
+  return <DataQueryCard tc={tc as DataQueryResult} index={index} />;
 }
 
 // ── 캐릭터 프로파일 카드 (사이트맵 뷰) ────────────────────────────────────────

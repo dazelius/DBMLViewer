@@ -212,7 +212,17 @@ export interface CodeGuideResult {
   error?: string;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult;
+export interface AssetSearchResult {
+  kind: 'asset_search';
+  label: string;
+  query: string;
+  ext: string;
+  files: { path: string; name: string; ext: string; size: number }[];
+  total: number;
+  error?: string;
+}
+
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -381,6 +391,27 @@ const TOOLS = [
     },
   },
   {
+    name: 'search_assets',
+    description:
+      'Unity 프로젝트 에셋 파일을 검색합니다 (FBX 3D 모델, PNG 텍스처, WAV/MP3 사운드 등). ' +
+      '캐릭터 모델·스킬 이펙트·UI 이미지 등의 파일명·경로를 확인할 때 사용하세요. ' +
+      'FBX 파일 경로를 알면 웹에서 바로 3D 뷰어로 렌더링할 수 있습니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: '검색 키워드 (파일명 일부). 예: "striker", "kaya", "skill_fire"',
+        },
+        ext: {
+          type: 'string',
+          description: '확장자 필터. 예: "fbx", "png", "wav". 비워두면 전체 검색.',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'search_code',
     description:
       '게임 클라이언트 C# 소스코드를 검색합니다. ' +
@@ -519,6 +550,7 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- read_code_guide: ⭐ 코드 분석 시작점. 코드베이스 가이드 MD 읽기. name="" 로 목록, "_OVERVIEW" 로 전체 구조, "_Skill"/"_Weapon" 등으로 도메인별 파일·클래스·메서드 목록.');
   lines.push('- search_code: C# 게임 클라이언트 소스코드 검색 (클래스/메서드/파일명/내용 전문검색). 코드 구현 방식, 로직, 버그 분석 시 사용.');
   lines.push('- read_code_file: 특정 .cs 파일 전체 내용 읽기. search_code로 경로 확인 후 호출.');
+  lines.push('- search_assets: Unity 에셋 파일 검색 (FBX 3D 모델, PNG 텍스처, WAV 사운드 등). ext="fbx"로 3D 모델만 검색 가능. 결과 경로를 /api/assets/file?path= 로 서빙.');
   lines.push('');
   lines.push('');
   lines.push('[캐릭터 기획서/프로파일/데이터 시트뷰 — 반드시 준수]');
@@ -1582,6 +1614,35 @@ function showTab(id){
           } catch (e) {
             resultStr = `가이드 로드 실패: ${String(e)}`;
             tc = { kind: 'code_guide', label: '코드 가이드 오류', text: resultStr, error: String(e) };
+          }
+        }
+
+        // ── search_assets ──
+        else if (tb.name === 'search_assets') {
+          const query = String(inp.query ?? '');
+          const ext = String(inp.ext ?? '');
+          const t0 = performance.now();
+          try {
+            const params = new URLSearchParams({ q: query });
+            if (ext) params.set('ext', ext);
+            const resp = await fetch(`/api/assets/index?${params.toString()}`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json() as { files: { path: string; name: string; ext: string; size: number }[]; total: number; message?: string };
+            const duration = performance.now() - t0;
+            if (data.message) {
+              resultStr = `에셋 인덱스 없음: ${data.message}\nsync_assets.ps1 을 먼저 실행하세요.`;
+              tc = { kind: 'asset_search', label: '에셋 검색 실패', query, ext, files: [], total: 0, error: data.message } as AssetSearchResult;
+            } else {
+              const lines = data.files.map(f => `${f.path}  (${(f.size / 1024).toFixed(0)} KB)`);
+              resultStr = `에셋 검색: "${query}"${ext ? ` [.${ext}]` : ''} → ${data.total}개 (${duration.toFixed(0)}ms)\n` +
+                (lines.length > 0 ? lines.join('\n') : '결과 없음') +
+                (data.total > data.files.length ? `\n… 상위 ${data.files.length}개만 표시` : '') +
+                '\n\n3D 뷰어: FBX 파일은 /api/assets/file?path=<경로> 로 접근 가능';
+              tc = { kind: 'asset_search', label: `에셋 검색: ${query}`, query, ext, files: data.files, total: data.total } as AssetSearchResult;
+            }
+          } catch (e) {
+            resultStr = `에셋 검색 실패: ${String(e)}`;
+            tc = { kind: 'asset_search', label: '에셋 검색 오류', query, ext, files: [], total: 0, error: String(e) } as AssetSearchResult;
           }
         }
 

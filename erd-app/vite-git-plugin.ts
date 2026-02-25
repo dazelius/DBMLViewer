@@ -527,6 +527,92 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
+    // ── /api/assets/index : 에셋 파일 인덱스 ──────────────────────────────────
+    if (req.url?.startsWith('/api/assets/index')) {
+      const ASSETS_DIR = join(process.cwd(), '..', '..', 'assets')
+      const idxPath = join(ASSETS_DIR, '.asset_index.json')
+      if (!existsSync(idxPath)) {
+        sendJson(res, 200, { files: [], message: 'No asset index. Run sync_assets.ps1 first.' })
+        return
+      }
+      const url = new URL(req.url, 'http://localhost')
+      const extFilter = (url.searchParams.get('ext') || '').toLowerCase()
+      const q = (url.searchParams.get('q') || '').toLowerCase()
+      let files = JSON.parse(readFileSync(idxPath, 'utf-8')) as { path: string; name: string; ext: string; size: number }[]
+      if (extFilter) files = files.filter(f => f.ext === (extFilter.startsWith('.') ? extFilter : '.' + extFilter))
+      if (q) files = files.filter(f => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q))
+      sendJson(res, 200, { files: files.slice(0, 500), total: files.length })
+      return
+    }
+
+    // ── /api/assets/file : 에셋 파일 서빙 (FBX / PNG / …) ─────────────────────
+    if (req.url?.startsWith('/api/assets/file')) {
+      const ASSETS_DIR = join(process.cwd(), '..', '..', 'assets')
+      const url = new URL(req.url, 'http://localhost')
+      let pathParam = url.searchParams.get('path') || ''
+      if (!pathParam) { res.writeHead(400); res.end('path required'); return }
+
+      let filePath = join(ASSETS_DIR, pathParam.replace(/\//g, sep))
+      // 직접 경로가 없으면 파일명으로 검색
+      if (!existsSync(filePath)) {
+        const basename = pathParam.split('/').pop() ?? ''
+        const { globSync } = await import('glob')
+        const hits = globSync(`**/${basename}`, { cwd: ASSETS_DIR, nocase: true })
+        if (hits.length > 0) {
+          filePath = join(ASSETS_DIR, hits[0])
+        } else {
+          res.writeHead(404); res.end('File not found: ' + pathParam); return
+        }
+      }
+
+      const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
+      const mimeMap: Record<string, string> = {
+        fbx: 'application/octet-stream', obj: 'application/octet-stream',
+        png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', tga: 'image/x-tga',
+        wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', mp4: 'video/mp4',
+      }
+      const mime = mimeMap[ext] ?? 'application/octet-stream'
+      const stat = statSync(filePath)
+      res.writeHead(200, {
+        'Content-Type': mime,
+        'Content-Length': stat.size,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=86400',
+      })
+      const { createReadStream } = await import('fs')
+      createReadStream(filePath).pipe(res)
+      return
+    }
+
+    // ── /api/assets/smart : 파일명으로 에셋 스마트 검색 ────────────────────────
+    if (req.url?.startsWith('/api/assets/smart')) {
+      const ASSETS_DIR = join(process.cwd(), '..', '..', 'assets')
+      const url = new URL(req.url, 'http://localhost')
+      const name = url.searchParams.get('name') || ''
+      if (!name) { res.writeHead(400); res.end('name required'); return }
+      const { globSync } = await import('glob')
+      const hits = globSync(`**/${name}`, { cwd: ASSETS_DIR, nocase: true })
+      if (hits.length === 0) { res.writeHead(404); res.end('Not found: ' + name); return }
+      const relPath = hits[0].replace(/\\/g, '/')
+      const filePath = join(ASSETS_DIR, hits[0])
+      const ext = name.split('.').pop()?.toLowerCase() ?? ''
+      const mimeMap: Record<string, string> = {
+        fbx: 'application/octet-stream', png: 'image/png', jpg: 'image/jpeg',
+      }
+      const mime = mimeMap[ext] ?? 'application/octet-stream'
+      const stat = statSync(filePath)
+      res.writeHead(200, {
+        'Content-Type': mime,
+        'Content-Length': stat.size,
+        'Access-Control-Allow-Origin': '*',
+        'X-Resolved-Path': relPath,
+        'Cache-Control': 'public, max-age=86400',
+      })
+      const { createReadStream } = await import('fs')
+      createReadStream(filePath).pipe(res)
+      return
+    }
+
     // ── /api/published : 출판된 문서 목록 (GET) ────────────────────────────────
     if (req.url === '/api/published' && req.method === 'GET') {
       sendJson(res, 200, readPublishedIndex())
