@@ -1158,6 +1158,31 @@ th,td{border:1px solid #334155;padding:6px;font-size:12px}th{background:#1e293b}
 
 // ── 아티팩트 사이드 패널 (우측 절반 스트리밍 뷰) ────────────────────────────
 
+const STREAM_BASE_STYLE = `
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 20px; font-family: 'Segoe UI', Tahoma, sans-serif; font-size: 13px;
+         background: #0f1117; color: #e2e8f0; line-height: 1.6; }
+  h1, h2, h3, h4 { color: #fff; margin: 0.8em 0 0.4em; }
+  p { margin: 0.4em 0; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 1em; }
+  th, td { border: 1px solid #334155; padding: 6px 10px; text-align: left; font-size: 12px; }
+  th { background: #1e293b; color: #94a3b8; font-weight: 600; }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  img { max-width: 100%; height: auto; }
+  ul, ol { padding-left: 1.4em; margin: 0.4em 0; }
+  li { margin: 0.2em 0; }
+  pre { background: #1e293b; padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 12px; }
+  code { background: #1e293b; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+`;
+
+function buildStreamHtml(bodyHtml: string): string {
+  return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<style>${STREAM_BASE_STYLE}</style></head><body>${bodyHtml}</body></html>`;
+}
+
 function ArtifactSidePanel({
   html,
   title,
@@ -1173,36 +1198,60 @@ function ArtifactSidePanel({
   finalTc?: ArtifactResult;
   onClose: () => void;
 }) {
-  // 스트리밍 중 blob URL 생성 (html이 충분히 쌓였을 때)
-  const blobUrl = useMemo(() => {
-    if (isComplete || !html || html.length < 30) return null;
-    const fullHtml = `<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    *, *::before, *::after { box-sizing: border-box; }
-    body { margin: 20px; font-family: 'Segoe UI', sans-serif; font-size: 13px;
-           background: #0f1117; color: #e2e8f0; line-height: 1.6; }
-    h1, h2, h3, h4 { color: #fff; margin: 0.8em 0 0.4em; }
-    table { width: 100%; border-collapse: collapse; margin-bottom: 1em; }
-    th, td { border: 1px solid #334155; padding: 6px 10px; text-align: left; font-size: 12px; }
-    th { background: #1e293b; color: #94a3b8; font-weight: 600; }
-    tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
-    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-    img { max-width: 100%; height: auto; }
-  </style>
-</head>
-<body>${html}</body>
-</html>`;
-    return URL.createObjectURL(new Blob([fullHtml], { type: 'text/html' }));
-  }, [html, isComplete]);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const pendingHtmlRef = useRef('');
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastFlushRef = useRef(0);
 
+  const THROTTLE_MS = 350;
+
+  // iframe에 직접 HTML을 씁니다 (리마운트 없이 콘텐츠만 교체)
+  const writeToIframe = useCallback((bodyHtml: string) => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    try {
+      const doc = iframe.contentDocument;
+      if (!doc) return;
+      doc.open();
+      doc.write(buildStreamHtml(bodyHtml));
+      doc.close();
+      lastFlushRef.current = Date.now();
+    } catch {
+      // sandbox/cross-origin 제약 시 무시
+    }
+  }, []);
+
+  // html prop이 변경될 때마다 스로틀링하여 iframe 업데이트
   useEffect(() => {
-    return () => { if (blobUrl) URL.revokeObjectURL(blobUrl); };
-  }, [blobUrl]);
+    if (isComplete || !html || html.length < 20) return;
+
+    pendingHtmlRef.current = html;
+
+    const now = Date.now();
+    const elapsed = now - lastFlushRef.current;
+
+    if (elapsed >= THROTTLE_MS) {
+      // 즉시 write
+      writeToIframe(html);
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+    } else if (!flushTimerRef.current) {
+      // 남은 시간 후 write (마지막 청크 보장)
+      flushTimerRef.current = setTimeout(() => {
+        writeToIframe(pendingHtmlRef.current);
+        flushTimerRef.current = null;
+      }, THROTTLE_MS - elapsed);
+    }
+  }, [html, isComplete, writeToIframe]);
+
+  // 언마운트 시 타이머 정리
+  useEffect(() => {
+    return () => {
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+    };
+  }, []);
 
   return (
     <div
@@ -1257,44 +1306,52 @@ function ArtifactSidePanel({
       </div>
 
       {/* ── 콘텐츠 영역 ── */}
-      <div className="flex-1 overflow-hidden relative">
+      <div className="flex-1 overflow-hidden flex flex-col relative">
         {isComplete && finalTc ? (
           /* 완료 → ArtifactCard (스크롤 가능) */
-          <div className="h-full overflow-y-auto px-4 py-3">
+          <div className="flex-1 overflow-y-auto px-4 py-3 min-h-0">
             <ArtifactCard tc={finalTc} />
           </div>
-        ) : blobUrl ? (
-          /* 스트리밍 중 → 실시간 iframe (전체 크기) */
+        ) : (
+          /* 스트리밍 중 → contentDocument.write로 실시간 업데이트 */
           <>
+            {/* 항상 마운트된 iframe — key 없음, 리마운트 없음 */}
             <iframe
-              key={blobUrl}
-              src={blobUrl}
+              ref={iframeRef}
               title="artifact-stream-preview"
-              className="w-full h-full border-none"
+              className="flex-1 border-none min-h-0"
               sandbox="allow-scripts allow-same-origin"
             />
-            {/* 하단 타이핑 오버레이 */}
-            <div
-              className="absolute bottom-0 inset-x-0 flex items-center gap-2 px-3 py-2"
-              style={{ background: 'rgba(15,17,23,0.88)', borderTop: '1px solid var(--border-color)', backdropFilter: 'blur(4px)' }}
-            >
-              <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--accent)' }}>
-                <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
-              </svg>
-              <span className="text-[10px] font-mono truncate flex-1" style={{ color: 'var(--text-muted)' }}>
-                {html.slice(-120).replace(/\s+/g, ' ')}
-                <span className="inline-block w-[2px] h-[10px] ml-0.5 rounded-sm animate-pulse align-middle" style={{ background: 'var(--accent)' }} />
-              </span>
-            </div>
+
+            {/* HTML이 아직 안 왔을 때 스피너 오버레이 */}
+            {html.length < 20 && (
+              <div
+                className="absolute inset-0 flex flex-col items-center justify-center gap-3"
+                style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)', zIndex: 2 }}
+              >
+                <svg className="animate-spin w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                </svg>
+                <span className="text-[12px]">HTML 생성 중...</span>
+              </div>
+            )}
+
+            {/* 하단 타이핑 바 */}
+            {html.length >= 20 && (
+              <div
+                className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5"
+                style={{ background: 'rgba(15,17,23,0.9)', borderTop: '1px solid var(--border-color)' }}
+              >
+                <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--accent)' }}>
+                  <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+                </svg>
+                <span className="text-[10px] font-mono truncate flex-1" style={{ color: 'var(--text-muted)' }}>
+                  {html.slice(-120).replace(/\s+/g, ' ')}
+                  <span className="inline-block w-[2px] h-[10px] ml-0.5 rounded-sm animate-pulse align-middle" style={{ background: 'var(--accent)' }} />
+                </span>
+              </div>
+            )}
           </>
-        ) : (
-          /* 초기 대기 */
-          <div className="flex flex-col items-center justify-center h-full gap-3" style={{ color: 'var(--text-muted)' }}>
-            <svg className="animate-spin w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-            </svg>
-            <span className="text-[12px]">HTML 생성 중...</span>
-          </div>
         )}
       </div>
     </div>
