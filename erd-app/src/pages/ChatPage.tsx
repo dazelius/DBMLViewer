@@ -1477,12 +1477,51 @@ function ArtifactSidePanel({
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeReady, setIframeReady] = useState(false);
-  // 최신 html을 항상 ref로 추적 (useEffect 클로저 stale 방지)
   const htmlRef = useRef('');
   const rafRef = useRef<number | null>(null);
   const lastSentRef = useRef('');
 
-  // iframe에 postMessage로 HTML 업데이트
+  // 완료 상태 전체화면 iframe용 blobUrl
+  const schema = useSchemaStore((s) => s.schema);
+  const tableData = useCanvasStore((s) => s.tableData) as TableDataMap;
+  const [completeBlobUrl, setCompleteBlobUrl] = useState<string | null>(null);
+
+  // finalTc 완료 시 blob URL 생성
+  useEffect(() => {
+    if (!isComplete || !finalTc) return;
+    const origin = window.location.origin;
+    const base = `<base href="${origin}/">`;
+    const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
+    const fullHtml = resolved.includes('<!DOCTYPE') || resolved.includes('<html')
+      ? resolved
+      : `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">${base}<title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}ul,ol{padding-left:1.4em;margin:.4em 0}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script></head><body>${resolved}</body></html>`;
+    const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    setCompleteBlobUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [isComplete, finalTc, schema, tableData]);
+
+  // 완료 상태에서 HTML 저장
+  const handleSaveHtml = useCallback(() => {
+    if (!finalTc) return;
+    const origin = window.location.origin;
+    const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
+    const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script></head><body>${resolved}</body></html>`;
+    const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(finalTc.title ?? '문서').replace(/[\\/:*?"<>|]/g, '_')}.html`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [finalTc, schema, tableData]);
+
+  // 완료 상태에서 PDF 저장
+  const handlePrint = useCallback(() => {
+    if (completeBlobUrl) window.open(completeBlobUrl)?.print();
+  }, [completeBlobUrl]);
+
+  // iframe postMessage 스트리밍
   const sendToIframe = useCallback((bodyHtml: string) => {
     const iframe = iframeRef.current;
     if (!iframe?.contentWindow || bodyHtml === lastSentRef.current) return;
@@ -1492,30 +1531,25 @@ function ArtifactSidePanel({
     } catch { /* ignore */ }
   }, []);
 
-  // RAF 기반 업데이트 스케줄러 (최대 60fps, 중복 방지)
   const scheduleUpdate = useCallback(() => {
-    if (rafRef.current !== null) return; // 이미 예약됨
+    if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
       if (htmlRef.current) sendToIframe(htmlRef.current);
     });
   }, [sendToIframe]);
 
-  // onLoad: srcdoc 로드 완료 → iframeReady (postMessage race condition 완전 우회)
   const handleIframeLoad = useCallback(() => {
     setIframeReady(true);
-    // 이미 쌓인 html이 있으면 즉시 전송
     if (htmlRef.current) sendToIframe(htmlRef.current);
   }, [sendToIframe]);
 
-  // html prop 변경 → ref 갱신 + RAF 스케줄
   useEffect(() => {
     if (isComplete) return;
     htmlRef.current = html;
     if (iframeReady && html) scheduleUpdate();
   }, [html, isComplete, iframeReady, scheduleUpdate]);
 
-  // 언마운트 시 RAF 정리
   useEffect(() => {
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
@@ -1524,12 +1558,12 @@ function ArtifactSidePanel({
 
   return (
     <div
-      className="h-full flex flex-col overflow-hidden border-l"
+      className="flex-1 flex flex-col overflow-hidden border-l min-h-0"
       style={{ borderColor: 'var(--border-color)', background: 'var(--bg-secondary)', minWidth: 0 }}
     >
       {/* ── 헤더 ── */}
       <div
-        className="flex items-center gap-2.5 px-4 py-2.5 flex-shrink-0"
+        className="flex items-center gap-2 px-3 py-2 flex-shrink-0"
         style={{
           borderBottom: '1px solid var(--border-color)',
           background: isComplete
@@ -1539,7 +1573,7 @@ function ArtifactSidePanel({
       >
         {/* 상태 아이콘 */}
         {isComplete ? (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ color: '#4ade80', flexShrink: 0 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ color: '#4ade80', flexShrink: 0 }}>
             <polyline points="20 6 9 17 4 12" />
           </svg>
         ) : (
@@ -1550,24 +1584,35 @@ function ArtifactSidePanel({
         )}
 
         {/* 타이틀 */}
-        <span className="font-semibold text-[13px] flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
+        <span className="font-semibold text-[12px] flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
           {title || '아티팩트'}
         </span>
 
+        {/* 완료 상태 액션 버튼 */}
+        {isComplete && finalTc && (
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button onClick={handleSaveHtml} className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium hover:opacity-80 transition-opacity"
+              style={{ background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.25)', color: '#34d399' }} title="HTML 저장">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+              HTML
+            </button>
+            <button onClick={handlePrint} className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium hover:opacity-80 transition-opacity"
+              style={{ background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.25)', color: 'var(--accent)' }} title="PDF 저장">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              PDF
+            </button>
+          </div>
+        )}
+
         {/* 글자 수 (생성 중) */}
         {!isComplete && charCount > 0 && (
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full" style={{ background: 'rgba(99,102,241,0.15)', color: 'var(--accent)' }}>
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full flex-shrink-0" style={{ background: 'rgba(99,102,241,0.15)', color: 'var(--accent)' }}>
             {charCount.toLocaleString()}자
           </span>
         )}
 
         {/* 닫기 버튼 */}
-        <button
-          onClick={onClose}
-          className="p-1.5 rounded-lg interactive flex-shrink-0"
-          style={{ color: 'var(--text-muted)' }}
-          title="패널 닫기"
-        >
+        <button onClick={onClose} className="p-1.5 rounded-lg interactive flex-shrink-0" style={{ color: 'var(--text-muted)' }} title="패널 닫기">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
           </svg>
@@ -1575,12 +1620,15 @@ function ArtifactSidePanel({
       </div>
 
       {/* ── 콘텐츠 영역 ── */}
-      <div className="flex-1 overflow-hidden flex flex-col relative">
+      <div className="flex-1 overflow-hidden flex flex-col relative min-h-0">
         {isComplete && finalTc ? (
-          /* 완료 → ArtifactCard (스크롤 가능) */
-          <div className="flex-1 overflow-y-auto px-4 py-3 min-h-0">
-            <ArtifactCard tc={finalTc} />
-          </div>
+          /* 완료 → 전체 높이 iframe */
+          completeBlobUrl
+            ? <iframe src={completeBlobUrl} className="flex-1 border-none min-h-0 w-full" title={finalTc.title ?? '문서'} sandbox="allow-same-origin allow-scripts" />
+            : <div className="flex-1 flex items-center justify-center" style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                <svg className="animate-spin mr-2" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                렌더링 중...
+              </div>
         ) : (
           /* 스트리밍 중 → postMessage로 실시간 innerHTML 업데이트 */
           <>
@@ -2748,7 +2796,7 @@ export default function ChatPage() {
         </div>
         {/* ── 아티팩트 사이드 패널 (우측 절반) ── */}
         {artifactPanel && (
-          <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          <div className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
             <ArtifactSidePanel
               html={artifactPanel.html}
               title={artifactPanel.title}
