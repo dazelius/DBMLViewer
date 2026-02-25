@@ -4453,8 +4453,8 @@ export default function ChatPage() {
                     ))}
                   </div>
                 )}
-              </div>{/* pointer-events-auto */}
-              </div>{/* fixed inset-0 */}
+              </div>
+              </div>
             )}
 
             {messages.map((msg, idx) => (

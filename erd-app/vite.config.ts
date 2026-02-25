@@ -20,6 +20,7 @@ export default defineConfig(({ mode }) => {
         confluenceBaseUrl: env.CONFLUENCE_BASE_URL || env.JIRA_BASE_URL || '',
         jiraUserEmail: env.JIRA_USER_EMAIL || '',
         jiraApiToken: env.JIRA_API_TOKEN || '',
+        jiraDefaultProject: env.JIRA_DEFAULT_PROJECT || '',
       }),
     ],
     base: '/TableMaster',

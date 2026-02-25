@@ -96,6 +96,7 @@ interface GitPluginOptions {
   confluenceBaseUrl?: string
   jiraUserEmail?: string
   jiraApiToken?: string
+  jiraDefaultProject?: string
 }
 
 function buildAuthUrl(repoUrl: string, token?: string): string {
@@ -1226,19 +1227,33 @@ function createGitMiddleware(options: GitPluginOptions) {
           // JQL에 project 조건이 없으면 자동으로 전체 프로젝트 목록을 조회해 추가.
           const hasProjectClause = /\bproject\b/i.test(jql)
           if (!hasProjectClause) {
+            let projectKeys: string[] = []
             try {
               const projResp = await fetch(`${baseUrl}/rest/api/3/project/search?maxResults=100&orderBy=name`, {
                 headers: { Authorization: authHeader, Accept: 'application/json' }
               })
               if (projResp.ok) {
                 const projData = await projResp.json() as { values?: { key: string }[] }
-                const keys = (projData.values ?? []).map((p: { key: string }) => p.key).filter(Boolean)
-                if (keys.length > 0) {
-                  const projectFilter = `project IN (${keys.map(k => `"${k}"`).join(',')}) AND `
-                  jql = projectFilter + (jql || 'ORDER BY created DESC')
-                }
+                projectKeys = (projData.values ?? []).map((p: { key: string }) => p.key).filter(Boolean)
               }
-            } catch { /* 프로젝트 조회 실패 시 원래 JQL 사용 */ }
+            } catch { /* ignore */ }
+
+            // project/search 결과 없으면 env의 기본 프로젝트 키 사용
+            if (projectKeys.length === 0 && options.jiraDefaultProject) {
+              projectKeys = options.jiraDefaultProject.split(',').map(k => k.trim()).filter(Boolean)
+            }
+
+            if (projectKeys.length > 0) {
+              const trimmedJql = jql.trim()
+              const projectPart = `project IN (${projectKeys.map(k => `"${k}"`).join(',')})`
+              if (!trimmedJql || trimmedJql.toUpperCase().startsWith('ORDER BY')) {
+                // 조건 없거나 ORDER BY만 있으면: project IN (...) ORDER BY ...
+                jql = `${projectPart} ${trimmedJql || 'ORDER BY created DESC'}`.trim()
+              } else {
+                // 기존 조건 앞에 project 조건 추가
+                jql = `${projectPart} AND ${trimmedJql}`
+              }
+            }
           }
 
           const apiUrl = `${baseUrl}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${encodeURIComponent(fields)}`
