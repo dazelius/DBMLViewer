@@ -898,6 +898,270 @@ function createGitMiddleware(options: GitPluginOptions) {
       }
     }
 
+    // ── /api/assets/scene : Unity .unity 씬 파일 파싱 ──────────────────────────
+    if (req.url?.startsWith('/api/assets/scene')) {
+      try {
+        const SCENE_ASSETS_DIR  = join(process.cwd(), '..', '..', 'assets')
+        const url2     = new URL(req.url, 'http://localhost')
+        const scenePath = url2.searchParams.get('path') || ''
+        const maxObjects = parseInt(url2.searchParams.get('max') || '60', 10)
+
+        if (!scenePath) { sendJson(res, 400, { error: 'path parameter required' }); return }
+
+        // ── GUID 인덱스 로드 ──────────────────────────────────────────────────
+        const guidIdxPath = join(SCENE_ASSETS_DIR, '.guid_index.json')
+        if (!existsSync(guidIdxPath)) {
+          sendJson(res, 404, { error: 'GUID index not found. Run build_guid_index.ps1 first.' })
+          return
+        }
+        let guidRaw = readFileSync(guidIdxPath, 'utf-8')
+        if (guidRaw.charCodeAt(0) === 0xFEFF) guidRaw = guidRaw.slice(1)
+        const guidToRelPath: Record<string, string> = JSON.parse(guidRaw)
+
+        // GUID → 절대경로 변환 헬퍼
+        const UNITY_BASE2 = join(SCENE_ASSETS_DIR, '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets')
+        const guidToAbs = (guid: string): string | null => {
+          const rel = guidToRelPath[guid]
+          if (!rel) return null
+          return join(UNITY_BASE2, rel)
+        }
+
+        // ── 씬 파일 읽기 ───────────────────────────────────────────────────────
+        // 먼저 assets 폴더에서 찾고 없으면 unity_project 에서 찾기
+        let sceneAbsPath = join(SCENE_ASSETS_DIR, scenePath)
+        if (!existsSync(sceneAbsPath)) {
+          sceneAbsPath = join(UNITY_BASE2, scenePath)
+        }
+        if (!existsSync(sceneAbsPath)) {
+          sendJson(res, 404, { error: `Scene not found: ${scenePath}` })
+          return
+        }
+
+        const sceneContent = readFileSync(sceneAbsPath, 'utf-8')
+
+        // ── YAML 파싱 헬퍼 ─────────────────────────────────────────────────────
+        const getFloat = (block: string, key: string): number => {
+          const m = block.match(new RegExp(`${key}:\\s*([\\d.eE+\\-]+)`))
+          return m ? parseFloat(m[1]) : 0
+        }
+        const getStr = (block: string, key: string): string => {
+          const m = block.match(new RegExp(`${key}:\\s*(.+)`))
+          return m ? m[1].trim() : ''
+        }
+
+        // ── PrefabInstance 파싱 ────────────────────────────────────────────────
+        // 씬에서 PrefabInstance 추출: GUID + position/rotation/scale override
+        interface PrefabPlacement {
+          id: string
+          sourcePrefabGuid: string
+          pos: { x: number; y: number; z: number }
+          rot: { x: number; y: number; z: number; w: number }
+          scale: { x: number; y: number; z: number }
+        }
+
+        const placements: PrefabPlacement[] = []
+        const sections = sceneContent.split(/\n---/)
+        for (const section of sections) {
+          if (!section.includes('!u!1001')) continue
+          const idMatch = section.match(/!u!1001 &(\d+)/)
+          if (!idMatch) continue
+          const prefabGuidMatch = section.match(/m_SourcePrefab:\s*\{fileID:\s*\d+,\s*guid:\s*([a-f0-9]+)/)
+          if (!prefabGuidMatch) continue
+
+          const mods = section // extract m_Modifications block
+          // Parse position, rotation, scale from m_Modifications property overrides
+          const getPropVal = (prop: string): number => {
+            const re = new RegExp(`propertyPath:\\s*${prop.replace(/\./g, '\\.')}[\\s\\S]+?value:\\s*([\\d.eE+\\-]+)`)
+            const m = mods.match(re)
+            return m ? parseFloat(m[1]) : 0
+          }
+          const hasProp = (prop: string): boolean =>
+            new RegExp(`propertyPath:\\s*${prop.replace(/\./g, '\\.')}`).test(mods)
+
+          placements.push({
+            id: idMatch[1],
+            sourcePrefabGuid: prefabGuidMatch[1],
+            pos: {
+              x: hasProp('m_LocalPosition.x') ? getPropVal('m_LocalPosition.x') : 0,
+              y: hasProp('m_LocalPosition.y') ? getPropVal('m_LocalPosition.y') : 0,
+              z: hasProp('m_LocalPosition.z') ? getPropVal('m_LocalPosition.z') : 0,
+            },
+            rot: {
+              x: hasProp('m_LocalRotation.x') ? getPropVal('m_LocalRotation.x') : 0,
+              y: hasProp('m_LocalRotation.y') ? getPropVal('m_LocalRotation.y') : 0,
+              z: hasProp('m_LocalRotation.z') ? getPropVal('m_LocalRotation.z') : 0,
+              w: hasProp('m_LocalRotation.w') ? getPropVal('m_LocalRotation.w') : 1,
+            },
+            scale: {
+              x: hasProp('m_LocalScale.x') ? getPropVal('m_LocalScale.x') : 1,
+              y: hasProp('m_LocalScale.y') ? getPropVal('m_LocalScale.y') : 1,
+              z: hasProp('m_LocalScale.z') ? getPropVal('m_LocalScale.z') : 1,
+            },
+          })
+        }
+
+        // ── 직접 GameObject+Transform+MeshFilter 파싱 ─────────────────────────
+        // (PrefabInstance 없이 직접 MeshFilter가 있는 경우)
+        interface DirectObject {
+          name: string
+          meshGuid: string
+          pos: { x: number; y: number; z: number }
+          rot: { x: number; y: number; z: number; w: number }
+          scale: { x: number; y: number; z: number }
+        }
+        const directObjects: DirectObject[] = []
+
+        // fileID → MeshFilter mesh guid
+        const meshFilters: Record<string, { meshGuid: string; goId: string }> = {}
+        // fileID → Transform
+        const transforms: Record<string, {
+          pos: { x: number; y: number; z: number }
+          rot: { x: number; y: number; z: number; w: number }
+          scale: { x: number; y: number; z: number }
+          goId: string
+        }> = {}
+        // fileID → GameObject name
+        const gameObjects: Record<string, string> = {}
+
+        for (const section of sections) {
+          if (section.includes('!u!1 &')) {
+            // GameObject
+            const idM = section.match(/!u!1 &(\d+)/)
+            const nameM = section.match(/m_Name:\s*(.+)/)
+            if (idM && nameM) gameObjects[idM[1]] = nameM[1].trim()
+          } else if (section.includes('!u!4 &')) {
+            // Transform
+            const idM = section.match(/!u!4 &(\d+)/)
+            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            if (idM && goM) {
+              // inline format: m_LocalPosition: {x: 1, y: 2, z: 3}
+              const posInline = section.match(/m_LocalPosition:\s*\{x:\s*([\d.eE+\-]+),\s*y:\s*([\d.eE+\-]+),\s*z:\s*([\d.eE+\-]+)/)
+              const rotInline = section.match(/m_LocalRotation:\s*\{x:\s*([\d.eE+\-]+),\s*y:\s*([\d.eE+\-]+),\s*z:\s*([\d.eE+\-]+),\s*w:\s*([\d.eE+\-]+)/)
+              const scaleInline = section.match(/m_LocalScale:\s*\{x:\s*([\d.eE+\-]+),\s*y:\s*([\d.eE+\-]+),\s*z:\s*([\d.eE+\-]+)/)
+              transforms[idM[1]] = {
+                pos: posInline
+                  ? { x: parseFloat(posInline[1]), y: parseFloat(posInline[2]), z: parseFloat(posInline[3]) }
+                  : { x: getFloat(section, 'm_LocalPosition:\\s*\\n\\s*x'), y: getFloat(section, 'y'), z: getFloat(section, 'z') },
+                rot: rotInline
+                  ? { x: parseFloat(rotInline[1]), y: parseFloat(rotInline[2]), z: parseFloat(rotInline[3]), w: parseFloat(rotInline[4]) }
+                  : { x: 0, y: 0, z: 0, w: 1 },
+                scale: scaleInline
+                  ? { x: parseFloat(scaleInline[1]), y: parseFloat(scaleInline[2]), z: parseFloat(scaleInline[3]) }
+                  : { x: 1, y: 1, z: 1 },
+                goId: goM[1],
+              }
+            }
+          } else if (section.includes('!u!33 &')) {
+            // MeshFilter
+            const idM = section.match(/!u!33 &(\d+)/)
+            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            const meshM = section.match(/m_Mesh:\s*\{fileID:\s*\d+,\s*guid:\s*([a-f0-9]+),\s*type:\s*3/)
+            if (idM && goM && meshM) {
+              meshFilters[idM[1]] = { meshGuid: meshM[1], goId: goM[1] }
+            }
+          }
+        }
+
+        // Merge direct objects (GameObject + Transform + MeshFilter)
+        for (const [, mf] of Object.entries(meshFilters)) {
+          const fbxPath = guidToRelPath[mf.meshGuid]
+          if (!fbxPath) continue
+          const goName = gameObjects[mf.goId] ?? 'Object'
+          // Find transform for this GO
+          let tf = Object.values(transforms).find(t => t.goId === mf.goId)
+          if (!tf) tf = { pos: { x: 0, y: 0, z: 0 }, rot: { x: 0, y: 0, z: 0, w: 1 }, scale: { x: 1, y: 1, z: 1 }, goId: mf.goId }
+          directObjects.push({
+            name: goName,
+            meshGuid: mf.meshGuid,
+            pos: tf.pos,
+            rot: tf.rot,
+            scale: tf.scale,
+          })
+        }
+
+        // ── prefab → FBX 해석 ─────────────────────────────────────────────────
+        // prefab GUID 중복 없이 처리 (같은 prefab을 여러 번 인스턴싱)
+        const prefabCache: Record<string, string | null> = {} // guid → fbx relative path
+
+        const resolvePrefabFbx = (prefabGuid: string): string | null => {
+          if (prefabGuid in prefabCache) return prefabCache[prefabGuid]
+          const prefabAbsPath = guidToAbs(prefabGuid)
+          if (!prefabAbsPath || !existsSync(prefabAbsPath)) {
+            prefabCache[prefabGuid] = null
+            return null
+          }
+          try {
+            const prefabContent = readFileSync(prefabAbsPath, 'utf-8')
+            // MeshFilter with type:3 (external FBX)
+            const meshM = prefabContent.match(/m_Mesh:\s*\{fileID:\s*\d+,\s*guid:\s*([a-f0-9]+),\s*type:\s*3/)
+            if (meshM) {
+              const fbxRel = guidToRelPath[meshM[1]] ?? null
+              prefabCache[prefabGuid] = fbxRel
+              return fbxRel
+            }
+            // ProBuilder / built-in mesh (type:0 or type:2) - no external FBX
+            prefabCache[prefabGuid] = null
+            return null
+          } catch {
+            prefabCache[prefabGuid] = null
+            return null
+          }
+        }
+
+        // ── 씬 오브젝트 목록 조합 ───────────────────────────────────────────────
+        interface SceneObj {
+          id: string
+          name: string
+          fbxPath: string    // relative, e.g. "GameContents/Character/..."
+          fbxUrl: string     // /api/assets/file?path=...
+          pos: { x: number; y: number; z: number }
+          rot: { x: number; y: number; z: number; w: number }
+          scale: { x: number; y: number; z: number }
+        }
+
+        const sceneObjects: SceneObj[] = []
+
+        // Direct MeshFilter objects
+        for (const d of directObjects) {
+          if (sceneObjects.length >= maxObjects) break
+          sceneObjects.push({
+            id: `dir_${d.meshGuid}`,
+            name: d.name,
+            fbxPath: d.meshGuid,
+            fbxUrl: `/api/assets/file?path=${encodeURIComponent(guidToRelPath[d.meshGuid] ?? '')}`,
+            pos: d.pos, rot: d.rot, scale: d.scale,
+          })
+        }
+
+        // PrefabInstance objects
+        for (const p of placements) {
+          if (sceneObjects.length >= maxObjects) break
+          const fbxRel = resolvePrefabFbx(p.sourcePrefabGuid)
+          if (!fbxRel || !fbxRel.match(/\.(fbx|FBX)$/)) continue
+          sceneObjects.push({
+            id: p.id,
+            name: getStr(sections.find(s => s.includes(`!u!1001 &${p.id}`)) ?? '', 'm_Name') || fbxRel.split('/').pop()?.replace(/\.(fbx|FBX)$/, '') || 'Object',
+            fbxPath: fbxRel,
+            fbxUrl: `/api/assets/file?path=${encodeURIComponent(fbxRel)}`,
+            pos: p.pos, rot: p.rot, scale: p.scale,
+          })
+        }
+
+        sendJson(res, 200, {
+          scenePath,
+          totalPrefabs: placements.length,
+          totalDirect: directObjects.length,
+          resolvedCount: sceneObjects.length,
+          objects: sceneObjects,
+        })
+        return
+      } catch (sceneErr) {
+        console.error('[scene endpoint error]', sceneErr)
+        if (!res.headersSent) sendJson(res, 500, { error: String(sceneErr) })
+        return
+      }
+    }
+
     // ── /api/published : 출판된 문서 목록 (GET) ────────────────────────────────
     if (req.url === '/api/published' && req.method === 'GET') {
       sendJson(res, 200, readPublishedIndex())

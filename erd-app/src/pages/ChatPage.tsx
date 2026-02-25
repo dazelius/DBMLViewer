@@ -562,6 +562,30 @@ function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableD
     },
   );
 
+  // <div data-embed="scene" data-src="path/to/scene.unity" [data-label="씬 이름"]></div>
+  // → scene viewer placeholder (실제 렌더는 ArtifactSidePanel iframe 내에서 postMessage 불가이므로
+  //   클라이언트 렌더링 컴포넌트로 대체. 여기서는 iframe 안에서 로드 가능한 마크업 생성)
+  html = html.replace(
+    /<div([^>]*?)data-embed=["']scene["']([^>]*?)data-src=["']([^"']+)["']([^>]*?)(?:data-label=["']([^"']+)["'])?([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, _b, src, _c, label) => {
+      const apiUrl = src.startsWith('/api/') ? src : `/api/assets/scene?path=${encodeURIComponent(src)}&max=60`;
+      const sceneName = label ?? src.split('/').pop()?.replace('.unity', '') ?? 'Scene';
+      return `<div class="embed-card embed-scene" style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin:12px 0;">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2">
+      <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/>
+    </svg>
+    <span style="color:#e2e8f0;font-weight:700;font-size:14px;">${sceneName}</span>
+    <span style="color:#64748b;font-size:12px;">.unity</span>
+  </div>
+  <div style="color:#94a3b8;font-size:12px;background:#0f172a;border-radius:6px;padding:10px;">
+    씬 API: <code style="color:#a78bfa;">${apiUrl}</code><br>
+    <small style="color:#64748b;">💡 채팅창의 에셋 검색으로 씬 파일을 찾아 [씬 뷰] 버튼으로 3D 뷰를 열 수 있습니다.</small>
+  </div>
+</div>`;
+    },
+  );
+
   // <div data-embed="diff" data-commit="SHA" [data-file="경로"]></div>
   html = html.replace(
     /<div([^>]*?)data-embed=["']diff["']([^>]*?)data-commit=["']([^"']+)["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
@@ -3048,13 +3072,15 @@ function CodeGuideCard({ tc }: { tc: CodeGuideResult }) {
 function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
   const [fbxUrl, setFbxUrl] = useState<string | null>(null);
   const [fbxName, setFbxName] = useState<string>('');
+  const [sceneViewPath, setSceneViewPath] = useState<string | null>(null);
   const hasError = !!tc.error;
 
-  // ext는 dot 없이 저장됨 ("fbx", "png" 등)
+  // ext는 dot 없이 저장됨 ("fbx", "png", "unity" 등)
   const fbxFiles   = tc.files.filter(f => f.ext?.toLowerCase() === 'fbx');
   const imgFiles   = tc.files.filter(f => ['png','jpg','jpeg','tga','gif','bmp'].includes(f.ext?.toLowerCase() ?? ''));
   const audioFiles = tc.files.filter(f => ['wav','mp3','ogg','flac','m4a'].includes(f.ext?.toLowerCase() ?? ''));
-  const otherFiles = tc.files.filter(f => !['fbx','png','jpg','jpeg','tga','gif','bmp','wav','mp3','ogg','flac','m4a'].includes(f.ext?.toLowerCase() ?? ''));
+  const unityFiles = tc.files.filter(f => f.ext?.toLowerCase() === 'unity');
+  const otherFiles = tc.files.filter(f => !['fbx','png','jpg','jpeg','tga','gif','bmp','wav','mp3','ogg','flac','m4a','unity'].includes(f.ext?.toLowerCase() ?? ''));
 
   return (
     <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${hasError ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.3)'}` }}>
@@ -3088,6 +3114,19 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
           <div style={{ padding: '4px 12px 6px', fontSize: 11, color: '#818cf8', background: 'rgba(99,102,241,0.05)' }}>
             {fbxName}
           </div>
+        </div>
+      )}
+
+      {/* 인라인 Unity 씬 뷰어 */}
+      {sceneViewPath && (
+        <div style={{ position: 'relative' }}>
+          <SceneViewerLazy scenePath={sceneViewPath} height={480} />
+          <button
+            onClick={() => setSceneViewPath(null)}
+            style={{ position: 'absolute', top: 42, right: 8, background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', borderRadius: 6, padding: '2px 8px', fontSize: 11, cursor: 'pointer', zIndex: 10 }}
+          >
+            ✕ 닫기
+          </button>
         </div>
       )}
 
@@ -3183,6 +3222,43 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
         </div>
       )}
 
+      {/* Unity 씬 파일 목록 */}
+      {unityFiles.length > 0 && (
+        <div className="px-3 pt-2 pb-1">
+          <div className="text-[11px] mb-1.5 font-semibold" style={{ color: '#a78bfa' }}>
+            🎮 Unity 씬 ({unityFiles.length})
+          </div>
+          <div className="space-y-1">
+            {unityFiles.map((f, i) => (
+              <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2">
+                  <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/>
+                </svg>
+                <span className="flex-1 text-[11px] font-mono truncate" style={{ color: '#c4b5fd' }} title={f.path}>
+                  {f.name}.unity
+                </span>
+                <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+                  {f.sizeKB} KB
+                </span>
+                <button
+                  onClick={() => {
+                    if (sceneViewPath === f.path) { setSceneViewPath(null); }
+                    else { setSceneViewPath(f.path); setFbxUrl(null); }
+                  }}
+                  className="flex-shrink-0 text-[10px] px-2 py-0.5 rounded"
+                  style={{
+                    background: sceneViewPath === f.path ? 'rgba(167,139,250,0.4)' : 'rgba(167,139,250,0.15)',
+                    color: '#a78bfa', border: '1px solid rgba(167,139,250,0.3)', cursor: 'pointer'
+                  }}
+                >
+                  {sceneViewPath === f.path ? '▼ 닫기' : '🎮 씬 뷰'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 기타 파일 목록 */}
       {otherFiles.length > 0 && (
         <div className="px-3 pt-2 pb-3">
@@ -3222,6 +3298,20 @@ function FbxViewerLazy({ url, filename }: { url: string; filename: string }) {
   }, []);
   if (!Comp) return <div className="flex items-center justify-center h-24 text-[12px]" style={{ color: 'var(--text-muted)' }}>3D 뷰어 로딩 중...</div>;
   return <Comp url={url} filename={filename} />;
+}
+
+// SceneViewer lazy wrapper (.unity 씬 파일 뷰어)
+function SceneViewerLazy({ scenePath, height }: { scenePath: string; height?: number }) {
+  const [Comp, setComp] = useState<React.ComponentType<{ scenePath: string; height?: number }> | null>(null);
+  useEffect(() => {
+    import('../components/SceneViewer').then(m => setComp(() => m.SceneViewer));
+  }, []);
+  if (!Comp) return (
+    <div className="flex items-center justify-center h-24 text-[12px]" style={{ color: 'var(--text-muted)' }}>
+      씬 뷰어 로딩 중...
+    </div>
+  );
+  return <Comp scenePath={scenePath} height={height ?? 520} />;
 }
 
 function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {

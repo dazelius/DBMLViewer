@@ -594,6 +594,16 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('  <div class="audio-player" data-src="/api/assets/file?path=Sound/hit_01.wav" data-label="피격음"></div>');
   lines.push('- search_assets 툴로 ext="wav" 또는 ext="mp3"로 검색 후 경로를 확인하세요.');
   lines.push('');
+  lines.push('[Unity .unity 씬 파일 뷰어 규칙]');
+  lines.push('⚠️ 씬 embed 태그도 채팅 텍스트에 직접 출력 금지! 반드시 create_artifact html 안에만!');
+  lines.push('- Unity .unity 씬을 3D로 보여달라는 요청 → search_assets(ext="unity")로 씬 파일 검색 후 → create_artifact 호출');
+  lines.push('- 채팅에서: "에셋 검색 결과의 [씬 뷰] 버튼을 클릭하면 3D 씬 뷰어가 열립니다" 라고 안내');
+  lines.push('- 아티팩트 HTML 안에서 씬 표시 패턴 (아티팩트 html 파라미터 내부에만 사용):');
+  lines.push('  <div data-embed="scene" data-src="GameContents/Map/씬파일.unity" data-label="씬 이름"></div>');
+  lines.push('- 씬 파일 경로는 search_assets 결과의 path 값을 그대로 사용하세요.');
+  lines.push('- /api/assets/scene?path=경로&max=60 API로 씬 오브젝트(FBX+트랜스폼) 목록을 조회할 수 있습니다.');
+  lines.push('- ⚠️ 씬 로딩은 build_guid_index.ps1 실행 후에만 작동합니다 (GUID 인덱스 필요).');
+  lines.push('');
   lines.push('[캐릭터 기획서/프로파일/데이터 시트뷰 — 반드시 준수]');
   lines.push('- "캐릭터 기획서", "[캐릭터명] 기획서", "프로파일", "캐릭터 카드", "개요" 요청 시: build_character_profile 먼저 → create_artifact 순서.');
   lines.push('- "데이터 다 제공해줘", "모든 데이터 보여줘", "시트뷰", "종합해줘", "전체 데이터" 요청 시도 동일하게 build_character_profile 먼저 호출.');
