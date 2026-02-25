@@ -2909,40 +2909,50 @@ function ThinkingIndicator({ liveToolCalls }: { liveToolCalls?: ToolCallResult[]
 function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => void }) {
   const isUser = msg.role === 'user';
 
+  /* ── 유저 메시지: 우측 정렬 그라데이션 버블 ─────────────────────────────── */
+  if (isUser) {
+    return (
+      <div className="flex justify-end px-1">
+        <div
+          className="max-w-[72%] rounded-2xl rounded-tr-sm px-5 py-3 shadow-md"
+          style={{
+            background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
+            boxShadow: '0 4px 20px rgba(99,102,241,0.35)',
+          }}
+        >
+          <p className="text-[14px] whitespace-pre-wrap leading-relaxed" style={{ color: '#fff' }}>
+            {msg.content}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── AI 메시지: 풀폭, 헤더 + 내용 ──────────────────────────────────────── */
   return (
-    <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
-      {/* 아바타 */}
-      <div
-        className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
-        style={{
-          background: isUser ? 'var(--accent)' : 'var(--bg-surface)',
-          border: isUser ? 'none' : '1px solid var(--border-color)',
-        }}
-      >
-        {isUser ? (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-            <circle cx="12" cy="7" r="4" />
-          </svg>
-        ) : (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: 'var(--accent)' }}>
+    <div className="flex flex-col gap-2 px-1">
+      {/* AI 헤더 */}
+      <div className="flex items-center gap-2">
+        <div
+          className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+          style={{ background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)', boxShadow: '0 2px 8px rgba(99,102,241,0.4)' }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
             <circle cx="12" cy="12" r="3" />
             <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83" />
           </svg>
-        )}
+        </div>
+        <span className="text-[12px] font-semibold" style={{ color: 'var(--accent)' }}>AI Assistant</span>
       </div>
 
       {/* 내용 */}
-      <div className={`flex flex-col gap-1 max-w-[80%] min-w-0 ${isUser ? 'items-end' : 'items-start'}`}>
-        <div
-          className="rounded-2xl px-4 py-3"
-          style={{
-            background: isUser ? 'var(--accent)' : 'var(--bg-surface)',
-            border: isUser ? 'none' : '1px solid var(--border-color)',
-            borderTopRightRadius: isUser ? 4 : 16,
-            borderTopLeftRadius: isUser ? 16 : 4,
-          }}
-        >
+      <div
+        className="rounded-2xl rounded-tl-sm px-5 py-4 w-full"
+        style={{
+          background: 'var(--bg-surface)',
+          border: '1px solid var(--border-color)',
+        }}
+      >
           {msg.isLoading && !msg.content ? (
             <ThinkingIndicator liveToolCalls={msg.liveToolCalls} />
           ) : msg.isLoading && (msg.content || msg.artifactProgress || (msg.liveToolCalls && msg.liveToolCalls.length > 0)) ? (
@@ -2969,7 +2979,7 @@ function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => v
                 </div>
               )}
               {msg.content && (
-                <div className="text-[13px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                <div className="text-[14px] leading-relaxed" style={{ color: 'var(--text-primary)' }}>
                   {renderMarkdown(msg.content)}
                   <span
                     className="inline-block ml-0.5 w-[2px] h-[14px] rounded-sm align-middle animate-pulse"
@@ -2978,12 +2988,8 @@ function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => v
                 </div>
               )}
             </div>
-          ) : isUser ? (
-            <p className="text-[13px] whitespace-pre-wrap" style={{ color: '#fff' }}>
-              {msg.content}
-            </p>
           ) : (
-            <div className="space-y-0.5">
+            <div className="space-y-2">
               {/* Tool calls */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="mb-3 space-y-1">
@@ -2995,14 +3001,16 @@ function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => v
               {/* 오류 */}
               {msg.error && (
                 <div
-                  className="px-3 py-2 rounded-lg text-[12px] mb-2"
-                  style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}
+                  className="px-4 py-3 rounded-xl text-[13px] mb-2"
+                  style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171' }}
                 >
                   {msg.error}
                 </div>
               )}
               {/* 본문 */}
+              <div className="text-[14px] leading-relaxed" style={{ color: 'var(--text-primary)' }}>
               {renderMarkdown(msg.content)}
+              </div>
 
               {/* 잘린 응답 → 계속 생성 버튼 */}
               {msg.isTruncated && (
@@ -3017,7 +3025,7 @@ function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => v
                   {onContinue && (
                     <button
                       onClick={onContinue}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium hover:opacity-80 transition-opacity"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium hover:opacity-80 transition-opacity"
                       style={{ background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.4)', color: '#818cf8' }}
                     >
                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -3032,10 +3040,9 @@ function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => v
             </div>
           )}
         </div>
-        <span className="text-[10px] px-1" style={{ color: 'var(--text-muted)' }}>
+        <span className="text-[11px] mt-1 px-1" style={{ color: 'var(--text-muted)' }}>
           {msg.timestamp.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
         </span>
-      </div>
     </div>
   );
 }
@@ -3065,6 +3072,7 @@ export default function ChatPage() {
   });
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // 아티팩트 사이드 패널 상태
   const [artifactPanel, setArtifactPanel] = useState<{
@@ -3293,16 +3301,63 @@ export default function ChatPage() {
       <div className="flex flex-1 overflow-hidden">
         {/* ── 사이드바 ── */}
         <div
-          className="w-56 flex-shrink-0 flex flex-col overflow-hidden"
-          style={{ borderRight: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}
+          className="flex-shrink-0 flex flex-col overflow-hidden transition-all duration-200"
+          style={{
+            width: sidebarCollapsed ? 48 : 256,
+            borderRight: '1px solid var(--border-color)',
+            background: 'var(--bg-secondary)',
+          }}
         >
+          {/* 사이드바 헤더 (토글 버튼) */}
+          <div
+            className="flex items-center px-2 py-2 flex-shrink-0"
+            style={{ borderBottom: '1px solid var(--border-color)', minHeight: 44 }}
+          >
+            {!sidebarCollapsed && (
+              <span className="flex-1 text-[11px] font-semibold uppercase tracking-wider px-2" style={{ color: 'var(--text-muted)' }}>
+                패널
+              </span>
+            )}
+            <button
+              onClick={() => setSidebarCollapsed((v) => !v)}
+              className="w-8 h-8 flex items-center justify-center rounded-lg hover:opacity-80 transition-opacity flex-shrink-0"
+              style={{ background: 'var(--bg-hover)', color: 'var(--text-muted)' }}
+              title={sidebarCollapsed ? '사이드바 펴기' : '사이드바 접기'}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                {sidebarCollapsed
+                  ? <><polyline points="9 18 15 12 9 6"/></>
+                  : <><polyline points="15 18 9 12 15 6"/></>
+                }
+              </svg>
+            </button>
+          </div>
+
+          {/* 접힌 상태: 아이콘만 표시 */}
+          {sidebarCollapsed ? (
+            <div className="flex flex-col items-center gap-2 py-3">
+              {hasData && (
+                <div className="w-8 h-8 flex items-center justify-center rounded-lg" style={{ background: 'rgba(34,197,94,0.1)' }} title={`${tableData.size}개 테이블`}>
+                  <span className="w-2 h-2 rounded-full" style={{ background: '#22c55e', boxShadow: '0 0 5px #22c55e' }} />
+                </div>
+              )}
+              {savedArtifacts.length > 0 && (
+                <div className="w-8 h-8 flex items-center justify-center rounded-lg" style={{ background: 'rgba(99,102,241,0.1)' }} title={`${savedArtifacts.length}개 문서`}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: 'var(--accent)' }}>
+                    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+                  </svg>
+                </div>
+              )}
+            </div>
+          ) : (
+          <>
           {/* 데이터 현황 */}
           <div className="px-4 pt-4 pb-3" style={{ borderBottom: '1px solid var(--border-color)' }}>
             <div className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
               데이터 현황
             </div>
             {hasData ? (
-              <div className="space-y-1">
+              <div className="space-y-1.5">
                 <div className="flex justify-between text-[12px]">
                   <span style={{ color: 'var(--text-secondary)' }}>테이블</span>
                   <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{tableData.size}개</span>
@@ -3321,10 +3376,7 @@ export default function ChatPage() {
                     </div>
                   </>
                 )}
-                <div
-                  className="mt-2 flex items-center gap-1.5 text-[11px]"
-                  style={{ color: '#22c55e' }}
-                >
+                <div className="mt-2 flex items-center gap-1.5 text-[11px]" style={{ color: '#22c55e' }}>
                   <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#22c55e', boxShadow: '0 0 5px #22c55e' }} />
                   AI 준비 완료
                 </div>
@@ -3443,6 +3495,8 @@ export default function ChatPage() {
               </button>
             )}
           </div>
+          </>
+          )}
         </div>
 
         {/* ── 채팅 + 아티팩트 패널 (가변 분할) ── */}
@@ -3451,25 +3505,51 @@ export default function ChatPage() {
         {/* ── 채팅 영역 ── */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
           {/* 메시지 목록 */}
-          <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+          <div className="flex-1 overflow-y-auto py-6">
+            {/* 아티팩트 패널 없을 때 → 가운데 정렬 max-w 컨테이너 */}
+            <div className={`mx-auto w-full px-6 space-y-6 ${!artifactPanel ? 'max-w-4xl' : ''}`}>
             {messages.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-full text-center" style={{ color: 'var(--text-muted)' }}>
+              <div className="flex flex-col items-center justify-center py-24 text-center" style={{ color: 'var(--text-muted)' }}>
                 <div
-                  className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4"
-                  style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)' }}
+                  className="w-20 h-20 rounded-3xl flex items-center justify-center mb-5"
+                  style={{ background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)', boxShadow: '0 8px 32px rgba(99,102,241,0.35)' }}
                 >
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" style={{ color: 'var(--accent)' }}>
+                  <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round">
                     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
                   </svg>
                 </div>
-                <h2 className="text-[18px] font-bold mb-2" style={{ color: 'var(--text-primary)' }}>
+                <h2 className="text-[22px] font-bold mb-3" style={{ color: 'var(--text-primary)' }}>
                   게임 데이터 AI 어시스턴트
                 </h2>
-                <p className="text-[13px] max-w-md leading-relaxed">
+                <p className="text-[15px] max-w-lg leading-relaxed mb-6">
                   {hasData
                     ? '게임 데이터에 대해 자유롭게 질문하세요. AI가 SQL로 데이터를 직접 조회해서 답변합니다.'
                     : 'Import 탭에서 데이터를 먼저 불러온 후 질문하세요.'}
                 </p>
+                {hasData && (
+                  <div className="grid grid-cols-2 gap-3 max-w-lg w-full">
+                    {[
+                      '캐릭터 목록 보여줘',
+                      '스킬 테이블 분석해줘',
+                      '카야 기획서 써줘',
+                      '테이블 관계도 그려줘',
+                    ].map((hint) => (
+                      <button
+                        key={hint}
+                        onClick={() => sendMessage(hint)}
+                        className="px-4 py-3 rounded-xl text-[13px] text-left transition-all hover:opacity-90"
+                        style={{
+                          background: 'var(--bg-surface)',
+                          border: '1px solid var(--border-color)',
+                          color: 'var(--text-secondary)',
+                          boxShadow: '0 1px 4px rgba(0,0,0,0.1)',
+                        }}
+                      >
+                        {hint}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -3487,63 +3567,73 @@ export default function ChatPage() {
             ))}
 
             <div ref={bottomRef} />
+            </div>{/* max-w 컨테이너 닫기 */}
           </div>
 
           {/* 입력 영역 */}
           <div
-            className="flex-shrink-0 px-6 pb-6 pt-3"
-            style={{ borderTop: '1px solid var(--border-color)' }}
+            className="flex-shrink-0 py-4"
+            style={{ borderTop: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}
           >
-            <div
-              className="flex items-end gap-3 rounded-2xl px-4 py-3"
-              style={{
-                background: 'var(--bg-surface)',
-                border: '1px solid var(--border-color)',
-                boxShadow: '0 2px 12px rgba(0,0,0,0.12)',
-              }}
-            >
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={
-                  hasData
-                    ? '게임 데이터에 대해 무엇이든 물어보세요... (Shift+Enter: 줄바꿈)'
-                    : '데이터를 먼저 Import 해주세요'
-                }
-                disabled={isLoading || !hasData}
-                rows={1}
-                className="flex-1 resize-none bg-transparent border-none outline-none text-[13px] leading-relaxed"
+            <div className={`mx-auto w-full px-6 ${!artifactPanel ? 'max-w-4xl' : ''}`}>
+              <div
+                className="flex items-end gap-3 rounded-2xl px-5 py-3.5"
                 style={{
-                  color: 'var(--text-primary)',
-                  minHeight: 24,
-                  maxHeight: 160,
+                  background: 'var(--bg-surface)',
+                  border: '1px solid var(--border-color)',
+                  boxShadow: '0 4px 24px rgba(0,0,0,0.15)',
+                  transition: 'border-color .15s, box-shadow .15s',
                 }}
-              />
-              <button
-                onClick={() => sendMessage(input)}
-                disabled={isLoading || !input.trim() || !hasData}
-                className="flex-shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-all"
-                style={{
-                  background: isLoading || !input.trim() || !hasData ? 'var(--bg-hover)' : 'var(--accent)',
-                  cursor: isLoading || !input.trim() || !hasData ? 'not-allowed' : 'pointer',
-                }}
+                onFocus={() => {}}
               >
-                {isLoading ? (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" className="spinner" style={{ color: 'var(--text-muted)' }}>
-                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                  </svg>
-                ) : (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ color: isLoading || !input.trim() || !hasData ? 'var(--text-muted)' : '#fff' }}>
-                    <line x1="22" y1="2" x2="11" y2="13" />
-                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                  </svg>
-                )}
-              </button>
-            </div>
-            <div className="text-[11px] mt-2 text-center" style={{ color: 'var(--text-muted)' }}>
-              Claude AI가 실제 데이터를 조회하여 답변합니다 · Enter로 전송 · Shift+Enter로 줄바꿈
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={
+                    hasData
+                      ? '게임 데이터에 대해 무엇이든 질문하세요... (Shift+Enter: 줄바꿈)'
+                      : '데이터를 먼저 Import 해주세요'
+                  }
+                  disabled={isLoading || !hasData}
+                  rows={1}
+                  className="flex-1 resize-none bg-transparent border-none outline-none leading-relaxed"
+                  style={{
+                    color: 'var(--text-primary)',
+                    fontSize: 15,
+                    minHeight: 28,
+                    maxHeight: 180,
+                  }}
+                />
+                <button
+                  onClick={() => sendMessage(input)}
+                  disabled={isLoading || !input.trim() || !hasData}
+                  className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-all"
+                  style={{
+                    background: isLoading || !input.trim() || !hasData
+                      ? 'var(--bg-hover)'
+                      : 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
+                    cursor: isLoading || !input.trim() || !hasData ? 'not-allowed' : 'pointer',
+                    boxShadow: (!isLoading && input.trim() && hasData) ? '0 4px 12px rgba(99,102,241,0.4)' : 'none',
+                    transition: 'all .15s',
+                  }}
+                >
+                  {isLoading ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" className="animate-spin" style={{ color: 'var(--text-muted)' }}>
+                      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                    </svg>
+                  ) : (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ color: isLoading || !input.trim() || !hasData ? 'var(--text-muted)' : '#fff' }}>
+                      <line x1="22" y1="2" x2="11" y2="13" />
+                      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+              <div className="text-[11px] mt-2 text-center" style={{ color: 'var(--text-muted)' }}>
+                Claude AI · Enter로 전송 · Shift+Enter로 줄바꿈
+              </div>
             </div>
           </div>
         </div>
