@@ -1,6 +1,6 @@
 import type { ParsedSchema } from '../schema/types.ts';
 import type { Row, TableDataMap } from '../query/schemaQueryEngine.ts';
-import { executeDataSQL } from '../query/schemaQueryEngine.ts';
+import { executeDataSQL, RESERVED_TABLE_NAMES } from '../query/schemaQueryEngine.ts';
 import { useSchemaStore } from '../../store/useSchemaStore.ts';
 
 // ── 타입 정의 ────────────────────────────────────────────────────────────────
@@ -713,6 +713,20 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- 잘못된 예: exec_target AS 대상  →  올바른 예: exec_target AS target');
   lines.push('- 잘못된 예: effect_type AS 효과타입  →  올바른 예: effect_type');
   lines.push('- 별칭이 필요 없으면 그냥 컬럼명 원본을 그대로 사용할 것');
+  lines.push('');
+  lines.push('## ⛔ alasql 예약어 테이블명 규칙 — 반드시 준수');
+  lines.push('아래 테이블명은 alasql 예약어이므로 SQL에서 직접 사용 불가. 내부명(__u_xxx)으로 쿼리할 것:');
+
+  // 로드된 tableData 중 예약어인 것 목록
+  for (const [key] of tableData) {
+    const upperKey = key.toUpperCase();
+    if (RESERVED_TABLE_NAMES.has(upperKey)) {
+      lines.push(`- "${key}" 테이블 → SELECT * FROM __u_${key} WHERE ... (절대 FROM ${key} 또는 FROM \`${key}\` 사용 금지)`);
+    }
+  }
+  if (!tableData.size) {
+    lines.push('- Enum 테이블 예시: SELECT * FROM __u_enum WHERE enum_type = \'WeaponType\'');
+  }
 
   return lines.join('\n');
 }

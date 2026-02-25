@@ -25,7 +25,7 @@ function translateSQL(sql: string): string {
  * alasql에서 테이블명으로 쓰면 파싱 오류가 나는 예약어 목록
  * (실제 DB 테이블명으로 자주 쓰이는 것들 위주)
  */
-const ALASQL_RESERVED_AS_TABLE = new Set([
+export const RESERVED_TABLE_NAMES = new Set([
   'ENUM', 'INDEX', 'KEY', 'VALUE', 'USER', 'VIEW',
   'SCHEMA', 'STATUS', 'TYPE', 'LEVEL', 'DATA', 'COMMENT',
   'COLUMN', 'CONSTRAINT', 'INTERVAL', 'TIMESTAMP',
@@ -45,21 +45,28 @@ function safeInternalName(name: string): string {
 
 /**
  * SQL 내 예약어 테이블명을 안전한 내부명으로 치환합니다.
- * 백틱/큰따옴표/대괄호로 이미 감싸진 것도 포함하여 모두 치환합니다.
+ * - 인용부호(백틱/큰따옴표/대괄호) 형태 모두 처리
+ * - FROM / JOIN 계열 / UPDATE / INTO / TABLE 키워드 뒤의 bare 식별자만 치환
+ *   (문자열 리터럴 안의 우연한 일치 방지)
  */
 function remapReservedTableNames(sql: string, remap: Map<string, string>): string {
+  if (remap.size === 0) return sql;
   let result = sql;
   for (const [original, internal] of remap) {
     const esc = original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // 이미 따옴표 계열로 감싸진 형태 먼저 치환
-    result = result
-      .replace(new RegExp(`\`${esc}\``, 'gi'), internal)
-      .replace(new RegExp(`"${esc}"`, 'gi'), internal)
-      .replace(new RegExp(`\\[${esc}\\]`, 'gi'), internal);
-    // 날 identifier (단어 경계)
+
+    // 1) 인용부호로 감싸진 형태 (안전 — 문자열 리터럴 오탐 없음)
+    result = result.replace(new RegExp('`' + esc + '`', 'gi'), internal);
+    result = result.replace(new RegExp('"' + esc + '"', 'gi'), internal);
+    result = result.replace(new RegExp('\\[' + esc + '\\]', 'gi'), internal);
+
+    // 2) bare 식별자 — SQL 키워드(FROM/JOIN/UPDATE/INTO/TABLE) 직후만 치환
     result = result.replace(
-      new RegExp(`(?<!['\`"\\[])\\b${esc}\\b(?!['\`"\\]])`, 'gi'),
-      internal,
+      new RegExp(
+        '\\b(FROM|JOIN|INNER\\s+JOIN|LEFT\\s+JOIN|RIGHT\\s+JOIN|CROSS\\s+JOIN|UPDATE|INTO|TABLE)\\s+(' + esc + ')\\b',
+        'gi',
+      ),
+      (_m: string, kw: string) => kw + ' ' + internal,
     );
   }
   return result;
@@ -255,7 +262,7 @@ export function executeDataSQL(
         return r;
       });
 
-      if (ALASQL_RESERVED_AS_TABLE.has(name.toUpperCase())) {
+      if (RESERVED_TABLE_NAMES.has(name.toUpperCase())) {
         // 예약어 테이블: 안전한 내부명으로 등록
         const internal = safeInternalName(name);
         remap.set(name, internal);
@@ -309,7 +316,20 @@ export function executeDataSQL(
 
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { columns: [], rows: [], rowCount: 0, error: msg, duration: performance.now() - t0 };
+
+    // 예약어 테이블명 오류 → 힌트 메시지
+    const reservedHint = (() => {
+      const m = msg.match(/Table does not exist[:\s]+(\w+)/i) ??
+                msg.match(/Parse error[^']*got '(\w+)'/i);
+      if (!m) return '';
+      const bad = m[1];
+      if (RESERVED_TABLE_NAMES.has(bad.toUpperCase())) {
+        return ` ※ "${bad}"은 alasql 예약어 → FROM ${safeInternalName(bad)} 으로 쿼리하세요.`;
+      }
+      return '';
+    })();
+
+    return { columns: [], rows: [], rowCount: 0, error: msg + reservedHint, duration: performance.now() - t0 };
   }
 }
 
@@ -319,16 +339,25 @@ export function buildDataQueryContext(tableData: TableDataMap, schema?: ParsedSc
   const properNameMap = new Map<string, string>();
   if (schema) for (const t of schema.tables) properNameMap.set(t.name.toLowerCase(), t.name);
 
+  const reservedWarnings: string[] = [];
   const lines: string[] = ['사용 가능한 테이블 (실제 데이터):'];
   for (const [key, { headers, rows }] of tableData) {
     const name = properNameMap.get(key) ?? key;
-    lines.push(`\n${name} (${rows.length}행)`);
+    const isReserved = RESERVED_TABLE_NAMES.has(name.toUpperCase());
+    const queryName = isReserved ? safeInternalName(name) : name;
+    lines.push(`\n${name} (${rows.length}행)${isReserved ? `  [SQL쿼리명: ${queryName}]` : ''}`);
     lines.push(`  컬럼: ${headers.join(', ')}`);
     if (rows.length > 0) {
       const sample = rows[0];
       const sampleStr = headers.slice(0, 6).map(h => `${h}=${JSON.stringify(sample[h] ?? '')}`).join(', ');
       lines.push(`  샘플: ${sampleStr}${headers.length > 6 ? ' ...' : ''}`);
     }
+    if (isReserved) reservedWarnings.push(`${name} → FROM ${queryName}`);
+  }
+
+  if (reservedWarnings.length > 0) {
+    lines.push('\n[예약어 테이블 SQL 쿼리명 — 반드시 이 이름으로 쿼리]:');
+    for (const w of reservedWarnings) lines.push(`  ${w}`);
   }
 
   if (schema && schema.refs.length > 0) {
