@@ -145,14 +145,39 @@ ${refs.length > 0 ? `<div class="embed-subtitle">관계 (FK)</div><table class="
 /** SQL 잘림 감지 및 복구 시도 */
 function tryRepairSQL(sql: string): { sql: string; repaired: boolean } {
   const trimmed = sql.trim();
-  // 잘린 패턴: 마지막 단어가 SQL 키워드인 경우
-  const TRAILING_KEYWORDS = /\b(AS|WHERE|FROM|AND|OR|ON|SET|HAVING|ORDER\s+BY|GROUP\s+BY|JOIN|LEFT|RIGHT|INNER|OUTER|LIMIT|OFFSET|UNION|SELECT|INSERT|UPDATE|DELETE|INTO|VALUES|BY)\s*$/i;
-  const match = trimmed.match(TRAILING_KEYWORDS);
-  if (match) {
-    // 잘린 키워드 이전까지만 사용
-    const repaired = trimmed.slice(0, match.index).trim().replace(/,\s*$/, '');
+
+  // ── Case 1: "... `#col` AS" 또는 "... colName AS" — alias 자동 추론 ──────────
+  const asTrailing = trimmed.match(/\s+AS\s*$/i);
+  if (asTrailing) {
+    const beforeAs = trimmed.slice(0, asTrailing.index).trim();
+    // 직전 컬럼 표현식 추출: 백틱, 일반 식별자
+    const lastCol = beforeAs.match(/`([^`]+)`\s*$|(?:^|[\s,(])(\w+)\s*$/);
+    if (lastCol) {
+      const raw = (lastCol[1] || lastCol[2]) ?? '';
+      // #foo → foo, 특수문자 → _로 치환
+      const alias = raw.replace(/^#/, '').replace(/[^a-zA-Z0-9_]/g, '_') || 'col';
+      return { sql: trimmed + ' ' + alias, repaired: true };
+    }
+    // alias 추론 불가 → AS 제거
+    const withoutAs = beforeAs.replace(/,\s*$/, '').trim();
+    if (withoutAs.length > 0) return { sql: withoutAs, repaired: true };
+  }
+
+  // ── Case 2: SELECT 컬럼 목록 끝이 쉼표로 끝남 ("SELECT id, name,") ───────────
+  const trailingComma = trimmed.match(/,\s*$/);
+  if (trailingComma) {
+    const repaired = trimmed.slice(0, trailingComma.index).trim();
     if (repaired.length > 0) return { sql: repaired, repaired: true };
   }
+
+  // ── Case 3: 기타 끝단 SQL 키워드 ─────────────────────────────────────────────
+  const TRAILING_KW = /\b(WHERE|FROM|AND|OR|ON|SET|HAVING|ORDER\s+BY|GROUP\s+BY|JOIN|LEFT|RIGHT|INNER|OUTER|LIMIT|OFFSET|UNION|SELECT|INSERT|UPDATE|DELETE|INTO|VALUES|BY)\s*$/i;
+  const kwMatch = trimmed.match(TRAILING_KW);
+  if (kwMatch) {
+    const repaired = trimmed.slice(0, kwMatch.index).trim().replace(/,\s*$/, '');
+    if (repaired.length > 0) return { sql: repaired, repaired: true };
+  }
+
   return { sql: trimmed, repaired: false };
 }
 
@@ -173,21 +198,32 @@ function renderQueryEmbedHtml(sql: string, tableData: TableDataMap, schema: Pars
     // SQL 실행 시도
     let result = executeDataSQL(finalSql, tableData, schema ?? undefined);
 
-    // 첫 번째 실패 시 복구 시도
+    // 첫 번째 실패 시 복구 시도 (1단계)
     if (result.error) {
       const { sql: repairedSql, repaired } = tryRepairSQL(finalSql);
-      if (repaired) {
+      if (repaired && repairedSql !== finalSql) {
         const retryResult = executeDataSQL(repairedSql, tableData, schema ?? undefined);
         if (!retryResult.error) {
           result = retryResult;
           finalSql = repairedSql;
           repairNote = ` <span style="color:#f59e0b;font-size:9px">(자동 복구됨)</span>`;
+        } else {
+          // 복구 후에도 실패 → 2단계: 반복 복구 (중첩 잘림 대응)
+          const { sql: sql2, repaired: r2 } = tryRepairSQL(repairedSql);
+          if (r2 && sql2 !== repairedSql) {
+            const retry2 = executeDataSQL(sql2, tableData, schema ?? undefined);
+            if (!retry2.error) {
+              result = retry2;
+              finalSql = sql2;
+              repairNote = ` <span style="color:#f59e0b;font-size:9px">(자동 복구됨)</span>`;
+            }
+          }
         }
       }
     }
 
     if (result.error) {
-      const isTruncated = /got 'EOF'|Unexpected end|unexpected end/i.test(result.error);
+      const isTruncated = /got 'EOF'|Unexpected end|unexpected end|Expecting 'LITERAL'.*got 'EOF'/i.test(result.error);
       const msg = isTruncated
         ? `SQL이 불완전합니다 (응답 생성 중 잘린 것 같습니다)`
         : `쿼리 오류: ${result.error}`;
