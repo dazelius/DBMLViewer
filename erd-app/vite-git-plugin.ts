@@ -807,7 +807,146 @@ function createGitMiddleware(options: GitPluginOptions) {
       if (!id) { res.writeHead(400); res.end('id required'); return }
       const htmlPath = join(PUBLISHED_DIR, `${id}.html`)
       if (!existsSync(htmlPath)) { res.writeHead(404); res.end('Not found'); return }
-      const html = readFileSync(htmlPath, 'utf-8')
+      let html = readFileSync(htmlPath, 'utf-8')
+
+      // ── 출판 페이지용 독립 FBX 뷰어 주입 ─────────────────────────────────
+      // 채팅 앱(postMessage) 없이 직접 CDN Three.js로 렌더링
+      const FBX_STANDALONE_SCRIPT = `
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+function buildViewer(container, fbxUrl, label) {
+  container.style.cssText = 'position:relative;background:#111827;border-radius:10px;overflow:hidden;border:1px solid #334155;margin:8px 0;';
+  const hdr = document.createElement('div');
+  hdr.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 14px;background:#1e293b;border-bottom:1px solid #334155;font-size:12px;font-family:monospace;color:#94a3b8;';
+  hdr.textContent = '🧊 ' + (label || fbxUrl.split('/').pop());
+  container.appendChild(hdr);
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'width:100%;height:420px;position:relative;';
+  container.appendChild(wrap);
+
+  const hint = document.createElement('div');
+  hint.style.cssText = 'position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:11px;color:#64748b;pointer-events:none;z-index:10;white-space:nowrap;';
+  hint.textContent = '드래그 회전 · 휠 줌 · 우클릭 이동';
+  wrap.appendChild(hint);
+
+  const W = () => wrap.clientWidth || 600;
+  const H = 420;
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(W(), H);
+  renderer.shadowMap.enabled = true;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.2;
+  wrap.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x111827);
+  const camera = new THREE.PerspectiveCamera(45, W() / H, 0.1, 2000);
+  camera.position.set(0, 100, 300);
+
+  const ctrl = new OrbitControls(camera, renderer.domElement);
+  ctrl.enableDamping = true; ctrl.dampingFactor = 0.08;
+
+  scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+  const d1 = new THREE.DirectionalLight(0xffffff, 2.0); d1.position.set(300,600,300); d1.castShadow = true; scene.add(d1);
+  const d2 = new THREE.DirectionalLight(0xaabbff, 0.8); d2.position.set(-200,200,-200); scene.add(d2);
+  scene.add(new THREE.HemisphereLight(0x8899ff, 0x334155, 0.6));
+  const grid = new THREE.GridHelper(600, 30, 0x334155, 0x1e293b); scene.add(grid);
+
+  let animId = 0;
+  const clock = new THREE.Clock();
+  let mixer = null;
+  const animate = () => {
+    animId = requestAnimationFrame(animate);
+    if (mixer) mixer.update(clock.getDelta());
+    ctrl.update(); renderer.render(scene, camera);
+  };
+  animate();
+  new ResizeObserver(() => { const nw = W(); camera.aspect = nw/H; camera.updateProjectionMatrix(); renderer.setSize(nw,H); }).observe(wrap);
+
+  // 텍스처 로드 (머터리얼 인덱스 API)
+  const loadTextures = async () => {
+    try {
+      const r = await fetch('/api/assets/materials?fbxPath=' + encodeURIComponent(fbxUrl.replace(/.*[?&]path=/, '')));
+      if (!r.ok) return {};
+      const d = await r.json();
+      const map = {};
+      for (const m of (d.materials || [])) map[m.name] = m;
+      return map;
+    } catch { return {}; }
+  };
+
+  const loader = new FBXLoader();
+  const loading = document.createElement('div');
+  loading.style.cssText = 'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:rgba(15,17,23,.85);font-size:13px;color:#94a3b8;';
+  loading.innerHTML = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2" style="animation:spin 1s linear infinite"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><span>FBX 로딩 중…</span><style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+  wrap.appendChild(loading);
+
+  loadTextures().then(matMap => {
+    loader.load(fbxUrl, (fbx) => {
+      const box = new THREE.Box3().setFromObject(fbx);
+      const sz = box.getSize(new THREE.Vector3());
+      const ctr = box.getCenter(new THREE.Vector3());
+      const md = Math.max(sz.x, sz.y, sz.z);
+      const fov = camera.fov * Math.PI / 180;
+      const dist = Math.abs(md / 2 / Math.tan(fov / 2)) * 1.6;
+      fbx.position.sub(ctr);
+      grid.position.y = -sz.y / 2;
+      camera.position.set(0, md * 0.4, dist);
+      camera.lookAt(0, 0, 0);
+      ctrl.target.set(0,0,0); ctrl.maxDistance = dist * 5; ctrl.update();
+
+      const texLoader = new THREE.TextureLoader();
+      fbx.traverse(child => {
+        if (!child.isMesh) return;
+        child.castShadow = true; child.receiveShadow = true;
+        const keys = Object.keys(matMap);
+        const mn = child.name.toLowerCase();
+        const entry = keys.find(k => mn.includes(k.toLowerCase()) || k.toLowerCase().includes(mn));
+        const m = entry ? matMap[entry] : Object.values(matMap)[0];
+        const mat = new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, roughness: 0.75, metalness: 0.1 });
+        if (m && m.albedo) {
+          texLoader.load(m.albedo, t => { t.colorSpace = THREE.SRGBColorSpace; t.flipY = true; mat.map = t; mat.needsUpdate = true; });
+        } else { mat.color.set(0x8899bb); }
+        if (m && m.normal) {
+          texLoader.load(m.normal, t => { t.flipY = true; mat.normalMap = t; mat.normalScale.set(1,-1); mat.needsUpdate = true; });
+        }
+        child.material = mat;
+      });
+      if (fbx.animations.length) { mixer = new THREE.AnimationMixer(fbx); mixer.clipAction(fbx.animations[0]).play(); }
+      scene.add(fbx);
+      loading.remove();
+      hdr.textContent = '🧊 ' + (label || fbxUrl.split('/').pop()) + '  ✓';
+    }, undefined, (e) => {
+      loading.innerHTML = '<span style="color:#f87171">FBX 로드 실패: ' + e.message + '</span>';
+    });
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.fbx-viewer[data-src],[data-fbx]').forEach(el => {
+    const src = el.getAttribute('data-src') || el.getAttribute('data-fbx');
+    const label = el.getAttribute('data-label') || '';
+    if (src) buildViewer(el, src, label);
+  });
+});
+</script>`
+
+      // </head> 앞에 스크립트 주입
+      if (html.includes('</head>')) {
+        html = html.replace('</head>', FBX_STANDALONE_SCRIPT + '\n</head>')
+      } else {
+        html = FBX_STANDALONE_SCRIPT + html
+      }
+
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=60' })
       res.end(html)
       return
