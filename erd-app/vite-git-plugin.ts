@@ -1,12 +1,40 @@
 import type { Plugin } from 'vite'
 import { execSync, execFileSync, execFile } from 'child_process'
-import { existsSync, readdirSync, readFileSync, mkdirSync } from 'fs'
-import { join, resolve, extname } from 'path'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { join, resolve, extname, basename } from 'path'
 import { promisify } from 'util'
 import type { IncomingMessage, ServerResponse } from 'http'
 
 // ── 로컬 이미지 디렉토리 (sync_ui_images.ps1 로 동기화) ──────────────────────
 const IMAGES_DIR = 'C:\\TableMaster\\images'
+
+// ── 출판 문서 저장 디렉토리 ──────────────────────────────────────────────────
+const PUBLISHED_DIR = resolve(process.cwd(), 'published')
+const PUBLISHED_INDEX = join(PUBLISHED_DIR, 'index.json')
+
+function ensurePublishedDir() {
+  if (!existsSync(PUBLISHED_DIR)) mkdirSync(PUBLISHED_DIR, { recursive: true })
+}
+
+interface PublishedMeta {
+  id: string
+  title: string
+  description: string
+  createdAt: string
+  updatedAt?: string
+  author?: string
+}
+
+function readPublishedIndex(): PublishedMeta[] {
+  ensurePublishedDir()
+  if (!existsSync(PUBLISHED_INDEX)) return []
+  try { return JSON.parse(readFileSync(PUBLISHED_INDEX, 'utf-8')) } catch { return [] }
+}
+
+function writePublishedIndex(list: PublishedMeta[]) {
+  ensurePublishedDir()
+  writeFileSync(PUBLISHED_INDEX, JSON.stringify(list, null, 2), 'utf-8')
+}
 
 function walkImages(dir: string, base: string, results: { name: string; path: string; relPath: string }[]) {
   if (!existsSync(dir)) return
@@ -225,6 +253,86 @@ function createGitMiddleware(options: GitPluginOptions) {
       const buf = readFileSync(match.path)
       res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600', 'X-Resolved-Path': match.relPath })
       res.end(buf)
+      return
+    }
+
+    // ── /api/publish : 기획서 출판 (POST) / 삭제 (DELETE) ──────────────────────
+    if (req.url?.startsWith('/api/publish')) {
+      const urlObj = new URL(req.url, 'http://localhost')
+      const idParam = urlObj.pathname.replace('/api/publish', '').replace(/^\//, '')
+
+      // DELETE /api/publish/:id
+      if (req.method === 'DELETE' && idParam) {
+        const list = readPublishedIndex()
+        const newList = list.filter(m => m.id !== idParam)
+        writePublishedIndex(newList)
+        const htmlPath = join(PUBLISHED_DIR, `${idParam}.html`)
+        if (existsSync(htmlPath)) {
+          const { unlinkSync } = await import('fs')
+          unlinkSync(htmlPath)
+        }
+        sendJson(res, 200, { ok: true })
+        return
+      }
+
+      // POST /api/publish  { title, html, description, author? }
+      if (req.method === 'POST') {
+        const body = await readBody(req)
+        let payload: { title?: string; html?: string; description?: string; author?: string } = {}
+        try { payload = JSON.parse(body) } catch { sendJson(res, 400, { error: 'Invalid JSON' }); return }
+        const { title = '제목 없음', html = '', description = '', author = '' } = payload
+        if (!html) { sendJson(res, 400, { error: 'html is required' }); return }
+
+        // 고유 ID 생성 (timestamp + 랜덤 4자리)
+        const id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+        const now = new Date().toISOString()
+
+        // HTML 파일 저장
+        ensurePublishedDir()
+        writeFileSync(join(PUBLISHED_DIR, `${id}.html`), html, 'utf-8')
+
+        // 인덱스 업데이트
+        const list = readPublishedIndex()
+        const meta: PublishedMeta = { id, title, description, createdAt: now, author }
+        list.unshift(meta)
+        writePublishedIndex(list)
+
+        sendJson(res, 200, { id, url: `/api/p/${id}` })
+        return
+      }
+
+      // PUT /api/publish/:id (메타 업데이트)
+      if (req.method === 'PUT' && idParam) {
+        const body = await readBody(req)
+        let payload: Partial<PublishedMeta> = {}
+        try { payload = JSON.parse(body) } catch { sendJson(res, 400, { error: 'Invalid JSON' }); return }
+        const list = readPublishedIndex()
+        const idx = list.findIndex(m => m.id === idParam)
+        if (idx === -1) { sendJson(res, 404, { error: 'Not found' }); return }
+        list[idx] = { ...list[idx], ...payload, updatedAt: new Date().toISOString() }
+        writePublishedIndex(list)
+        sendJson(res, 200, list[idx])
+        return
+      }
+
+      next(); return
+    }
+
+    // ── /api/published : 출판된 문서 목록 (GET) ────────────────────────────────
+    if (req.url === '/api/published' && req.method === 'GET') {
+      sendJson(res, 200, readPublishedIndex())
+      return
+    }
+
+    // ── /api/p/:id : 출판된 문서 서빙 (GET) ────────────────────────────────────
+    if (req.url?.startsWith('/api/p/') && req.method === 'GET') {
+      const id = req.url.replace('/api/p/', '').split('?')[0].replace(/[^a-z0-9_]/gi, '')
+      if (!id) { res.writeHead(400); res.end('id required'); return }
+      const htmlPath = join(PUBLISHED_DIR, `${id}.html`)
+      if (!existsSync(htmlPath)) { res.writeHead(404); res.end('Not found'); return }
+      const html = readFileSync(htmlPath, 'utf-8')
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=60' })
+      res.end(html)
       return
     }
 

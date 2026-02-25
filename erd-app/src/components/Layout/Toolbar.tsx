@@ -25,6 +25,7 @@ export default function Toolbar() {
   const isValidation = location.pathname.startsWith('/validation');
   const isQuery      = location.pathname.startsWith('/query');
   const isChat       = location.pathname.startsWith('/chat');
+  const isExplore    = location.pathname.startsWith('/explore');
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -64,6 +65,15 @@ export default function Toolbar() {
             <ModeTab active={isValidation} onClick={() => navigate('/validation')}>Validation</ModeTab>
             <ModeTab active={isQuery}      onClick={() => navigate('/query')}>Query</ModeTab>
             <ModeTab active={isChat}       onClick={() => navigate('/chat')}>ChatBot</ModeTab>
+            <ModeTab active={isExplore}    onClick={() => navigate('/explore')}>
+              <span className="flex items-center gap-1.5">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+                  <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+                </svg>
+                Explore
+              </span>
+            </ModeTab>
           </div>
 
           <Divider />

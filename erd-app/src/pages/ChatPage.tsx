@@ -1625,6 +1625,43 @@ function ArtifactSidePanel({
     if (completeBlobUrl) window.open(completeBlobUrl)?.print();
   }, [completeBlobUrl]);
 
+  // 출판 상태
+  const [publishState, setPublishState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [publishedUrl, setPublishedUrl] = useState<string | null>(null);
+  const [publishCopied, setPublishCopied] = useState(false);
+
+  const handlePublish = useCallback(async () => {
+    if (!finalTc || publishState === 'loading') return;
+    setPublishState('loading');
+    try {
+      const origin = window.location.origin;
+      const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
+      const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}</head><body>${resolved}</body></html>`;
+      const res = await fetch('/api/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: finalTc.title ?? '제목 없음', html: fullHtml, description: finalTc.description ?? '' }),
+      });
+      const data = await res.json() as { id?: string; url?: string; error?: string };
+      if (data.error) throw new Error(data.error);
+      const url = `${origin}${data.url}`;
+      setPublishedUrl(url);
+      setPublishState('done');
+    } catch (e) {
+      console.error('Publish failed:', e);
+      setPublishState('error');
+      setTimeout(() => setPublishState('idle'), 3000);
+    }
+  }, [finalTc, schema, tableData, publishState]);
+
+  const handleCopyUrl = useCallback(() => {
+    if (!publishedUrl) return;
+    navigator.clipboard.writeText(publishedUrl).then(() => {
+      setPublishCopied(true);
+      setTimeout(() => setPublishCopied(false), 2000);
+    });
+  }, [publishedUrl]);
+
   // iframe postMessage 스트리밍
   const sendToIframe = useCallback((bodyHtml: string) => {
     const iframe = iframeRef.current;
@@ -1705,6 +1742,27 @@ function ArtifactSidePanel({
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               PDF
             </button>
+            {/* 출판 버튼 */}
+            {publishState === 'done' ? (
+              <button onClick={handleCopyUrl} className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium hover:opacity-80 transition-all"
+                style={{ background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.4)', color: '#fbbf24' }} title={publishedUrl ?? ''}>
+                {publishCopied
+                  ? <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>복사됨</>
+                  : <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>URL 복사</>
+                }
+              </button>
+            ) : (
+              <button onClick={handlePublish} disabled={publishState === 'loading'}
+                className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium hover:opacity-80 transition-all disabled:opacity-50"
+                style={{ background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', color: '#fbbf24' }} title="서버에 출판하여 URL 공유">
+                {publishState === 'loading'
+                  ? <><svg className="animate-spin" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>출판 중</>
+                  : publishState === 'error'
+                    ? <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>오류</>
+                    : <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>출판</>
+                }
+              </button>
+            )}
           </div>
         )}
 

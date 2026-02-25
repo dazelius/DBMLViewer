@@ -6,6 +6,7 @@ import ValidationPage from './pages/ValidationPage.tsx';
 import GuidePage from './pages/GuidePage.tsx';
 import QueryPage from './pages/QueryPage.tsx';
 import ChatPage from './pages/ChatPage.tsx';
+import ExplorePage from './pages/ExplorePage.tsx';
 import { SyncToast } from './components/Sync/SyncToast.tsx';
 import { useAutoLoad } from './hooks/useAutoLoad.ts';
 import { useDebouncedParse } from './hooks/useDebouncedParse.ts';
@@ -29,6 +30,7 @@ export default function App() {
                 <Route path="/guide" element={<GuidePage />} />
                 <Route path="/query" element={<QueryPage />} />
                 <Route path="/chat" element={<ChatPage />} />
+                <Route path="/explore" element={<ExplorePage />} />
       </Routes>
     </BrowserRouter>
   );

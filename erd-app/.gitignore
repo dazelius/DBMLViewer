@@ -20,6 +20,9 @@ dist-ssr
 # Git repo cache
 .git-repo
 
+# Published documents (server-side storage, not tracked)
+published/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
