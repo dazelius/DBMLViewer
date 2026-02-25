@@ -529,9 +529,10 @@ function createGitMiddleware(options: GitPluginOptions) {
 
     // ── /api/assets/* : 에셋 엔드포인트 (try-catch로 서버 크래시 방지) ────────────
     if (req.url?.startsWith('/api/assets/')) {
-      // 공통 헬퍼
-      const ASSETS_DIR = join(process.cwd(), '..', '..', 'assets')
-      const idxPath    = join(ASSETS_DIR, '.asset_index.json')
+      // 공통 헬퍼 - assets/ 폴더 없으면 unity_project 직접 사용
+      const ASSETS_DIR       = join(process.cwd(), '..', '..', 'assets')
+      const UNITY_ASSETS_DIR = join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets')
+      const idxPath          = join(ASSETS_DIR, '.asset_index.json')
 
       type AssetEntry = { path: string; name: string; ext: string; sizeKB: number }
 
@@ -541,6 +542,16 @@ function createGitMiddleware(options: GitPluginOptions) {
           if (!existsSync(idxPath)) return []
           return JSON.parse(readFileSync(idxPath, 'utf-8')) as AssetEntry[]
         } catch { return [] }
+      }
+
+      /** relPath 기준으로 실제 파일 경로 해석 (assets/ 없으면 unity_project/ fallback) */
+      const resolveAssetFile = (relPath: string): string | null => {
+        const norm = relPath.replace(/\//g, sep)
+        const p1 = join(ASSETS_DIR, norm)
+        if (existsSync(p1)) return p1
+        const p2 = join(UNITY_ASSETS_DIR, norm)
+        if (existsSync(p2)) return p2
+        return null
       }
 
       /** 파일명(확장자 포함/미포함)으로 인덱스에서 검색 */
@@ -589,27 +600,24 @@ function createGitMiddleware(options: GitPluginOptions) {
 
         // ── /api/assets/file : 에셋 파일 직접 서빙 ───────────────────────────
         if (req.url.startsWith('/api/assets/file')) {
-          const url2     = new URL(req.url, 'http://localhost')
+          const url2      = new URL(req.url, 'http://localhost')
           const pathParam = url2.searchParams.get('path') || ''
           if (!pathParam) { res.writeHead(400); res.end('path required'); return }
 
-          let filePath = join(ASSETS_DIR, pathParam.replace(/\//g, sep))
+          // 1) assets/ 또는 unity_project/ 에서 경로 직접 해석
+          let filePath = resolveAssetFile(pathParam)
 
-          // 직접 경로가 없으면 인덱스에서 파일명으로 검색
-          if (!existsSync(filePath)) {
+          // 2) 없으면 인덱스에서 파일명으로 검색 후 재시도
+          if (!filePath) {
             const baseName = pathParam.split('/').pop() ?? ''
-            const found = findInIdx(baseName)
-            if (found) {
-              filePath = join(ASSETS_DIR, found.path.replace(/\//g, sep))
-            } else {
-              res.writeHead(404, { 'Content-Type': 'text/plain' })
-              res.end(`Asset not found: ${pathParam}\n인덱스에도 없습니다. sync_assets.ps1 실행 후 재시도하세요.`)
-              return
-            }
+            const found    = findInIdx(baseName)
+            if (found) filePath = resolveAssetFile(found.path)
           }
 
-          if (!existsSync(filePath)) {
-            res.writeHead(404); res.end('File not found: ' + pathParam); return
+          if (!filePath) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' })
+            res.end(`Asset not found: ${pathParam}\nbuild_asset_index.ps1 을 실행하여 인덱스를 생성하세요.`)
+            return
           }
 
           const fileExt  = filePath.split('.').pop()?.toLowerCase() ?? ''
@@ -636,20 +644,22 @@ function createGitMiddleware(options: GitPluginOptions) {
           const found = findInIdx(name)
           if (!found) {
             res.writeHead(404, { 'Content-Type': 'text/plain' })
-            res.end(`Asset '${name}' not found in index. Run sync_assets.ps1 first.`)
+            res.end(`Asset '${name}' not found in index. Run build_asset_index.ps1 first.`)
             return
           }
 
-          const filePath = join(ASSETS_DIR, found.path.replace(/\//g, sep))
-          if (!existsSync(filePath)) {
+          const filePath = resolveAssetFile(found.path)
+          if (!filePath) {
             res.writeHead(404); res.end('File missing on disk: ' + found.path); return
           }
 
           const fileExt  = found.ext.toLowerCase()
           const mime     = mimeMap[fileExt] ?? 'application/octet-stream'
-          const fileStat = statSync(filePath)
+          const fileExt2  = found.ext.toLowerCase()
+          const mime2     = mimeMap[fileExt2] ?? 'application/octet-stream'
+          const fileStat  = statSync(filePath)
           res.writeHead(200, {
-            'Content-Type': mime,
+            'Content-Type': mime2,
             'Content-Length': fileStat.size,
             'Access-Control-Allow-Origin': '*',
             'X-Resolved-Path': found.path,
