@@ -435,8 +435,9 @@ function renderMarkdown(text: string): React.ReactNode[] {
   while (i < lines.length) {
     const line = lines[i];
 
-    // 코드 블록
+    // 코드 블록 (``` 또는 ```lang)
     if (line.startsWith('```')) {
+      const lang = line.slice(3).trim(); // 언어 힌트 추출 (예: csharp, sql, python)
       const codeLines: string[] = [];
       i++;
       while (i < lines.length && !lines[i].startsWith('```')) {
@@ -444,18 +445,32 @@ function renderMarkdown(text: string): React.ReactNode[] {
         i++;
       }
       nodes.push(
-        <pre
+        <div
           key={i}
-          className="rounded-lg px-4 py-3 my-2 overflow-x-auto text-[12px]"
-          style={{
-            background: 'var(--bg-secondary)',
-            border: '1px solid var(--border-color)',
-            fontFamily: 'var(--font-mono)',
-            color: 'var(--text-primary)',
-          }}
+          className="my-3 rounded-xl overflow-hidden"
+          style={{ border: '1px solid var(--border-color)', background: '#0d1117' }}
         >
-          {codeLines.join('\n')}
-        </pre>,
+          {/* 코드블록 헤더 바 */}
+          <div
+            className="flex items-center justify-between px-4 py-1.5"
+            style={{ background: 'rgba(255,255,255,0.04)', borderBottom: '1px solid var(--border-color)' }}
+          >
+            <span className="text-[11px] font-mono font-semibold" style={{ color: '#7c8b9a' }}>
+              {lang || 'code'}
+            </span>
+            <div className="flex gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#ff5f57' }} />
+              <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#febc2e' }} />
+              <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#28c840' }} />
+            </div>
+          </div>
+          <pre
+            className="px-5 py-4 overflow-x-auto text-[13px] leading-relaxed"
+            style={{ fontFamily: 'var(--font-mono)', color: '#e2e8f0', margin: 0, background: 'transparent' }}
+          >
+            {codeLines.join('\n')}
+          </pre>
+        </div>,
       );
       i++;
       continue;
@@ -2911,18 +2926,46 @@ function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => v
 
   /* ── 유저 메시지: 우측 정렬 그라데이션 버블 ─────────────────────────────── */
   if (isUser) {
+    // ``` 코드블록 파싱 (유저 메시지도 코드블록은 렌더링)
+    const userParts = msg.content.split(/(```[\s\S]*?```)/g);
+    const hasCodeBlock = userParts.length > 1;
     return (
       <div className="flex justify-end px-2 py-1">
         <div
-          className="max-w-[75%] rounded-3xl rounded-tr-md px-6 py-4 shadow-lg"
+          className={`${hasCodeBlock ? 'max-w-[90%]' : 'max-w-[75%]'} rounded-3xl rounded-tr-md overflow-hidden shadow-lg`}
           style={{
             background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
             boxShadow: '0 6px 24px rgba(99,102,241,0.4)',
           }}
         >
-          <p className="text-[15px] whitespace-pre-wrap leading-relaxed" style={{ color: '#fff' }}>
-            {msg.content}
-          </p>
+          {userParts.map((part, idx) => {
+            if (part.startsWith('```') && part.endsWith('```')) {
+              const lines = part.split('\n');
+              const lang = lines[0].slice(3).trim();
+              const codeBody = lines.slice(1, lines[lines.length - 1] === '```' ? -1 : undefined).join('\n');
+              return (
+                <div key={idx} className="mx-3 my-2 rounded-xl overflow-hidden" style={{ background: '#0d1117', border: '1px solid rgba(255,255,255,0.12)' }}>
+                  <div className="flex items-center justify-between px-4 py-1.5" style={{ background: 'rgba(255,255,255,0.06)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                    <span className="text-[11px] font-mono font-semibold" style={{ color: '#7c8b9a' }}>{lang || 'code'}</span>
+                    <div className="flex gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#ff5f57' }} />
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#febc2e' }} />
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#28c840' }} />
+                    </div>
+                  </div>
+                  <pre className="px-5 py-4 overflow-x-auto text-[13px] leading-relaxed" style={{ fontFamily: 'var(--font-mono)', color: '#e2e8f0', margin: 0 }}>
+                    {codeBody}
+                  </pre>
+                </div>
+              );
+            }
+            if (!part.trim()) return null;
+            return (
+              <p key={idx} className="text-[15px] whitespace-pre-wrap leading-relaxed px-6 py-4" style={{ color: '#fff' }}>
+                {part}
+              </p>
+            );
+          })}
         </div>
       </div>
     );
