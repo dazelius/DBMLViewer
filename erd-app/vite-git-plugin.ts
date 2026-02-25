@@ -624,7 +624,6 @@ function createGitMiddleware(options: GitPluginOptions) {
         .map(f => {
           const stat = statSync(join(guidesDir, f))
           const isDb   = f.startsWith('_DB_')
-          const isCode = !isDb
           return { name: f.replace('.md', ''), sizeKB: Math.round(stat.size / 1024 * 10) / 10, category: isDb ? 'db' : 'code' }
         })
         .sort((a, b) => a.name.localeCompare(b.name))
@@ -865,10 +864,7 @@ function createGitMiddleware(options: GitPluginOptions) {
             res.writeHead(404); res.end('File missing on disk: ' + found.path); return
           }
 
-          const fileExt  = found.ext.toLowerCase()
-          const mime     = mimeMap[fileExt] ?? 'application/octet-stream'
-          const fileExt2  = found.ext.toLowerCase()
-          const mime2     = mimeMap[fileExt2] ?? 'application/octet-stream'
+          const mime2 = mimeMap[found.ext.toLowerCase()] ?? 'application/octet-stream'
           const fileStat  = statSync(filePath)
           res.writeHead(200, {
             'Content-Type': mime2,
@@ -982,14 +978,6 @@ function createGitMiddleware(options: GitPluginOptions) {
         const sceneContent = readFileSync(sceneAbsPath, 'utf-8')
 
         // ── YAML 파싱 헬퍼 ─────────────────────────────────────────────────────
-        const getFloat = (block: string, key: string): number => {
-          const m = block.match(new RegExp(`${key}:\\s*([\\d.eE+\\-]+)`))
-          return m ? parseFloat(m[1]) : 0
-        }
-        const getStr = (block: string, key: string): string => {
-          const m = block.match(new RegExp(`${key}:\\s*(.+)`))
-          return m ? m[1].trim() : ''
-        }
 
         // ── 공통 헬퍼 ─────────────────────────────────────────────────────────
         // float 값 파싱 (Unity YAML은 음수 포함)
@@ -1286,9 +1274,10 @@ function createGitMiddleware(options: GitPluginOptions) {
           const apiResp = await fetch(apiUrl, {
             headers: { Authorization: authHeader, Accept: 'application/json' }
           })
-          const data = await apiResp.json()
+          const data = await apiResp.json() as Record<string, unknown>
           if (!apiResp.ok) {
-            sendJson(res, apiResp.status, { error: data?.errorMessages?.[0] ?? data?.message ?? `Jira API ${apiResp.status}`, raw: data })
+            const errMsg = (data?.errorMessages as string[])?.[0] ?? (data?.message as string) ?? `Jira API ${apiResp.status}`
+            sendJson(res, apiResp.status, { error: errMsg, raw: data })
           } else {
             sendJson(res, 200, data)
           }
@@ -1304,9 +1293,10 @@ function createGitMiddleware(options: GitPluginOptions) {
           const apiResp = await fetch(apiUrl, {
             headers: { Authorization: authHeader, Accept: 'application/json' }
           })
-          const data = await apiResp.json()
+          const data = await apiResp.json() as Record<string, unknown>
           if (!apiResp.ok) {
-            sendJson(res, apiResp.status, { error: data?.errorMessages?.[0] ?? `Jira issue ${issueKey} not found`, raw: data })
+            const errMsg = (data?.errorMessages as string[])?.[0] ?? `Jira issue ${issueKey} not found`
+            sendJson(res, apiResp.status, { error: errMsg, raw: data })
           } else {
             sendJson(res, 200, data)
           }
@@ -1356,9 +1346,9 @@ function createGitMiddleware(options: GitPluginOptions) {
           const apiResp = await fetch(apiUrl, {
             headers: { Authorization: confAuthHeader, Accept: 'application/json' }
           })
-          const data = await apiResp.json()
+          const data = await apiResp.json() as Record<string, unknown>
           if (!apiResp.ok) {
-            sendJson(res, apiResp.status, { error: data?.message ?? `Confluence page ${pageId} not found`, raw: data })
+            sendJson(res, apiResp.status, { error: (data?.message as string) ?? `Confluence page ${pageId} not found`, raw: data })
           } else {
             sendJson(res, 200, data)
           }

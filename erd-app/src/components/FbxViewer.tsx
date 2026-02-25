@@ -164,9 +164,10 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
             // PNG/JPG 등: TextureLoader 표준 → flipY=true
             const isTga = /\.tga$/i.test(apiUrl);
             const loader2 = isTga ? tgaLoader : texLoader;
-            (loader2 as THREE.TGALoader).load(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (loader2 as any).load(
               apiUrl,
-              (tex) => {
+              (tex: THREE.Texture) => {
                 tex.colorSpace = THREE.SRGBColorSpace;
                 tex.flipY = !isTga; // TGA=false, 나머지=true
                 texCache[apiUrl] = tex;
