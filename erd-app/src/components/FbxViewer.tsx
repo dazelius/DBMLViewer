@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
+import { TGALoader } from 'three/examples/jsm/loaders/TGALoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 interface FbxViewerProps {
@@ -11,18 +12,38 @@ interface FbxViewerProps {
   className?: string;
 }
 
+interface MatEntry {
+  name: string;
+  albedo: string;   // api URL
+  normal: string;
+  emission: string;
+}
+
+/** FBX URL에서 fbxPath 파라미터 또는 경로 부분만 추출 */
+function extractFbxPath(url: string): string {
+  try {
+    const u = new URL(url, window.location.origin);
+    return u.searchParams.get('path') ?? url;
+  } catch {
+    return url;
+  }
+}
+
 export function FbxViewer({ url, filename, height = 420, className = '' }: FbxViewerProps) {
   const mountRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
   const [errMsg, setErrMsg] = useState('');
+  const [texInfo, setTexInfo] = useState<string>('');
   const cleanupRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const el = mountRef.current;
     if (!el) return;
 
+    let cancelled = false;
+
     // ── Three.js 씬 셋업 ─────────────────────────────────────────────────────
-    const w = el.clientWidth || 600;
+    const w = el.clientWidth || 700;
     const h = height;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -48,7 +69,7 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
     controls.minDistance = 20;
     controls.maxDistance = 1500;
 
-    // 조명 (충분히 밝게 – 텍스처 없어도 보이도록)
+    // 조명
     scene.add(new THREE.AmbientLight(0xffffff, 1.5));
     const dir = new THREE.DirectionalLight(0xffffff, 2.0);
     dir.position.set(300, 600, 300);
@@ -89,11 +110,30 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
     const ro = new ResizeObserver(onResize);
     ro.observe(el);
 
+    // ── 머터리얼 인덱스에서 텍스처 맵 로드 ─────────────────────────────────
+    const fetchMaterials = async (): Promise<MatEntry[]> => {
+      try {
+        const fbxPath = extractFbxPath(url);
+        const resp = await fetch(`/api/assets/materials?fbxPath=${encodeURIComponent(fbxPath)}`);
+        if (!resp.ok) return [];
+        const data = await resp.json() as { materials: MatEntry[] };
+        return data.materials ?? [];
+      } catch {
+        return [];
+      }
+    };
+
+    // TGA 로더 등록 (Three.js FBXLoader가 내부적으로 사용)
+    const tgaLoader = new TGALoader();
+    THREE.DefaultLoadingManager.addHandler(/\.tga$/i, tgaLoader);
+
     // ── FBX 로드 ─────────────────────────────────────────────────────────────
     const loader = new FBXLoader();
     loader.load(
       url,
-      (fbx) => {
+      async (fbx) => {
+        if (cancelled) return;
+
         // 모델 중앙 정렬 + 카메라 자동 거리
         const box = new THREE.Box3().setFromObject(fbx);
         const center = box.getCenter(new THREE.Vector3());
@@ -103,42 +143,105 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
         const camDist = Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.6;
 
         fbx.position.sub(center);
-        grid.position.y = -box.getSize(new THREE.Vector3()).y / 2;
+        grid.position.y = -size.y / 2;
         camera.position.set(0, maxDim * 0.4, camDist);
-        camera.lookAt(new THREE.Vector3(0, 0, 0));
+        camera.lookAt(0, 0, 0);
         controls.target.set(0, 0, 0);
         controls.maxDistance = camDist * 5;
         controls.update();
 
-        // 재질 보정 + 그림자 활성화
-        // FBX 텍스처가 로컬에 없으면 검정으로 렌더되므로 강제로 visible 재질 적용
-        fbx.traverse((child) => {
-          const mesh = child as THREE.Mesh;
-          if (!mesh.isMesh) return;
-          mesh.castShadow = true;
-          mesh.receiveShadow = true;
+        // ── 텍스처 로딩 ──────────────────────────────────────────────────────
+        const matEntries = await fetchMaterials();
+        const texLoader  = new THREE.TextureLoader();
 
-          const fixMat = (mat: THREE.Material): THREE.Material => {
-            // MeshPhong/Lambert/Standard 계열
-            const m = mat as THREE.MeshPhongMaterial & THREE.MeshStandardMaterial;
-            m.side = THREE.DoubleSide;
-            // 텍스처가 없거나 색이 거의 검정이면 기본 색 지정
-            if (!m.map) {
-              const hasColor =
-                m.color && (m.color.r + m.color.g + m.color.b) > 0.05;
-              if (!hasColor) m.color?.set(0x8899bb);
-              // 완전히 검정 재질이면 MeshStandard로 교체
-            }
-            m.needsUpdate = true;
-            return m;
-          };
+        // 머터리얼 이름 → 텍스처 캐시
+        const texCache: Record<string, THREE.Texture | null> = {};
+        const loadTex = (apiUrl: string): Promise<THREE.Texture | null> => {
+          if (!apiUrl) return Promise.resolve(null);
+          if (texCache[apiUrl] !== undefined) return Promise.resolve(texCache[apiUrl]);
+          return new Promise((resolve) => {
+            // TGA는 TGALoader, 그 외 TextureLoader
+            const isTga = apiUrl.toLowerCase().includes('.tga');
+            const loader2 = isTga ? tgaLoader : texLoader;
+            (loader2 as THREE.TGALoader).load(
+              apiUrl,
+              (tex) => {
+                tex.colorSpace = THREE.SRGBColorSpace;
+                tex.flipY = false; // FBX UV는 Y flip 불필요
+                texCache[apiUrl] = tex;
+                resolve(tex);
+              },
+              undefined,
+              () => { texCache[apiUrl] = null; resolve(null); }
+            );
+          });
+        };
 
-          if (Array.isArray(mesh.material)) {
-            mesh.material = mesh.material.map(fixMat) as THREE.Material[];
-          } else if (mesh.material) {
-            mesh.material = fixMat(mesh.material);
-          }
-        });
+        // 메쉬 이름 → MatEntry 매핑 (이름 포함 여부로 매칭)
+        const findEntry = (meshName: string): MatEntry | undefined => {
+          const mn = meshName.toLowerCase();
+          return matEntries.find(e => {
+            const en = e.name.toLowerCase();
+            return en && (mn.includes(en) || en.includes(mn));
+          }) ?? matEntries[0]; // fallback: 첫번째 머터리얼
+        };
+
+        let appliedCount = 0;
+
+        await Promise.all(
+          (() => {
+            const promises: Promise<void>[] = [];
+            fbx.traverse((child) => {
+              const mesh = child as THREE.Mesh;
+              if (!mesh.isMesh) return;
+              mesh.castShadow = true;
+              mesh.receiveShadow = true;
+
+              const entry = findEntry(mesh.name);
+
+              promises.push((async () => {
+                const [albedoTex, normalTex, emissionTex] = await Promise.all([
+                  loadTex(entry?.albedo ?? ''),
+                  loadTex(entry?.normal ?? ''),
+                  loadTex(entry?.emission ?? ''),
+                ]);
+
+                const newMat = new THREE.MeshStandardMaterial({
+                  side: THREE.DoubleSide,
+                  roughness: 0.75,
+                  metalness: 0.1,
+                });
+
+                if (albedoTex) {
+                  newMat.map = albedoTex;
+                  appliedCount++;
+                } else {
+                  // 텍스처 없음: 기존 컬러 유지하되 검정이면 회색으로
+                  const oldMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+                  const oldColor = (oldMat as THREE.MeshPhongMaterial)?.color;
+                  if (oldColor && (oldColor.r + oldColor.g + oldColor.b) > 0.05) {
+                    newMat.color.copy(oldColor);
+                  } else {
+                    newMat.color.set(0x8899bb);
+                  }
+                }
+
+                if (normalTex) {
+                  newMat.normalMap = normalTex;
+                  newMat.normalScale.set(1, 1);
+                }
+                if (emissionTex) {
+                  newMat.emissiveMap = emissionTex;
+                  newMat.emissive.set(0xffffff);
+                }
+
+                newMat.needsUpdate = true;
+                mesh.material = newMat;
+              })());
+            });
+            return promises;
+          })()
+        );
 
         // 애니메이션
         if (fbx.animations.length > 0) {
@@ -147,21 +250,28 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
         }
 
         scene.add(fbx);
-        setStatus('ok');
+        if (!cancelled) {
+          setTexInfo(appliedCount > 0 ? `텍스처 ${appliedCount}개 적용됨` : '텍스처 없음 (기본 재질)');
+          setStatus('ok');
+        }
       },
       undefined,
       (err) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        setErrMsg(msg);
-        setStatus('error');
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setErrMsg(msg);
+          setStatus('error');
+        }
       },
     );
 
     cleanupRef.current = () => {
+      cancelled = true;
       cancelAnimationFrame(animId);
       ro.disconnect();
       controls.dispose();
       renderer.dispose();
+      THREE.DefaultLoadingManager.removeHandler(/\.tga$/i);
       if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement);
     };
     return cleanupRef.current;
@@ -183,10 +293,10 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
           <path d="M2 17l10 5 10-5" />
           <path d="M2 12l10 5 10-5" />
         </svg>
-        <span style={{ color: '#94a3b8' }}>{filename ?? url.split('/').pop() ?? 'FBX'}</span>
+        <span style={{ color: '#94a3b8' }}>{filename ?? url.split('/').pop()?.split('?')[0] ?? 'FBX'}</span>
         {status === 'ok' && (
           <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8' }}>
-            드래그 회전 · 휠 줌
+            {texInfo} · 드래그 회전 · 휠 줌
           </span>
         )}
       </div>
@@ -196,17 +306,17 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
 
       {/* 오버레이: 로딩 */}
       {status === 'loading' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3" style={{ background: 'rgba(15,17,23,0.85)' }}>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3" style={{ background: 'rgba(15,17,23,0.85)', top: 36 }}>
           <svg className="animate-spin w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2">
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
           </svg>
-          <span className="text-[12px]" style={{ color: '#94a3b8' }}>FBX 로딩 중...</span>
+          <span className="text-[12px]" style={{ color: '#94a3b8' }}>FBX + 텍스처 로딩 중...</span>
         </div>
       )}
 
       {/* 오버레이: 에러 */}
       {status === 'error' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-6" style={{ background: 'rgba(15,17,23,0.92)' }}>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-6" style={{ background: 'rgba(15,17,23,0.92)', top: 36 }}>
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2">
             <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
           </svg>

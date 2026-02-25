@@ -676,6 +676,53 @@ function createGitMiddleware(options: GitPluginOptions) {
           return
         }
 
+        // ── /api/assets/materials : FBX 경로 → 머터리얼/텍스처 맵 ─────────────
+        if (req.url.startsWith('/api/assets/materials')) {
+          const url2        = new URL(req.url, 'http://localhost')
+          const fbxPathParam = url2.searchParams.get('fbxPath') || ''
+          const matIdxPath  = join(ASSETS_DIR, '.material_index.json')
+
+          if (!existsSync(matIdxPath)) {
+            sendJson(res, 404, { error: 'Material index not found. Run build_material_index.ps1 first.' })
+            return
+          }
+
+          type MatEntry = { name: string; albedoPath: string; normalPath: string; emissionPath: string }
+          type MatIndex = { generatedAt: string; fbxMaterials: Record<string, MatEntry[]> }
+          const rawMat = readFileSync(matIdxPath, 'utf-8')
+          const matIdx = JSON.parse(rawMat.startsWith('\uFEFF') ? rawMat.substring(1) : rawMat) as MatIndex
+
+          // fbxPath 정규화 (앞쪽 Assets/ 제거, 슬래시 통일)
+          const norm = (p: string) => p.replace(/\\/g, '/').replace(/^\/+/, '').replace(/^assets\//i, '')
+          const fbxNorm = norm(fbxPathParam)
+
+          // 직접 매칭 또는 파일명으로 부분 매칭
+          let entries: MatEntry[] = []
+          const directKey = Object.keys(matIdx.fbxMaterials).find(k => {
+            const kn = norm(k)
+            return kn === fbxNorm || kn.endsWith('/' + fbxNorm) || kn.endsWith(fbxNorm)
+          })
+          if (directKey) {
+            entries = matIdx.fbxMaterials[directKey] as MatEntry[]
+          }
+
+          // 텍스처 경로를 API URL로 변환
+          const toApiUrl = (relPath: string) =>
+            relPath ? `/api/assets/file?path=${encodeURIComponent(relPath)}` : ''
+
+          const result = entries
+            .filter(e => e.albedoPath || e.normalPath)
+            .map(e => ({
+              name:    e.name,
+              albedo:  toApiUrl(e.albedoPath),
+              normal:  toApiUrl(e.normalPath),
+              emission: toApiUrl(e.emissionPath),
+            }))
+
+          sendJson(res, 200, { fbxPath: fbxPathParam, materials: result, matchedKey: directKey ?? null })
+          return
+        }
+
       } catch (assetErr) {
         console.error('[assets endpoint error]', assetErr)
         if (!res.headersSent) {
