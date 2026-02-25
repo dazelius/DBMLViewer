@@ -1646,7 +1646,50 @@ th,td{border:1px solid #334155;padding:6px;font-size:12px}th{background:#1e293b}
 
 // ── 아티팩트 사이드 패널 (우측 절반 스트리밍 뷰) ────────────────────────────
 
-// iframe이 한 번만 로드되는 수신기 HTML (postMessage로 innerHTML 업데이트)
+/**
+ * 스트리밍 iframe 기반 HTML srcdoc.
+ * 한 번 로드된 후 parent 에서 contentDocument.body.innerHTML 을 직접 갱신한다.
+ * - allow-same-origin: parent 에서 contentDocument 접근 허용
+ * - allow-scripts: innerHTML 내 <script> 실행 허용
+ * base href 는 iframe load 후 script 에서 동적으로 세팅.
+ */
+const STREAMING_BASE_SRCDOC = `<!DOCTYPE html><html lang="ko"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<base id="dynbase" href="/">
+<style>
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%;margin:0;padding:0}
+body{padding:16px;font-family:'Segoe UI',Tahoma,Geneva,sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6;overflow-x:hidden}
+h1{font-size:1.6em;color:#fff;margin:.8em 0 .4em;border-bottom:1px solid #334155;padding-bottom:.3em}
+h2{font-size:1.3em;color:#c7d2fe;margin:.8em 0 .3em}
+h3{font-size:1.1em;color:#a5b4fc;margin:.6em 0 .2em}
+h4,h5,h6{color:#94a3b8;margin:.4em 0 .2em}
+table{width:100%;border-collapse:collapse;margin-bottom:1em;font-size:12px}
+th{background:#1e293b;color:#94a3b8;font-weight:600;padding:6px 10px;border:1px solid #334155;text-align:left}
+td{padding:6px 10px;border:1px solid #334155;color:#e2e8f0}
+tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}
+img{max-width:100%;height:auto;border-radius:4px}
+ul,ol{padding-left:1.4em;margin:.4em 0}a{color:#818cf8;text-decoration:none}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px}
+.tab{padding:6px 14px;border-radius:6px;border:1px solid #334155;background:#1e293b;color:#94a3b8;cursor:pointer;font-size:12px;transition:all .15s}
+.tab:hover{border-color:#6366f1;color:#a5b4fc}
+.tab.active{background:#6366f1;color:#fff;border-color:#6366f1}
+.tab-panel{display:none}.tab-panel.active{display:block}
+.grid{display:grid;gap:12px}.grid-2{grid-template-columns:repeat(2,1fr)}.grid-3{grid-template-columns:repeat(3,1fr)}
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600}
+.tag{background:rgba(99,102,241,0.15);color:#818cf8;padding:2px 6px;border-radius:4px;font-size:11px}
+code{background:#1e293b;padding:1px 5px;border-radius:3px;font-size:12px;font-family:monospace;color:#a5b4fc}
+pre{background:#1e293b;border:1px solid #334155;border-radius:6px;padding:12px;overflow-x:auto;font-size:12px;line-height:1.6}
+blockquote{border-left:3px solid #6366f1;margin:0;padding:4px 12px;background:rgba(99,102,241,.05);color:#94a3b8}
+hr{border:none;border-top:1px solid #334155;margin:16px 0}
+</style>
+<script>
+// base href 를 parent origin 으로 설정
+try{document.getElementById('dynbase').href=parent.location.origin+'/';}catch(e){}
+</script>
+</head><body></body></html>`;
+
 // 이미지 onerror smart fallback 스크립트 (경로 틀려도 파일명으로 재시도)
 const IMG_ONERROR_SCRIPT = `
 document.addEventListener('error', function(e) {
@@ -1693,6 +1736,31 @@ function ArtifactSidePanel({
   const schema = useSchemaStore((s) => s.schema);
   const tableData = useCanvasStore((s) => s.tableData) as TableDataMap;
   const [completeBlobUrl, setCompleteBlobUrl] = useState<string | null>(null);
+
+  // ── 스트리밍 iframe: srcdoc 한 번 로드 후 body.innerHTML 직접 갱신 ──────────
+  const streamIframeRef = useRef<HTMLIFrameElement>(null);
+  const [streamIframeReady, setStreamIframeReady] = useState(false);
+  // html 이 빨리 와도 iframe 이 아직 로드 전일 수 있으므로 ref 에 최신 값 캐시
+  const pendingHtmlRef = useRef('');
+
+  const handleStreamIframeLoad = useCallback(() => {
+    setStreamIframeReady(true);
+    // 로드 완료 시 이미 쌓인 html 이 있으면 즉시 반영
+    const doc = streamIframeRef.current?.contentDocument;
+    if (doc?.body && pendingHtmlRef.current) {
+      doc.body.innerHTML = pendingHtmlRef.current;
+    }
+  }, []);
+
+  // html prop 이 바뀔 때마다 iframe body 직접 갱신 (React 가상DOM 우회)
+  useLayoutEffect(() => {
+    if (isComplete) return;
+    pendingHtmlRef.current = html;
+    if (!streamIframeReady) return;
+    const doc = streamIframeRef.current?.contentDocument;
+    if (!doc?.body) return;
+    doc.body.innerHTML = html || '';
+  });
 
   // finalTc 완료 시 blob URL 생성
   useEffect(() => {
@@ -1960,28 +2028,13 @@ function ArtifactSidePanel({
             )}
           </>
         ) : (
-          /* 스트리밍 중 → dangerouslySetInnerHTML 직접 렌더링 (postMessage/iframeReady 불필요) */
+          /* ── 스트리밍 중: iframe 으로 직접 body.innerHTML 갱신 ──────────────── */
           <>
-            {html ? (
-              /* HTML 도착 → 즉시 렌더링 */
+            {/* HTML 아직 없으면 스피너 오버레이 */}
+            {!html && (
               <div
-                className="flex-1 overflow-y-auto overflow-x-hidden min-h-0"
-                style={{
-                  padding: '16px',
-                  background: '#0f1117',
-                  color: '#e2e8f0',
-                  fontFamily: "'Segoe UI', Tahoma, sans-serif",
-                  fontSize: 13,
-                  lineHeight: 1.6,
-                }}
-                // eslint-disable-next-line react/no-danger
-                dangerouslySetInnerHTML={{ __html: html }}
-              />
-            ) : (
-              /* HTML 미도착 → 스피너 */
-              <div
-                className="flex-1 flex flex-col items-center justify-center gap-3"
-                style={{ color: 'var(--text-muted)' }}
+                className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10"
+                style={{ background: '#0f1117', color: 'var(--text-muted)' }}
               >
                 <svg className="animate-spin w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
@@ -1993,18 +2046,32 @@ function ArtifactSidePanel({
               </div>
             )}
 
-            {/* 하단 타이핑 바 (html 스트리밍 중) */}
+            {/* 스트리밍 iframe: srcdoc 한 번 로드 후 body 직접 갱신 */}
+            <iframe
+              ref={streamIframeRef}
+              srcDoc={STREAMING_BASE_SRCDOC}
+              onLoad={handleStreamIframeLoad}
+              sandbox="allow-scripts allow-same-origin"
+              title="스트리밍 미리보기"
+              className="flex-1 border-none min-h-0 w-full"
+              style={{ background: '#0f1117', display: 'block' }}
+            />
+
+            {/* 하단 타이핑 바 */}
             {html && (
               <div
                 className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5"
-                style={{ background: 'rgba(15,17,23,0.9)', borderTop: '1px solid var(--border-color)' }}
+                style={{ background: 'rgba(15,17,23,0.95)', borderTop: '1px solid var(--border-color)' }}
               >
-                <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--accent)' }}>
+                <svg className="w-3 h-3 flex-shrink-0 animate-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--accent)' }}>
                   <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
                 </svg>
                 <span className="text-[10px] font-mono truncate flex-1" style={{ color: 'var(--text-muted)' }}>
-                  {html.slice(-120).replace(/\s+/g, ' ')}
+                  {html.slice(-100).replace(/\s+/g, ' ')}
                   <span className="inline-block w-[2px] h-[10px] ml-0.5 rounded-sm animate-pulse align-middle" style={{ background: 'var(--accent)' }} />
+                </span>
+                <span className="flex-shrink-0 text-[10px] font-mono" style={{ color: '#6366f1' }}>
+                  {charCount.toLocaleString()}자
                 </span>
               </div>
             )}
@@ -3124,10 +3191,10 @@ export default function ChatPage() {
           );
         },
         (html, title, charCount) => {
-          // 아티팩트 실시간 생성 진행 → 사이드 패널 업데이트
+          // 아티팩트 실시간 생성 진행 → 사이드 패널만 업데이트
+          // ⚠️ setMessages 는 제거: 매 delta마다 메시지 목록 전체 재렌더 → 심각한 성능 저하
           setArtifactPanel((prev) => {
             if (!prev) {
-              // 처음 패널 오픈 — flushSync는 effect 바깥이라 사용 불가, 일반 setState로 충분
               return { html, title: title || '', charCount, isComplete: false };
             }
             if (!prev.isComplete) {
@@ -3135,14 +3202,6 @@ export default function ChatPage() {
             }
             return prev; // 이미 완료된 경우 유지
           });
-          // 메시지에도 최소 진행 상태 표시
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === loadingId
-                ? { ...m, artifactProgress: { html: '', title, charCount }, isLoading: true }
-                : m,
-            ),
-          );
         },
       );
 
