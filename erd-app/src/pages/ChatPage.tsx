@@ -20,6 +20,8 @@ import {
   type DiffFile,
   type DiffHunk,
 } from '../core/ai/chatEngine.ts';
+import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
+import type { ParsedSchema } from '../core/schema/types.ts';
 
 // ── UUID 폴백 (HTTP 환경에서 crypto.randomUUID 미지원 대응) ──────────────────
 function genId(): string {
@@ -30,6 +32,139 @@ function genId(): string {
     const r = (Math.random() * 16) | 0;
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
   });
+}
+
+// ── 아티팩트 임베드 시스템 ────────────────────────────────────────────────────
+// 아티팩트 HTML에서 특수 태그를 실제 데이터로 교체
+// 사용법: <div data-embed="schema" data-table="Character"></div>
+//        <div data-embed="query" data-sql="SELECT * FROM Skill LIMIT 10"></div>
+//        <div data-embed="relations" data-table="Character"></div>
+
+const EMBED_CSS = `
+.embed-card { background:#1a2035; border:1px solid #2d3f5e; border-radius:8px; padding:12px 14px; margin:10px 0; overflow:hidden; }
+.embed-header { display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+.embed-icon { font-size:14px; }
+.embed-title { font-weight:700; color:#e2e8f0; font-size:13px; }
+.embed-meta { color:#64748b; font-size:11px; }
+.embed-subtitle { font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase; letter-spacing:.06em; margin:8px 0 4px; }
+.embed-sql { font-size:10px; color:#818cf8; background:rgba(99,102,241,.12); border-radius:4px; padding:2px 6px; font-family:monospace; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.embed-table { width:100%; border-collapse:collapse; font-size:11px; }
+.embed-table th { background:#0f1a2e; color:#94a3b8; font-weight:600; padding:5px 8px; text-align:left; border-bottom:1px solid #2d3f5e; }
+.embed-table td { padding:4px 8px; border-bottom:1px solid rgba(45,63,94,.5); color:#cbd5e1; }
+.embed-table tr:last-child td { border-bottom:none; }
+.badge-pk { display:inline-block; padding:1px 5px; border-radius:3px; font-size:10px; font-weight:700; background:rgba(99,102,241,.25); color:#818cf8; margin-right:2px; }
+.badge-fk { display:inline-block; padding:1px 5px; border-radius:3px; font-size:10px; font-weight:700; background:rgba(234,179,8,.15); color:#fbbf24; margin-right:2px; }
+.badge-nn { display:inline-block; padding:1px 5px; border-radius:3px; font-size:10px; font-weight:700; background:rgba(100,116,139,.2); color:#94a3b8; margin-right:2px; }
+.embed-error { background:rgba(239,68,68,.1); border:1px solid rgba(239,68,68,.3); border-radius:6px; padding:8px 12px; color:#ef4444; font-size:12px; margin:6px 0; }
+.embed-empty { background:rgba(100,116,139,.1); border-radius:6px; padding:8px 12px; color:#64748b; font-size:12px; margin:6px 0; }
+`;
+
+/** 스키마 테이블 embed → HTML */
+function renderSchemaEmbedHtml(tableName: string, schema: ParsedSchema | null): string {
+  if (!schema) return `<div class="embed-error">스키마 없음</div>`;
+  const table = schema.tables.find(t => t.name.toLowerCase() === tableName.toLowerCase());
+  if (!table) return `<div class="embed-error">테이블 '${tableName}'을 찾을 수 없습니다</div>`;
+  const nameById = new Map(schema.tables.map(t => [t.id, t.name]));
+
+  const colRows = table.columns.map(c => {
+    const badges = [
+      c.isPrimaryKey ? '<span class="badge-pk">PK</span>' : '',
+      c.isForeignKey ? '<span class="badge-fk">FK</span>' : '',
+      c.isNotNull && !c.isPrimaryKey ? '<span class="badge-nn">NN</span>' : '',
+    ].filter(Boolean).join('');
+    return `<tr><td>${c.name}</td><td style="color:#94a3b8">${c.type}</td><td>${badges}</td><td style="color:#64748b;font-size:10px">${c.note ?? ''}</td></tr>`;
+  }).join('');
+
+  const refs = schema.refs.filter(r => r.fromTable === table.id || r.toTable === table.id);
+  const relRows = refs.map(r => {
+    const isFrom = r.fromTable === table.id;
+    const other = nameById.get(isFrom ? r.toTable : r.fromTable) ?? '?';
+    const dir = isFrom ? '→' : '←';
+    const cols = isFrom ? `${r.fromColumns[0]} → ${r.toColumns[0]}` : `${r.toColumns[0]} ← ${r.fromColumns[0]}`;
+    return `<tr><td style="color:#818cf8">${dir}</td><td style="color:#e2e8f0">${other}</td><td style="color:#94a3b8">${cols}</td><td style="color:#64748b">${r.type}</td></tr>`;
+  }).join('');
+
+  return `<div class="embed-card embed-schema">
+<div class="embed-header"><span class="embed-icon">🗄️</span><span class="embed-title">${table.name}</span><span class="embed-meta">${table.groupName ?? ''} · ${table.columns.length}컬럼${refs.length > 0 ? ` · 관계 ${refs.length}개` : ''}</span></div>
+<table class="embed-table"><thead><tr><th>컬럼</th><th>타입</th><th>속성</th><th>설명</th></tr></thead><tbody>${colRows}</tbody></table>
+${refs.length > 0 ? `<div class="embed-subtitle">관계 (FK)</div><table class="embed-table"><thead><tr><th>방향</th><th>테이블</th><th>컬럼</th><th>타입</th></tr></thead><tbody>${relRows}</tbody></table>` : ''}
+</div>`;
+}
+
+/** SQL 쿼리 embed → HTML */
+function renderQueryEmbedHtml(sql: string, tableData: TableDataMap, schema: ParsedSchema | null): string {
+  try {
+    const result = executeDataSQL(sql, tableData, schema ?? undefined);
+    if (result.error) return `<div class="embed-error">쿼리 오류: ${result.error}<br><code style="font-size:10px">${sql}</code></div>`;
+    if (result.rowCount === 0) return `<div class="embed-empty">결과 없음 — <code style="font-size:10px">${sql}</code></div>`;
+    const headers = result.columns.map(c => `<th>${c}</th>`).join('');
+    const rows = result.rows.map(row =>
+      `<tr>${result.columns.map(c => `<td>${String((row as Record<string, unknown>)[c] ?? '')}</td>`).join('')}</tr>`
+    ).join('');
+    return `<div class="embed-card embed-query">
+<div class="embed-header"><span class="embed-icon">📊</span><span class="embed-meta">${result.rowCount}행</span><span class="embed-sql">${sql}</span></div>
+<div style="overflow-x:auto"><table class="embed-table"><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table></div>
+</div>`;
+  } catch (e) {
+    return `<div class="embed-error">오류: ${String(e)}</div>`;
+  }
+}
+
+/** 관계도 embed → HTML (특정 테이블의 FK 관계망) */
+function renderRelationsEmbedHtml(tableName: string, schema: ParsedSchema | null): string {
+  if (!schema) return `<div class="embed-error">스키마 없음</div>`;
+  const table = schema.tables.find(t => t.name.toLowerCase() === tableName.toLowerCase());
+  if (!table) return `<div class="embed-error">테이블 '${tableName}'을 찾을 수 없습니다</div>`;
+  const nameById = new Map(schema.tables.map(t => [t.id, t.name]));
+
+  const outRefs = schema.refs.filter(r => r.fromTable === table.id);
+  const inRefs  = schema.refs.filter(r => r.toTable === table.id);
+
+  const outRows = outRefs.map(r => {
+    const to = nameById.get(r.toTable) ?? r.toTable;
+    return `<tr><td style="color:#818cf8">→ ${to}</td><td style="color:#94a3b8">${r.fromColumns[0]}</td><td style="color:#64748b">${r.type}</td></tr>`;
+  }).join('');
+  const inRows = inRefs.map(r => {
+    const from = nameById.get(r.fromTable) ?? r.fromTable;
+    return `<tr><td style="color:#34d399">← ${from}</td><td style="color:#94a3b8">${r.fromColumns[0]}</td><td style="color:#64748b">${r.type}</td></tr>`;
+  }).join('');
+
+  return `<div class="embed-card embed-relations">
+<div class="embed-header"><span class="embed-icon">🔗</span><span class="embed-title">${table.name} 관계도</span><span class="embed-meta">출력 ${outRefs.length}개 · 입력 ${inRefs.length}개</span></div>
+${outRows || inRows ? `<table class="embed-table"><thead><tr><th>연결 테이블</th><th>FK 컬럼</th><th>타입</th></tr></thead><tbody>${outRows}${inRows}</tbody></table>` : '<div class="embed-empty">관계 없음</div>'}
+</div>`;
+}
+
+/** 아티팩트 HTML 내 embed 태그를 실제 콘텐츠로 교체 */
+function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableData: TableDataMap): string {
+  // <div data-embed="schema" data-table="TableName"></div>  (속성 순서 무관)
+  html = html.replace(
+    /<div([^>]*?)data-embed=["']schema["']([^>]*?)data-table=["']([^"']+)["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, _b, tbl) => renderSchemaEmbedHtml(tbl, schema),
+  );
+  html = html.replace(
+    /<div([^>]*?)data-table=["']([^"']+)["']([^>]*?)data-embed=["']schema["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, tbl) => renderSchemaEmbedHtml(tbl, schema),
+  );
+  // <div data-embed="query" data-sql="..."></div>
+  html = html.replace(
+    /<div([^>]*?)data-embed=["']query["']([^>]*?)data-sql=["']([^"']+)["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, _b, sql) => renderQueryEmbedHtml(sql.replace(/&quot;/g, '"').replace(/&amp;/g, '&'), tableData, schema),
+  );
+  html = html.replace(
+    /<div([^>]*?)data-sql=["']([^"']+)["']([^>]*?)data-embed=["']query["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, sql) => renderQueryEmbedHtml(sql.replace(/&quot;/g, '"').replace(/&amp;/g, '&'), tableData, schema),
+  );
+  // <div data-embed="relations" data-table="..."></div>
+  html = html.replace(
+    /<div([^>]*?)data-embed=["']relations["']([^>]*?)data-table=["']([^"']+)["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, _b, tbl) => renderRelationsEmbedHtml(tbl, schema),
+  );
+  html = html.replace(
+    /<div([^>]*?)data-table=["']([^"']+)["']([^>]*?)data-embed=["']relations["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, tbl) => renderRelationsEmbedHtml(tbl, schema),
+  );
+  return html;
 }
 
 // ── 타입 ─────────────────────────────────────────────────────────────────────
@@ -1390,21 +1525,20 @@ function ArtifactCard({ tc }: { tc: ArtifactResult }) {
   const previewRef = useRef<HTMLIFrameElement>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
 
-  // HTML에 <base> 태그 주입 + body-only HTML은 전체 문서로 래핑
-  const getInjectedHtml = () => {
+  // embed 해석을 위해 store에서 schema / tableData 가져오기
+  const schema = useSchemaStore((s) => s.schema);
+  const tableData = useCanvasStore((s) => s.tableData) as TableDataMap;
+
+  // HTML에 <base> + embed 해석 + 다크 테마 CSS 주입
+  const getInjectedHtml = useCallback(() => {
     const origin = window.location.origin;
     const base = `<base href="${origin}/">`;
-    const html = tc.html ?? '';
+    // 1. embed 태그 먼저 해석
+    const resolved = resolveArtifactEmbeds(tc.html ?? '', schema, tableData);
 
-    // 완전한 HTML 문서인 경우 → <head>에 base만 주입
-    if (html.includes('<!DOCTYPE') || html.includes('<html')) {
-      if (html.includes('<head>')) return html.replace('<head>', `<head>${base}`);
-      if (html.includes('<head ')) return html.replace(/<head(\s[^>]*)>/, `<head$1>${base}`);
-      return html.replace('<!DOCTYPE html>', `<!DOCTYPE html>${base}`);
-    }
-
-    // body-only HTML → 완전한 문서로 래핑
-    return `<!DOCTYPE html>
+    // 2. body-only HTML → 완전한 문서로 래핑
+    if (!resolved.includes('<!DOCTYPE') && !resolved.includes('<html')) {
+      return `<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
@@ -1423,18 +1557,31 @@ function ArtifactCard({ tc }: { tc: ArtifactResult }) {
     .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
     img { max-width: 100%; height: auto; }
+    ${EMBED_CSS}
     @media print {
       body { background: #fff; color: #000; }
       th { background: #f1f5f9; }
       .card { border: 1px solid #cbd5e1; }
+      .embed-card { border: 1px solid #cbd5e1; background: #f8fafc; }
+      .embed-table th { background: #f1f5f9; color: #475569; }
+      .embed-table td { color: #1e293b; }
     }
   </style>
 </head>
 <body>
-${html}
+${resolved}
 </body>
 </html>`;
-  };
+    }
+
+    // 3. 완전한 HTML 문서 → <head>에 base + embed CSS 주입
+    const withBase = resolved.includes('<head>')
+      ? resolved.replace('<head>', `<head>${base}<style>${EMBED_CSS}</style>`)
+      : resolved.includes('<head ')
+        ? resolved.replace(/<head(\s[^>]*)>/, `<head$1>${base}<style>${EMBED_CSS}</style>`)
+        : resolved;
+    return withBase;
+  }, [tc.html, tc.title, schema, tableData]);
 
   useEffect(() => {
     if (!tc.html) return;
@@ -1443,7 +1590,7 @@ ${html}
     const url = URL.createObjectURL(blob);
     setBlobUrl(url);
     return () => URL.revokeObjectURL(url);
-  }, [tc.html]);
+  }, [tc.html, getInjectedHtml]);
 
   // ESC 키로 전체화면 닫기
   useEffect(() => {
@@ -1458,6 +1605,21 @@ ${html}
     if (!iframe?.contentWindow) return;
     iframe.contentWindow.focus();
     iframe.contentWindow.print();
+  };
+
+  // HTML 파일로 저장 (embed 포함 완전한 standalone 문서)
+  const handleSaveHtml = () => {
+    const fullHtml = getInjectedHtml();
+    const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = (tc.title ?? '문서').replace(/[\\/:*?"<>|]/g, '_');
+    a.download = `${safeName}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   if (tc.error) {
@@ -1499,6 +1661,19 @@ ${html}
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {/* HTML 저장 */}
+            <button
+              onClick={handleSaveHtml}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all hover:opacity-80"
+              style={{ background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.3)', color: '#34d399' }}
+              title="HTML 파일로 저장 (사이트 형식, embed 포함)"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <polyline points="16 18 22 12 16 6"/>
+                <polyline points="8 6 2 12 8 18"/>
+              </svg>
+              HTML 저장
+            </button>
             {/* PDF 저장 */}
             <button
               onClick={handlePrint}
