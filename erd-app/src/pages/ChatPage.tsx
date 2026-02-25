@@ -1156,6 +1156,151 @@ th,td{border:1px solid #334155;padding:6px;font-size:12px}th{background:#1e293b}
   );
 }
 
+// ── 아티팩트 사이드 패널 (우측 절반 스트리밍 뷰) ────────────────────────────
+
+function ArtifactSidePanel({
+  html,
+  title,
+  charCount,
+  isComplete,
+  finalTc,
+  onClose,
+}: {
+  html: string;
+  title: string;
+  charCount: number;
+  isComplete: boolean;
+  finalTc?: ArtifactResult;
+  onClose: () => void;
+}) {
+  // 스트리밍 중 blob URL 생성 (html이 충분히 쌓였을 때)
+  const blobUrl = useMemo(() => {
+    if (isComplete || !html || html.length < 30) return null;
+    const fullHtml = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 20px; font-family: 'Segoe UI', sans-serif; font-size: 13px;
+           background: #0f1117; color: #e2e8f0; line-height: 1.6; }
+    h1, h2, h3, h4 { color: #fff; margin: 0.8em 0 0.4em; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 1em; }
+    th, td { border: 1px solid #334155; padding: 6px 10px; text-align: left; font-size: 12px; }
+    th { background: #1e293b; color: #94a3b8; font-weight: 600; }
+    tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    img { max-width: 100%; height: auto; }
+  </style>
+</head>
+<body>${html}</body>
+</html>`;
+    return URL.createObjectURL(new Blob([fullHtml], { type: 'text/html' }));
+  }, [html, isComplete]);
+
+  useEffect(() => {
+    return () => { if (blobUrl) URL.revokeObjectURL(blobUrl); };
+  }, [blobUrl]);
+
+  return (
+    <div
+      className="flex flex-col overflow-hidden border-l"
+      style={{ borderColor: 'var(--border-color)', background: 'var(--bg-secondary)', minWidth: 0 }}
+    >
+      {/* ── 헤더 ── */}
+      <div
+        className="flex items-center gap-2.5 px-4 py-2.5 flex-shrink-0"
+        style={{
+          borderBottom: '1px solid var(--border-color)',
+          background: isComplete
+            ? 'linear-gradient(135deg, rgba(99,102,241,0.12) 0%, rgba(139,92,246,0.08) 100%)'
+            : 'rgba(99,102,241,0.08)',
+        }}
+      >
+        {/* 상태 아이콘 */}
+        {isComplete ? (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ color: '#4ade80', flexShrink: 0 }}>
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+        ) : (
+          <span className="relative flex h-2.5 w-2.5 flex-shrink-0">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ background: 'var(--accent)' }} />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5" style={{ background: 'var(--accent)' }} />
+          </span>
+        )}
+
+        {/* 타이틀 */}
+        <span className="font-semibold text-[13px] flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
+          {title || '아티팩트'}
+        </span>
+
+        {/* 글자 수 (생성 중) */}
+        {!isComplete && charCount > 0 && (
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full" style={{ background: 'rgba(99,102,241,0.15)', color: 'var(--accent)' }}>
+            {charCount.toLocaleString()}자
+          </span>
+        )}
+
+        {/* 닫기 버튼 */}
+        <button
+          onClick={onClose}
+          className="p-1.5 rounded-lg interactive flex-shrink-0"
+          style={{ color: 'var(--text-muted)' }}
+          title="패널 닫기"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+
+      {/* ── 콘텐츠 영역 ── */}
+      <div className="flex-1 overflow-hidden relative">
+        {isComplete && finalTc ? (
+          /* 완료 → ArtifactCard (스크롤 가능) */
+          <div className="h-full overflow-y-auto px-4 py-3">
+            <ArtifactCard tc={finalTc} />
+          </div>
+        ) : blobUrl ? (
+          /* 스트리밍 중 → 실시간 iframe (전체 크기) */
+          <>
+            <iframe
+              key={blobUrl}
+              src={blobUrl}
+              title="artifact-stream-preview"
+              className="w-full h-full border-none"
+              sandbox="allow-scripts allow-same-origin"
+            />
+            {/* 하단 타이핑 오버레이 */}
+            <div
+              className="absolute bottom-0 inset-x-0 flex items-center gap-2 px-3 py-2"
+              style={{ background: 'rgba(15,17,23,0.88)', borderTop: '1px solid var(--border-color)', backdropFilter: 'blur(4px)' }}
+            >
+              <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--accent)' }}>
+                <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+              </svg>
+              <span className="text-[10px] font-mono truncate flex-1" style={{ color: 'var(--text-muted)' }}>
+                {html.slice(-120).replace(/\s+/g, ' ')}
+                <span className="inline-block w-[2px] h-[10px] ml-0.5 rounded-sm animate-pulse align-middle" style={{ background: 'var(--accent)' }} />
+              </span>
+            </div>
+          </>
+        ) : (
+          /* 초기 대기 */
+          <div className="flex flex-col items-center justify-center h-full gap-3" style={{ color: 'var(--text-muted)' }}>
+            <svg className="animate-spin w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+            </svg>
+            <span className="text-[12px]">HTML 생성 중...</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── 아티팩트 카드 ─────────────────────────────────────────────────────────────
 
 function ArtifactCard({ tc }: { tc: ArtifactResult }) {
@@ -1594,13 +1739,20 @@ function MessageBubble({ msg }: { msg: Message }) {
                   {msg.liveToolCalls.map((tc, i) => <ToolCallCard key={i} tc={tc} index={i} />)}
                 </div>
               )}
-              {/* 아티팩트 실시간 생성 카드 */}
+              {/* 아티팩트 실시간 생성 → 오른쪽 패널에서 표시, 여기선 뱃지만 */}
               {msg.artifactProgress && (
-                <ArtifactProgressCard
-                  html={msg.artifactProgress.html}
-                  title={msg.artifactProgress.title}
-                  charCount={msg.artifactProgress.charCount}
-                />
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg mb-2" style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.25)' }}>
+                  <span className="relative flex h-2 w-2 flex-shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ background: 'var(--accent)' }} />
+                    <span className="relative inline-flex rounded-full h-2 w-2" style={{ background: 'var(--accent)' }} />
+                  </span>
+                  <span className="text-[12px]" style={{ color: 'var(--accent)' }}>
+                    아티팩트 생성 중{msg.artifactProgress.title ? `: ${msg.artifactProgress.title}` : ''}
+                  </span>
+                  <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+                    {msg.artifactProgress.charCount.toLocaleString()}자 · 오른쪽 패널 ›
+                  </span>
+                </div>
               )}
               {msg.content && (
                 <div className="text-[13px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
@@ -1673,6 +1825,15 @@ export default function ChatPage() {
   });
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  // 아티팩트 사이드 패널 상태
+  const [artifactPanel, setArtifactPanel] = useState<{
+    html: string;
+    title: string;
+    charCount: number;
+    isComplete: boolean;
+    finalTc?: ArtifactResult;
+  } | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1772,11 +1933,13 @@ export default function ChatPage() {
           );
         },
         (html, title, charCount) => {
-          // 아티팩트 실시간 생성 진행
+          // 아티팩트 실시간 생성 진행 → 사이드 패널 업데이트
+          setArtifactPanel({ html, title, charCount, isComplete: false });
+          // 메시지에도 최소 진행 상태 표시
           setMessages((prev) =>
             prev.map((m) =>
               m.id === loadingId
-                ? { ...m, artifactProgress: { html, title, charCount }, isLoading: true }
+                ? { ...m, artifactProgress: { html: '', title, charCount }, isLoading: true }
                 : m,
             ),
           );
@@ -1798,6 +1961,16 @@ export default function ChatPage() {
             : m,
         ),
       );
+
+      // 아티팩트 패널: 완료 처리
+      const artifactTc = toolCalls?.find((tc) => tc.kind === 'artifact') as ArtifactResult | undefined;
+      if (artifactTc) {
+        setArtifactPanel((prev) =>
+          prev ? { ...prev, isComplete: true, finalTc: artifactTc } : { html: artifactTc.html ?? '', title: artifactTc.title ?? '', charCount: (artifactTc.html ?? '').length, isComplete: true, finalTc: artifactTc },
+        );
+      } else if (artifactPanel) {
+        // 아티팩트가 없으면 패널 그대로 유지 (에러 케이스에서도 보이도록)
+      }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error('[Chat] sendMessage 오류:', errMsg);
@@ -1833,7 +2006,7 @@ export default function ChatPage() {
       <div className="flex flex-1 overflow-hidden">
         {/* ── 사이드바 ── */}
         <div
-          className="w-64 flex-shrink-0 flex flex-col overflow-hidden"
+          className="w-56 flex-shrink-0 flex flex-col overflow-hidden"
           style={{ borderRight: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}
         >
           {/* 데이터 현황 */}
@@ -1928,8 +2101,11 @@ export default function ChatPage() {
           )}
         </div>
 
+        {/* ── 채팅 + 아티팩트 패널 (가변 분할) ── */}
+        <div className="flex-1 flex overflow-hidden min-w-0">
+
         {/* ── 채팅 영역 ── */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
           {/* 메시지 목록 */}
           <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
             {messages.length === 0 && (
@@ -2018,6 +2194,20 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
+        {/* ── 아티팩트 사이드 패널 (우측 절반) ── */}
+        {artifactPanel && (
+          <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+            <ArtifactSidePanel
+              html={artifactPanel.html}
+              title={artifactPanel.title}
+              charCount={artifactPanel.charCount}
+              isComplete={artifactPanel.isComplete}
+              finalTc={artifactPanel.finalTc}
+              onClose={() => setArtifactPanel(null)}
+            />
+          </div>
+        )}
+        </div>{/* ── /채팅+패널 래퍼 ── */}
       </div>
 
       {/* CSS 애니메이션 */}
