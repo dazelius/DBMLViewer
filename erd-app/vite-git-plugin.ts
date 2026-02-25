@@ -1,7 +1,7 @@
 import type { Plugin } from 'vite'
 import { execSync, execFileSync, execFile } from 'child_process'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'fs'
-import { join, resolve, extname } from 'path'
+import { join, resolve, extname, sep } from 'path'
 import { promisify } from 'util'
 import type { IncomingMessage, ServerResponse } from 'http'
 
@@ -536,12 +536,17 @@ function createGitMiddleware(options: GitPluginOptions) {
 
       type AssetEntry = { path: string; name: string; ext: string; sizeKB: number }
 
-      /** 인덱스 로드 (없으면 빈 배열) */
+      /** 인덱스 로드 (없으면 빈 배열) - BOM 자동 제거 */
       const loadIdx = (): AssetEntry[] => {
         try {
           if (!existsSync(idxPath)) return []
-          return JSON.parse(readFileSync(idxPath, 'utf-8')) as AssetEntry[]
-        } catch { return [] }
+          let raw = readFileSync(idxPath, 'utf-8')
+          if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1) // strip UTF-8 BOM
+          return JSON.parse(raw) as AssetEntry[]
+        } catch (e) {
+          console.error('[loadIdx] parse error:', e)
+          return []
+        }
       }
 
       /** relPath 기준으로 실제 파일 경로 해석 (assets/ 없으면 unity_project/ fallback) */
