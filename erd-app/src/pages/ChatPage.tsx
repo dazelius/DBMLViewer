@@ -105,17 +105,65 @@ ${refs.length > 0 ? `<div class="embed-subtitle">관계 (FK)</div><table class="
 }
 
 /** SQL 쿼리 embed → HTML */
+/** SQL 잘림 감지 및 복구 시도 */
+function tryRepairSQL(sql: string): { sql: string; repaired: boolean } {
+  const trimmed = sql.trim();
+  // 잘린 패턴: 마지막 단어가 SQL 키워드인 경우
+  const TRAILING_KEYWORDS = /\b(AS|WHERE|FROM|AND|OR|ON|SET|HAVING|ORDER\s+BY|GROUP\s+BY|JOIN|LEFT|RIGHT|INNER|OUTER|LIMIT|OFFSET|UNION|SELECT|INSERT|UPDATE|DELETE|INTO|VALUES|BY)\s*$/i;
+  const match = trimmed.match(TRAILING_KEYWORDS);
+  if (match) {
+    // 잘린 키워드 이전까지만 사용
+    const repaired = trimmed.slice(0, match.index).trim().replace(/,\s*$/, '');
+    if (repaired.length > 0) return { sql: repaired, repaired: true };
+  }
+  return { sql: trimmed, repaired: false };
+}
+
 function renderQueryEmbedHtml(sql: string, tableData: TableDataMap, schema: ParsedSchema | null): string {
   try {
-    const result = executeDataSQL(sql, tableData, schema ?? undefined);
-    if (result.error) return `<div class="embed-error">쿼리 오류: ${result.error}<br><code style="font-size:10px">${sql}</code></div>`;
-    if (result.rowCount === 0) return `<div class="embed-empty">결과 없음 — <code style="font-size:10px">${sql}</code></div>`;
+    // HTML 엔티티 복원
+    const decoded = sql
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&amp;/g, '&')
+      .replace(/&#39;/g, "'")
+      .replace(/&#34;/g, '"')
+      .trim();
+
+    let finalSql = decoded;
+    let repairNote = '';
+
+    // SQL 실행 시도
+    let result = executeDataSQL(finalSql, tableData, schema ?? undefined);
+
+    // 첫 번째 실패 시 복구 시도
+    if (result.error) {
+      const { sql: repairedSql, repaired } = tryRepairSQL(finalSql);
+      if (repaired) {
+        const retryResult = executeDataSQL(repairedSql, tableData, schema ?? undefined);
+        if (!retryResult.error) {
+          result = retryResult;
+          finalSql = repairedSql;
+          repairNote = ` <span style="color:#f59e0b;font-size:9px">(자동 복구됨)</span>`;
+        }
+      }
+    }
+
+    if (result.error) {
+      const isTruncated = /got 'EOF'|Unexpected end|unexpected end/i.test(result.error);
+      const msg = isTruncated
+        ? `SQL이 불완전합니다 (응답 생성 중 잘린 것 같습니다)`
+        : `쿼리 오류: ${result.error}`;
+      return `<div class="embed-error">${msg}<br><code style="font-size:10px;opacity:0.7">${finalSql}</code></div>`;
+    }
+    if (result.rowCount === 0) return `<div class="embed-empty">결과 없음 — <code style="font-size:10px">${finalSql}</code></div>`;
+
     const headers = result.columns.map(c => `<th>${c}</th>`).join('');
     const rows = result.rows.map(row =>
       `<tr>${result.columns.map(c => `<td>${String((row as Record<string, unknown>)[c] ?? '')}</td>`).join('')}</tr>`
     ).join('');
     return `<div class="embed-card embed-query">
-<div class="embed-header"><span class="embed-icon">📊</span><span class="embed-meta">${result.rowCount}행</span><span class="embed-sql">${sql}</span></div>
+<div class="embed-header"><span class="embed-icon">📊</span><span class="embed-meta">${result.rowCount}행${repairNote}</span><span class="embed-sql">${finalSql}</span></div>
 <div style="overflow-x:auto"><table class="embed-table"><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table></div>
 </div>`;
   } catch (e) {
@@ -233,13 +281,24 @@ function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableD
     (_, _a, tbl) => renderSchemaEmbedHtml(tbl, schema),
   );
   // <div data-embed="query" data-sql="..."></div>
+  // data-sql="..." 형식 (SQL 내 ' 허용)
   html = html.replace(
-    /<div([^>]*?)data-embed=["']query["']([^>]*?)data-sql=["']([^"']+)["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
-    (_, _a, _b, sql) => renderQueryEmbedHtml(sql.replace(/&quot;/g, '"').replace(/&amp;/g, '&'), tableData, schema),
+    /<div([^>]*?)data-embed=["']query["']([^>]*?)data-sql="([^"]*)"([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, _b, sql) => renderQueryEmbedHtml(sql, tableData, schema),
+  );
+  // data-sql='...' 형식 (SQL 내 " 허용)
+  html = html.replace(
+    /<div([^>]*?)data-embed=["']query["']([^>]*?)data-sql='([^']*)'([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, _b, sql) => renderQueryEmbedHtml(sql, tableData, schema),
+  );
+  // 속성 순서 반대: data-sql 먼저
+  html = html.replace(
+    /<div([^>]*?)data-sql="([^"]*)"([^>]*?)data-embed=["']query["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, sql) => renderQueryEmbedHtml(sql, tableData, schema),
   );
   html = html.replace(
-    /<div([^>]*?)data-sql=["']([^"']+)["']([^>]*?)data-embed=["']query["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
-    (_, _a, sql) => renderQueryEmbedHtml(sql.replace(/&quot;/g, '"').replace(/&amp;/g, '&'), tableData, schema),
+    /<div([^>]*?)data-sql='([^']*)'([^>]*?)data-embed=["']query["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, sql) => renderQueryEmbedHtml(sql, tableData, schema),
   );
   // <div data-embed="relations" data-table="..."></div>
   html = html.replace(

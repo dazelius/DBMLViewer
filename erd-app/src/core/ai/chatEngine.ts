@@ -377,8 +377,14 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('   → 컬럼 목록, PK/FK 속성, FK 관계 테이블 등이 자동 렌더링됨');
   lines.push('');
   lines.push('2. 쿼리 결과 임베드: <div data-embed="query" data-sql="SELECT 문"></div>');
-  lines.push('   예) <div data-embed="query" data-sql="SELECT * FROM Skill WHERE character_id=\'1001\' LIMIT 10"></div>');
+  lines.push('   예) <div data-embed="query" data-sql="SELECT id, name, type FROM Perk LIMIT 20"></div>');
+  lines.push('   예) <div data-embed="query" data-sql="SELECT * FROM PerkEffect WHERE perk_id=\'101\'"></div>');
   lines.push('   → SQL 실행 결과가 데이터 테이블로 자동 렌더링됨. 데이터를 직접 HTML에 쓰지 말고 이 태그 사용 권장');
+  lines.push('   ⚠️ data-sql 작성 규칙:');
+  lines.push('      - 속성은 항상 큰따옴표(")로 감싸세요: data-sql="SQL"');
+  lines.push('      - SQL 내에 큰따옴표가 필요하면 &quot; 사용');
+  lines.push('      - #으로 시작하는 컬럼은 백틱으로 감싸되 별칭(AS)을 반드시 완성: `#effect_group` AS effect_group');
+  lines.push('      - SQL은 반드시 완전한 문장이어야 합니다 (AS 뒤 alias, FROM 뒤 테이블명 등 생략 금지)');
   lines.push('');
   lines.push('3. 관계도 임베드: <div data-embed="relations" data-table="테이블명"></div>');
   lines.push('   예) <div data-embed="relations" data-table="Character"></div>');
