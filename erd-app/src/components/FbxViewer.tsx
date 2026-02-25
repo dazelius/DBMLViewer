@@ -167,7 +167,9 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
               apiUrl,
               (tex) => {
                 tex.colorSpace = THREE.SRGBColorSpace;
-                tex.flipY = false; // FBX UV는 Y flip 불필요
+                // FBXLoader가 내부적으로 UV.y = 1 - UV.y 변환을 하므로
+                // 외부에서 입히는 텍스처는 flipY = true (기본값) 유지
+                tex.flipY = true;
                 texCache[apiUrl] = tex;
                 resolve(tex);
               },
@@ -228,7 +230,9 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
 
                 if (normalTex) {
                   newMat.normalMap = normalTex;
-                  newMat.normalScale.set(1, 1);
+                  // Unity 노말맵은 DirectX 스타일 (G채널 반전 필요)
+                  // OpenGL 스타일로 변환: normalScale.y = -1
+                  newMat.normalScale.set(1, -1);
                 }
                 if (emissionTex) {
                   newMat.emissiveMap = emissionTex;
