@@ -1158,30 +1158,40 @@ th,td{border:1px solid #334155;padding:6px;font-size:12px}th{background:#1e293b}
 
 // ── 아티팩트 사이드 패널 (우측 절반 스트리밍 뷰) ────────────────────────────
 
-const STREAM_BASE_STYLE = `
-  *, *::before, *::after { box-sizing: border-box; }
-  body { margin: 20px; font-family: 'Segoe UI', Tahoma, sans-serif; font-size: 13px;
-         background: #0f1117; color: #e2e8f0; line-height: 1.6; }
-  h1, h2, h3, h4 { color: #fff; margin: 0.8em 0 0.4em; }
-  p { margin: 0.4em 0; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 1em; }
-  th, td { border: 1px solid #334155; padding: 6px 10px; text-align: left; font-size: 12px; }
-  th { background: #1e293b; color: #94a3b8; font-weight: 600; }
-  tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
-  .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-  img { max-width: 100%; height: auto; }
-  ul, ol { padding-left: 1.4em; margin: 0.4em 0; }
-  li { margin: 0.2em 0; }
-  pre { background: #1e293b; padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 12px; }
-  code { background: #1e293b; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
-`;
-
-function buildStreamHtml(bodyHtml: string): string {
-  return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
+// iframe이 한 번만 로드되는 수신기 HTML (postMessage로 innerHTML 업데이트)
+const STREAM_RECEIVER_SRCDOC = `<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<style>${STREAM_BASE_STYLE}</style></head><body>${bodyHtml}</body></html>`;
-}
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  body{margin:20px;font-family:'Segoe UI',Tahoma,sans-serif;font-size:13px;
+       background:#0f1117;color:#e2e8f0;line-height:1.6}
+  h1,h2,h3,h4{color:#fff;margin:.8em 0 .4em}
+  p{margin:.4em 0}
+  table{width:100%;border-collapse:collapse;margin-bottom:1em}
+  th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}
+  th{background:#1e293b;color:#94a3b8;font-weight:600}
+  tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+  .card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+  img{max-width:100%;height:auto}
+  ul,ol{padding-left:1.4em;margin:.4em 0}
+  li{margin:.2em 0}
+  pre{background:#1e293b;padding:10px;border-radius:6px;overflow-x:auto;font-size:12px}
+  code{background:#1e293b;padding:1px 5px;border-radius:3px;font-size:12px}
+</style>
+</head>
+<body>
+<script>
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'artifact-update') {
+      document.body.innerHTML = e.data.html;
+    }
+  });
+  // 준비 완료 신호
+  window.parent.postMessage({ type: 'artifact-ready' }, '*');
+</script>
+</body></html>`;
 
 function ArtifactSidePanel({
   html,
@@ -1199,52 +1209,63 @@ function ArtifactSidePanel({
   onClose: () => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [iframeReady, setIframeReady] = useState(false);
   const pendingHtmlRef = useRef('');
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastFlushRef = useRef(0);
 
-  const THROTTLE_MS = 350;
+  const THROTTLE_MS = 300;
 
-  // iframe에 직접 HTML을 씁니다 (리마운트 없이 콘텐츠만 교체)
-  const writeToIframe = useCallback((bodyHtml: string) => {
+  // iframe에 postMessage로 HTML 업데이트 (리로드 없이 innerHTML만 교체)
+  const sendToIframe = useCallback((bodyHtml: string) => {
     const iframe = iframeRef.current;
-    if (!iframe) return;
+    if (!iframe?.contentWindow) return;
     try {
-      const doc = iframe.contentDocument;
-      if (!doc) return;
-      doc.open();
-      doc.write(buildStreamHtml(bodyHtml));
-      doc.close();
+      iframe.contentWindow.postMessage({ type: 'artifact-update', html: bodyHtml }, '*');
       lastFlushRef.current = Date.now();
-    } catch {
-      // sandbox/cross-origin 제약 시 무시
-    }
+    } catch { /* ignore */ }
   }, []);
 
-  // html prop이 변경될 때마다 스로틀링하여 iframe 업데이트
+  // iframe 준비 완료 신호 수신 (srcdoc 로드 후)
   useEffect(() => {
-    if (isComplete || !html || html.length < 20) return;
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type === 'artifact-ready') {
+        setIframeReady(true);
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  // iframe이 준비되면 쌓인 html 즉시 전송
+  useEffect(() => {
+    if (!iframeReady || !pendingHtmlRef.current) return;
+    sendToIframe(pendingHtmlRef.current);
+  }, [iframeReady, sendToIframe]);
+
+  // html prop 변경 시 스로틀링하여 postMessage 전송
+  useEffect(() => {
+    if (isComplete || !html || html.length < 10) return;
 
     pendingHtmlRef.current = html;
+    if (!iframeReady) return; // iframe 로드 전이면 준비 후 전송
 
     const now = Date.now();
     const elapsed = now - lastFlushRef.current;
 
     if (elapsed >= THROTTLE_MS) {
-      // 즉시 write
-      writeToIframe(html);
+      sendToIframe(html);
       if (flushTimerRef.current) {
         clearTimeout(flushTimerRef.current);
         flushTimerRef.current = null;
       }
     } else if (!flushTimerRef.current) {
-      // 남은 시간 후 write (마지막 청크 보장)
       flushTimerRef.current = setTimeout(() => {
-        writeToIframe(pendingHtmlRef.current);
+        sendToIframe(pendingHtmlRef.current);
         flushTimerRef.current = null;
       }, THROTTLE_MS - elapsed);
     }
-  }, [html, isComplete, writeToIframe]);
+  }, [html, isComplete, iframeReady, sendToIframe]);
 
   // 언마운트 시 타이머 정리
   useEffect(() => {
@@ -1313,18 +1334,19 @@ function ArtifactSidePanel({
             <ArtifactCard tc={finalTc} />
           </div>
         ) : (
-          /* 스트리밍 중 → contentDocument.write로 실시간 업데이트 */
+          /* 스트리밍 중 → postMessage로 실시간 innerHTML 업데이트 */
           <>
-            {/* 항상 마운트된 iframe — key 없음, 리마운트 없음 */}
+            {/* srcdoc는 상수라 React가 재렌더해도 iframe은 리로드되지 않음 */}
             <iframe
               ref={iframeRef}
               title="artifact-stream-preview"
               className="flex-1 border-none min-h-0"
-              sandbox="allow-scripts allow-same-origin"
+              sandbox="allow-scripts"
+              srcDoc={STREAM_RECEIVER_SRCDOC}
             />
 
-            {/* HTML이 아직 안 왔을 때 스피너 오버레이 */}
-            {html.length < 20 && (
+            {/* 스피너 오버레이: iframe 미준비 or html 미도착 */}
+            {(!iframeReady || html.length < 10) && (
               <div
                 className="absolute inset-0 flex flex-col items-center justify-center gap-3"
                 style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)', zIndex: 2 }}
@@ -1337,7 +1359,7 @@ function ArtifactSidePanel({
             )}
 
             {/* 하단 타이핑 바 */}
-            {html.length >= 20 && (
+            {iframeReady && html.length >= 10 && (
               <div
                 className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5"
                 style={{ background: 'rgba(15,17,23,0.9)', borderTop: '1px solid var(--border-color)' }}
