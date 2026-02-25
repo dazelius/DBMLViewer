@@ -1220,7 +1220,7 @@ function createGitMiddleware(options: GitPluginOptions) {
           const maxResults = parseInt(url2.searchParams.get('maxResults') || '20', 10)
           const fields = url2.searchParams.get('fields') || 'summary,status,assignee,priority,issuetype,created,updated,description,comment,labels,components,fixVersions,reporter'
 
-          const apiUrl = `${baseUrl}/rest/api/3/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${encodeURIComponent(fields)}`
+          const apiUrl = `${baseUrl}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${encodeURIComponent(fields)}`
 
           const apiResp = await fetch(apiUrl, {
             headers: { Authorization: authHeader, Accept: 'application/json' }
