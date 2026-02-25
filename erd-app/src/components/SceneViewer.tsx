@@ -148,7 +148,7 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
     // ── 씬 데이터 로드 ───────────────────────────────────────────────────────
     ;(async () => {
       try {
-        const resp = await fetch(`/api/assets/scene?path=${encodeURIComponent(scenePath)}&max=60`)
+        const resp = await fetch(`/api/assets/scene?path=${encodeURIComponent(scenePath)}&max=200`)
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ error: resp.statusText }))
           throw new Error(err.error ?? resp.statusText)

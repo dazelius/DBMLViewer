@@ -949,10 +949,27 @@ function createGitMiddleware(options: GitPluginOptions) {
           return m ? m[1].trim() : ''
         }
 
+        // ── 공통 헬퍼 ─────────────────────────────────────────────────────────
+        // float 값 파싱 (Unity YAML은 음수 포함)
+        const parseVal = (s: string): number => {
+          const n = parseFloat(s)
+          return isNaN(n) ? 0 : n
+        }
+        // m_Modifications 에서 특정 propertyPath 값 추출
+        const getPropVal = (block: string, prop: string): number | null => {
+          // Unity modification 형식: propertyPath: m_LocalPosition.x\n      value: 19.554
+          const escaped = prop.replace(/\./g, '\\.').replace(/\[/g, '\\[').replace(/\]/g, '\\]')
+          const re = new RegExp(
+            `propertyPath:\\s*${escaped}\\s*\\n\\s*value:\\s*([^\\n]+)`
+          )
+          const m = block.match(re)
+          return m ? parseVal(m[1].trim()) : null
+        }
+
         // ── PrefabInstance 파싱 ────────────────────────────────────────────────
-        // 씬에서 PrefabInstance 추출: GUID + position/rotation/scale override
         interface PrefabPlacement {
           id: string
+          prefabName: string
           sourcePrefabGuid: string
           pos: { x: number; y: number; z: number }
           rot: { x: number; y: number; z: number; w: number }
@@ -965,43 +982,26 @@ function createGitMiddleware(options: GitPluginOptions) {
           if (!section.includes('!u!1001')) continue
           const idMatch = section.match(/!u!1001 &(\d+)/)
           if (!idMatch) continue
-          const prefabGuidMatch = section.match(/m_SourcePrefab:\s*\{fileID:\s*\d+,\s*guid:\s*([a-f0-9]+)/)
+          // ✅ fileID는 Unity signed int64로 음수일 수 있음 → -?\d+
+          const prefabGuidMatch = section.match(/m_SourcePrefab:\s*\{fileID:\s*-?\d+,\s*guid:\s*([a-f0-9]+)/)
           if (!prefabGuidMatch) continue
 
-          const mods = section // extract m_Modifications block
-          // Parse position, rotation, scale from m_Modifications property overrides
-          const getPropVal = (prop: string): number => {
-            const re = new RegExp(`propertyPath:\\s*${prop.replace(/\./g, '\\.')}[\\s\\S]+?value:\\s*([\\d.eE+\\-]+)`)
-            const m = mods.match(re)
-            return m ? parseFloat(m[1]) : 0
-          }
-          const hasProp = (prop: string): boolean =>
-            new RegExp(`propertyPath:\\s*${prop.replace(/\./g, '\\.')}`).test(mods)
+          const pv = (prop: string, def: number): number => getPropVal(section, prop) ?? def
 
           placements.push({
             id: idMatch[1],
+            prefabName: (() => {
+              const rel = guidToRelPath[prefabGuidMatch[1]]
+              return rel ? rel.split('/').pop()?.replace(/\.prefab$/i, '') ?? 'Object' : 'Object'
+            })(),
             sourcePrefabGuid: prefabGuidMatch[1],
-            pos: {
-              x: hasProp('m_LocalPosition.x') ? getPropVal('m_LocalPosition.x') : 0,
-              y: hasProp('m_LocalPosition.y') ? getPropVal('m_LocalPosition.y') : 0,
-              z: hasProp('m_LocalPosition.z') ? getPropVal('m_LocalPosition.z') : 0,
-            },
-            rot: {
-              x: hasProp('m_LocalRotation.x') ? getPropVal('m_LocalRotation.x') : 0,
-              y: hasProp('m_LocalRotation.y') ? getPropVal('m_LocalRotation.y') : 0,
-              z: hasProp('m_LocalRotation.z') ? getPropVal('m_LocalRotation.z') : 0,
-              w: hasProp('m_LocalRotation.w') ? getPropVal('m_LocalRotation.w') : 1,
-            },
-            scale: {
-              x: hasProp('m_LocalScale.x') ? getPropVal('m_LocalScale.x') : 1,
-              y: hasProp('m_LocalScale.y') ? getPropVal('m_LocalScale.y') : 1,
-              z: hasProp('m_LocalScale.z') ? getPropVal('m_LocalScale.z') : 1,
-            },
+            pos: { x: pv('m_LocalPosition.x', 0), y: pv('m_LocalPosition.y', 0), z: pv('m_LocalPosition.z', 0) },
+            rot: { x: pv('m_LocalRotation.x', 0), y: pv('m_LocalRotation.y', 0), z: pv('m_LocalRotation.z', 0), w: pv('m_LocalRotation.w', 1) },
+            scale: { x: pv('m_LocalScale.x', 1), y: pv('m_LocalScale.y', 1), z: pv('m_LocalScale.z', 1) },
           })
         }
 
         // ── 직접 GameObject+Transform+MeshFilter 파싱 ─────────────────────────
-        // (PrefabInstance 없이 직접 MeshFilter가 있는 경우)
         interface DirectObject {
           name: string
           meshGuid: string
@@ -1011,100 +1011,89 @@ function createGitMiddleware(options: GitPluginOptions) {
         }
         const directObjects: DirectObject[] = []
 
-        // fileID → MeshFilter mesh guid
+        // fileID → MeshFilter mesh guid (✅ -?\d+ 로 음수 fileID 대응)
         const meshFilters: Record<string, { meshGuid: string; goId: string }> = {}
-        // fileID → Transform
         const transforms: Record<string, {
           pos: { x: number; y: number; z: number }
           rot: { x: number; y: number; z: number; w: number }
           scale: { x: number; y: number; z: number }
           goId: string
         }> = {}
-        // fileID → GameObject name
         const gameObjects: Record<string, string> = {}
 
         for (const section of sections) {
-          if (section.includes('!u!1 &')) {
-            // GameObject
+          if (section.includes('!u!1 &') && !section.includes('!u!1001')) {
+            // GameObject (!u!1)
             const idM = section.match(/!u!1 &(\d+)/)
             const nameM = section.match(/m_Name:\s*(.+)/)
             if (idM && nameM) gameObjects[idM[1]] = nameM[1].trim()
           } else if (section.includes('!u!4 &')) {
-            // Transform
+            // Transform (!u!4) - inline format: m_LocalPosition: {x:1, y:2, z:3}
             const idM = section.match(/!u!4 &(\d+)/)
-            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            const goM  = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
             if (idM && goM) {
-              // inline format: m_LocalPosition: {x: 1, y: 2, z: 3}
-              const posInline = section.match(/m_LocalPosition:\s*\{x:\s*([\d.eE+\-]+),\s*y:\s*([\d.eE+\-]+),\s*z:\s*([\d.eE+\-]+)/)
-              const rotInline = section.match(/m_LocalRotation:\s*\{x:\s*([\d.eE+\-]+),\s*y:\s*([\d.eE+\-]+),\s*z:\s*([\d.eE+\-]+),\s*w:\s*([\d.eE+\-]+)/)
-              const scaleInline = section.match(/m_LocalScale:\s*\{x:\s*([\d.eE+\-]+),\s*y:\s*([\d.eE+\-]+),\s*z:\s*([\d.eE+\-]+)/)
+              const p3 = (key: string) => section.match(new RegExp(`${key}:\\s*\\{x:\\s*([\\d.eE+\\-]+),\\s*y:\\s*([\\d.eE+\\-]+),\\s*z:\\s*([\\d.eE+\\-]+)`))
+              const pos = p3('m_LocalPosition')
+              const rot4 = section.match(/m_LocalRotation:\s*\{x:\s*([\d.eE+\-]+),\s*y:\s*([\d.eE+\-]+),\s*z:\s*([\d.eE+\-]+),\s*w:\s*([\d.eE+\-]+)/)
+              const scl = p3('m_LocalScale')
               transforms[idM[1]] = {
-                pos: posInline
-                  ? { x: parseFloat(posInline[1]), y: parseFloat(posInline[2]), z: parseFloat(posInline[3]) }
-                  : { x: getFloat(section, 'm_LocalPosition:\\s*\\n\\s*x'), y: getFloat(section, 'y'), z: getFloat(section, 'z') },
-                rot: rotInline
-                  ? { x: parseFloat(rotInline[1]), y: parseFloat(rotInline[2]), z: parseFloat(rotInline[3]), w: parseFloat(rotInline[4]) }
-                  : { x: 0, y: 0, z: 0, w: 1 },
-                scale: scaleInline
-                  ? { x: parseFloat(scaleInline[1]), y: parseFloat(scaleInline[2]), z: parseFloat(scaleInline[3]) }
-                  : { x: 1, y: 1, z: 1 },
+                pos:   pos  ? { x: parseVal(pos[1]),  y: parseVal(pos[2]),  z: parseVal(pos[3])  } : { x: 0, y: 0, z: 0 },
+                rot:   rot4 ? { x: parseVal(rot4[1]), y: parseVal(rot4[2]), z: parseVal(rot4[3]), w: parseVal(rot4[4]) } : { x: 0, y: 0, z: 0, w: 1 },
+                scale: scl  ? { x: parseVal(scl[1]),  y: parseVal(scl[2]),  z: parseVal(scl[3])  } : { x: 1, y: 1, z: 1 },
                 goId: goM[1],
               }
             }
           } else if (section.includes('!u!33 &')) {
-            // MeshFilter
-            const idM = section.match(/!u!33 &(\d+)/)
-            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
-            const meshM = section.match(/m_Mesh:\s*\{fileID:\s*\d+,\s*guid:\s*([a-f0-9]+),\s*type:\s*3/)
-            if (idM && goM && meshM) {
+            // MeshFilter (!u!33) — ✅ fileID는 음수 가능 → -?\d+
+            const idM  = section.match(/!u!33 &(\d+)/)
+            const goM  = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            const meshM = section.match(/m_Mesh:\s*\{fileID:\s*-?\d+,\s*guid:\s*([a-f0-9]+),\s*type:\s*3/)
+            if (idM && goM && meshM && meshM[1] !== '0000000000000000e000000000000000') {
               meshFilters[idM[1]] = { meshGuid: meshM[1], goId: goM[1] }
             }
           }
         }
 
-        // Merge direct objects (GameObject + Transform + MeshFilter)
+        // Merge direct objects
         for (const [, mf] of Object.entries(meshFilters)) {
           const fbxPath = guidToRelPath[mf.meshGuid]
-          if (!fbxPath) continue
+          if (!fbxPath || !/\.(fbx)$/i.test(fbxPath)) continue
           const goName = gameObjects[mf.goId] ?? 'Object'
-          // Find transform for this GO
-          let tf = Object.values(transforms).find(t => t.goId === mf.goId)
-          if (!tf) tf = { pos: { x: 0, y: 0, z: 0 }, rot: { x: 0, y: 0, z: 0, w: 1 }, scale: { x: 1, y: 1, z: 1 }, goId: mf.goId }
+          const tf = Object.values(transforms).find(t => t.goId === mf.goId)
           directObjects.push({
             name: goName,
             meshGuid: mf.meshGuid,
-            pos: tf.pos,
-            rot: tf.rot,
-            scale: tf.scale,
+            pos:   tf?.pos   ?? { x: 0, y: 0, z: 0 },
+            rot:   tf?.rot   ?? { x: 0, y: 0, z: 0, w: 1 },
+            scale: tf?.scale ?? { x: 1, y: 1, z: 1 },
           })
         }
 
         // ── prefab → FBX 해석 ─────────────────────────────────────────────────
-        // prefab GUID 중복 없이 처리 (같은 prefab을 여러 번 인스턴싱)
-        const prefabCache: Record<string, string | null> = {} // guid → fbx relative path
+        // ✅ 핵심 수정: m_Mesh fileID는 Unity signed int64 (음수 가능) → -?\d+
+        const prefabCache: Record<string, string | null> = {}
 
         const resolvePrefabFbx = (prefabGuid: string): string | null => {
           if (prefabGuid in prefabCache) return prefabCache[prefabGuid]
           const prefabAbsPath = guidToAbs(prefabGuid)
           if (!prefabAbsPath || !existsSync(prefabAbsPath)) {
-            prefabCache[prefabGuid] = null
-            return null
+            return (prefabCache[prefabGuid] = null)
           }
           try {
-            const prefabContent = readFileSync(prefabAbsPath, 'utf-8')
-            // MeshFilter with type:3 (external FBX)
-            const meshM = prefabContent.match(/m_Mesh:\s*\{fileID:\s*\d+,\s*guid:\s*([a-f0-9]+),\s*type:\s*3/)
-            if (meshM) {
-              const fbxRel = guidToRelPath[meshM[1]] ?? null
-              prefabCache[prefabGuid] = fbxRel
-              return fbxRel
+            const pc = readFileSync(prefabAbsPath, 'utf-8')
+            // ✅ fileID에 -?\d+ (음수 허용) 적용 — 이게 이전 버그의 핵심 원인
+            const meshRefs = [...pc.matchAll(/m_Mesh:\s*\{fileID:\s*-?\d+,\s*guid:\s*([a-f0-9]+),\s*type:\s*3/g)]
+            for (const m of meshRefs) {
+              const meshGuid = m[1]
+              if (meshGuid === '0000000000000000e000000000000000') continue // built-in
+              const fbxRel = guidToRelPath[meshGuid]
+              if (fbxRel && /\.(fbx)$/i.test(fbxRel)) {
+                return (prefabCache[prefabGuid] = fbxRel)
+              }
             }
-            // ProBuilder / built-in mesh (type:0 or type:2) - no external FBX
-            prefabCache[prefabGuid] = null
-            return null
+            return (prefabCache[prefabGuid] = null)
           } catch {
-            prefabCache[prefabGuid] = null
-            return null
+            return (prefabCache[prefabGuid] = null)
           }
         }
 
@@ -1112,8 +1101,8 @@ function createGitMiddleware(options: GitPluginOptions) {
         interface SceneObj {
           id: string
           name: string
-          fbxPath: string    // relative, e.g. "GameContents/Character/..."
-          fbxUrl: string     // /api/assets/file?path=...
+          fbxPath: string
+          fbxUrl: string
           pos: { x: number; y: number; z: number }
           rot: { x: number; y: number; z: number; w: number }
           scale: { x: number; y: number; z: number }
@@ -1121,26 +1110,27 @@ function createGitMiddleware(options: GitPluginOptions) {
 
         const sceneObjects: SceneObj[] = []
 
-        // Direct MeshFilter objects
+        // 1) 직접 MeshFilter 오브젝트
         for (const d of directObjects) {
           if (sceneObjects.length >= maxObjects) break
+          const rel = guidToRelPath[d.meshGuid] ?? ''
           sceneObjects.push({
             id: `dir_${d.meshGuid}`,
             name: d.name,
-            fbxPath: d.meshGuid,
-            fbxUrl: `/api/assets/file?path=${encodeURIComponent(guidToRelPath[d.meshGuid] ?? '')}`,
+            fbxPath: rel,
+            fbxUrl: `/api/assets/file?path=${encodeURIComponent(rel)}`,
             pos: d.pos, rot: d.rot, scale: d.scale,
           })
         }
 
-        // PrefabInstance objects
+        // 2) PrefabInstance → FBX 해석
         for (const p of placements) {
           if (sceneObjects.length >= maxObjects) break
           const fbxRel = resolvePrefabFbx(p.sourcePrefabGuid)
-          if (!fbxRel || !fbxRel.match(/\.(fbx|FBX)$/)) continue
+          if (!fbxRel) continue
           sceneObjects.push({
             id: p.id,
-            name: getStr(sections.find(s => s.includes(`!u!1001 &${p.id}`)) ?? '', 'm_Name') || fbxRel.split('/').pop()?.replace(/\.(fbx|FBX)$/, '') || 'Object',
+            name: p.prefabName,
             fbxPath: fbxRel,
             fbxUrl: `/api/assets/file?path=${encodeURIComponent(fbxRel)}`,
             pos: p.pos, rot: p.rot, scale: p.scale,
