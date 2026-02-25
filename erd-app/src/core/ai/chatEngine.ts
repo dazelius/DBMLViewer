@@ -1024,13 +1024,37 @@ export async function sendChatMessage(
 
               // 전략 0: character_id 직접 지정된 경우 PK로 바로 검색
               if (directCharId) {
-                try {
-                  const r = await executeDataSQL(
-                    `SELECT * FROM "${charTable.name}" WHERE ${pkCol} = '${directCharId.replace(/'/g, "''")}' LIMIT 1`,
-                    tableData,
-                  );
-                  if (r.rows.length > 0) character = r.rows[0] as Record<string, unknown>;
-                } catch { /* skip */ }
+                const isNumericId = !isNaN(Number(directCharId)) && directCharId.trim() !== '';
+                // 0-a: 숫자형 비교 (PK가 INT인 경우)
+                if (isNumericId) {
+                  try {
+                    const r = await executeDataSQL(
+                      `SELECT * FROM "${charTable.name}" WHERE ${pkCol} = ${Number(directCharId)} LIMIT 1`,
+                      tableData,
+                    );
+                    if (r.rows.length > 0) character = r.rows[0] as Record<string, unknown>;
+                  } catch { /* skip */ }
+                }
+                // 0-b: 문자열 비교 (PK가 VARCHAR인 경우)
+                if (!character) {
+                  try {
+                    const r = await executeDataSQL(
+                      `SELECT * FROM "${charTable.name}" WHERE ${pkCol} = '${directCharId.replace(/'/g, "''")}' LIMIT 1`,
+                      tableData,
+                    );
+                    if (r.rows.length > 0) character = r.rows[0] as Record<string, unknown>;
+                  } catch { /* skip */ }
+                }
+                // 0-c: JS 전체 탐색 폴백 (타입 불일치 최후 수단)
+                if (!character) {
+                  try {
+                    const allRows = await executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 500`, tableData);
+                    const found = allRows.rows.find(row =>
+                      Object.values(row as Record<string, unknown>).some(v => String(v) === directCharId),
+                    );
+                    if (found) character = found as Record<string, unknown>;
+                  } catch { /* skip */ }
+                }
               }
 
               if (!character && charName) {
@@ -1099,6 +1123,11 @@ export async function sendChatMessage(
                 }
               } else {
                 const charId = character[pkCol];
+                // charId가 숫자면 숫자 리터럴, 아니면 문자열 리터럴
+                const charIdStr = String(charId);
+                const charIdLiteral = !isNaN(Number(charIdStr)) && charIdStr.trim() !== ''
+                  ? charIdStr  // 숫자 그대로 (따옴표 없음)
+                  : `'${charIdStr.replace(/'/g, "''")}'`;
 
                 // 4. Schema refs에서 캐릭터 테이블을 참조하는 테이블 탐색 (1차 연결)
                 const directRefs = resolvedSchema.refs.filter(r => r.toTable === charTable.id);
@@ -1113,7 +1142,7 @@ export async function sendChatMessage(
 
                   try {
                     const res = await executeDataSQL(
-                      `SELECT * FROM "${connTable.name}" WHERE ${fkCol} = '${String(charId).replace(/'/g, "''")}' LIMIT 5`,
+                      `SELECT * FROM "${connTable.name}" WHERE ${fkCol} = ${charIdLiteral} LIMIT 5`,
                       tableData,
                     );
                     totalRelated += res.rowCount;
@@ -1128,7 +1157,10 @@ export async function sendChatMessage(
                         const subTable = resolvedSchema.tables.find(t => t.id === sref.fromTable);
                         if (!subTable) return;
                         const subFk = sref.fromColumns[0].toLowerCase(); // 소문자
-                        const ids = res.rows.map(r => `'${String((r as Record<string, unknown>)[connPK]).replace(/'/g, "''")}'`).join(',');
+                        const ids = res.rows.map(r => {
+                          const v = String((r as Record<string, unknown>)[connPK]);
+                          return !isNaN(Number(v)) && v.trim() !== '' ? v : `'${v.replace(/'/g, "''")}'`;
+                        }).join(',');
                         try {
                           const subRes = await executeDataSQL(
                             `SELECT COUNT(*) as cnt FROM "${subTable.name}" WHERE ${subFk} IN (${ids})`,
