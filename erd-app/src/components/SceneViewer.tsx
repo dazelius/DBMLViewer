@@ -168,16 +168,22 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
         // setURLModifier로 모든 상대 경로를 smart 검색 API로 우회함.
         const loadingManager = new THREE.LoadingManager()
         loadingManager.setURLModifier((url: string) => {
-          // 이미 API URL이거나 절대 URL이면 그대로
+          // 유효한 API 엔드포인트 (쿼리 파라미터 포함) → 그대로 통과
+          // 주의: /api/assets/파일명.png 형태는 잘못된 URL → smart로 리다이렉트해야 함
           if (
-            url.startsWith('/api/') ||
+            url.startsWith('/api/assets/file?') ||
+            url.startsWith('/api/assets/smart?') ||
+            url.startsWith('/api/assets/scene?') ||
+            url.startsWith('/api/assets/index') ||
+            url.startsWith('/api/git/') ||
             url.startsWith('http://') ||
             url.startsWith('https://') ||
             url.startsWith('data:') ||
             url.startsWith('blob:')
           ) return url
-          // 상대 경로 → 파일명만 추출해서 smart 검색
-          const filename = url.split(/[/\\]/).pop() ?? url
+          // /api/assets/SomeTexture.png 처럼 잘못 조합된 URL도 포함해
+          // 모든 기타 경로 → 파일명만 추출해서 smart 검색
+          const filename = url.split(/[/?\\]/).filter(Boolean).pop() ?? url
           return `/api/assets/smart?name=${encodeURIComponent(filename)}`
         })
         // TGA 핸들러를 커스텀 매니저에 등록
