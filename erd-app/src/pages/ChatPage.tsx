@@ -16,6 +16,7 @@ import {
   type RevisionDiffResult,
   type ImageResult,
   type ArtifactResult,
+  type CharacterProfileResult,
   type DiffFile,
   type DiffHunk,
 } from '../core/ai/chatEngine.ts';
@@ -1634,7 +1635,99 @@ function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'revision_diff') return <DiffCard tc={tc} />;
   if (tc.kind === 'image_search') return <ImageCard tc={tc} />;
   if (tc.kind === 'artifact') return <ArtifactCard tc={tc} />;
+  if (tc.kind === 'character_profile') return <CharacterProfileCard tc={tc} />;
   return <DataQueryCard tc={tc} index={index} />;
+}
+
+// ── 캐릭터 프로파일 카드 (사이트맵 뷰) ────────────────────────────────────────
+
+function CharacterProfileCard({ tc }: { tc: CharacterProfileResult }) {
+  if (tc.error) {
+    return (
+      <div className="rounded-lg p-3 my-2 text-[12px]" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444' }}>
+        캐릭터 프로파일 오류: {tc.error}
+      </div>
+    );
+  }
+
+  const charFields = Object.entries(tc.character).slice(0, 12);
+
+  return (
+    <div className="rounded-xl overflow-hidden my-2" style={{ border: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}>
+      {/* ── 헤더 ── */}
+      <div className="flex items-center gap-3 px-4 py-3" style={{ background: 'linear-gradient(135deg,rgba(99,102,241,.18) 0%,rgba(139,92,246,.12) 100%)', borderBottom: '1px solid var(--border-color)' }}>
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(99,102,241,.25)' }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: 'var(--accent)' }}>
+            <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+          </svg>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="font-bold text-[13px]" style={{ color: 'var(--text-primary)' }}>{tc.characterName} 프로파일</div>
+          <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            {tc.charTableName} · 연결 테이블 {tc.connections.length}개 · 관련 데이터 {tc.totalRelatedRows.toLocaleString()}행
+            {tc.duration != null && <span className="ml-2">{tc.duration.toFixed(0)}ms</span>}
+          </div>
+        </div>
+      </div>
+
+      {/* ── 캐릭터 기본 정보 ── */}
+      {charFields.length > 0 && (
+        <div className="px-4 py-2.5 flex flex-wrap gap-x-4 gap-y-1" style={{ borderBottom: '1px solid var(--border-color)' }}>
+          {charFields.map(([k, v]) => (
+            <span key={k} className="text-[11px]">
+              <span style={{ color: 'var(--text-muted)' }}>{k}: </span>
+              <span style={{ color: 'var(--text-secondary)' }}>{String(v ?? '-')}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* ── 사이트맵 노드 ── */}
+      <div className="px-4 py-3">
+        <div className="text-[10px] font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
+          연결 데이터 구조
+        </div>
+        <div className="space-y-1.5">
+          {tc.connections.map((conn, i) => (
+            <div key={i} className="flex items-start gap-2">
+              {/* 트리 라인 */}
+              <span className="text-[11px] flex-shrink-0 mt-0.5 font-mono" style={{ color: 'var(--text-muted)' }}>
+                {i === tc.connections.length - 1 ? '└─' : '├─'}
+              </span>
+              <div className="flex-1 min-w-0">
+                {/* 노드 */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold text-[12px]" style={{ color: 'var(--text-primary)' }}>{conn.tableName}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full font-mono" style={{ background: 'rgba(99,102,241,.15)', color: 'var(--accent)' }}>
+                    {conn.rowCount.toLocaleString()}행
+                  </span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>via {conn.fkColumn}</span>
+                  {/* 샘플값 */}
+                  {conn.sampleRows.length > 0 && (() => {
+                    const nameKey = conn.columns.find(c => /name|title|이름/i.test(c));
+                    const val = nameKey ? (conn.sampleRows[0] as Record<string, unknown>)[nameKey] : null;
+                    return val ? <span className="text-[10px] truncate max-w-[120px]" style={{ color: 'var(--text-muted)' }} title={String(val)}>"{String(val)}"</span> : null;
+                  })()}
+                </div>
+                {/* 2차 연결 */}
+                {conn.children && conn.children.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-1 ml-2">
+                    {conn.children.map((ch, j) => (
+                      <span key={j} className="flex items-center gap-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        <span className="font-mono">└</span>
+                        <span style={{ color: 'var(--text-secondary)' }}>{ch.tableName}</span>
+                        <span className="px-1 rounded" style={{ background: 'rgba(99,102,241,.1)', color: 'var(--accent)' }}>{ch.rowCount}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── 데이터 조회 카드 (기존 ToolCallCard 내용) ────────────────────────────────

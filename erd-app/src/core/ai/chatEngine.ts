@@ -133,7 +133,31 @@ export interface ArtifactResult {
   error?: string;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult;
+// ── 캐릭터 프로파일 (FK 자동 탐색) ──────────────────────────────────────────
+
+export interface CharacterProfileNode {
+  tableName: string;
+  fkColumn: string;      // 이 테이블에서 캐릭터 PK를 참조하는 컬럼
+  rowCount: number;
+  columns: string[];
+  sampleRows: Row[];
+  // 2차 연결 (이 테이블을 참조하는 테이블들)
+  children?: { tableName: string; fkColumn: string; rowCount: number }[];
+}
+
+export interface CharacterProfileResult {
+  kind: 'character_profile';
+  characterName: string;
+  charTableName: string;
+  charPK: string;
+  character: Record<string, unknown>;   // 캐릭터 기본 필드
+  connections: CharacterProfileNode[];
+  totalRelatedRows: number;
+  error?: string;
+  duration?: number;
+}
+
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | CharacterProfileResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -257,6 +281,23 @@ const TOOLS = [
     },
   },
   {
+    name: 'build_character_profile',
+    description:
+      '캐릭터 이름으로 해당 캐릭터의 모든 연관 데이터를 FK 관계를 따라 자동 수집합니다. ' +
+      '캐릭터 기획서, 프로파일, 카드, 개요, 사이트맵 생성 시 이 툴을 먼저 호출하세요. ' +
+      '캐릭터 ID만 있으면 스킬, 패시브, 스탯, 이펙트 등 연결된 모든 데이터를 한 번에 가져옵니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        character_name: {
+          type: 'string',
+          description: '조회할 캐릭터 이름 (한글 또는 영문, 부분 일치 가능. 예: "카야", "Kaya")',
+        },
+      },
+      required: ['character_name'],
+    },
+  },
+  {
     name: 'create_artifact',
     description:
       '수집된 데이터를 기반으로 완전한 HTML 문서(보고서, 캐릭터 시트, 밸런스 표, 릴리즈 노트 등)를 생성합니다. ' +
@@ -297,10 +338,16 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('사용자의 질문에 답하기 위해 아래 도구들을 적극 활용하세요:');
   lines.push('- query_game_data: 실제 게임 데이터를 SQL로 조회');
   lines.push('- show_table_schema: 테이블 구조/관계도를 ERD 카드로 시각화. 테이블 설명 시 반드시 호출. 관계도 요청 시 관련 테이블 여러 개 연속 호출 가능');
+  lines.push('- build_character_profile: 캐릭터명 → Character ID로 FK 연결된 모든 데이터 자동 수집 (스킬/패시브/스탯/이펙트 등). 캐릭터 기획서/프로파일 요청 시 반드시 먼저 호출.');
   lines.push('- query_git_history: 변경 이력 조회 (언제 무엇이 바뀌었는지)');
   lines.push('- show_revision_diff: 특정 커밋의 상세 변경 내용(DIFF) 시각화 (리비전 차이 확인 시 사용)');
   lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 및 채팅 임베드 (아이콘, UI 이미지 찾기 요청 시 사용)');
   lines.push('- create_artifact: 수집된 데이터로 완성된 HTML 문서/보고서 생성 (전체화면 프리뷰, PDF 저장 가능)');
+  lines.push('');
+  lines.push('[캐릭터 기획서/프로파일 생성 — 반드시 준수]');
+  lines.push('- "캐릭터 기획서", "[캐릭터명] 기획서", "프로파일", "캐릭터 카드", "개요" 요청 시: build_character_profile 먼저 → create_artifact 순서.');
+  lines.push('- build_character_profile 결과에 캐릭터의 모든 연관 데이터(스킬 수, 패시브 수, 스탯 등)가 포함됨. 추가 query_game_data 불필요.');
+  lines.push('- create_artifact HTML: 사이트맵/카드 레이아웃으로 캐릭터 → 연결 테이블 계층 시각화. 각 노드에 테이블명, 관계, 데이터 수, 샘플값 표시.');
   lines.push('');
   lines.push('[아티팩트 생성 규칙 — 반드시 준수]');
   lines.push('- "정리해줘", "문서로", "보고서", "시트 만들어줘", "뽑아줘" 등 요청 시 create_artifact를 호출하세요.');
@@ -913,6 +960,142 @@ export async function sendChatMessage(
             const msg = err instanceof Error ? err.message : String(err);
             tc = { kind: 'image_search', query, images: [], total: 0, error: msg } as ImageResult;
             resultStr = `이미지 검색 오류: ${msg}`;
+          }
+        }
+
+        // ── build_character_profile ──
+        else if (tb.name === 'build_character_profile') {
+          const charName = String(inp.character_name ?? '');
+          const t0 = performance.now();
+          const resolvedSchema = schema ?? useSchemaStore.getState().schema;
+
+          if (!resolvedSchema || !charName) {
+            tc = { kind: 'character_profile', characterName: charName, charTableName: '', charPK: '', character: {}, connections: [], totalRelatedRows: 0, error: '스키마 또는 캐릭터명이 없습니다.', duration: 0 } as CharacterProfileResult;
+            resultStr = '오류: 스키마 또는 캐릭터명 없음';
+          } else {
+            // 1. 캐릭터 테이블 탐색 (이름에 'character' 포함)
+            const charKeywords = ['character', 'char', '캐릭터'];
+            const charTable = resolvedSchema.tables.find(t =>
+              charKeywords.some(k => t.name.toLowerCase().includes(k))
+            );
+
+            if (!charTable) {
+              tc = { kind: 'character_profile', characterName: charName, charTableName: '', charPK: '', character: {}, connections: [], totalRelatedRows: 0, error: '캐릭터 테이블을 찾을 수 없습니다.' } as CharacterProfileResult;
+              resultStr = '오류: 캐릭터 테이블 없음';
+            } else {
+              // 2. 캐릭터 PK 컬럼 탐색
+              const pkCol = charTable.columns.find(c => c.isPrimaryKey)?.name ?? 'id';
+
+              // 3. 캐릭터 이름으로 검색 (name, char_name 등 시도)
+              const nameColumns = charTable.columns
+                .filter(c => /name|이름/i.test(c.name))
+                .map(c => c.name);
+              if (nameColumns.length === 0) nameColumns.push('name');
+
+              let character: Record<string, unknown> | null = null;
+              for (const nc of nameColumns) {
+                try {
+                  const r = await executeDataSQL(
+                    `SELECT * FROM "${charTable.name}" WHERE LOWER("${nc}") LIKE LOWER('%${charName.replace(/'/g, "''")}%') LIMIT 1`,
+                    tableData,
+                  );
+                  if (r.rows.length > 0) { character = r.rows[0] as Record<string, unknown>; break; }
+                } catch { /* try next column */ }
+              }
+
+              if (!character) {
+                tc = { kind: 'character_profile', characterName: charName, charTableName: charTable.name, charPK: pkCol, character: {}, connections: [], totalRelatedRows: 0, error: `"${charName}" 캐릭터를 찾을 수 없습니다.`, duration: performance.now() - t0 } as CharacterProfileResult;
+                resultStr = `오류: "${charName}" 캐릭터 없음`;
+              } else {
+                const charId = character[pkCol];
+
+                // 4. Schema refs에서 캐릭터 테이블을 참조하는 테이블 탐색 (1차 연결)
+                const directRefs = resolvedSchema.refs.filter(r => r.toTable === charTable.id);
+                const connections: CharacterProfileNode[] = [];
+                let totalRelated = 0;
+
+                // 5. 각 연결 테이블 쿼리
+                await Promise.all(directRefs.map(async (ref) => {
+                  const connTable = resolvedSchema.tables.find(t => t.id === ref.fromTable);
+                  if (!connTable) return;
+                  const fkCol = ref.fromColumns[0];
+
+                  try {
+                    const res = await executeDataSQL(
+                      `SELECT * FROM "${connTable.name}" WHERE "${fkCol}" = '${String(charId).replace(/'/g, "''")}' LIMIT 5`,
+                      tableData,
+                    );
+                    totalRelated += res.rowCount;
+
+                    // 5-1. 이 테이블을 참조하는 2차 연결 탐색
+                    const connPK = connTable.columns.find(c => c.isPrimaryKey)?.name;
+                    const subChildren: CharacterProfileNode['children'] = [];
+
+                    if (connPK && res.rows.length > 0) {
+                      const subRefs = resolvedSchema.refs.filter(r => r.toTable === connTable.id);
+                      await Promise.all(subRefs.slice(0, 6).map(async (sref) => {
+                        const subTable = resolvedSchema.tables.find(t => t.id === sref.fromTable);
+                        if (!subTable) return;
+                        const subFk = sref.fromColumns[0];
+                        const ids = res.rows.map(r => `'${String((r as Record<string, unknown>)[connPK]).replace(/'/g, "''")}'`).join(',');
+                        try {
+                          const subRes = await executeDataSQL(
+                            `SELECT COUNT(*) as cnt FROM "${subTable.name}" WHERE "${subFk}" IN (${ids})`,
+                            tableData,
+                          );
+                          const cnt = Number((subRes.rows[0] as Record<string, unknown>)?.cnt ?? 0);
+                          if (cnt > 0) subChildren.push({ tableName: subTable.name, fkColumn: subFk, rowCount: cnt });
+                        } catch { /* skip */ }
+                      }));
+                    }
+
+                    connections.push({
+                      tableName: connTable.name,
+                      fkColumn: fkCol,
+                      rowCount: res.rowCount,
+                      columns: res.columns,
+                      sampleRows: res.rows.slice(0, 3),
+                      children: subChildren.length > 0 ? subChildren : undefined,
+                    });
+                  } catch { /* skip */ }
+                }));
+
+                // rowCount 내림차순 정렬
+                connections.sort((a, b) => b.rowCount - a.rowCount);
+
+                const duration = performance.now() - t0;
+                tc = {
+                  kind: 'character_profile',
+                  characterName: charName,
+                  charTableName: charTable.name,
+                  charPK: pkCol,
+                  character,
+                  connections,
+                  totalRelatedRows: totalRelated,
+                  duration,
+                } as CharacterProfileResult;
+
+                // Claude에게 전달할 구조화된 요약
+                const connSummary = connections.map(c => {
+                  const sample = c.sampleRows.length > 0
+                    ? ' | 샘플: ' + Object.entries(c.sampleRows[0]).slice(0, 4).map(([k, v]) => `${k}=${v}`).join(', ')
+                    : '';
+                  const sub = c.children?.length
+                    ? ' → [' + c.children.map(ch => `${ch.tableName}(${ch.rowCount})`).join(', ') + ']'
+                    : '';
+                  return `  • ${c.tableName}: ${c.rowCount}행 (FK: ${c.fkColumn})${sample}${sub}`;
+                }).join('\n');
+
+                const charSummary = Object.entries(character).slice(0, 10).map(([k, v]) => `${k}: ${v}`).join(', ');
+                resultStr = `캐릭터 "${charName}" 프로파일 수집 완료 (${duration.toFixed(0)}ms)
+캐릭터 기본정보: ${charSummary}
+연관 테이블 ${connections.length}개, 총 ${totalRelated}행:
+${connSummary}
+
+이 데이터를 기반으로 create_artifact를 호출하여 사이트맵/프로파일 HTML을 생성하세요.
+HTML 레이아웃: 캐릭터 헤더 → 연결 데이터 노드들 (사이트맵 트리 형태), 각 노드에 테이블명/관계/데이터수/샘플값 표시.`;
+              }
+            }
           }
         }
 
