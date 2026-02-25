@@ -25,15 +25,19 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
     const w = el.clientWidth || 600;
     const h = height;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
     renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
     el.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0f1117);
+    scene.background = new THREE.Color(0x111827);
+    scene.fog = new THREE.Fog(0x111827, 800, 2000);
 
     const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 2000);
     camera.position.set(0, 100, 300);
@@ -44,13 +48,18 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
     controls.minDistance = 20;
     controls.maxDistance = 1500;
 
-    // 조명
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    const dir = new THREE.DirectionalLight(0xffffff, 1.2);
-    dir.position.set(200, 400, 200);
+    // 조명 (충분히 밝게 – 텍스처 없어도 보이도록)
+    scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+    const dir = new THREE.DirectionalLight(0xffffff, 2.0);
+    dir.position.set(300, 600, 300);
     dir.castShadow = true;
+    dir.shadow.mapSize.width = 1024;
+    dir.shadow.mapSize.height = 1024;
     scene.add(dir);
-    scene.add(new THREE.HemisphereLight(0x6366f1, 0x1e293b, 0.4));
+    const dir2 = new THREE.DirectionalLight(0xaabbff, 0.8);
+    dir2.position.set(-200, 200, -200);
+    scene.add(dir2);
+    scene.add(new THREE.HemisphereLight(0x8899ff, 0x334155, 0.6));
 
     // 그리드
     const grid = new THREE.GridHelper(600, 30, 0x334155, 0x1e293b);
@@ -101,11 +110,33 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
         controls.maxDistance = camDist * 5;
         controls.update();
 
-        // 그림자 활성화
+        // 재질 보정 + 그림자 활성화
+        // FBX 텍스처가 로컬에 없으면 검정으로 렌더되므로 강제로 visible 재질 적용
         fbx.traverse((child) => {
-          if ((child as THREE.Mesh).isMesh) {
-            child.castShadow = true;
-            child.receiveShadow = true;
+          const mesh = child as THREE.Mesh;
+          if (!mesh.isMesh) return;
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+
+          const fixMat = (mat: THREE.Material): THREE.Material => {
+            // MeshPhong/Lambert/Standard 계열
+            const m = mat as THREE.MeshPhongMaterial & THREE.MeshStandardMaterial;
+            m.side = THREE.DoubleSide;
+            // 텍스처가 없거나 색이 거의 검정이면 기본 색 지정
+            if (!m.map) {
+              const hasColor =
+                m.color && (m.color.r + m.color.g + m.color.b) > 0.05;
+              if (!hasColor) m.color?.set(0x8899bb);
+              // 완전히 검정 재질이면 MeshStandard로 교체
+            }
+            m.needsUpdate = true;
+            return m;
+          };
+
+          if (Array.isArray(mesh.material)) {
+            mesh.material = mesh.material.map(fixMat) as THREE.Material[];
+          } else if (mesh.material) {
+            mesh.material = fixMat(mesh.material);
           }
         });
 
