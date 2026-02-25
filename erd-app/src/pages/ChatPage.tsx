@@ -4411,7 +4411,7 @@ export default function ChatPage() {
           <div className="flex-1 overflow-y-auto py-8">
             <div className="w-full px-8 space-y-8">
             {messages.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-24 text-center" style={{ color: 'var(--text-muted)' }}>
+              <div className="fixed inset-0 flex flex-col items-center justify-center text-center" style={{ color: 'var(--text-muted)', zIndex: 0 }}>
                 <div
                   className="w-20 h-20 rounded-3xl flex items-center justify-center mb-5"
                   style={{ background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)', boxShadow: '0 8px 32px rgba(99,102,241,0.35)' }}
