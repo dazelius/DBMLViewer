@@ -385,6 +385,35 @@ function renderMarkdown(text: string): React.ReactNode[] {
       continue;
     }
 
+    // 블록 이미지: ![alt](url) 단독 줄
+    {
+      const imgMatch = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+      if (imgMatch) {
+        const [, alt, url] = imgMatch;
+        nodes.push(
+          <div key={i} className="my-2">
+            <img
+              src={url}
+              alt={alt}
+              style={{ maxWidth: '100%', maxHeight: '280px', borderRadius: '6px', display: 'block' }}
+              onError={(e) => {
+                const img = e.currentTarget;
+                if (img.dataset.smartRetried) return;
+                img.dataset.smartRetried = '1';
+                const pathParam = url.match(/[?&]path=([^&]+)/);
+                const filename = pathParam
+                  ? decodeURIComponent(pathParam[1]).split('/').pop() ?? ''
+                  : url.split('/').pop() ?? '';
+                if (filename) img.src = `/api/images/smart?name=${encodeURIComponent(filename)}`;
+              }}
+            />
+          </div>,
+        );
+        i++;
+        continue;
+      }
+    }
+
     // 수평선
     if (/^---+$/.test(line.trim())) {
       nodes.push(
@@ -541,32 +570,89 @@ function InlineImageCell({ text }: { text: string }) {
 }
 
 function inlineMarkdown(text: string): React.ReactNode {
-  // **bold**, `code`, *italic*
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g);
-  return parts.map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={i} style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{part.slice(2, -2)}</strong>;
-    }
-    if (part.startsWith('`') && part.endsWith('`')) {
-      return (
-        <code
-          key={i}
-          className="px-1 py-0.5 rounded text-[12px]"
-          style={{
-            background: 'var(--bg-secondary)',
-            color: 'var(--accent)',
-            fontFamily: 'var(--font-mono)',
+  // 이미지, 링크, 볼드, 코드, 이탤릭을 순서대로 파싱
+  const INLINE_RE = /!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]*)\]\(([^)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|\*([^*]+)\*/g;
+  const segments: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let key = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = INLINE_RE.exec(text)) !== null) {
+    // 매치 앞 평문 텍스트
+    if (match.index > lastIndex) segments.push(text.slice(lastIndex, match.index));
+
+    const [full, imgAlt, imgUrl, linkText, linkUrl, boldText, codeText, italicText] = match;
+
+    if (imgUrl !== undefined) {
+      // 이미지: ![alt](url)
+      segments.push(
+        <img
+          key={key++}
+          src={imgUrl}
+          alt={imgAlt ?? ''}
+          style={{ maxWidth: '100%', maxHeight: '120px', borderRadius: '4px', verticalAlign: 'middle', display: 'inline-block' }}
+          onError={(e) => {
+            // 경로 틀렸을 때 smart 엔드포인트로 폴백
+            const img = e.currentTarget;
+            if (img.dataset.smartRetried) return;
+            img.dataset.smartRetried = '1';
+            const pathParam = imgUrl.match(/[?&]path=([^&]+)/);
+            const filename = pathParam
+              ? decodeURIComponent(pathParam[1]).split('/').pop() ?? ''
+              : imgUrl.split('/').pop() ?? '';
+            if (filename) img.src = `/api/images/smart?name=${encodeURIComponent(filename)}`;
           }}
-        >
-          {part.slice(1, -1)}
-        </code>
+        />,
       );
+    } else if (linkUrl !== undefined) {
+      // 링크: [text](url) — 이미지 URL이면 img로 렌더
+      if (/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(linkUrl) || linkUrl.includes('/api/images/')) {
+        segments.push(
+          <img
+            key={key++}
+            src={linkUrl}
+            alt={linkText ?? ''}
+            style={{ maxWidth: '100%', maxHeight: '120px', borderRadius: '4px', verticalAlign: 'middle', display: 'inline-block' }}
+            onError={(e) => {
+              const img = e.currentTarget;
+              if (img.dataset.smartRetried) return;
+              img.dataset.smartRetried = '1';
+              const pathParam = linkUrl.match(/[?&]path=([^&]+)/);
+              const filename = pathParam
+                ? decodeURIComponent(pathParam[1]).split('/').pop() ?? ''
+                : linkUrl.split('/').pop() ?? '';
+              if (filename) img.src = `/api/images/smart?name=${encodeURIComponent(filename)}`;
+            }}
+          />,
+        );
+      } else {
+        segments.push(
+          <a key={key++} href={linkUrl} target="_blank" rel="noreferrer"
+             style={{ color: 'var(--accent)', textDecoration: 'underline' }}>
+            {linkText}
+          </a>,
+        );
+      }
+    } else if (boldText !== undefined) {
+      segments.push(<strong key={key++} style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{boldText}</strong>);
+    } else if (codeText !== undefined) {
+      segments.push(
+        <code key={key++} className="px-1 py-0.5 rounded text-[12px]"
+              style={{ background: 'var(--bg-secondary)', color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>
+          {codeText}
+        </code>,
+      );
+    } else if (italicText !== undefined) {
+      segments.push(<em key={key++}>{italicText}</em>);
     }
-    if (part.startsWith('*') && part.endsWith('*')) {
-      return <em key={i}>{part.slice(1, -1)}</em>;
-    }
-    return part;
-  });
+
+    lastIndex = match.index + full.length;
+  }
+
+  if (lastIndex < text.length) segments.push(text.slice(lastIndex));
+  if (segments.length === 0) return text;
+  if (segments.length === 1) return segments[0];
+  return <>{segments}</>;
 }
 
 // ── 테이블 스키마 카드 (ERD 노드 스타일 + 미니 ERD 임베드) ──────────────────
