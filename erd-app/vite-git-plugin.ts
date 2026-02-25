@@ -1,7 +1,7 @@
 import type { Plugin } from 'vite'
 import { execSync, execFileSync, execFile } from 'child_process'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
-import { join, resolve, extname, basename } from 'path'
+import { join, resolve, extname } from 'path'
 import { promisify } from 'util'
 import type { IncomingMessage, ServerResponse } from 'http'
 

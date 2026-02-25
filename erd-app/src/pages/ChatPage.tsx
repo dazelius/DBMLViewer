@@ -1531,38 +1531,6 @@ document.addEventListener('error', function(e) {
 }, true);
 `;
 
-const STREAM_RECEIVER_SRCDOC = `<!DOCTYPE html>
-<html lang="ko"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<style>
-  *,*::before,*::after{box-sizing:border-box}
-  body{margin:20px;font-family:'Segoe UI',Tahoma,sans-serif;font-size:13px;
-       background:#0f1117;color:#e2e8f0;line-height:1.6}
-  h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}
-  p{margin:.4em 0}
-  table{width:100%;border-collapse:collapse;margin-bottom:1em}
-  th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}
-  th{background:#1e293b;color:#94a3b8;font-weight:600}
-  tr:nth-child(even) td{background:rgba(255,255,255,.02)}
-  .card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}
-  .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
-  img{max-width:100%;height:auto}
-  ul,ol{padding-left:1.4em;margin:.4em 0}
-  li{margin:.2em 0}
-  pre{background:#1e293b;padding:10px;border-radius:6px;overflow-x:auto;font-size:12px}
-  code{background:#1e293b;padding:1px 5px;border-radius:3px;font-size:12px}
-</style>
-</head>
-<body>
-<script>
-  ${IMG_ONERROR_SCRIPT}
-  window.addEventListener('message', function(e) {
-    if (e.data && e.data.type === 'artifact-update') {
-      document.body.innerHTML = e.data.html;
-    }
-  });
-</script>
-</body></html>`;
 
 function ArtifactSidePanel({
   html,
@@ -1579,12 +1547,6 @@ function ArtifactSidePanel({
   finalTc?: ArtifactResult;
   onClose: () => void;
 }) {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [iframeReady, setIframeReady] = useState(false);
-  const htmlRef = useRef('');
-  const rafRef = useRef<number | null>(null);
-  const lastSentRef = useRef('');
-
   // 완료 상태 전체화면 iframe용 blobUrl
   const schema = useSchemaStore((s) => s.schema);
   const tableData = useCanvasStore((s) => s.tableData) as TableDataMap;
@@ -1662,40 +1624,6 @@ function ArtifactSidePanel({
     });
   }, [publishedUrl]);
 
-  // iframe postMessage 스트리밍
-  const sendToIframe = useCallback((bodyHtml: string) => {
-    const iframe = iframeRef.current;
-    if (!iframe?.contentWindow || bodyHtml === lastSentRef.current) return;
-    try {
-      iframe.contentWindow.postMessage({ type: 'artifact-update', html: bodyHtml }, '*');
-      lastSentRef.current = bodyHtml;
-    } catch { /* ignore */ }
-  }, []);
-
-  const scheduleUpdate = useCallback(() => {
-    if (rafRef.current !== null) return;
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null;
-      if (htmlRef.current) sendToIframe(htmlRef.current);
-    });
-  }, [sendToIframe]);
-
-  const handleIframeLoad = useCallback(() => {
-    setIframeReady(true);
-    if (htmlRef.current) sendToIframe(htmlRef.current);
-  }, [sendToIframe]);
-
-  useEffect(() => {
-    if (isComplete) return;
-    htmlRef.current = html;
-    if (iframeReady && html) scheduleUpdate();
-  }, [html, isComplete, iframeReady, scheduleUpdate]);
-
-  useEffect(() => {
-    return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-    };
-  }, []);
 
   return (
     <div
@@ -1792,23 +1720,28 @@ function ArtifactSidePanel({
                 렌더링 중...
               </div>
         ) : (
-          /* 스트리밍 중 → postMessage로 실시간 innerHTML 업데이트 */
+          /* 스트리밍 중 → dangerouslySetInnerHTML 직접 렌더링 (postMessage/iframeReady 불필요) */
           <>
-            {/* srcdoc는 상수라 React가 재렌더해도 iframe은 리로드되지 않음 */}
-            <iframe
-              ref={iframeRef}
-              title="artifact-stream-preview"
-              className="flex-1 border-none min-h-0"
-              sandbox="allow-scripts"
-              srcDoc={STREAM_RECEIVER_SRCDOC}
-              onLoad={handleIframeLoad}
-            />
-
-            {/* 스피너 오버레이: iframe 미준비 (onLoad 전) 또는 html 아직 없음 */}
-            {(!iframeReady || !html) && (
+            {html ? (
+              /* HTML 도착 → 즉시 렌더링 */
               <div
-                className="absolute inset-0 flex flex-col items-center justify-center gap-3"
-                style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)', zIndex: 2 }}
+                className="flex-1 overflow-y-auto overflow-x-hidden min-h-0"
+                style={{
+                  padding: '16px',
+                  background: '#0f1117',
+                  color: '#e2e8f0',
+                  fontFamily: "'Segoe UI', Tahoma, sans-serif",
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                }}
+                // eslint-disable-next-line react/no-danger
+                dangerouslySetInnerHTML={{ __html: html }}
+              />
+            ) : (
+              /* HTML 미도착 → 스피너 */
+              <div
+                className="flex-1 flex flex-col items-center justify-center gap-3"
+                style={{ color: 'var(--text-muted)' }}
               >
                 <svg className="animate-spin w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
@@ -1820,8 +1753,8 @@ function ArtifactSidePanel({
               </div>
             )}
 
-            {/* 하단 타이핑 바 */}
-            {iframeReady && html && (
+            {/* 하단 타이핑 바 (html 스트리밍 중) */}
+            {html && (
               <div
                 className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5"
                 style={{ background: 'rgba(15,17,23,0.9)', borderTop: '1px solid var(--border-color)' }}
