@@ -256,6 +256,12 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
+    // ── /api/published : 출판된 문서 목록 (GET) ────────────────────────────────
+    if (req.url === '/api/published' && req.method === 'GET') {
+      sendJson(res, 200, readPublishedIndex())
+      return
+    }
+
     // ── /api/publish : 기획서 출판 (POST) / 삭제 (DELETE) ──────────────────────
     if (req.url?.startsWith('/api/publish')) {
       const urlObj = new URL(req.url, 'http://localhost')
@@ -316,12 +322,6 @@ function createGitMiddleware(options: GitPluginOptions) {
       }
 
       next(); return
-    }
-
-    // ── /api/published : 출판된 문서 목록 (GET) ────────────────────────────────
-    if (req.url === '/api/published' && req.method === 'GET') {
-      sendJson(res, 200, readPublishedIndex())
-      return
     }
 
     // ── /api/p/:id : 출판된 문서 서빙 (GET) ────────────────────────────────────
