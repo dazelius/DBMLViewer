@@ -1255,7 +1255,7 @@ function ArtifactSidePanel({
 
   return (
     <div
-      className="flex flex-col overflow-hidden border-l"
+      className="h-full flex flex-col overflow-hidden border-l"
       style={{ borderColor: 'var(--border-color)', background: 'var(--bg-secondary)', minWidth: 0 }}
     >
       {/* ── 헤더 ── */}
