@@ -925,10 +925,14 @@ function buildViewer(container, fbxUrl, label) {
         const m = entry ? matMap[entry] : Object.values(matMap)[0];
         const mat = new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, roughness: 0.75, metalness: 0.1 });
         if (m && m.albedo) {
-          loadTex(m.albedo, t => { t.colorSpace = THREE.SRGBColorSpace; t.flipY = true; mat.map = t; mat.needsUpdate = true; });
+          // TGALoader는 내부적으로 Y 방향을 보정하므로 flipY=false
+          // PNG/JPG는 WebGL 업로드 시 뒤집어야 하므로 flipY=true (기본값)
+          const isTgaA = /\.tga$/i.test(m.albedo);
+          loadTex(m.albedo, t => { t.colorSpace = THREE.SRGBColorSpace; t.flipY = !isTgaA; mat.map = t; mat.needsUpdate = true; });
         } else { mat.color.set(0x8899bb); }
         if (m && m.normal) {
-          loadTex(m.normal, t => { t.flipY = true; mat.normalMap = t; mat.normalScale.set(1,-1); mat.needsUpdate = true; });
+          const isTgaN = /\.tga$/i.test(m.normal);
+          loadTex(m.normal, t => { t.flipY = !isTgaN; mat.normalMap = t; mat.normalScale.set(1,-1); mat.needsUpdate = true; });
         }
         child.material = mat;
       });

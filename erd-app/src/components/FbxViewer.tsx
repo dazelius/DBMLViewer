@@ -167,9 +167,10 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
               apiUrl,
               (tex) => {
                 tex.colorSpace = THREE.SRGBColorSpace;
-                // FBXLoader가 내부적으로 UV.y = 1 - UV.y 변환을 하므로
-                // 외부에서 입히는 텍스처는 flipY = true (기본값) 유지
-                tex.flipY = true;
+                // TGALoader는 내부적으로 이미지 방향을 보정(imageDescriptor 기반)
+                // → flipY=false (추가 반전 금지)
+                // PNG/JPG(TextureLoader)는 WebGL 업로드 시 반전 필요 → flipY=true
+                tex.flipY = !isTga;
                 texCache[apiUrl] = tex;
                 resolve(tex);
               },
@@ -230,9 +231,12 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
 
                 if (normalTex) {
                   newMat.normalMap = normalTex;
-                  // Unity 노말맵은 DirectX 스타일 (G채널 반전 필요)
-                  // OpenGL 스타일로 변환: normalScale.y = -1
+                  // Unity 노말맵 DirectX→OpenGL: normalScale.y = -1
                   newMat.normalScale.set(1, -1);
+                  // TGA 노말맵은 이미 TGALoader가 보정 → flipY=false
+                  const isTgaN = (entry?.normal ?? '').toLowerCase().includes('.tga');
+                  normalTex.flipY = !isTgaN;
+                  normalTex.needsUpdate = true;
                 }
                 if (emissionTex) {
                   newMat.emissiveMap = emissionTex;
