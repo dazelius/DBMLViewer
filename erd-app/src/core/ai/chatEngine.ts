@@ -1,6 +1,6 @@
 import type { ParsedSchema } from '../schema/types.ts';
 import type { Row, TableDataMap } from '../query/schemaQueryEngine.ts';
-import { executeDataSQL, RESERVED_TABLE_NAMES } from '../query/schemaQueryEngine.ts';
+import { executeDataSQL, RESERVED_TABLE_NAMES, VIRTUAL_TABLE_SCHEMA } from '../query/schemaQueryEngine.ts';
 import { useSchemaStore } from '../../store/useSchemaStore.ts';
 
 // ── 타입 정의 ────────────────────────────────────────────────────────────────
@@ -907,11 +907,15 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
       lines.push('');
     }
 
-    if (schema.enums.length > 0 && schema.enums.length <= 20) {
-      lines.push('## Enum');
-      for (const e of schema.enums.slice(0, 15)) {
-        lines.push(`${e.name}: ${e.values.slice(0, 8).map((v) => v.name).join(', ')}`);
+    if (schema.enums.length > 0) {
+      lines.push(`## DBML Enum 정의 (총 ${schema.enums.length}개 — SELECT * FROM ENUMS WHERE enum_name='이름' 으로 조회)`);
+      // 최대 30개까지 표시, 각 enum 값도 최대 10개까지
+      for (const e of schema.enums.slice(0, 30)) {
+        const vals = e.values.slice(0, 10).map((v) => v.name).join(', ');
+        const more = e.values.length > 10 ? ` ... +${e.values.length - 10}개` : '';
+        lines.push(`${e.name}: ${vals}${more}`);
       }
+      if (schema.enums.length > 30) lines.push(`... 외 ${schema.enums.length - 30}개 (ENUMS 가상 테이블로 조회)`);
       lines.push('');
     }
   }
@@ -936,6 +940,16 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- 잘못된 예: effect_type AS 효과타입  →  올바른 예: effect_type');
   lines.push('- 별칭이 필요 없으면 그냥 컬럼명 원본을 그대로 사용할 것');
   lines.push('');
+  lines.push('## ⭐ DBML 스키마 전용 가상 테이블 — Enum 조회 시 반드시 사용');
+  lines.push(VIRTUAL_TABLE_SCHEMA);
+  lines.push('');
+  lines.push('⚠️ Enum 값 조회 방법:');
+  lines.push('  - DBML에 정의된 Enum → SELECT * FROM ENUMS WHERE enum_name = \'EPerkType\'');
+  lines.push('  - 여러 Enum 한 번에  → SELECT * FROM ENUMS WHERE enum_name IN (\'EPerkType\', \'EPassiveEffectType\')');
+  lines.push('  - 전체 Enum 목록     → SELECT DISTINCT enum_name FROM ENUMS ORDER BY enum_name');
+  lines.push('  ⛔ 절대 금지: SELECT * FROM Enum ... (Enum은 alasql 예약어, 파싱 오류 발생)');
+  lines.push('  ⛔ 절대 금지: FROM __u_enum ... (game data 테이블이 없는 경우 오류)');
+  lines.push('');
   lines.push('## ⛔ alasql 예약어 테이블명 규칙 — 반드시 준수');
   lines.push('아래 테이블명은 alasql 예약어이므로 SQL에서 직접 사용 불가. 내부명(__u_xxx)으로 쿼리할 것:');
 
@@ -943,11 +957,8 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   for (const [key] of tableData) {
     const upperKey = key.toUpperCase();
     if (RESERVED_TABLE_NAMES.has(upperKey)) {
-      lines.push(`- "${key}" 테이블 → SELECT * FROM __u_${key} WHERE ... (절대 FROM ${key} 또는 FROM \`${key}\` 사용 금지)`);
+      lines.push(`- "${key}" 게임데이터 테이블 → SELECT * FROM __u_${key} WHERE ... (절대 FROM ${key} 사용 금지)`);
     }
-  }
-  if (!tableData.size) {
-    lines.push('- Enum 테이블 예시: SELECT * FROM __u_enum WHERE enum_type = \'WeaponType\'');
   }
 
   return lines.join('\n');
