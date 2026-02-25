@@ -559,6 +559,45 @@ export type ClaudeMsg =
   | { role: 'assistant'; content: ContentBlock[] };
 
 /**
+ * messages 배열에서 tool_use 없이 tool_result가 없는 orphan을 제거해 Claude API 포맷 준수
+ */
+function sanitizeMessages(messages: ClaudeMsg[]): ClaudeMsg[] {
+  const result: ClaudeMsg[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    result.push(msg);
+    // assistant 메시지에 tool_use 블록이 있으면 다음 메시지가 tool_result인지 확인
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      const toolUseIds = (msg.content as ContentBlock[])
+        .filter((b): b is ToolUseBlock => b.type === 'tool_use')
+        .map((b) => b.id);
+      if (toolUseIds.length === 0) continue;
+
+      const next = messages[i + 1];
+      const nextIsToolResult =
+        next &&
+        next.role === 'user' &&
+        Array.isArray(next.content) &&
+        (next.content as Array<{ type: string }>).some((b) => b.type === 'tool_result');
+
+      if (!nextIsToolResult) {
+        // orphan tool_use 발견 → 빈 tool_result 삽입
+        console.warn('[sanitizeMessages] orphan tool_use 감지, 빈 tool_result 삽입:', toolUseIds);
+        result.push({
+          role: 'user',
+          content: toolUseIds.map((id) => ({
+            type: 'tool_result' as const,
+            tool_use_id: id,
+            content: '(응답이 잘렸습니다 — 해당 도구 결과 없음)',
+          })),
+        });
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * ChatTurn → Claude API messages 변환
  * rawMessages가 있는 assistant 턴은 전체 tool_use/tool_result 교환을 복원합니다.
  */
@@ -571,7 +610,7 @@ function historyToMessages(history: ChatTurn[]): ClaudeMsg[] {
     if (turn.role === 'user' && i + 1 < history.length) {
       const next = history[i + 1];
       if (next.role === 'assistant' && next.rawMessages && next.rawMessages.length > 0) {
-        result.push(...next.rawMessages);
+        result.push(...sanitizeMessages(next.rawMessages));
         i += 2;
         continue;
       }
@@ -798,11 +837,12 @@ export async function sendChatMessage(
 
     // 529 재시도 포함 스트리밍 호출
     let data: ClaudeResponse | null = null;
+    const safeMessages = sanitizeMessages(messages); // orphan tool_use 방어
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt));
       try {
         data = await streamClaude(
-          { ...requestBase, messages },
+          { ...requestBase, messages: safeMessages },
           (delta) => {
             accumulatedText += delta;
             onTextDelta?.(delta, accumulatedText);
@@ -1312,10 +1352,30 @@ HTML 레이아웃: 캐릭터 헤더 → 연결 데이터 노드들 (사이트맵
     );
     const hasArtifact = allToolCalls.some((tc) => tc.kind === 'artifact');
 
+    // max_tokens 시 content에 orphan tool_use가 있으면 빈 tool_result 삽입
+    const orphanToolUseIds = data.content
+      .filter((b): b is ToolUseBlock => b.type === 'tool_use')
+      .map((b) => b.id);
+
+    const pushAssistantWithOrphanFix = (msgs: typeof messages) => {
+      msgs.push({ role: 'assistant', content: data.content });
+      if (orphanToolUseIds.length > 0) {
+        console.warn('[Chat] max_tokens orphan tool_use 발견, 빈 tool_result 삽입:', orphanToolUseIds);
+        msgs.push({
+          role: 'user',
+          content: orphanToolUseIds.map((id) => ({
+            type: 'tool_result' as const,
+            tool_use_id: id,
+            content: '(생성 중단 — max_tokens)',
+          })),
+        });
+      }
+    };
+
     // 데이터 수집 완료 & 아티팩트 미생성 → 자동으로 create_artifact 재촉
     if (hasFetchedData && !hasArtifact && i < MAX_ITERATIONS - 1) {
       console.log('[Chat] max_tokens 감지: 데이터 수집 완료, 아티팩트 자동 재시도');
-      messages.push({ role: 'assistant', content: data.content });
+      pushAssistantWithOrphanFix(messages);
       messages.push({
         role: 'user',
         content:
@@ -1327,7 +1387,7 @@ HTML 레이아웃: 캐릭터 헤더 → 연결 데이터 노드들 (사이트맵
     }
 
     // 자동 계속 불가 → rawMessages 저장하여 '계속해줘' 지원
-    messages.push({ role: 'assistant', content: data.content });
+    pushAssistantWithOrphanFix(messages);
     console.log('[Chat] max_tokens: rawMessages 저장 (계속해줘 지원)');
     return {
       content: truncatedText || '(응답이 잘렸습니다)',
