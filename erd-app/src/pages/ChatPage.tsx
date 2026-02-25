@@ -183,6 +183,7 @@ interface Message {
 
 // ── localStorage 캐시 키 ──────────────────────────────────────────────────────
 const CHAT_CACHE_KEY = 'datamaster_chat_history';
+const ARTIFACTS_CACHE_KEY = 'datamaster_saved_artifacts';
 
 // ── 간단 마크다운 렌더러 ──────────────────────────────────────────────────────
 
@@ -2305,8 +2306,22 @@ export default function ChatPage() {
     finalTc?: ArtifactResult;
   } | null>(null);
 
-  // 생성된 아티팩트 목록 (사이드바용)
-  const [savedArtifacts, setSavedArtifacts] = useState<{ id: string; title: string; tc: ArtifactResult; createdAt: Date }[]>([]);
+  // 생성된 아티팩트 목록 (사이드바용) — localStorage 복원
+  const [savedArtifacts, setSavedArtifacts] = useState<{ id: string; title: string; tc: ArtifactResult; createdAt: Date }[]>(() => {
+    try {
+      const raw = localStorage.getItem(ARTIFACTS_CACHE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as { id: string; title: string; tc: ArtifactResult; createdAt: string }[];
+      return parsed.map((a) => ({ ...a, createdAt: new Date(a.createdAt) }));
+    } catch { return []; }
+  });
+
+  // savedArtifacts 변경 시 localStorage 동기화
+  useEffect(() => {
+    try {
+      localStorage.setItem(ARTIFACTS_CACHE_KEY, JSON.stringify(savedArtifacts));
+    } catch { /* 용량 초과 등 무시 */ }
+  }, [savedArtifacts]);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -2604,9 +2619,9 @@ export default function ChatPage() {
             )}
           </div>
 
-          {/* 대화 초기화 */}
-          {messages.length > 0 && (
-            <div className="px-3 py-3" style={{ borderTop: '1px solid var(--border-color)' }}>
+          {/* 하단 버튼 영역 */}
+          <div className="px-3 py-3 flex flex-col gap-1" style={{ borderTop: '1px solid var(--border-color)' }}>
+            {messages.length > 0 && (
               <button
                 onClick={clearHistory}
                 className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[12px] interactive"
@@ -2618,8 +2633,24 @@ export default function ChatPage() {
                 </svg>
                 대화 초기화
               </button>
-            </div>
-          )}
+            )}
+            {savedArtifacts.length > 0 && (
+              <button
+                onClick={() => {
+                  setSavedArtifacts([]);
+                  localStorage.removeItem(ARTIFACTS_CACHE_KEY);
+                }}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[12px] interactive"
+                style={{ color: 'var(--text-muted)', background: 'var(--bg-hover)' }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                  <path d="M10 11v6m4-6v6"/><path d="M9 6V4h6v2"/>
+                </svg>
+                문서 목록 지우기
+              </button>
+            )}
+          </div>
         </div>
 
         {/* ── 채팅 + 아티팩트 패널 (가변 분할) ── */}
