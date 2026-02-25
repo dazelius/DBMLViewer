@@ -16,12 +16,49 @@ import {
   type RevisionDiffResult,
   type ImageResult,
   type ArtifactResult,
+  type ArtifactPatchResult,
   type CharacterProfileResult,
   type DiffFile,
   type DiffHunk,
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
 import type { ParsedSchema } from '../core/schema/types.ts';
+
+// ── HTML 압축 (수정 요청 시 스타일/스크립트 제거 → 입력 토큰 절약) ─────────────
+function compressHtmlForEdit(html: string): string {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '<!-- styles removed -->')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '<!-- scripts removed -->')
+    .replace(/<!--(?!styles removed|scripts removed)[\s\S]*?-->/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// ── patch 적용: find/replace 순서대로 적용 ──────────────────────────────────
+function applyPatches(originalHtml: string, patches: { find: string; replace: string }[]): { html: string; applied: number; failed: string[] } {
+  let html = originalHtml;
+  let applied = 0;
+  const failed: string[] = [];
+  for (const patch of patches) {
+    if (!patch.find) continue;
+    if (html.includes(patch.find)) {
+      html = html.split(patch.find).join(patch.replace); // 모든 occurrences 교체
+      applied++;
+    } else {
+      // 공백 정규화 후 재시도 (Claude가 개행/공백을 약간 다르게 반환할 수 있음)
+      const normalizedHtml = html.replace(/\s+/g, ' ');
+      const normalizedFind = patch.find.replace(/\s+/g, ' ');
+      if (normalizedHtml.includes(normalizedFind)) {
+        html = normalizedHtml.split(normalizedFind).join(patch.replace.replace(/\s+/g, ' '));
+        applied++;
+      } else {
+        failed.push(patch.find.slice(0, 60) + (patch.find.length > 60 ? '…' : ''));
+      }
+    }
+  }
+  return { html, applied, failed };
+}
 
 // ── UUID 폴백 (HTTP 환경에서 crypto.randomUUID 미지원 대응) ──────────────────
 function genId(): string {
@@ -2797,6 +2834,8 @@ export default function ChatPage() {
 
       // 아티팩트 패널: 완료 처리
       const artifactTc = toolCalls?.find((tc) => tc.kind === 'artifact') as ArtifactResult | undefined;
+      const patchTc = toolCalls?.find((tc) => tc.kind === 'artifact_patch') as ArtifactPatchResult | undefined;
+
       if (artifactTc) {
         const artifactId = `artifact-${Date.now()}`;
         setArtifactPanel((prev) =>
@@ -2809,6 +2848,23 @@ export default function ChatPage() {
           { id: artifactId, title: artifactTc.title ?? '문서', tc: artifactTc, createdAt: new Date() },
           ...prev,
         ]);
+      } else if (patchTc && patchTc.patches.length > 0) {
+        // patch_artifact: 현재 열린 아티팩트에 패치 적용
+        setArtifactPanel((prev) => {
+          if (!prev?.finalTc) return prev;
+          const originalHtml = prev.finalTc.html ?? '';
+          const { html: patchedHtml, applied, failed } = applyPatches(originalHtml, patchTc.patches);
+          console.log(`[Patch] 적용 ${applied}/${patchTc.patches.length}개${failed.length ? `, 실패: ${failed.join(' | ')}` : ''}`);
+          const newTitle = patchTc.title ?? prev.finalTc.title ?? prev.title;
+          const patchedTc: ArtifactResult = { ...prev.finalTc, html: patchedHtml, title: newTitle };
+          // savedArtifacts도 업데이트
+          if (prev.artifactId) {
+            setSavedArtifacts((arts) => arts.map((a) =>
+              a.id === prev.artifactId ? { ...a, title: newTitle, tc: patchedTc } : a
+            ));
+          }
+          return { ...prev, html: patchedHtml, title: newTitle, charCount: patchedHtml.length, isComplete: true, finalTc: patchedTc };
+        });
       } else if (artifactPanel) {
         // 아티팩트가 없으면 패널 그대로 유지 (에러 케이스에서도 보이도록)
       }
@@ -3126,14 +3182,16 @@ export default function ChatPage() {
                 if (!artifactPanel.finalTc) return;
                 const currentHtml = artifactPanel.finalTc.html ?? '';
                 const title = artifactPanel.finalTc.title ?? '문서';
-                // Claude에게 전달할 전체 컨텍스트 (HTML 포함)
+                // 스타일/스크립트 제거 → 입력 토큰 대폭 절약
+                const compressedHtml = compressHtmlForEdit(currentHtml);
+                // Claude에게 전달할 컨텍스트
                 const fullMessage =
                   `[아티팩트 수정 요청]\n` +
                   `제목: ${title}\n\n` +
-                  `현재 아티팩트 HTML:\n\`\`\`html\n${currentHtml}\n\`\`\`\n\n` +
+                  `현재 아티팩트 HTML (스타일/스크립트 제외):\n\`\`\`html\n${compressedHtml}\n\`\`\`\n\n` +
                   `수정 요청: ${prompt}\n\n` +
-                  `위 HTML을 수정하여 즉시 create_artifact 툴을 호출해주세요. ` +
-                  `수정되지 않은 섹션은 그대로 유지하고, 요청된 부분만 변경해주세요.`;
+                  `⭐ 반드시 patch_artifact 툴을 사용하세요. ` +
+                  `변경이 필요한 부분의 find/replace 패치만 반환하면 됩니다. HTML 전체 재생성 금지.`;
                 // 채팅에는 사용자가 입력한 텍스트만 표시
                 const displayText = `✏️ [${title}] ${prompt}`;
                 sendMessage(fullMessage, displayText);

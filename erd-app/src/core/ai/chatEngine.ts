@@ -133,6 +133,19 @@ export interface ArtifactResult {
   error?: string;
 }
 
+export interface ArtifactPatch {
+  find: string;
+  replace: string;
+}
+
+export interface ArtifactPatchResult {
+  kind: 'artifact_patch';
+  title?: string;
+  patches: ArtifactPatch[];
+  duration?: number;
+  error?: string;
+}
+
 // ── 캐릭터 프로파일 (FK 자동 탐색) ──────────────────────────────────────────
 
 export interface CharacterProfileNode {
@@ -157,7 +170,7 @@ export interface CharacterProfileResult {
   duration?: number;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | CharacterProfileResult;
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -304,11 +317,49 @@ const TOOLS = [
     },
   },
   {
+    name: 'patch_artifact',
+    description:
+      '⭐ [아티팩트 수정 요청] 메시지에 반드시 사용하세요. create_artifact 대신 이 툴을 사용하면 출력 토큰이 90% 절약됩니다. ' +
+      '수정할 부분의 원본 텍스트(find)와 새 텍스트(replace) 쌍의 배열을 반환합니다. ' +
+      '전체 HTML을 재생성하지 말고, 변경이 필요한 섹션만 패치하세요.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description: '문서 제목 (변경할 경우에만 입력, 생략 가능)',
+        },
+        patches: {
+          type: 'array',
+          description: '순서대로 적용할 find/replace 패치 목록',
+          items: {
+            type: 'object',
+            properties: {
+              find: {
+                type: 'string',
+                description:
+                  '원본 HTML에서 찾을 정확한 텍스트. 충분히 고유한 문자열이어야 합니다 (10자 이상 권장). ' +
+                  '공백/줄바꿈을 그대로 포함하세요.',
+              },
+              replace: {
+                type: 'string',
+                description: '찾은 텍스트를 대체할 새 텍스트.',
+              },
+            },
+            required: ['find', 'replace'],
+          },
+        },
+      },
+      required: ['patches'],
+    },
+  },
+  {
     name: 'create_artifact',
     description:
       '수집된 데이터를 기반으로 완전한 HTML 문서(보고서, 캐릭터 시트, 밸런스 표, 릴리즈 노트 등)를 생성합니다. ' +
       '사용자가 "정리해줘", "문서로 만들어줘", "보고서", "뽑아줘", "시트 만들어줘" 등을 요청할 때 호출하세요. ' +
-      '먼저 query_game_data, show_table_schema 등으로 필요한 데이터를 모두 수집한 후 이 툴을 마지막에 호출하세요.',
+      '먼저 query_game_data, show_table_schema 등으로 필요한 데이터를 모두 수집한 후 이 툴을 마지막에 호출하세요. ' +
+      '⚠️ [아티팩트 수정 요청] 메시지에는 이 툴 대신 patch_artifact를 사용하세요.',
     input_schema: {
       type: 'object',
       properties: {
@@ -349,6 +400,7 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- show_revision_diff: 특정 커밋의 상세 변경 내용(DIFF) 시각화 (리비전 차이 확인 시 사용)');
   lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 및 채팅 임베드 (아이콘, UI 이미지 찾기 요청 시 사용)');
   lines.push('- create_artifact: 수집된 데이터로 완성된 HTML 문서/보고서 생성 (전체화면 프리뷰, PDF 저장 가능)');
+  lines.push('- patch_artifact: ⭐ 기존 아티팩트 수정 시 사용 (find/replace 패치만 반환 → 토큰 90% 절약)');
   lines.push('');
   lines.push('[캐릭터 기획서/프로파일 생성 — 반드시 준수]');
   lines.push('- "캐릭터 기획서", "[캐릭터명] 기획서", "프로파일", "캐릭터 카드", "개요" 요청 시: build_character_profile 먼저 → create_artifact 순서.');
@@ -409,13 +461,17 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('[중요] "관계도 보여줘", "ERD 보여줘" 요청에는 가장 핵심이 되는 테이블 1개만 show_table_schema를 호출하세요.');
   lines.push('       ERD 카드 안에 연결 테이블이 모두 표시되므로 관련 테이블을 여러 번 반복 호출하지 마세요.');
   lines.push('');
-  lines.push('## 아티팩트 수정 요청 처리');
+  lines.push('## 아티팩트 수정 요청 처리 — [아티팩트 수정 요청] 메시지 전용');
   lines.push('사용자 메시지가 "[아티팩트 수정 요청]"으로 시작하면:');
-  lines.push('1. 메시지에 포함된 "현재 아티팩트 HTML"을 기반으로 수정 작업을 수행하세요.');
-  lines.push('2. 추가 데이터 조회 없이 즉시 HTML을 수정하여 create_artifact를 호출하세요.');
-  lines.push('3. ⚠️ 수정되지 않은 섹션은 반드시 원본 그대로 유지하세요. 전체를 재작성하지 마세요.');
-  lines.push('4. 수정된 부분에만 변경을 가하고, 나머지 embed 태그·스타일·구조를 그대로 보존하세요.');
-  lines.push('5. 수정 범위가 넓더라도 embed 태그(data-embed="...")는 절대 삭제하거나 인라인 데이터로 대체하지 마세요.');
+  lines.push('1. ⭐ 반드시 patch_artifact 툴을 사용하세요. create_artifact 절대 사용 금지!');
+  lines.push('   - patch_artifact: 변경된 부분만 find/replace로 전달 → 출력 토큰 90% 절약, 10배 빠름');
+  lines.push('   - create_artifact: 전체 HTML 재생성 → 토큰 낭비, 느림, 사용 금지');
+  lines.push('2. 추가 데이터 조회 없이 즉시 patch_artifact를 호출하세요.');
+  lines.push('3. patches 작성 규칙:');
+  lines.push('   - find: 원본 HTML에서 수정할 부분의 정확한 텍스트 (최소 15자 이상, 고유한 문자열)');
+  lines.push('   - replace: 새 텍스트로 대체. 변경하지 않는 부분은 find/replace에 포함하지 마세요');
+  lines.push('   - embed 태그(data-embed="...")는 절대 삭제/교체하지 말고 그대로 보존');
+  lines.push('4. 수정 범위가 넓으면 여러 패치로 분할하되, 각 패치의 find는 반드시 원본과 완전히 일치해야 합니다.');
   lines.push('');
   lines.push('답변은 반드시 한국어로 작성하세요.');
   lines.push('단순 나열이 아닌, 의미있는 해석과 함께 친절하게 설명하세요.');
@@ -731,8 +787,8 @@ async function streamClaude(
           const cb = ev.content_block as ContentBlock;
           if (cb.type === 'tool_use') {
             blocks[idx] = { ...cb, _inputStr: '' } as ContentBlock & { _inputStr: string };
-            // create_artifact 블록 시작 즉시 패널 오픈 (html 도착 전에도)
-            if ((cb as ToolUseBlock).name === 'create_artifact' && onArtifactProgress) {
+            // create_artifact / patch_artifact 블록 시작 즉시 패널 오픈
+            if (((cb as ToolUseBlock).name === 'create_artifact' || (cb as ToolUseBlock).name === 'patch_artifact') && onArtifactProgress) {
               onArtifactProgress('', '', 0);
             }
           } else {
@@ -1307,6 +1363,27 @@ ${connSummary}
 HTML 레이아웃: 캐릭터 헤더 → 연결 데이터 노드들 (사이트맵 트리 형태), 각 노드에 테이블명/관계/데이터수/샘플값 표시.`;
               }
             }
+          }
+        }
+
+        // ── patch_artifact ──
+        else if (tb.name === 'patch_artifact') {
+          const title = inp.title ? String(inp.title) : undefined;
+          const rawPatches = Array.isArray(inp.patches) ? inp.patches : [];
+          const t0 = performance.now();
+
+          if (rawPatches.length === 0) {
+            tc = { kind: 'artifact_patch', title, patches: [], error: '패치 내용이 없습니다.', duration: 0 } as ArtifactPatchResult;
+            resultStr = '패치 실패: patches 배열이 비어있음';
+          } else {
+            const patches: ArtifactPatch[] = rawPatches.map((p) => ({
+              find: String((p as Record<string, unknown>).find ?? ''),
+              replace: String((p as Record<string, unknown>).replace ?? ''),
+            })).filter(p => p.find.length > 0);
+
+            const duration = performance.now() - t0;
+            tc = { kind: 'artifact_patch', title, patches, duration } as ArtifactPatchResult;
+            resultStr = `패치 ${patches.length}개 준비 완료. 클라이언트에서 원본 HTML에 적용됩니다.`;
           }
         }
 
