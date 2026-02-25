@@ -105,12 +105,31 @@ const EMBED_CSS = `
 /** Mermaid.js CDN 초기화 스크립트 (아티팩트 HTML 템플릿에 주입) */
 const MERMAID_INIT_SCRIPT = '<script type="module">'
   + 'import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";'
-  + 'mermaid.initialize({startOnLoad:true,theme:"dark",themeVariables:{'
+  + 'mermaid.initialize({startOnLoad:false,theme:"dark",securityLevel:"loose",themeVariables:{'
   + 'primaryColor:"#1e293b",primaryTextColor:"#e2e8f0",primaryBorderColor:"#4f46e5",'
   + 'lineColor:"#6366f1",secondaryColor:"#0f172a",background:"#0f1117",'
   + 'mainBkg:"#1e293b",nodeBorder:"#4f46e5",clusterBkg:"#0f172a",'
   + 'titleColor:"#e2e8f0",edgeLabelBackground:"#0f172a",fontFamily:"Segoe UI,sans-serif"'
   + '}});'
+  // DOM 준비 후 .mermaid 요소 렌더링 — \\n 리터럴 → 실제 줄바꿈 전처리 후 실행
+  + 'async function renderAll(){'
+  + '  const els=document.querySelectorAll(".mermaid");'
+  + '  for(const el of els){'
+  + '    try{'
+  // Claude가 \\n을 리터럴로 출력할 경우 실제 줄바꿈으로 치환
+  + '      const raw=el.textContent.replace(/\\\\n/g,"\\n");'
+  + '      el.textContent=raw;'
+  + '      const {svg}=await mermaid.render("m"+Math.random().toString(36).slice(2),raw);'
+  + '      el.innerHTML=svg;'
+  + '    }catch(e){'
+  // 에러 시 원본 코드 표시 (bomb 아이콘 대신)
+  + '      el.innerHTML=`<pre style="background:#1e1e2e;color:#ef4444;padding:10px;border-radius:6px;font-size:11px;overflow:auto;white-space:pre-wrap">'
+  + '⚠️ Mermaid 렌더링 실패\\n${e.message||e}\\n\\n원본:\\n${el.textContent.trim()}</pre>`;'
+  + '    }'
+  + '  }'
+  + '}'
+  + 'if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",renderAll);'
+  + 'else renderAll();'
   + '</' + 'script>';
 
 /** 스키마 테이블 embed → HTML */
@@ -302,17 +321,28 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
   const limitedIds = [...includedIds].slice(0, 25);
   const limitedSet = new Set(limitedIds);
 
-  // 노드 이름 안전 처리 (Mermaid 식별자 특수문자 회피)
-  const safeId = (name: string) => name.replace(/[^a-zA-Z0-9_가-힣]/g, '_');
+  // 노드 ID: ASCII 전용 (한글 포함 비ASCII 제거), 중복 방지를 위해 인덱스 suffix
+  const idMap = new Map<string, string>();
+  let idxCounter = 0;
+  const safeId = (name: string): string => {
+    if (idMap.has(name)) return idMap.get(name)!;
+    // ASCII 영숫자/_만 허용, 시작은 반드시 알파벳
+    const base = 'N' + name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/_+/g, '_').slice(0, 20);
+    const sid = base + (idxCounter++);
+    idMap.set(name, sid);
+    return sid;
+  };
+  // FK 컬럼명 라벨 안전 처리 (따옴표·특수문자 제거)
+  const safeLabel = (col: string) => col.replace(/[^a-zA-Z0-9_가-힣]/g, '_').slice(0, 20);
 
   const lines: string[] = ['graph LR'];
 
-  // 노드 정의
+  // 노드 정의 — HTML 태그 없이 plain text 라벨 사용
   for (const id of limitedIds) {
     const name = nameById.get(id) ?? id;
     const sid = safeId(name);
     if (centerIds.has(id)) {
-      lines.push(`  ${sid}["<b>${name}</b>"]:::center`);
+      lines.push(`  ${sid}["${name}"]:::center`);
     } else {
       lines.push(`  ${sid}["${name}"]`);
     }
@@ -331,7 +361,7 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
     if (addedEdges.has(key)) continue;
     addedEdges.add(key);
     const fkCol = ref.fromColumns[0] ?? '';
-    const label = fkCol ? `|"${fkCol}"|` : '';
+    const label = fkCol ? `|${safeLabel(fkCol)}|` : '';
     lines.push(`  ${safeId(fromName)} -->${label} ${safeId(toName)}`);
   }
 
