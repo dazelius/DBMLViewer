@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import Toolbar from '../components/Layout/Toolbar.tsx';
 import { useSchemaStore } from '../store/useSchemaStore.ts';
@@ -2013,7 +2014,16 @@ export default function ChatPage() {
         },
         (html, title, charCount) => {
           // 아티팩트 실시간 생성 진행 → 사이드 패널 업데이트
-          setArtifactPanel({ html, title, charCount, isComplete: false });
+          // flushSync: 패널이 배칭 지연 없이 즉시 렌더되도록 강제
+          flushSync(() => {
+            setArtifactPanel((prev) => {
+              // 첫 오픈이거나 업데이트
+              if (!prev || !prev.isComplete) {
+                return { html, title: title || prev?.title || '', charCount, isComplete: false };
+              }
+              return prev; // 이미 완료된 경우 유지
+            });
+          });
           // 메시지에도 최소 진행 상태 표시
           setMessages((prev) =>
             prev.map((m) =>

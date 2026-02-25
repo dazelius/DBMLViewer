@@ -568,6 +568,10 @@ async function streamClaude(
           const cb = ev.content_block as ContentBlock;
           if (cb.type === 'tool_use') {
             blocks[idx] = { ...cb, _inputStr: '' } as ContentBlock & { _inputStr: string };
+            // create_artifact 블록 시작 즉시 패널 오픈 (html 도착 전에도)
+            if ((cb as ToolUseBlock).name === 'create_artifact' && onArtifactProgress) {
+              onArtifactProgress('', '', 0);
+            }
           } else {
             blocks[idx] = { ...cb } as ContentBlock;
           }
@@ -585,12 +589,13 @@ async function streamClaude(
             const tb = b as ContentBlock & { _inputStr: string };
             tb._inputStr = (tb._inputStr || '') + (delta.partial_json ?? '');
 
-            // create_artifact 스트리밍 진행 상황 전달
+            // create_artifact: html 필드 유무 상관없이 title + html 추출해서 진행 전달
             if ((b as ToolUseBlock).name === 'create_artifact' && onArtifactProgress) {
               const parsed = extractHtmlFromPartialJson(tb._inputStr);
-              if (parsed) {
-                onArtifactProgress(parsed.html, parsed.title, parsed.html.length);
-              }
+              // html 없어도 title은 실시간으로 추출 (패널 타이틀 업데이트)
+              const titleMatch = tb._inputStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)/) ;
+              const liveTitle = parsed?.title || (titleMatch ? titleMatch[1].replace(/\\"/g, '"') : '');
+              onArtifactProgress(parsed?.html ?? '', liveTitle, parsed?.html.length ?? 0);
             }
           }
           break;
