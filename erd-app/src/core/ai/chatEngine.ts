@@ -1549,20 +1549,41 @@ function showTab(id){
                 : `"${query}" 코드에서 찾을 수 없음`;
             } else {
               const total = typeof rawData.total === 'number' ? rawData.total : 0;
+              const isFallback = rawData.fallbackToContent === true;
               const indexResults = (Array.isArray(rawData.results) ? rawData.results : []) as CodeFileEntry[];
-              tc = {
-                kind: 'code_search',
-                query,
-                searchType: 'index',
-                total,
-                results: indexResults,
-                duration,
-              } as CodeSearchResult;
-              resultStr = indexResults.length > 0
-                ? `"${query}" 검색 결과 ${indexResults.length}개:\n` + indexResults.slice(0, 10).map(r =>
-                    `  📄 ${r.path}\n     클래스: ${r.classes.join(', ') || '없음'} | 네임스페이스: ${r.namespaces.join(', ') || '없음'}`
-                  ).join('\n')
-                : `"${query}" 코드 파일에서 찾을 수 없음 (전체 인덱스 ${total}개 파일)`;
+
+              // 자동 폴백: 인덱스 0건 → content 검색으로 대체됨
+              if (isFallback) {
+                type ContentHit = { path: string; matches: { line: number; lineContent: string }[] };
+                const contentHits = (Array.isArray(rawData.contentHits) ? rawData.contentHits : []) as ContentHit[];
+                tc = {
+                  kind: 'code_search',
+                  query,
+                  searchType: 'content',
+                  contentHits,
+                  results: [],
+                  duration,
+                } as CodeSearchResult;
+                resultStr = contentHits.length > 0
+                  ? `"${query}" 인덱스에 없어 전문검색으로 폴백 → ${contentHits.length}개 파일\n` + contentHits.slice(0, 5).map(r =>
+                      `  📄 ${r.path}\n` + r.matches.slice(0, 3).map(m => `    L${m.line}: ${m.lineContent}`).join('\n')
+                    ).join('\n')
+                  : `"${query}" 인덱스·전문검색 모두 결과 없음 (전체 ${total}개 파일). 다른 키워드로 시도하거나 type="content"로 검색하세요.`;
+              } else {
+                tc = {
+                  kind: 'code_search',
+                  query,
+                  searchType: 'index',
+                  total,
+                  results: indexResults,
+                  duration,
+                } as CodeSearchResult;
+                resultStr = indexResults.length > 0
+                  ? `"${query}" 검색 결과 ${indexResults.length}개:\n` + indexResults.slice(0, 10).map(r =>
+                      `  📄 ${r.path}\n     클래스: ${r.classes.join(', ') || '없음'} | 네임스페이스: ${r.namespaces.join(', ') || '없음'}`
+                    ).join('\n')
+                  : `"${query}" 코드 파일에서 찾을 수 없음 (전체 인덱스 ${total}개 파일)`;
+              }
             }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);

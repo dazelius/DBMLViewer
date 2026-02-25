@@ -292,12 +292,13 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
-    // ── /api/code/list : C# 파일 목록·검색 ──────────────────────────────────────
+    // ── /api/code/list : C# 파일 목록·검색 (인덱스 0건 시 content 폴백) ─────────
     if (req.url?.startsWith('/api/code/list')) {
       const url = new URL(req.url, 'http://localhost')
       const q = (url.searchParams.get('q') || '').toLowerCase().trim()
-      const type = (url.searchParams.get('type') || '').toLowerCase() // 'class'|'method'|'file'|''
+      const type = (url.searchParams.get('type') || '').toLowerCase()
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '30', 10), 100)
+      const noFallback = url.searchParams.get('nofallback') === '1'
       const index = loadCodeIndex()
 
       let results = index
@@ -306,13 +307,44 @@ function createGitMiddleware(options: GitPluginOptions) {
           if (type === 'class')  return e.classes.some(c => c.toLowerCase().includes(q))
           if (type === 'method') return e.methods.some(m => m.toLowerCase().includes(q))
           if (type === 'file')   return e.name.toLowerCase().includes(q) || e.path.toLowerCase().includes(q)
-          // 전체 검색 (이름, 클래스, 네임스페이스, 메서드)
           return e.name.toLowerCase().includes(q)
             || e.path.toLowerCase().includes(q)
             || e.classes.some(c => c.toLowerCase().includes(q))
             || e.namespaces.some(n => n.toLowerCase().includes(q))
             || e.methods.some(m => m.toLowerCase().includes(q))
         })
+      }
+
+      // 인덱스 검색 결과가 없고 키워드가 있으면 → 전문 검색(grep) 자동 폴백
+      if (q && results.length === 0 && !noFallback) {
+        const all: { name: string; path: string; relPath: string }[] = []
+        walkCode(CODE_DIR, '', all)
+        const contentHits: { path: string; matches: { line: number; lineContent: string }[] }[] = []
+        const maxHitFiles = Math.min(limit, 20)
+        for (const f of all) {
+          if (contentHits.length >= maxHitFiles) break
+          try {
+            let raw = readFileSync(f.path, 'utf-8')
+            if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
+            const lines = raw.split('\n')
+            const matches: { line: number; lineContent: string }[] = []
+            for (let i = 0; i < lines.length; i++) {
+              if (lines[i].toLowerCase().includes(q)) {
+                matches.push({ line: i + 1, lineContent: lines[i].trim().slice(0, 200) })
+                if (matches.length >= 5) break
+              }
+            }
+            if (matches.length > 0) contentHits.push({ path: f.relPath, matches })
+          } catch { /* skip */ }
+        }
+        sendJson(res, 200, {
+          total: index.length,
+          matched: 0,
+          results: [],
+          fallbackToContent: true,
+          contentHits,
+        })
+        return
       }
 
       sendJson(res, 200, {
@@ -330,27 +362,45 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
-    // ── /api/code/file : C# 파일 내용 읽기 ──────────────────────────────────────
+    // ── /api/code/file : C# 파일 내용 읽기 (스마트 경로 폴백 포함) ─────────────
     if (req.url?.startsWith('/api/code/file')) {
       const url = new URL(req.url, 'http://localhost')
-      const relPath = (url.searchParams.get('path') || '').replace(/\.\./g, '')
+      const relPath = (url.searchParams.get('path') || '').replace(/\.\./g, '').replace(/\\/g, '/')
       if (!relPath) { res.writeHead(400); res.end('path required'); return }
 
-      const safePath = join(CODE_DIR, relPath.replace(/\//g, '\\'))
-      if (!safePath.startsWith(CODE_DIR) || !existsSync(safePath)) {
-        res.writeHead(404); res.end('not found'); return
+      // 1) 정확한 경로 시도
+      let resolvedPath = join(CODE_DIR, relPath.replace(/\//g, '\\'))
+      let resolvedRel = relPath
+
+      if (!resolvedPath.startsWith(CODE_DIR) || !existsSync(resolvedPath)) {
+        // 2) 파일명으로 전체 탐색 (경로 앞부분이 다를 때)
+        const fileName = relPath.split('/').pop()!.toLowerCase()
+        const all: { name: string; path: string; relPath: string }[] = []
+        walkCode(CODE_DIR, '', all)
+
+        const match =
+          // 정확한 상대경로 끝부분 일치 우선
+          all.find(f => f.relPath.toLowerCase().endsWith(relPath.toLowerCase())) ??
+          // 파일명만 일치
+          all.find(f => f.name.toLowerCase() === fileName) ??
+          // 파일명 부분 일치
+          all.find(f => f.name.toLowerCase().includes(fileName.replace('.cs', '')))
+
+        if (!match) { res.writeHead(404); res.end(`not found: ${relPath}`); return }
+        resolvedPath = match.path
+        resolvedRel  = match.relPath
       }
-      const stat = statSync(safePath)
-      // 100KB 이상이면 앞뒤만 반환 (토큰 절약)
+
+      const stat = statSync(resolvedPath)
       const MAX_SIZE = 100 * 1024
-      let content = readFileSync(safePath, 'utf-8')
+      let raw = readFileSync(resolvedPath, 'utf-8')
+      // UTF-8 BOM 제거
+      if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
       let truncated = false
-      if (content.length > MAX_SIZE) {
-        content = content.slice(0, MAX_SIZE)
-        truncated = true
-      }
+      if (raw.length > MAX_SIZE) { raw = raw.slice(0, MAX_SIZE); truncated = true }
+
       res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
-      res.end(JSON.stringify({ path: relPath, size: stat.size, truncated, content }))
+      res.end(JSON.stringify({ path: resolvedRel, size: stat.size, truncated, content: raw }))
       return
     }
 
