@@ -150,6 +150,20 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
         controls.maxDistance = camDist * 5;
         controls.update();
 
+        // ── FBXLoader가 내부적으로 UV V좌표를 (1-v)로 반전하므로 되돌림 ──────
+        // flipY=true(표준) + UV 보정 = 올바른 텍스처 매핑
+        fbx.traverse((child) => {
+          const mesh = child as THREE.Mesh;
+          if (!mesh.isMesh) return;
+          const uv = mesh.geometry.getAttribute('uv') as THREE.BufferAttribute | undefined;
+          if (uv) {
+            for (let i = 0; i < uv.count; i++) {
+              uv.setY(i, 1 - uv.getY(i));
+            }
+            uv.needsUpdate = true;
+          }
+        });
+
         // ── 텍스처 로딩 ──────────────────────────────────────────────────────
         const matEntries = await fetchMaterials();
         const texLoader  = new THREE.TextureLoader();
@@ -167,9 +181,9 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
               apiUrl,
               (tex) => {
                 tex.colorSpace = THREE.SRGBColorSpace;
-                // FBXLoader가 이미 UV V 좌표를 (1-v)로 반전하므로
-                // 텍스처 자체는 추가 반전 없이 그대로 사용 (TGA/PNG 모두 동일)
-                tex.flipY = false;
+                // flipY=true (Three.js 표준)
+                // UV V 반전은 아래 지오메트리 UV 직접 보정으로 처리
+                tex.flipY = true;
                 texCache[apiUrl] = tex;
                 resolve(tex);
               },
@@ -232,8 +246,7 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
                   newMat.normalMap = normalTex;
                   // Unity 노말맵 DirectX→OpenGL: normalScale.y = -1
                   newMat.normalScale.set(1, -1);
-                  // FBXLoader UV 반전과 동일하게 flipY=false
-                  normalTex.flipY = false;
+                  normalTex.flipY = true;
                   normalTex.colorSpace = THREE.NoColorSpace;
                   normalTex.needsUpdate = true;
                 }

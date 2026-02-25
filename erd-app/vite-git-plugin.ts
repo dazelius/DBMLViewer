@@ -916,11 +916,21 @@ function buildViewer(container, fbxUrl, label) {
       ctrl.target.set(0,0,0); ctrl.maxDistance = dist * 5; ctrl.update();
 
       const texLoader = new THREE.TextureLoader();
-      // TGA/일반 텍스처 자동 선택 로더
+      // TGA/일반 텍스처 자동 선택 로더 (flipY=true: Three.js 표준)
       const loadTex = (url, onLoad) => {
         const loader = /\.tga$/i.test(url) ? tgaLoader : texLoader;
         loader.load(url, onLoad, undefined, (e) => console.warn('tex load fail:', url, e));
       };
+
+      // FBXLoader가 내부적으로 UV V좌표를 (1-v)로 반전하므로 되돌림
+      fbx.traverse(child => {
+        if (!child.isMesh) return;
+        const uv = child.geometry && child.geometry.getAttribute('uv');
+        if (uv) {
+          for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i));
+          uv.needsUpdate = true;
+        }
+      });
 
       fbx.traverse(child => {
         if (!child.isMesh) return;
@@ -931,12 +941,10 @@ function buildViewer(container, fbxUrl, label) {
         const m = entry ? matMap[entry] : Object.values(matMap)[0];
         const mat = new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, roughness: 0.75, metalness: 0.1 });
         if (m && m.albedo) {
-          // FBXLoader가 이미 UV V 좌표를 (1-v)로 반전하므로 텍스처 추가 반전 불필요
-          // TGA/PNG 모두 flipY=false 통일
-          loadTex(m.albedo, t => { t.colorSpace = THREE.SRGBColorSpace; t.flipY = false; mat.map = t; mat.needsUpdate = true; });
+          loadTex(m.albedo, t => { t.colorSpace = THREE.SRGBColorSpace; t.flipY = true; mat.map = t; mat.needsUpdate = true; });
         } else { mat.color.set(0x8899bb); }
         if (m && m.normal) {
-          loadTex(m.normal, t => { t.flipY = false; t.colorSpace = THREE.NoColorSpace; mat.normalMap = t; mat.normalScale.set(1,-1); mat.needsUpdate = true; });
+          loadTex(m.normal, t => { t.flipY = true; t.colorSpace = THREE.NoColorSpace; mat.normalMap = t; mat.normalScale.set(1,-1); mat.needsUpdate = true; });
         }
         child.material = mat;
       });
