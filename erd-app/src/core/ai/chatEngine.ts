@@ -222,7 +222,56 @@ export interface AssetSearchResult {
   error?: string;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult;
+export interface JiraSearchResult {
+  kind: 'jira_search';
+  jql: string;
+  issues: {
+    key: string; id: string; summary: string; status: string;
+    assignee: string; priority: string; issuetype: string; updated: string;
+  }[];
+  total: number;
+  error?: string;
+  duration?: number;
+}
+
+export interface JiraIssueResult {
+  kind: 'jira_issue';
+  issueKey: string;
+  summary?: string;
+  status?: string;
+  issuetype?: string;
+  priority?: string;
+  assignee?: string;
+  reporter?: string;
+  created?: string;
+  updated?: string;
+  description?: string;
+  comments?: { author: string; body: string; created: string }[];
+  error?: string;
+  duration?: number;
+}
+
+export interface ConfluenceSearchResult {
+  kind: 'confluence_search';
+  cql: string;
+  pages: { id: string; title: string; type: string; space: string; url: string }[];
+  total: number;
+  error?: string;
+  duration?: number;
+}
+
+export interface ConfluencePageResult {
+  kind: 'confluence_page';
+  pageId: string;
+  title?: string;
+  space?: string;
+  htmlContent?: string;
+  version?: number;
+  error?: string;
+  duration?: number;
+}
+
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult | JiraSearchResult | JiraIssueResult | ConfluenceSearchResult | ConfluencePageResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -544,6 +593,88 @@ const TOOLS = [
       required: ['title', 'description', 'html'],
     },
   },
+  // ── Jira / Confluence 툴 ─────────────────────────────────────────────────
+  {
+    name: 'search_jira',
+    description:
+      'Jira 이슈를 JQL(Jira Query Language)로 검색합니다. ' +
+      '버그 조회, 작업 목록 확인, 특정 컴포넌트·스프린트·담당자의 이슈 조회에 사용하세요. ' +
+      '예: "project = GAME AND status != Done ORDER BY created DESC" ' +
+      '     "assignee = currentUser() AND sprint in openSprints()" ' +
+      '     "issuetype = Bug AND priority = High AND component = Combat"',
+    input_schema: {
+      type: 'object',
+      properties: {
+        jql: {
+          type: 'string',
+          description:
+            'JQL 쿼리 문자열. 예: "project = GAME AND status = \"In Progress\"".' +
+            'project, status, assignee, issuetype, priority, component, sprint, label, text 등을 사용 가능.',
+        },
+        maxResults: {
+          type: 'number',
+          description: '최대 반환 건수 (기본 20, 최대 50)',
+        },
+      },
+      required: ['jql'],
+    },
+  },
+  {
+    name: 'get_jira_issue',
+    description:
+      'Jira 이슈 키(예: GAME-1234)로 이슈 상세 정보를 조회합니다. ' +
+      '이슈 설명, 댓글, 첨부파일, 서브태스크, 담당자, 상태, 우선순위 등이 포함됩니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        issueKey: {
+          type: 'string',
+          description: 'Jira 이슈 키. 예: "GAME-1234", "PROJECT-567"',
+        },
+      },
+      required: ['issueKey'],
+    },
+  },
+  {
+    name: 'search_confluence',
+    description:
+      'Confluence 페이지를 CQL(Confluence Query Language)로 검색합니다. ' +
+      '기획 문서, 스펙 문서, 회의록 등을 찾을 때 사용하세요. ' +
+      '예: "text ~ \\"스킬 시스템\\" AND space = \\"GAME\\"" ' +
+      '     "title = \\"캐릭터 밸런스\\" AND lastModified > \\"2024-01-01\\""',
+    input_schema: {
+      type: 'object',
+      properties: {
+        cql: {
+          type: 'string',
+          description:
+            'CQL 쿼리 문자열. text, title, space, type(page/blogpost), lastModified 등 사용 가능. ' +
+            '예: "text ~ \\"전투 시스템\\" AND type = page"',
+        },
+        limit: {
+          type: 'number',
+          description: '최대 반환 건수 (기본 10, 최대 20)',
+        },
+      },
+      required: ['cql'],
+    },
+  },
+  {
+    name: 'get_confluence_page',
+    description:
+      'Confluence 페이지 ID로 페이지 전체 내용을 조회합니다. ' +
+      'search_confluence로 페이지 ID를 먼저 확인한 후 호출하세요.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pageId: {
+          type: 'string',
+          description: 'Confluence 페이지 ID (숫자 문자열). search_confluence 결과의 id 필드에서 확인.',
+        },
+      },
+      required: ['pageId'],
+    },
+  },
 ];
 
 // ── 시스템 프롬프트 빌더 ─────────────────────────────────────────────────────
@@ -555,6 +686,10 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('사용자의 질문에 답하기 위해 아래 도구들을 적극 활용하세요:');
   lines.push('- query_game_data: 실제 게임 데이터를 SQL로 조회');
   lines.push('- show_table_schema: 테이블 구조/관계도를 ERD 카드로 시각화. 테이블 설명 시 반드시 호출. 관계도 요청 시 관련 테이블 여러 개 연속 호출 가능');
+  lines.push('- search_jira: Jira 이슈 JQL 검색 (버그/작업/스프린트 조회)');
+  lines.push('- get_jira_issue: Jira 이슈 상세 조회 (GAME-1234 등 이슈 키 직접 지정)');
+  lines.push('- search_confluence: Confluence 문서 CQL 검색 (기획서/스펙/회의록 등)');
+  lines.push('- get_confluence_page: Confluence 페이지 전체 내용 조회 (pageId 필요)');
   lines.push('- build_character_profile: 캐릭터명 → FK 연결 모든 데이터 자동 수집. 이름 검색 실패 시 전체 목록 반환 → character_id로 재호출. 캐릭터 기획서/프로파일 요청 시 반드시 먼저 호출.');
   lines.push('- query_git_history: 변경 이력 조회 (언제 무엇이 바뀌었는지)');
   lines.push('- show_revision_diff: 특정 커밋의 상세 변경 내용(DIFF) 시각화 (리비전 차이 확인 시 사용)');
@@ -604,7 +739,17 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- /api/assets/scene?path=경로&max=60 API로 씬 오브젝트(FBX+트랜스폼) 목록을 조회할 수 있습니다.');
   lines.push('- ⚠️ 씬 로딩은 build_guid_index.ps1 실행 후에만 작동합니다 (GUID 인덱스 필요).');
   lines.push('');
-  lines.push('[캐릭터 기획서/프로파일/데이터 시트뷰 — 반드시 준수]');
+  lines.push('[Jira / Confluence 사용 규칙]');
+  lines.push('- 버그, 이슈, 작업 조회 요청 → search_jira(jql) 호출. 프로젝트 키를 모를 경우 text ~ "키워드" 사용');
+  lines.push('- 특정 이슈 번호 언급 (예: GAME-1234) → get_jira_issue("GAME-1234") 바로 호출');
+  lines.push('- 기획서/스펙 문서 요청 → search_confluence(cql) 호출. 예: text ~ "스킬 밸런스" AND type = page');
+  lines.push('- 검색 결과에서 특정 페이지 내용이 필요하면 get_confluence_page(pageId) 호출');
+  lines.push('- JQL 예시: "project = GAME AND issuetype = Bug AND status != Done ORDER BY created DESC"');
+  lines.push('- CQL 예시: "text ~ \\"캐릭터 스킬\\" AND type = page ORDER BY lastModified DESC"');
+  lines.push('- Jira 이슈 표시는 아티팩트 create_artifact로 카드 형태로 보여주거나, 채팅에서 요약 텍스트로 제공');
+  lines.push('- Confluence 내용의 HTML 태그(p, table, ul 등)는 그대로 아티팩트에 삽입 가능');
+  lines.push('');
+  lines.push('[캐릭터 기획서/프로파일/데이터 시트뷰 — 반드시 준수]');;
   lines.push('- "캐릭터 기획서", "[캐릭터명] 기획서", "프로파일", "캐릭터 카드", "개요" 요청 시: build_character_profile 먼저 → create_artifact 순서.');
   lines.push('- "데이터 다 제공해줘", "모든 데이터 보여줘", "시트뷰", "종합해줘", "전체 데이터" 요청 시도 동일하게 build_character_profile 먼저 호출.');
   lines.push('- build_character_profile 결과에 [EMBED_SQL] 힌트가 포함됨. 이 SQL을 data-embed="query" 태그에 그대로 사용하세요.');
@@ -1916,6 +2061,175 @@ function showTab(id){
             const duration = performance.now() - t0;
             tc = { kind: 'artifact', title, description, html, duration } as ArtifactResult;
             resultStr = `아티팩트 "${title}" 생성 완료 (${html.length}자). 사용자 화면에 전체화면 프리뷰와 PDF 저장 버튼이 표시됩니다.`;
+          }
+        }
+
+        // ── search_jira ──
+        else if (tb.name === 'search_jira') {
+          const jql = String(inp.jql ?? '');
+          const maxResults = Math.min(Number(inp.maxResults ?? 20), 50);
+          const t0 = performance.now();
+          try {
+            const params = new URLSearchParams({ jql, maxResults: String(maxResults) });
+            const resp = await fetch(`/api/jira/search?${params.toString()}`);
+            const data2 = await resp.json() as Record<string, unknown>;
+            const duration = performance.now() - t0;
+            if (!resp.ok) {
+              resultStr = `Jira 검색 실패 (${resp.status}): ${String((data2 as Record<string,unknown>).error ?? data2)}`;
+              tc = { kind: 'jira_search', jql, issues: [], total: 0, error: resultStr, duration } as JiraSearchResult;
+            } else {
+              type JiraIssue = { id: string; key: string; fields: Record<string, unknown> };
+              const issues = (Array.isArray((data2 as Record<string,unknown>).issues) ? (data2 as Record<string,unknown>).issues : []) as JiraIssue[];
+              const total = Number((data2 as Record<string,unknown>).total ?? issues.length);
+              const summaryLines = issues.map((iss) => {
+                const f = iss.fields;
+                const status = (f.status as Record<string,unknown>)?.name ?? '?';
+                const assignee = ((f.assignee as Record<string,unknown>)?.displayName ?? '미배정') as string;
+                const priority = (f.priority as Record<string,unknown>)?.name ?? '-';
+                const summary = String(f.summary ?? '');
+                return `[${iss.key}] [${status}] [${priority}] ${summary} (담당: ${assignee})`;
+              });
+              resultStr = `Jira 검색: "${jql}" → ${total}건 (${duration.toFixed(0)}ms)\n` +
+                (summaryLines.length > 0 ? summaryLines.join('\n') : '결과 없음');
+              tc = { kind: 'jira_search', jql, issues: issues.map(i => ({
+                key: i.key, id: i.id,
+                summary: String(i.fields.summary ?? ''),
+                status: String((i.fields.status as Record<string,unknown>)?.name ?? ''),
+                assignee: String((i.fields.assignee as Record<string,unknown>)?.displayName ?? '미배정'),
+                priority: String((i.fields.priority as Record<string,unknown>)?.name ?? ''),
+                issuetype: String((i.fields.issuetype as Record<string,unknown>)?.name ?? ''),
+                updated: String(i.fields.updated ?? ''),
+              })), total, duration } as JiraSearchResult;
+            }
+          } catch (e) {
+            resultStr = `Jira 검색 오류: ${String(e)}`;
+            tc = { kind: 'jira_search', jql, issues: [], total: 0, error: String(e), duration: 0 } as JiraSearchResult;
+          }
+        }
+
+        // ── get_jira_issue ──
+        else if (tb.name === 'get_jira_issue') {
+          const issueKey = String(inp.issueKey ?? '');
+          const t0 = performance.now();
+          try {
+            const resp = await fetch(`/api/jira/issue/${encodeURIComponent(issueKey)}`);
+            const data2 = await resp.json() as Record<string, unknown>;
+            const duration = performance.now() - t0;
+            if (!resp.ok) {
+              resultStr = `Jira 이슈 조회 실패 (${resp.status}): ${String((data2 as Record<string,unknown>).error ?? data2)}`;
+              tc = { kind: 'jira_issue', issueKey, error: resultStr, duration } as JiraIssueResult;
+            } else {
+              const f = (data2.fields ?? {}) as Record<string, unknown>;
+              const comments = ((f.comment as Record<string,unknown>)?.comments ?? []) as Array<Record<string,unknown>>;
+              const commentLines = comments.slice(-5).map((c) => {
+                const author = String((c.author as Record<string,unknown>)?.displayName ?? 'unknown');
+                const bodyContent = (c.body as Record<string,unknown>)?.content
+                const body = typeof c.body === 'string' ? c.body.slice(0, 200) :
+                  JSON.stringify(Array.isArray(bodyContent) ? bodyContent[0] : bodyContent ?? '').slice(0, 200);
+                return `  [${author}]: ${body}`;
+              });
+              resultStr = [
+                `이슈: ${issueKey} - ${String(f.summary ?? '')}`,
+                `상태: ${String((f.status as Record<string,unknown>)?.name ?? '')}`,
+                `유형: ${String((f.issuetype as Record<string,unknown>)?.name ?? '')}`,
+                `우선순위: ${String((f.priority as Record<string,unknown>)?.name ?? '')}`,
+                `담당자: ${String((f.assignee as Record<string,unknown>)?.displayName ?? '미배정')}`,
+                `보고자: ${String((f.reporter as Record<string,unknown>)?.displayName ?? '')}`,
+                `생성: ${String(f.created ?? '')}  수정: ${String(f.updated ?? '')}`,
+                `컴포넌트: ${((f.components as Array<Record<string,unknown>>) ?? []).map(c => c.name).join(', ') || '-'}`,
+                `레이블: ${((f.labels as string[]) ?? []).join(', ') || '-'}`,
+                `설명: ${String(typeof f.description === 'string' ? f.description : JSON.stringify((f.description as Record<string,unknown>)?.content ?? '')).slice(0, 500)}`,
+                comments.length > 0 ? `\n최근 댓글 (${comments.length}개 중 최대 5개):\n${commentLines.join('\n')}` : '',
+              ].filter(Boolean).join('\n');
+              tc = { kind: 'jira_issue', issueKey,
+                summary: String(f.summary ?? ''),
+                status: String((f.status as Record<string,unknown>)?.name ?? ''),
+                issuetype: String((f.issuetype as Record<string,unknown>)?.name ?? ''),
+                priority: String((f.priority as Record<string,unknown>)?.name ?? ''),
+                assignee: String((f.assignee as Record<string,unknown>)?.displayName ?? '미배정'),
+                reporter: String((f.reporter as Record<string,unknown>)?.displayName ?? ''),
+                created: String(f.created ?? ''),
+                updated: String(f.updated ?? ''),
+                description: String(typeof f.description === 'string' ? f.description : JSON.stringify((f.description as Record<string,unknown>)?.content ?? '')).slice(0, 1000),
+                comments: comments.slice(-5).map(c => ({
+                  author: String((c.author as Record<string,unknown>)?.displayName ?? ''),
+                  body: String(typeof c.body === 'string' ? c.body : JSON.stringify((c.body as Record<string,unknown>)?.content ?? '')).slice(0, 300),
+                  created: String(c.created ?? ''),
+                })),
+                duration,
+              } as JiraIssueResult;
+            }
+          } catch (e) {
+            resultStr = `Jira 이슈 조회 오류: ${String(e)}`;
+            tc = { kind: 'jira_issue', issueKey, error: String(e), duration: 0 } as JiraIssueResult;
+          }
+        }
+
+        // ── search_confluence ──
+        else if (tb.name === 'search_confluence') {
+          const cql = String(inp.cql ?? '');
+          const limit = Math.min(Number(inp.limit ?? 10), 20);
+          const t0 = performance.now();
+          try {
+            const params = new URLSearchParams({ cql, limit: String(limit) });
+            const resp = await fetch(`/api/confluence/search?${params.toString()}`);
+            const data2 = await resp.json() as Record<string, unknown>;
+            const duration = performance.now() - t0;
+            if (!resp.ok) {
+              resultStr = `Confluence 검색 실패 (${resp.status}): ${String((data2 as Record<string,unknown>).error ?? data2)}`;
+              tc = { kind: 'confluence_search', cql, pages: [], total: 0, error: resultStr, duration } as ConfluenceSearchResult;
+            } else {
+              type ConfluencePage = { id: string; title: string; type: string; space?: Record<string,unknown>; version?: Record<string,unknown>; _links?: Record<string,unknown> };
+              const results = (Array.isArray((data2 as Record<string,unknown>).results) ? (data2 as Record<string,unknown>).results : []) as ConfluencePage[];
+              const total = Number((data2 as Record<string,unknown>).totalSize ?? results.length);
+              const summaryLines = results.map((p) => `[${p.id}] ${p.title} (Space: ${p.space?.key ?? '-'})`);
+              resultStr = `Confluence 검색: "${cql}" → ${total}건 (${duration.toFixed(0)}ms)\n` +
+                (summaryLines.length > 0 ? summaryLines.join('\n') : '결과 없음') +
+                '\n\n페이지 내용이 필요하면 get_confluence_page(pageId) 호출';
+              tc = { kind: 'confluence_search', cql, pages: results.map(p => ({
+                id: p.id, title: p.title, type: p.type,
+                space: String(p.space?.key ?? ''),
+                url: String((p._links as Record<string,unknown>)?.webui ?? ''),
+              })), total, duration } as ConfluenceSearchResult;
+            }
+          } catch (e) {
+            resultStr = `Confluence 검색 오류: ${String(e)}`;
+            tc = { kind: 'confluence_search', cql, pages: [], total: 0, error: String(e), duration: 0 } as ConfluenceSearchResult;
+          }
+        }
+
+        // ── get_confluence_page ──
+        else if (tb.name === 'get_confluence_page') {
+          const pageId = String(inp.pageId ?? '');
+          const t0 = performance.now();
+          try {
+            const resp = await fetch(`/api/confluence/page/${encodeURIComponent(pageId)}`);
+            const data2 = await resp.json() as Record<string, unknown>;
+            const duration = performance.now() - t0;
+            if (!resp.ok) {
+              resultStr = `Confluence 페이지 조회 실패 (${resp.status}): ${String((data2 as Record<string,unknown>).error ?? data2)}`;
+              tc = { kind: 'confluence_page', pageId, error: resultStr, duration } as ConfluencePageResult;
+            } else {
+              const body = (data2.body as Record<string,unknown>)?.storage as Record<string,unknown>
+              const htmlContent = String(body?.value ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 3000)
+              const space = (data2.space as Record<string,unknown>)?.key ?? ''
+              resultStr = [
+                `Confluence 페이지: ${String(data2.title ?? '')} (ID: ${pageId})`,
+                `Space: ${space}`,
+                `버전: ${String((data2.version as Record<string,unknown>)?.number ?? '')}`,
+                `내용 (HTML 태그 제거):\n${htmlContent}`,
+              ].join('\n');
+              tc = { kind: 'confluence_page', pageId,
+                title: String(data2.title ?? ''),
+                space: String(space),
+                htmlContent: String((data2.body as Record<string,unknown>)?.storage ? ((data2.body as Record<string,unknown>).storage as Record<string,unknown>).value : ''),
+                version: Number((data2.version as Record<string,unknown>)?.number ?? 0),
+                duration,
+              } as ConfluencePageResult;
+            }
+          } catch (e) {
+            resultStr = `Confluence 페이지 조회 오류: ${String(e)}`;
+            tc = { kind: 'confluence_page', pageId, error: String(e), duration: 0 } as ConfluencePageResult;
           }
         }
 

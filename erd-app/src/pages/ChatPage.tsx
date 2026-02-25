@@ -22,6 +22,10 @@ import {
   type CodeFileResult,
   type CodeGuideResult,
   type AssetSearchResult,
+  type JiraSearchResult,
+  type JiraIssueResult,
+  type ConfluenceSearchResult,
+  type ConfluencePageResult,
   type DiffFile,
   type DiffHunk,
 } from '../core/ai/chatEngine.ts';
@@ -3068,6 +3072,206 @@ function CodeGuideCard({ tc }: { tc: CodeGuideResult }) {
   );
 }
 
+// ── JiraSearchCard ────────────────────────────────────────────────────────────
+function JiraSearchCard({ tc }: { tc: JiraSearchResult }) {
+  const statusColor = (s: string) => {
+    const l = s.toLowerCase();
+    if (l.includes('done') || l.includes('closed') || l.includes('resolved')) return '#22c55e';
+    if (l.includes('progress') || l.includes('review')) return '#3b82f6';
+    if (l.includes('block') || l.includes('bug')) return '#ef4444';
+    return '#a3a3a3';
+  };
+  const priorityIcon = (p: string) => {
+    const l = p.toLowerCase();
+    if (l === 'highest' || l === 'blocker') return '🔴';
+    if (l === 'high') return '🟠';
+    if (l === 'medium') return '🟡';
+    if (l === 'low') return '🔵';
+    return '⚪';
+  };
+  const typeIcon = (t: string) => {
+    const l = t.toLowerCase();
+    if (l.includes('bug')) return '🐛';
+    if (l.includes('task')) return '✅';
+    if (l.includes('story')) return '📖';
+    if (l.includes('epic')) return '⚡';
+    if (l.includes('sub')) return '↳';
+    return '🎫';
+  };
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+      <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: 'rgba(37,99,235,0.15)', borderBottom: '1px solid var(--border)' }}>
+        <span style={{ color: '#60a5fa', fontSize: 16 }}>🔵</span>
+        <span className="font-semibold text-[13px]" style={{ color: '#60a5fa' }}>Jira 검색</span>
+        <span className="ml-auto text-[11px] font-mono px-2 py-0.5 rounded" style={{ background: 'rgba(96,165,250,0.15)', color: '#60a5fa' }}>
+          {tc.total}건
+        </span>
+        {tc.duration && <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{tc.duration.toFixed(0)}ms</span>}
+      </div>
+      <div className="px-3 py-2">
+        <div className="text-[11px] font-mono px-2 py-1 rounded mb-2" style={{ background: 'var(--bg-primary)', color: 'var(--text-muted)' }}>{tc.jql}</div>
+        {tc.error ? (
+          <div className="text-[12px] px-3 py-2 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>{tc.error}</div>
+        ) : tc.issues.length === 0 ? (
+          <div className="text-[12px] text-center py-3" style={{ color: 'var(--text-muted)' }}>결과 없음</div>
+        ) : (
+          <div className="space-y-1">
+            {tc.issues.map((iss) => (
+              <div key={iss.key} className="flex items-start gap-2 px-2 py-2 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+                <span style={{ fontSize: 13 }}>{typeIcon(iss.issuetype)}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <span className="text-[11px] font-mono font-bold" style={{ color: '#60a5fa' }}>{iss.key}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: statusColor(iss.status) + '22', color: statusColor(iss.status) }}>{iss.status}</span>
+                    <span className="text-[11px]">{priorityIcon(iss.priority)}</span>
+                  </div>
+                  <div className="text-[12px] truncate" style={{ color: 'var(--text-primary)' }}>{iss.summary}</div>
+                  <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>담당: {iss.assignee}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── JiraIssueCard ─────────────────────────────────────────────────────────────
+function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
+  const [showComments, setShowComments] = useState(false);
+  const statusColor = (() => {
+    const l = (tc.status ?? '').toLowerCase();
+    if (l.includes('done') || l.includes('closed')) return '#22c55e';
+    if (l.includes('progress') || l.includes('review')) return '#3b82f6';
+    return '#a3a3a3';
+  })();
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+      <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: 'rgba(37,99,235,0.15)', borderBottom: '1px solid var(--border)' }}>
+        <span style={{ color: '#60a5fa', fontSize: 16 }}>🎫</span>
+        <span className="font-semibold text-[13px] font-mono" style={{ color: '#60a5fa' }}>{tc.issueKey}</span>
+        {tc.status && (
+          <span className="text-[10px] px-2 py-0.5 rounded-full ml-1" style={{ background: statusColor + '22', color: statusColor }}>{tc.status}</span>
+        )}
+        {tc.duration && <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{tc.duration.toFixed(0)}ms</span>}
+      </div>
+      {tc.error ? (
+        <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{tc.error}</div>
+      ) : (
+        <div className="px-4 py-3 space-y-2">
+          <div className="font-semibold text-[14px]" style={{ color: 'var(--text-primary)' }}>{tc.summary}</div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+            {[
+              ['유형', tc.issuetype], ['우선순위', tc.priority],
+              ['담당자', tc.assignee], ['보고자', tc.reporter],
+              ['생성', tc.created?.slice(0,10)], ['수정', tc.updated?.slice(0,10)],
+            ].filter(([,v]) => v).map(([k, v]) => (
+              <div key={k} className="flex gap-1">
+                <span style={{ color: 'var(--text-muted)' }}>{k}:</span>
+                <span style={{ color: 'var(--text-secondary)' }}>{v}</span>
+              </div>
+            ))}
+          </div>
+          {tc.description && (
+            <div className="text-[12px] p-2 rounded" style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', maxHeight: 120, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+              {tc.description.slice(0, 400)}{tc.description.length > 400 ? '…' : ''}
+            </div>
+          )}
+          {tc.comments && tc.comments.length > 0 && (
+            <div>
+              <button onClick={() => setShowComments(!showComments)} className="text-[11px] px-2 py-1 rounded" style={{ background: 'rgba(96,165,250,0.1)', color: '#60a5fa', border: '1px solid rgba(96,165,250,0.3)', cursor: 'pointer' }}>
+                {showComments ? '▲' : '▼'} 댓글 {tc.comments.length}개
+              </button>
+              {showComments && (
+                <div className="mt-2 space-y-1.5">
+                  {tc.comments.map((c, i) => (
+                    <div key={i} className="px-2 py-1.5 rounded text-[11px]" style={{ background: 'var(--bg-primary)' }}>
+                      <div className="font-semibold mb-0.5" style={{ color: '#60a5fa' }}>{c.author} <span style={{ color: 'var(--text-muted)', fontWeight: 'normal' }}>{c.created?.slice(0,10)}</span></div>
+                      <div style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ConfluenceSearchCard ──────────────────────────────────────────────────────
+function ConfluenceSearchCard({ tc }: { tc: ConfluenceSearchResult }) {
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+      <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: 'rgba(23,162,184,0.15)', borderBottom: '1px solid var(--border)' }}>
+        <span style={{ color: '#67e8f9', fontSize: 16 }}>📄</span>
+        <span className="font-semibold text-[13px]" style={{ color: '#67e8f9' }}>Confluence 검색</span>
+        <span className="ml-auto text-[11px] font-mono px-2 py-0.5 rounded" style={{ background: 'rgba(103,232,249,0.15)', color: '#67e8f9' }}>{tc.total}건</span>
+        {tc.duration && <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{tc.duration.toFixed(0)}ms</span>}
+      </div>
+      <div className="px-3 py-2">
+        <div className="text-[11px] font-mono px-2 py-1 rounded mb-2" style={{ background: 'var(--bg-primary)', color: 'var(--text-muted)' }}>{tc.cql}</div>
+        {tc.error ? (
+          <div className="text-[12px] px-3 py-2 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>{tc.error}</div>
+        ) : tc.pages.length === 0 ? (
+          <div className="text-[12px] text-center py-3" style={{ color: 'var(--text-muted)' }}>결과 없음</div>
+        ) : (
+          <div className="space-y-1">
+            {tc.pages.map((p) => (
+              <div key={p.id} className="flex items-center gap-2 px-2 py-2 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+                <span style={{ fontSize: 12 }}>{p.type === 'blogpost' ? '📝' : '📄'}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[12px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{p.title}</div>
+                  <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Space: {p.space} · ID: {p.id}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── ConfluencePageCard ────────────────────────────────────────────────────────
+function ConfluencePageCard({ tc }: { tc: ConfluencePageResult }) {
+  const [showHtml, setShowHtml] = useState(false);
+  const textContent = tc.htmlContent?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 800) ?? '';
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+      <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: 'rgba(23,162,184,0.15)', borderBottom: '1px solid var(--border)' }}>
+        <span style={{ color: '#67e8f9', fontSize: 16 }}>📋</span>
+        <span className="font-semibold text-[13px]" style={{ color: '#67e8f9' }}>Confluence 페이지</span>
+        {tc.space && <span className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'rgba(103,232,249,0.1)', color: '#67e8f9' }}>{tc.space}</span>}
+        {tc.duration && <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{tc.duration.toFixed(0)}ms</span>}
+      </div>
+      {tc.error ? (
+        <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{tc.error}</div>
+      ) : (
+        <div className="px-4 py-3 space-y-2">
+          <div className="font-semibold text-[14px]" style={{ color: 'var(--text-primary)' }}>{tc.title}</div>
+          <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>ID: {tc.pageId} · 버전: {tc.version}</div>
+          {textContent && (
+            <div className="text-[12px] p-2 rounded" style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', maxHeight: 160, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+              {textContent}{(tc.htmlContent?.length ?? 0) > 800 ? '…' : ''}
+            </div>
+          )}
+          {tc.htmlContent && (
+            <button onClick={() => setShowHtml(!showHtml)} className="text-[11px] px-2 py-1 rounded" style={{ background: 'rgba(103,232,249,0.1)', color: '#67e8f9', border: '1px solid rgba(103,232,249,0.3)', cursor: 'pointer' }}>
+              {showHtml ? '▲ HTML 숨기기' : '▼ HTML 원본 보기'}
+            </button>
+          )}
+          {showHtml && tc.htmlContent && (
+            <pre className="text-[10px] p-2 rounded overflow-auto" style={{ background: 'var(--bg-primary)', color: 'var(--text-muted)', maxHeight: 300 }}>{tc.htmlContent.slice(0, 3000)}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── AssetSearchCard ────────────────────────────────────────────────────────────
 function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
   const [fbxUrl, setFbxUrl] = useState<string | null>(null);
@@ -3325,6 +3529,10 @@ function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'code_file') return <CodeFileCard tc={tc} />;
   if (tc.kind === 'code_guide') return <CodeGuideCard tc={tc} />;
   if (tc.kind === 'asset_search') return <AssetSearchCard tc={tc} />;
+  if (tc.kind === 'jira_search') return <JiraSearchCard tc={tc} />;
+  if (tc.kind === 'jira_issue') return <JiraIssueCard tc={tc} />;
+  if (tc.kind === 'confluence_search') return <ConfluenceSearchCard tc={tc} />;
+  if (tc.kind === 'confluence_page') return <ConfluencePageCard tc={tc} />;
   if (tc.kind === 'artifact_patch') return null;
   return <DataQueryCard tc={tc as DataQueryResult} index={index} />;
 }

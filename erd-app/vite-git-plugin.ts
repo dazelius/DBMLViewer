@@ -1182,6 +1182,130 @@ function createGitMiddleware(options: GitPluginOptions) {
       }
     }
 
+    // ── /api/jira/* : Jira / Confluence 프록시 ──────────────────────────────────
+    if (req.url?.startsWith('/api/jira/') || req.url?.startsWith('/api/confluence/')) {
+      try {
+        // jira-config.json 로드 (없으면 404)
+        const jiraCfgPath = join(process.cwd(), '..', '..', 'jira-config.json')
+        if (!existsSync(jiraCfgPath)) {
+          sendJson(res, 503, { error: 'jira-config.json not found. Create C:\\TableMaster\\jira-config.json first.' })
+          return
+        }
+        const cfgRaw = readFileSync(jiraCfgPath, 'utf-8')
+        const cfg = JSON.parse(cfgRaw) as { baseUrl: string; apiToken: string; userEmail: string }
+
+        if (!cfg.apiToken) {
+          sendJson(res, 503, { error: 'apiToken not set in jira-config.json' })
+          return
+        }
+
+        // Authorization 헤더 구성
+        // Jira Cloud: Basic auth (email:token) 또는 Bearer (PAT)
+        let authHeader: string
+        if (cfg.userEmail) {
+          authHeader = 'Basic ' + Buffer.from(`${cfg.userEmail}:${cfg.apiToken}`).toString('base64')
+        } else {
+          authHeader = 'Bearer ' + cfg.apiToken
+        }
+
+        const baseUrl = cfg.baseUrl.replace(/\/$/, '')
+        const url2 = new URL(req.url, 'http://localhost')
+
+        // ── /api/jira/search?jql=...&maxResults=20 ─────────────────────────
+        if (req.url.startsWith('/api/jira/search')) {
+          const jql = url2.searchParams.get('jql') || ''
+          const maxResults = parseInt(url2.searchParams.get('maxResults') || '20', 10)
+          const fields = url2.searchParams.get('fields') || 'summary,status,assignee,priority,issuetype,created,updated,description,comment,labels,components,fixVersions,reporter'
+
+          const apiUrl = `${baseUrl}/rest/api/3/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${encodeURIComponent(fields)}`
+
+          const apiResp = await fetch(apiUrl, {
+            headers: { Authorization: authHeader, Accept: 'application/json' }
+          })
+          const data = await apiResp.json()
+          if (!apiResp.ok) {
+            sendJson(res, apiResp.status, { error: data?.errorMessages?.[0] ?? data?.message ?? `Jira API ${apiResp.status}`, raw: data })
+          } else {
+            sendJson(res, 200, data)
+          }
+          return
+        }
+
+        // ── /api/jira/issue/:key ────────────────────────────────────────────
+        if (req.url.startsWith('/api/jira/issue/')) {
+          const issueKey = url2.pathname.replace('/api/jira/issue/', '').split('?')[0]
+          const expand = url2.searchParams.get('expand') || 'renderedFields,names,schema'
+          const apiUrl = `${baseUrl}/rest/api/3/issue/${issueKey}?expand=${expand}&fields=summary,status,assignee,priority,issuetype,created,updated,description,comment,labels,components,fixVersions,reporter,subtasks,parent,attachment`
+
+          const apiResp = await fetch(apiUrl, {
+            headers: { Authorization: authHeader, Accept: 'application/json' }
+          })
+          const data = await apiResp.json()
+          if (!apiResp.ok) {
+            sendJson(res, apiResp.status, { error: data?.errorMessages?.[0] ?? `Jira issue ${issueKey} not found`, raw: data })
+          } else {
+            sendJson(res, 200, data)
+          }
+          return
+        }
+
+        // ── /api/jira/projects ─────────────────────────────────────────────
+        if (req.url.startsWith('/api/jira/projects')) {
+          const apiUrl = `${baseUrl}/rest/api/3/project/search?maxResults=50&orderBy=name`
+          const apiResp = await fetch(apiUrl, {
+            headers: { Authorization: authHeader, Accept: 'application/json' }
+          })
+          const data = await apiResp.json()
+          sendJson(res, apiResp.ok ? 200 : apiResp.status, data)
+          return
+        }
+
+        // ── /api/confluence/search?cql=...&limit=20 ────────────────────────
+        if (req.url.startsWith('/api/confluence/search')) {
+          const cql = url2.searchParams.get('cql') || ''
+          const limit = parseInt(url2.searchParams.get('limit') || '10', 10)
+          const expand = 'body.storage,version,space,ancestors'
+
+          const apiUrl = `${baseUrl}/wiki/rest/api/search?cql=${encodeURIComponent(cql)}&limit=${limit}&expand=${encodeURIComponent(expand)}`
+
+          const apiResp = await fetch(apiUrl, {
+            headers: { Authorization: authHeader, Accept: 'application/json', 'X-Atlassian-Token': 'no-check' }
+          })
+          const data = await apiResp.json()
+          if (!apiResp.ok) {
+            sendJson(res, apiResp.status, { error: data?.message ?? `Confluence API ${apiResp.status}`, raw: data })
+          } else {
+            sendJson(res, 200, data)
+          }
+          return
+        }
+
+        // ── /api/confluence/page/:id ────────────────────────────────────────
+        if (req.url.startsWith('/api/confluence/page/')) {
+          const pageId = url2.pathname.replace('/api/confluence/page/', '').split('?')[0]
+          const apiUrl = `${baseUrl}/wiki/rest/api/content/${pageId}?expand=body.storage,version,space,ancestors,children.page`
+
+          const apiResp = await fetch(apiUrl, {
+            headers: { Authorization: authHeader, Accept: 'application/json' }
+          })
+          const data = await apiResp.json()
+          if (!apiResp.ok) {
+            sendJson(res, apiResp.status, { error: data?.message ?? `Confluence page ${pageId} not found`, raw: data })
+          } else {
+            sendJson(res, 200, data)
+          }
+          return
+        }
+
+        sendJson(res, 404, { error: 'Unknown Jira/Confluence endpoint' })
+        return
+      } catch (jiraErr) {
+        console.error('[jira proxy error]', jiraErr)
+        if (!res.headersSent) sendJson(res, 500, { error: String(jiraErr) })
+        return
+      }
+    }
+
     // ── /api/published : 출판된 문서 목록 (GET) ────────────────────────────────
     if (req.url === '/api/published' && req.method === 'GET') {
       sendJson(res, 200, readPublishedIndex())
