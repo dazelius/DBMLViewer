@@ -922,16 +922,6 @@ function buildViewer(container, fbxUrl, label) {
         loader.load(url, onLoad, undefined, (e) => console.warn('tex load fail:', url, e));
       };
 
-      // FBXLoader가 내부적으로 UV V좌표를 (1-v)로 반전하므로 되돌림
-      fbx.traverse(child => {
-        if (!child.isMesh) return;
-        const uv = child.geometry && child.geometry.getAttribute('uv');
-        if (uv) {
-          for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i));
-          uv.needsUpdate = true;
-        }
-      });
-
       fbx.traverse(child => {
         if (!child.isMesh) return;
         child.castShadow = true; child.receiveShadow = true;

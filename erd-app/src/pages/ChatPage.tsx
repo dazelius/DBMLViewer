@@ -3030,29 +3030,25 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
           <div className="text-[11px] mb-1.5 font-semibold" style={{ color: '#34d399' }}>
             🔊 오디오 ({audioFiles.length})
           </div>
-          <div className="space-y-2">
+          <div className="space-y-1">
             {audioFiles.map((f, i) => (
-              <div key={i} className="rounded-lg overflow-hidden" style={{ background: 'var(--bg-primary)', border: '1px solid rgba(52,211,153,0.15)' }}>
-                <div className="flex items-center gap-2 px-2 py-1.5">
-                  <span className="text-[11px]">🔊</span>
-                  <span className="flex-1 text-[11px] font-mono truncate" style={{ color: '#6ee7b7' }} title={f.path}>
-                    {f.name}.{f.ext}
-                  </span>
-                  <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
-                    {f.sizeKB} KB
-                  </span>
-                </div>
+              <div key={i} className="flex items-center gap-2 px-2 py-1 rounded" style={{ background: 'var(--bg-primary)' }}>
+                <span className="text-[11px] font-mono truncate flex-1 min-w-0" style={{ color: '#6ee7b7' }} title={f.path}>
+                  {f.name}.{f.ext}
+                </span>
+                <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+                  {f.sizeKB}KB
+                </span>
                 <audio
                   controls
-                  preload="metadata"
-                  style={{ width: '100%', display: 'block', borderRadius: '0 0 8px 8px', accentColor: '#34d399' }}
+                  preload="none"
+                  style={{ flexShrink: 0, width: 160, height: 24 }}
                 >
                   <source src={`/api/assets/file?path=${encodeURIComponent(f.path)}`} type={
                     f.ext === 'mp3' ? 'audio/mpeg' :
                     f.ext === 'ogg' ? 'audio/ogg' :
                     f.ext === 'flac' ? 'audio/flac' :
-                    f.ext === 'm4a' ? 'audio/mp4' :
-                    'audio/wav'
+                    f.ext === 'm4a' ? 'audio/mp4' : 'audio/wav'
                   } />
                 </audio>
               </div>

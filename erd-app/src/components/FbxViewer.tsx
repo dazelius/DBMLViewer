@@ -150,20 +150,6 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
         controls.maxDistance = camDist * 5;
         controls.update();
 
-        // ── FBXLoader가 내부적으로 UV V좌표를 (1-v)로 반전하므로 되돌림 ──────
-        // flipY=true(표준) + UV 보정 = 올바른 텍스처 매핑
-        fbx.traverse((child) => {
-          const mesh = child as THREE.Mesh;
-          if (!mesh.isMesh) return;
-          const uv = mesh.geometry.getAttribute('uv') as THREE.BufferAttribute | undefined;
-          if (uv) {
-            for (let i = 0; i < uv.count; i++) {
-              uv.setY(i, 1 - uv.getY(i));
-            }
-            uv.needsUpdate = true;
-          }
-        });
-
         // ── 텍스처 로딩 ──────────────────────────────────────────────────────
         const matEntries = await fetchMaterials();
         const texLoader  = new THREE.TextureLoader();
