@@ -408,6 +408,15 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('');
   lines.push('[중요] "관계도 보여줘", "ERD 보여줘" 요청에는 가장 핵심이 되는 테이블 1개만 show_table_schema를 호출하세요.');
   lines.push('       ERD 카드 안에 연결 테이블이 모두 표시되므로 관련 테이블을 여러 번 반복 호출하지 마세요.');
+  lines.push('');
+  lines.push('## 아티팩트 수정 요청 처리');
+  lines.push('사용자 메시지가 "[아티팩트 수정 요청]"으로 시작하면:');
+  lines.push('1. 메시지에 포함된 "현재 아티팩트 HTML"을 기반으로 수정 작업을 수행하세요.');
+  lines.push('2. 추가 데이터 조회 없이 즉시 HTML을 수정하여 create_artifact를 호출하세요.');
+  lines.push('3. ⚠️ 수정되지 않은 섹션은 반드시 원본 그대로 유지하세요. 전체를 재작성하지 마세요.');
+  lines.push('4. 수정된 부분에만 변경을 가하고, 나머지 embed 태그·스타일·구조를 그대로 보존하세요.');
+  lines.push('5. 수정 범위가 넓더라도 embed 태그(data-embed="...")는 절대 삭제하거나 인라인 데이터로 대체하지 마세요.');
+  lines.push('');
   lines.push('답변은 반드시 한국어로 작성하세요.');
   lines.push('단순 나열이 아닌, 의미있는 해석과 함께 친절하게 설명하세요.');
   lines.push('');

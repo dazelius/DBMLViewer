@@ -1601,6 +1601,7 @@ function ArtifactSidePanel({
   onClose,
   initialPublishedUrl,
   onPublished,
+  onEditRequest,
 }: {
   html: string;
   title: string;
@@ -1610,6 +1611,7 @@ function ArtifactSidePanel({
   onClose: () => void;
   initialPublishedUrl?: string;
   onPublished?: (url: string) => void;
+  onEditRequest?: (prompt: string) => void;
 }) {
   // 완료 상태 전체화면 iframe용 blobUrl
   const schema = useSchemaStore((s) => s.schema);
@@ -1703,6 +1705,24 @@ function ArtifactSidePanel({
     });
   }, [publishedUrl]);
 
+  // ── 수정 요청 상태 ──────────────────────────────────────────────────────────
+  const [editMode, setEditMode] = useState(false);
+  const [editInput, setEditInput] = useState('');
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const handleEditSubmit = useCallback(() => {
+    const prompt = editInput.trim();
+    if (!prompt || !finalTc) return;
+    onEditRequest?.(prompt);
+    setEditInput('');
+    setEditMode(false);
+  }, [editInput, finalTc, onEditRequest]);
+
+  // 수정 모드 열릴 때 textarea 포커스
+  useEffect(() => {
+    if (editMode) setTimeout(() => editTextareaRef.current?.focus(), 50);
+  }, [editMode]);
+
 
   return (
     <div
@@ -1791,13 +1811,78 @@ function ArtifactSidePanel({
       {/* ── 콘텐츠 영역 ── */}
       <div className="flex-1 overflow-hidden flex flex-col relative min-h-0">
         {isComplete && finalTc ? (
-          /* 완료 → 전체 높이 iframe */
-          completeBlobUrl
-            ? <iframe src={completeBlobUrl} className="flex-1 border-none min-h-0 w-full" title={finalTc.title ?? '문서'} sandbox="allow-same-origin allow-scripts" />
-            : <div className="flex-1 flex items-center justify-center" style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                <svg className="animate-spin mr-2" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-                렌더링 중...
+          /* 완료 → 전체 높이 iframe + 수정 요청 바 */
+          <>
+            {completeBlobUrl
+              ? <iframe src={completeBlobUrl} className="flex-1 border-none min-h-0 w-full" title={finalTc.title ?? '문서'} sandbox="allow-same-origin allow-scripts" />
+              : <div className="flex-1 flex items-center justify-center" style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                  <svg className="animate-spin mr-2" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  렌더링 중...
+                </div>
+            }
+
+            {/* ── 수정 요청 바 ── */}
+            {onEditRequest && (
+              <div
+                className="flex-shrink-0"
+                style={{ borderTop: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}
+              >
+                {editMode ? (
+                  /* 입력 모드 */
+                  <div className="flex gap-2 px-3 py-2">
+                    <textarea
+                      ref={editTextareaRef}
+                      value={editInput}
+                      onChange={(e) => setEditInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEditSubmit(); }
+                        if (e.key === 'Escape') { setEditMode(false); setEditInput(''); }
+                      }}
+                      placeholder="수정할 내용을 입력하세요… (Enter 전송, Shift+Enter 줄바꿈)"
+                      rows={2}
+                      className="flex-1 text-[12px] rounded-lg px-2.5 py-1.5 resize-none outline-none"
+                      style={{
+                        background: 'var(--bg-primary)',
+                        border: '1px solid var(--accent)',
+                        color: 'var(--text-primary)',
+                        lineHeight: 1.5,
+                      }}
+                    />
+                    <div className="flex flex-col gap-1 flex-shrink-0">
+                      <button
+                        onClick={handleEditSubmit}
+                        disabled={!editInput.trim()}
+                        className="px-2.5 py-1 rounded-lg text-[10px] font-semibold transition-opacity hover:opacity-80 disabled:opacity-40"
+                        style={{ background: 'var(--accent)', color: '#fff' }}
+                      >
+                        전송
+                      </button>
+                      <button
+                        onClick={() => { setEditMode(false); setEditInput(''); }}
+                        className="px-2.5 py-1 rounded-lg text-[10px] font-medium transition-opacity hover:opacity-80"
+                        style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}
+                      >
+                        취소
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* 접힌 상태 — 버튼 한 줄 */
+                  <button
+                    onClick={() => setEditMode(true)}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-[11px] hover:opacity-80 transition-opacity"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: 'var(--accent)' }}>
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    </svg>
+                    이 문서 수정 요청…
+                  </button>
+                )}
               </div>
+            )}
+          </>
         ) : (
           /* 스트리밍 중 → dangerouslySetInnerHTML 직접 렌더링 (postMessage/iframeReady 불필요) */
           <>
@@ -3036,6 +3121,20 @@ export default function ChatPage() {
                 setSavedArtifacts(prev =>
                   prev.map(a => a.id === artifactPanel.artifactId ? { ...a, publishedUrl: url } : a)
                 );
+              }}
+              onEditRequest={(prompt) => {
+                if (!artifactPanel.finalTc) return;
+                const currentHtml = artifactPanel.finalTc.html ?? '';
+                const title = artifactPanel.finalTc.title ?? '문서';
+                // 현재 아티팩트 HTML(embed 태그 포함 원본)을 컨텍스트에 주입
+                const editMessage =
+                  `[아티팩트 수정 요청]\n` +
+                  `제목: ${title}\n\n` +
+                  `현재 아티팩트 HTML:\n\`\`\`html\n${currentHtml}\n\`\`\`\n\n` +
+                  `수정 요청: ${prompt}\n\n` +
+                  `위 HTML을 수정하여 즉시 create_artifact 툴을 호출해주세요. ` +
+                  `수정되지 않은 섹션은 그대로 유지하고, 요청된 부분만 변경해주세요.`;
+                sendMessage(editMessage);
               }}
             />
           </div>
