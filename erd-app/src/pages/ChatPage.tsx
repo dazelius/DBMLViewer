@@ -3506,8 +3506,7 @@ export default function ChatPage() {
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
           {/* 메시지 목록 */}
           <div className="flex-1 overflow-y-auto py-6">
-            {/* 아티팩트 패널 없을 때 → 가운데 정렬 max-w 컨테이너 */}
-            <div className={`mx-auto w-full px-6 space-y-6 ${!artifactPanel ? 'max-w-4xl' : ''}`}>
+            <div className="w-full px-6 space-y-6">
             {messages.length === 0 && (
               <div className="flex flex-col items-center justify-center py-24 text-center" style={{ color: 'var(--text-muted)' }}>
                 <div
@@ -3575,7 +3574,7 @@ export default function ChatPage() {
             className="flex-shrink-0 py-4"
             style={{ borderTop: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}
           >
-            <div className={`mx-auto w-full px-6 ${!artifactPanel ? 'max-w-4xl' : ''}`}>
+            <div className="w-full px-6">
               <div
                 className="flex items-end gap-3 rounded-2xl px-5 py-3.5"
                 style={{
