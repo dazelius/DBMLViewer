@@ -402,10 +402,17 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- create_artifact: 수집된 데이터로 완성된 HTML 문서/보고서 생성 (전체화면 프리뷰, PDF 저장 가능)');
   lines.push('- patch_artifact: ⭐ 기존 아티팩트 수정 시 사용 (find/replace 패치만 반환 → 토큰 90% 절약)');
   lines.push('');
-  lines.push('[캐릭터 기획서/프로파일 생성 — 반드시 준수]');
+  lines.push('[캐릭터 기획서/프로파일/데이터 시트뷰 — 반드시 준수]');
   lines.push('- "캐릭터 기획서", "[캐릭터명] 기획서", "프로파일", "캐릭터 카드", "개요" 요청 시: build_character_profile 먼저 → create_artifact 순서.');
-  lines.push('- build_character_profile 결과에 캐릭터의 모든 연관 데이터(스킬 수, 패시브 수, 스탯 등)가 포함됨. 추가 query_game_data 불필요.');
-  lines.push('- create_artifact HTML: 사이트맵/카드 레이아웃으로 캐릭터 → 연결 테이블 계층 시각화. 각 노드에 테이블명, 관계, 데이터 수, 샘플값 표시.');
+  lines.push('- "데이터 다 제공해줘", "모든 데이터 보여줘", "시트뷰", "종합해줘", "전체 데이터" 요청 시도 동일하게 build_character_profile 먼저 호출.');
+  lines.push('- build_character_profile 결과에 [EMBED_SQL] 힌트가 포함됨. 이 SQL을 data-embed="query" 태그에 그대로 사용하세요.');
+  lines.push('- create_artifact 아티팩트는 아래 두 가지 레이아웃 중 요청에 맞게 선택:');
+  lines.push('  (A) 기획서/개요 → 사이트맵/카드 레이아웃: 캐릭터 헤더 → 연결 테이블 카드 (데이터 수, 샘플 표시)');
+  lines.push('  (B) 시트뷰/전체데이터 → 탭 레이아웃: 탭마다 연결 테이블 data-embed query 표시');
+  lines.push('- ⭐ 탭 레이아웃 필수 JS 패턴:');
+  lines.push('  <script>function showTab(id){document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.tab===id));document.querySelectorAll(".tab-panel").forEach(p=>p.classList.toggle("active",p.dataset.panel===id));}</script>');
+  lines.push('  탭 버튼: <button class="tab active" data-tab="basic" onclick="showTab(\'basic\')">기본정보</button>');
+  lines.push('  패널: <div class="tab-panel active" data-panel="basic"><div data-embed="query" data-sql="[EMBED_SQL]"></div></div>');
   lines.push('');
   lines.push('[아티팩트 생성 규칙 — 반드시 준수]');
   lines.push('- "정리해줘", "문서로", "보고서", "시트 만들어줘", "뽑아줘" 등 요청 시 create_artifact를 호출하세요.');
@@ -1342,7 +1349,7 @@ export async function sendChatMessage(
                   duration,
                 } as CharacterProfileResult;
 
-                // Claude에게 전달할 구조화된 요약
+                // Claude에게 전달할 구조화된 요약 + pre-built SQL embed 제안
                 const connSummary = connections.map(c => {
                   const sample = c.sampleRows.length > 0
                     ? ' | 샘플: ' + Object.entries(c.sampleRows[0]).slice(0, 4).map(([k, v]) => `${k}=${v}`).join(', ')
@@ -1350,17 +1357,56 @@ export async function sendChatMessage(
                   const sub = c.children?.length
                     ? ' → [' + c.children.map(ch => `${ch.tableName}(${ch.rowCount})`).join(', ') + ']'
                     : '';
-                  return `  • ${c.tableName}: ${c.rowCount}행 (FK: ${c.fkColumn})${sample}${sub}`;
+                  const embedSql = `SELECT * FROM ${c.tableName} WHERE ${c.fkColumn} = ${charIdLiteral} LIMIT 100`;
+                  return `  • ${c.tableName}: ${c.rowCount}행 (FK: ${c.fkColumn})${sample}${sub}\n    [EMBED_SQL]: ${embedSql}`;
                 }).join('\n');
 
-                const charSummary = Object.entries(character).slice(0, 10).map(([k, v]) => `${k}: ${v}`).join(', ');
-                resultStr = `캐릭터 "${charName}" 프로파일 수집 완료 (${duration.toFixed(0)}ms)
-캐릭터 기본정보: ${charSummary}
-연관 테이블 ${connections.length}개, 총 ${totalRelated}행:
-${connSummary}
+                // 2차 연결 테이블 SQL 힌트
+                const childSummary = connections.flatMap(c => {
+                  const connTableDef = resolvedSchema.tables.find(t => t.name === c.tableName);
+                  const connPK2 = connTableDef?.columns.find(col => col.isPrimaryKey)?.name?.toLowerCase();
+                  if (!connPK2 || !c.children?.length) return [];
+                  return c.children.map(ch =>
+                    `  • ${ch.tableName} (${c.tableName} 하위): ${ch.rowCount}행\n    [EMBED_SQL]: SELECT * FROM ${ch.tableName} WHERE ${ch.fkColumn} IN (SELECT ${connPK2} FROM ${c.tableName} WHERE ${c.fkColumn} = ${charIdLiteral}) LIMIT 100`
+                  );
+                }).join('\n');
 
-이 데이터를 기반으로 create_artifact를 호출하여 사이트맵/프로파일 HTML을 생성하세요.
-HTML 레이아웃: 캐릭터 헤더 → 연결 데이터 노드들 (사이트맵 트리 형태), 각 노드에 테이블명/관계/데이터수/샘플값 표시.`;
+                const charSummary = Object.entries(character).slice(0, 15).map(([k, v]) => `${k}: ${v}`).join(', ');
+                const charCols = Object.keys(character).join(', ');
+                const basicEmbedSql = `SELECT * FROM ${charTable.name} WHERE ${pkCol} = ${charIdLiteral}`;
+
+                resultStr = `캐릭터 "${charName}" 프로파일 수집 완료 (${duration.toFixed(0)}ms)
+캐릭터 기본정보 (컬럼: ${charCols}):
+${charSummary}
+  [EMBED_SQL]: ${basicEmbedSql}
+
+직접 연결 테이블 ${connections.length}개, 총 ${totalRelated}행:
+${connSummary}
+${childSummary ? '\n2차 연결 테이블:\n' + childSummary : ''}
+
+[아티팩트 시트뷰 생성 방법]
+★ [EMBED_SQL] 힌트를 data-embed="query" data-sql="SQL" 태그로 그대로 사용하세요.
+★ 탭 인터페이스 예시 (JavaScript 사용 가능):
+<style>
+  .tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px}
+  .tab{padding:6px 14px;border-radius:6px;border:1px solid #334155;background:#1e293b;color:#94a3b8;cursor:pointer;font-size:12px}
+  .tab.active{background:#6366f1;color:#fff;border-color:#6366f1}
+  .tab-panel{display:none}.tab-panel.active{display:block}
+</style>
+<div class="tabs">
+  <button class="tab active" onclick="showTab('basic')">기본정보</button>
+  <button class="tab" onclick="showTab('tab1')">연결테이블1</button>
+</div>
+<div id="tab-basic" class="tab-panel active">
+  <div data-embed="query" data-sql="${basicEmbedSql}"></div>
+</div>
+<script>
+function showTab(id){
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',t.onclick?.toString().includes(id)));
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('active',p.id==='tab-'+id));
+}
+</script>
+위 방식으로 각 연결 테이블마다 탭을 추가하세요.`;
               }
             }
           }
