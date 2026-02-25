@@ -220,7 +220,31 @@ function renderMarkdown(text: string): React.ReactNode[] {
       continue;
     }
 
-    // 헤더
+    // 헤더 (긴 것부터 체크 — #### 이 ### 보다 먼저)
+    if (line.startsWith('###### ')) {
+      nodes.push(
+        <h6 key={i} className="text-[11px] font-semibold mt-2 mb-0.5" style={{ color: 'var(--text-muted)' }}>
+          {inlineMarkdown(line.slice(7))}
+        </h6>,
+      );
+      i++; continue;
+    }
+    if (line.startsWith('##### ')) {
+      nodes.push(
+        <h5 key={i} className="text-[11px] font-bold mt-2 mb-0.5" style={{ color: 'var(--text-secondary)' }}>
+          {inlineMarkdown(line.slice(6))}
+        </h5>,
+      );
+      i++; continue;
+    }
+    if (line.startsWith('#### ')) {
+      nodes.push(
+        <h4 key={i} className="text-[12px] font-bold mt-3 mb-1" style={{ color: 'var(--text-primary)' }}>
+          {inlineMarkdown(line.slice(5))}
+        </h4>,
+      );
+      i++; continue;
+    }
     if (line.startsWith('### ')) {
       nodes.push(
         <h3 key={i} className="text-[13px] font-bold mt-4 mb-1" style={{ color: 'var(--text-primary)' }}>
