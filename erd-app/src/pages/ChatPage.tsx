@@ -1818,9 +1818,16 @@ function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
 
 function CharacterProfileCard({ tc }: { tc: CharacterProfileResult }) {
   if (tc.error) {
+    // 전체 목록 포함 오류 → 스크롤 가능한 카드로 표시
+    const isListError = tc.error.includes('전체 목록') || tc.error.includes('재호출');
     return (
-      <div className="rounded-lg p-3 my-2 text-[12px]" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444' }}>
-        캐릭터 프로파일 오류: {tc.error}
+      <div className="rounded-lg my-2 overflow-hidden" style={{ border: `1px solid ${isListError ? 'rgba(251,191,36,.3)' : 'rgba(239,68,68,0.3)'}`, background: isListError ? 'rgba(251,191,36,.05)' : 'rgba(239,68,68,0.05)' }}>
+        <div className="px-3 py-2 text-[11px] font-semibold" style={{ color: isListError ? '#fbbf24' : '#ef4444', borderBottom: '1px solid rgba(255,255,255,.06)' }}>
+          {isListError ? '⚠ 캐릭터 이름 불일치 — 아래 목록에서 확인 후 ID로 재시도' : `✕ 캐릭터 프로파일 오류`}
+        </div>
+        <pre className="px-3 py-2 text-[10px] overflow-auto max-h-48 whitespace-pre-wrap" style={{ color: isListError ? '#e2e8f0' : '#ef4444', margin: 0 }}>
+          {tc.error}
+        </pre>
       </div>
     );
   }

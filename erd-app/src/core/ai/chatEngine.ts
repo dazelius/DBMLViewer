@@ -285,16 +285,20 @@ const TOOLS = [
     description:
       '캐릭터 이름으로 해당 캐릭터의 모든 연관 데이터를 FK 관계를 따라 자동 수집합니다. ' +
       '캐릭터 기획서, 프로파일, 카드, 개요, 사이트맵 생성 시 이 툴을 먼저 호출하세요. ' +
-      '캐릭터 ID만 있으면 스킬, 패시브, 스탯, 이펙트 등 연결된 모든 데이터를 한 번에 가져옵니다.',
+      '이름 검색 실패 시 반환된 전체 목록에서 확인 후 character_id로 재호출하세요.',
     input_schema: {
       type: 'object',
       properties: {
         character_name: {
           type: 'string',
-          description: '조회할 캐릭터 이름 (한글 또는 영문, 부분 일치 가능. 예: "카야", "Kaya")',
+          description: '조회할 캐릭터 이름 (한글 또는 영문, 부분 일치). 이름 검색 실패 시 반환된 목록에서 character_id를 찾아 재호출.',
+        },
+        character_id: {
+          type: 'string',
+          description: 'PK ID로 직접 검색 (이름 검색 실패 후 목록에서 확인한 ID). 예: "1001"',
         },
       },
-      required: ['character_name'],
+      required: [],
     },
   },
   {
@@ -338,7 +342,7 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('사용자의 질문에 답하기 위해 아래 도구들을 적극 활용하세요:');
   lines.push('- query_game_data: 실제 게임 데이터를 SQL로 조회');
   lines.push('- show_table_schema: 테이블 구조/관계도를 ERD 카드로 시각화. 테이블 설명 시 반드시 호출. 관계도 요청 시 관련 테이블 여러 개 연속 호출 가능');
-  lines.push('- build_character_profile: 캐릭터명 → Character ID로 FK 연결된 모든 데이터 자동 수집 (스킬/패시브/스탯/이펙트 등). 캐릭터 기획서/프로파일 요청 시 반드시 먼저 호출.');
+  lines.push('- build_character_profile: 캐릭터명 → FK 연결 모든 데이터 자동 수집. 이름 검색 실패 시 전체 목록 반환 → character_id로 재호출. 캐릭터 기획서/프로파일 요청 시 반드시 먼저 호출.');
   lines.push('- query_git_history: 변경 이력 조회 (언제 무엇이 바뀌었는지)');
   lines.push('- show_revision_diff: 특정 커밋의 상세 변경 내용(DIFF) 시각화 (리비전 차이 확인 시 사용)');
   lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 및 채팅 임베드 (아이콘, UI 이미지 찾기 요청 시 사용)');
@@ -987,77 +991,109 @@ export async function sendChatMessage(
 
         // ── build_character_profile ──
         else if (tb.name === 'build_character_profile') {
-          const charName = String(inp.character_name ?? '');
+          const charName = String(inp.character_name ?? inp.character_id ?? '');
+          const directCharId = inp.character_id ? String(inp.character_id) : null;
           const t0 = performance.now();
           const resolvedSchema = schema ?? useSchemaStore.getState().schema;
 
-          if (!resolvedSchema || !charName) {
-            tc = { kind: 'character_profile', characterName: charName, charTableName: '', charPK: '', character: {}, connections: [], totalRelatedRows: 0, error: '스키마 또는 캐릭터명이 없습니다.', duration: 0 } as CharacterProfileResult;
-            resultStr = '오류: 스키마 또는 캐릭터명 없음';
+          if (!resolvedSchema) {
+            tc = { kind: 'character_profile', characterName: charName, charTableName: '', charPK: '', character: {}, connections: [], totalRelatedRows: 0, error: '스키마가 없습니다.', duration: 0 } as CharacterProfileResult;
+            resultStr = '오류: 스키마 없음';
           } else {
-            // 1. 캐릭터 테이블 탐색 (이름에 'character' 포함)
-            const charKeywords = ['character', 'char', '캐릭터'];
-            const charTable = resolvedSchema.tables.find(t =>
+            // 1. 캐릭터 테이블 탐색 — 'Character'처럼 정확한 이름 우선, 부분 매칭 후순위
+            const charKeywords = ['character', '캐릭터'];
+            const allMatchedTables = resolvedSchema.tables.filter(t =>
               charKeywords.some(k => t.name.toLowerCase().includes(k))
             );
+            // 정확히 'character'인 테이블 우선, 없으면 첫 번째 매칭
+            const charTable = allMatchedTables.find(t => t.name.toLowerCase() === 'character')
+              ?? allMatchedTables.find(t => t.name.toLowerCase() === 'characters')
+              ?? allMatchedTables[0];
 
             if (!charTable) {
               tc = { kind: 'character_profile', characterName: charName, charTableName: '', charPK: '', character: {}, connections: [], totalRelatedRows: 0, error: '캐릭터 테이블을 찾을 수 없습니다.' } as CharacterProfileResult;
               resultStr = '오류: 캐릭터 테이블 없음';
             } else {
-              // 2. 캐릭터 PK 컬럼 탐색 (소문자로 통일 — executeDataSQL이 컬럼명을 lowercase 정규화)
+              // 2. PK 컬럼 (소문자 — executeDataSQL이 컬럼명 소문자 정규화)
               const pkCol = (charTable.columns.find(c => c.isPrimaryKey)?.name ?? 'id').toLowerCase();
 
-              // 3. 캐릭터 이름으로 검색 — 컬럼명 소문자 필수 (alasql 저장 방식)
-              // 전략 1: name/이름 패턴 컬럼 우선
-              const nameColumns = charTable.columns
-                .filter(c => /name|이름/i.test(c.name))
-                .map(c => c.name.toLowerCase());
-              if (nameColumns.length === 0) nameColumns.push('name');
-
-              // 전략 2: 전체 컬럼 (영문명, 별칭 등 대비)
-              const allColumns = charTable.columns.map(c => c.name.toLowerCase());
-              const searchCols = [...new Set([...nameColumns, ...allColumns])];
-
-              const safeInput = charName.replace(/'/g, "''");
-
               let character: Record<string, unknown> | null = null;
-              for (const nc of searchCols) {
+
+              // 전략 0: character_id 직접 지정된 경우 PK로 바로 검색
+              if (directCharId) {
                 try {
                   const r = await executeDataSQL(
-                    // 컬럼명은 따옴표 없이 사용 (alasql 소문자 식별자)
-                    `SELECT * FROM "${charTable.name}" WHERE LOWER(${nc}) LIKE LOWER('%${safeInput}%') LIMIT 1`,
+                    `SELECT * FROM "${charTable.name}" WHERE ${pkCol} = '${directCharId.replace(/'/g, "''")}' LIMIT 1`,
                     tableData,
                   );
-                  if (r.rows.length > 0) { character = r.rows[0] as Record<string, unknown>; break; }
-                } catch { /* 비문자열 컬럼 등 스킵 */ }
-              }
-
-              // 전략 3: 모든 행을 가져와서 JS에서 필터 (인코딩 차이 등 최후 대비)
-              if (!character) {
-                try {
-                  const allRows = await executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 200`, tableData);
-                  const lowerInput = charName.toLowerCase();
-                  const found = allRows.rows.find(row =>
-                    Object.values(row as Record<string, unknown>).some(v =>
-                      typeof v === 'string' && v.toLowerCase().includes(lowerInput)
-                    )
-                  );
-                  if (found) character = found as Record<string, unknown>;
+                  if (r.rows.length > 0) character = r.rows[0] as Record<string, unknown>;
                 } catch { /* skip */ }
               }
 
-              if (!character) {
-                // 샘플 데이터를 포함해 Claude가 올바른 이름을 찾도록 hint 제공
-                let sampleHint = '';
-                try {
-                  const sample = await executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 5`, tableData);
-                  if (sample.rows.length > 0) {
-                    sampleHint = '\n캐릭터 테이블 샘플: ' + JSON.stringify(sample.rows.slice(0, 3));
+              if (!character && charName) {
+                // 전략 1: name/이름 패턴 컬럼에서 LIKE 검색
+                const nameColumns = charTable.columns
+                  .filter(c => /name|이름/i.test(c.name))
+                  .map(c => c.name.toLowerCase());
+                if (nameColumns.length === 0) nameColumns.push('name');
+
+                const safeInput = charName.replace(/'/g, "''");
+                for (const nc of nameColumns) {
+                  try {
+                    const r = await executeDataSQL(
+                      `SELECT * FROM "${charTable.name}" WHERE LOWER(${nc}) LIKE LOWER('%${safeInput}%') LIMIT 1`,
+                      tableData,
+                    );
+                    if (r.rows.length > 0) { character = r.rows[0] as Record<string, unknown>; break; }
+                  } catch { /* 비문자열 컬럼 스킵 */ }
+                }
+
+                // 전략 2: 전체 컬럼에서 LIKE 검색
+                if (!character) {
+                  const allColumns = charTable.columns.map(c => c.name.toLowerCase());
+                  for (const nc of allColumns) {
+                    try {
+                      const r = await executeDataSQL(
+                        `SELECT * FROM "${charTable.name}" WHERE LOWER(${nc}) LIKE LOWER('%${safeInput}%') LIMIT 1`,
+                        tableData,
+                      );
+                      if (r.rows.length > 0) { character = r.rows[0] as Record<string, unknown>; break; }
+                    } catch { /* skip */ }
                   }
-                } catch { /* skip */ }
-                tc = { kind: 'character_profile', characterName: charName, charTableName: charTable.name, charPK: pkCol, character: {}, connections: [], totalRelatedRows: 0, error: `"${charName}" 캐릭터를 찾을 수 없습니다. 캐릭터 이름이 정확한지 확인하세요.${sampleHint}`, duration: performance.now() - t0 } as CharacterProfileResult;
-                resultStr = `오류: "${charName}" 캐릭터 없음${sampleHint}`;
+                }
+
+                // 전략 3: JS 측 완전 탐색 (인코딩/특수문자 차이 대비)
+                if (!character) {
+                  try {
+                    const allRows = await executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 500`, tableData);
+                    const lowerInput = charName.toLowerCase();
+                    const found = allRows.rows.find(row =>
+                      Object.values(row as Record<string, unknown>).some(v =>
+                        typeof v === 'string' && v.toLowerCase().includes(lowerInput)
+                      )
+                    );
+                    if (found) character = found as Record<string, unknown>;
+                  } catch { /* skip */ }
+                }
+              }
+
+              if (!character) {
+                // 실패 시 — 전체 캐릭터 목록 반환 (Claude가 재호출할 수 있도록)
+                try {
+                  const allChars = await executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 100`, tableData);
+                  const charList = allChars.rows.map((row, i) => {
+                    const r = row as Record<string, unknown>;
+                    return `[${i + 1}] ${Object.entries(r).slice(0, 6).map(([k, v]) => `${k}=${v}`).join(', ')}`;
+                  }).join('\n');
+                  const errMsg = charName
+                    ? `"${charName}"을(를) 찾지 못했습니다. 아래 전체 목록에서 확인 후 character_id로 재호출하세요.\n\n${charTable.name} 전체 목록 (${allChars.rowCount}개):\n${charList}`
+                    : `character_name 또는 character_id를 입력하세요.\n\n${charTable.name} 전체 목록 (${allChars.rowCount}개):\n${charList}`;
+                  tc = { kind: 'character_profile', characterName: charName, charTableName: charTable.name, charPK: pkCol, character: {}, connections: [], totalRelatedRows: 0, error: errMsg, duration: performance.now() - t0 } as CharacterProfileResult;
+                  resultStr = errMsg;
+                } catch (err2) {
+                  tc = { kind: 'character_profile', characterName: charName, charTableName: charTable.name, charPK: pkCol, character: {}, connections: [], totalRelatedRows: 0, error: `캐릭터 검색 실패: ${String(err2)}`, duration: performance.now() - t0 } as CharacterProfileResult;
+                  resultStr = `캐릭터 검색 실패: ${String(err2)}`;
+                }
               } else {
                 const charId = character[pkCol];
 
