@@ -1704,7 +1704,99 @@ hr{border:none;border-top:1px solid #334155;margin:16px 0}
 // base href 를 parent origin 으로 설정
 try{document.getElementById('dynbase').href=parent.location.origin+'/';}catch(e){}
 </script>
+<script type="module" id="__fbx_viewer_init__"></script>
 </head><body></body></html>`;
+
+// ── FBX 인라인 뷰어 스크립트 ─────────────────────────────────────────────────
+// 아티팩트 HTML 안의 <a href="*.fbx"> 또는 <div class="fbx-viewer" data-src="...">를
+// Three.js CDN으로 인라인 3D 뷰어로 교체한다.
+const FBX_VIEWER_SCRIPT = `
+(function(){
+  var THREE_CDN   = 'https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js';
+  var FBX_CDN     = 'https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/loaders/FBXLoader.js';
+  var INFLATE_CDN = 'https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/libs/fflate.module.js';
+  var ORBIT_CDN   = 'https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/controls/OrbitControls.js';
+
+  function makePlaceholder(url, label) {
+    var d = document.createElement('div');
+    d.style.cssText = 'background:#0f1117;border:1px solid #334155;border-radius:8px;overflow:hidden;margin:8px 0;';
+    d.innerHTML =
+      '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#1e293b;">' +
+        '<span style="color:#818cf8;font-size:12px;font-family:monospace;">' + (label||url.split('/').pop().split('?').pop()) + '</span>' +
+        '<button data-fbx-url="'+url+'" style="background:#6366f1;color:#fff;border:none;border-radius:5px;padding:4px 12px;font-size:11px;cursor:pointer;">▶ 3D 뷰어</button>' +
+      '</div>' +
+      '<div class="fbx-canvas-wrap" style="display:none;height:380px;position:relative;"></div>';
+    return d;
+  }
+
+  function initViewer(wrap, url) {
+    wrap.style.display = 'block';
+    import(THREE_CDN).then(function(THREE) {
+      var scene    = new THREE.Scene(); scene.background = new THREE.Color(0x1a1b26);
+      var camera   = new THREE.PerspectiveCamera(60, wrap.clientWidth/380, 0.1, 10000);
+      camera.position.set(0,150,300);
+      var renderer = new THREE.WebGLRenderer({antialias:true});
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(wrap.clientWidth, 380);
+      wrap.appendChild(renderer.domElement);
+      scene.add(new THREE.AmbientLight(0xffffff,0.8));
+      var dl = new THREE.DirectionalLight(0xffffff,0.6); dl.position.set(1,2,1); scene.add(dl);
+      Promise.all([import(FBX_CDN), import(ORBIT_CDN)]).then(function(mods){
+        var FBXLoader     = mods[0].FBXLoader;
+        var OrbitControls = mods[1].OrbitControls;
+        var ctrl = new OrbitControls(camera, renderer.domElement);
+        ctrl.enableDamping = true;
+        new FBXLoader().load(url, function(obj){
+          var box = new THREE.Box3().setFromObject(obj);
+          var c   = box.getCenter(new THREE.Vector3());
+          var s   = box.getSize(new THREE.Vector3());
+          var sc  = 150/Math.max(s.x,s.y,s.z);
+          obj.scale.setScalar(sc); obj.position.sub(c.multiplyScalar(sc));
+          scene.add(obj);
+          camera.position.set(0, s.y*sc*0.6, s.z*sc*1.8);
+          ctrl.target.set(0,0,0); ctrl.update();
+          (function animate(){ requestAnimationFrame(animate); ctrl.update(); renderer.render(scene,camera); })();
+        }, undefined, function(e){ wrap.innerHTML='<div style="color:#f87171;padding:12px;font-size:12px;">FBX 로드 실패: '+e.message+'</div>'; });
+      });
+    });
+  }
+
+  function convertLinks() {
+    // 1) <a href="...fbx..."> → placeholder
+    document.querySelectorAll('a[href*=".fbx"], a[href*="assets/file"]').forEach(function(a){
+      var href = a.getAttribute('href');
+      if (!href || !href.match(/\\.fbx|assets\\/file/i)) return;
+      var label = a.textContent.trim() || a.querySelector('img')? (a.querySelector('img')? '' : a.textContent) : '';
+      var ph = makePlaceholder(href, a.title || label || null);
+      a.parentNode.replaceChild(ph, a);
+    });
+    // 2) <div class="fbx-viewer" data-src="..."> → placeholder
+    document.querySelectorAll('.fbx-viewer[data-src], div[data-fbx]').forEach(function(d){
+      var url = d.getAttribute('data-src') || d.getAttribute('data-fbx');
+      if (!url) return;
+      var ph = makePlaceholder(url, d.getAttribute('data-label') || null);
+      d.parentNode.replaceChild(ph, d);
+    });
+    // 버튼 클릭 이벤트
+    document.addEventListener('click', function(e){
+      var btn = e.target.closest('button[data-fbx-url]');
+      if (!btn) return;
+      var url  = btn.getAttribute('data-fbx-url');
+      var wrap = btn.closest('div').nextElementSibling;
+      if (wrap && wrap.classList.contains('fbx-canvas-wrap')) {
+        btn.style.display = 'none';
+        initViewer(wrap, url);
+      }
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', convertLinks);
+  } else {
+    convertLinks();
+  }
+})();
+`;
 
 // 이미지 onerror smart fallback 스크립트 (경로 틀려도 파일명으로 재시도)
 const IMG_ONERROR_SCRIPT = `
@@ -1776,6 +1868,11 @@ function ArtifactSidePanel({
     const doc = streamIframeRef.current?.contentDocument;
     if (!doc?.body) return;
     doc.body.innerHTML = html || '';
+    // FBX 뷰어 스크립트 inject (완성 직전 혹은 스트리밍 중에도 대비)
+    const existing = doc.getElementById('__fbx_viewer_init__');
+    if (existing && !existing.textContent) {
+      existing.textContent = FBX_VIEWER_SCRIPT;
+    }
   });
 
   // finalTc 완료 시 blob URL 생성
@@ -1786,7 +1883,7 @@ function ArtifactSidePanel({
     const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
     const fullHtml = resolved.includes('<!DOCTYPE') || resolved.includes('<html')
       ? resolved
-      : `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">${base}<title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}ul,ol{padding-left:1.4em;margin:.4em 0}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}</head><body>${resolved}</body></html>`;
+      : `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">${base}<title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}ul,ol{padding-left:1.4em;margin:.4em 0}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script><script type="module">${FBX_VIEWER_SCRIPT}</script>${MERMAID_INIT_SCRIPT}</head><body>${resolved}</body></html>`;
     const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     setCompleteBlobUrl(url);
