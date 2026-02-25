@@ -283,6 +283,7 @@ interface Message {
   error?: string;
   liveToolCalls?: ToolCallResult[]; // 스트리밍 중 실시간 tool_calls
   artifactProgress?: { html: string; title: string; charCount: number }; // 아티팩트 생성 진행
+  isTruncated?: boolean; // max_tokens로 잘린 응답 (계속 생성 버튼 표시용)
 }
 
 // ── localStorage 캐시 키 ──────────────────────────────────────────────────────
@@ -2307,7 +2308,7 @@ function ThinkingIndicator({ liveToolCalls }: { liveToolCalls?: ToolCallResult[]
 
 // ── 메시지 버블 ──────────────────────────────────────────────────────────────
 
-function MessageBubble({ msg }: { msg: Message }) {
+function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => void }) {
   const isUser = msg.role === 'user';
 
   return (
@@ -2404,6 +2405,32 @@ function MessageBubble({ msg }: { msg: Message }) {
               )}
               {/* 본문 */}
               {renderMarkdown(msg.content)}
+
+              {/* 잘린 응답 → 계속 생성 버튼 */}
+              {msg.isTruncated && (
+                <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-color)' }}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: '#f59e0b', flexShrink: 0 }}>
+                      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                      <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                    <span className="text-[11px]" style={{ color: '#f59e0b' }}>응답이 잘렸습니다 — 이전에 조회된 데이터를 재활용해 계속 생성할 수 있습니다.</span>
+                  </div>
+                  {onContinue && (
+                    <button
+                      onClick={onContinue}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium hover:opacity-80 transition-opacity"
+                      style={{ background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.4)', color: '#818cf8' }}
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                        <polyline points="5 12 12 19 19 12"/>
+                        <polyline points="5 5 12 12 19 5"/>
+                      </svg>
+                      이어서 생성하기
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -2539,7 +2566,7 @@ export default function ChatPage() {
     const loadingId = loadingMsg.id;
 
     try {
-      const { content, toolCalls } = await sendChatMessage(
+      const { content, toolCalls, rawMessages } = await sendChatMessage(
         text.trim(),
         historyRef.current,
         schema,
@@ -2587,18 +2614,19 @@ export default function ChatPage() {
         },
       );
 
-      // history 갱신
+      // history 갱신 (max_tokens로 잘린 경우 rawMessages 포함 → 계속해줘 지원)
+      const isTruncated = !!rawMessages; // rawMessages가 있으면 max_tokens로 잘린 응답
       historyRef.current = [
         ...historyRef.current,
         { id: userMsg.id, role: 'user' as const, content: text.trim(), timestamp: userMsg.timestamp },
-        { id: loadingId, role: 'assistant' as const, content, toolCalls, timestamp: new Date() },
+        { id: loadingId, role: 'assistant' as const, content, toolCalls, rawMessages, timestamp: new Date() },
       ].slice(-20); // 최근 20턴만 유지
 
       // 로딩 메시지를 실제 응답으로 교체
       setMessages((prev) =>
         prev.map((m) =>
           m.id === loadingId
-            ? { ...m, content, toolCalls, isLoading: false, liveToolCalls: undefined, artifactProgress: undefined }
+            ? { ...m, content, toolCalls, isTruncated, isLoading: false, liveToolCalls: undefined, artifactProgress: undefined }
             : m,
         ),
       );
@@ -2825,8 +2853,17 @@ export default function ChatPage() {
               </div>
             )}
 
-            {messages.map((msg) => (
-              <MessageBubble key={msg.id} msg={msg} />
+            {messages.map((msg, idx) => (
+              <MessageBubble
+                key={msg.id}
+                msg={msg}
+                onContinue={
+                  // 마지막 assistant 메시지가 잘린 경우에만 버튼 활성화
+                  msg.isTruncated && !isLoading && idx === messages.length - 1
+                    ? () => sendMessage('계속해서 아티팩트를 완성해주세요. 이미 조회된 데이터를 재활용하세요.')
+                    : undefined
+                }
+              />
             ))}
 
             <div ref={bottomRef} />

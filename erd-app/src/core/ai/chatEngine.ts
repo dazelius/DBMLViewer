@@ -167,6 +167,8 @@ export interface ChatTurn {
   content: string;
   toolCalls?: ToolCallResult[];
   timestamp: Date;
+  /** max_tokens로 잘린 경우 tool_use/tool_result 전체 컨텍스트 저장 (계속해줘 지원) */
+  rawMessages?: ClaudeMsg[];
 }
 
 // ── Claude Tool 정의 ─────────────────────────────────────────────────────────
@@ -545,13 +547,33 @@ interface ClaudeResponse {
   stop_reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence';
 }
 
-type ClaudeMsg =
+export type ClaudeMsg =
   | { role: 'user' | 'assistant'; content: string }
   | { role: 'user'; content: { type: 'tool_result'; tool_use_id: string; content: string }[] }
   | { role: 'assistant'; content: ContentBlock[] };
 
+/**
+ * ChatTurn → Claude API messages 변환
+ * rawMessages가 있는 assistant 턴은 전체 tool_use/tool_result 교환을 복원합니다.
+ */
 function historyToMessages(history: ChatTurn[]): ClaudeMsg[] {
-  return history.map((t) => ({ role: t.role, content: t.content }));
+  const result: ClaudeMsg[] = [];
+  let i = 0;
+  while (i < history.length) {
+    const turn = history[i];
+    // user 턴 + 다음 assistant 턴에 rawMessages가 있으면 → 전체 교환 복원
+    if (turn.role === 'user' && i + 1 < history.length) {
+      const next = history[i + 1];
+      if (next.role === 'assistant' && next.rawMessages && next.rawMessages.length > 0) {
+        result.push(...next.rawMessages);
+        i += 2;
+        continue;
+      }
+    }
+    result.push({ role: turn.role as 'user' | 'assistant', content: turn.content });
+    i++;
+  }
+  return result;
 }
 
 // ── SSE 스트리밍 파서 ────────────────────────────────────────────────────────
@@ -743,7 +765,7 @@ export async function sendChatMessage(
   onToolCall?: (tc: ToolCallResult, index: number) => void,
   onTextDelta?: (delta: string, fullText: string) => void,
   onArtifactProgress?: (html: string, title: string, charCount: number) => void,
-): Promise<{ content: string; toolCalls: ToolCallResult[] }> {
+): Promise<{ content: string; toolCalls: ToolCallResult[]; rawMessages?: ClaudeMsg[] }> {
   // 컴포넌트가 아직 로딩 중일 때 schema가 null일 수 있으므로 스토어에서 fallback
   const effectiveSchema = schema ?? useSchemaStore.getState().schema;
   const systemPrompt = buildSystemPrompt(effectiveSchema, tableData);
@@ -1273,12 +1295,39 @@ HTML 레이아웃: 캐릭터 헤더 → 연결 데이터 노드들 (사이트맵
       continue;
     }
 
-    // max_tokens 등 기타
-    const text = data.content
+    // ── max_tokens : 응답 잘림 처리 ──────────────────────────────────────────
+    const truncatedText = data.content
       .filter((b): b is TextBlock => b.type === 'text')
       .map((b) => b.text)
       .join('\n');
-    return { content: text || '(응답이 잘렸습니다)', toolCalls: allToolCalls };
+
+    const hasFetchedData = allToolCalls.some(
+      (tc) => tc.kind === 'data_query' || tc.kind === 'schema_card' || tc.kind === 'character_profile',
+    );
+    const hasArtifact = allToolCalls.some((tc) => tc.kind === 'artifact');
+
+    // 데이터 수집 완료 & 아티팩트 미생성 → 자동으로 create_artifact 재촉
+    if (hasFetchedData && !hasArtifact && i < MAX_ITERATIONS - 1) {
+      console.log('[Chat] max_tokens 감지: 데이터 수집 완료, 아티팩트 자동 재시도');
+      messages.push({ role: 'assistant', content: data.content });
+      messages.push({
+        role: 'user',
+        content:
+          '수집한 데이터를 바탕으로 즉시 create_artifact 툴을 호출하여 HTML 문서를 생성해주세요. ' +
+          '추가 데이터 조회 없이 현재 데이터만으로 바로 아티팩트를 만들어주세요. ' +
+          '긴 HTML보다는 핵심 내용을 간결하게 담아 토큰을 아껴주세요.',
+      });
+      continue;
+    }
+
+    // 자동 계속 불가 → rawMessages 저장하여 '계속해줘' 지원
+    messages.push({ role: 'assistant', content: data.content });
+    console.log('[Chat] max_tokens: rawMessages 저장 (계속해줘 지원)');
+    return {
+      content: truncatedText || '(응답이 잘렸습니다)',
+      toolCalls: allToolCalls,
+      rawMessages: messages, // tool_use/tool_result 전체 컨텍스트 보존
+    };
   }
 
   return {
