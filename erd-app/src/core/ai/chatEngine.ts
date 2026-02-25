@@ -1323,8 +1323,10 @@ export async function sendChatMessage(
   ];
 
   const allToolCalls: ToolCallResult[] = [];
-  const MAX_ITERATIONS = 10;
+  const MAX_ITERATIONS = 12;
   let accumulatedText = '';
+  let totalText = ''; // max_tokens 자동 계속 시 누적 텍스트
+  let continuationCount = 0; // 자동 계속 횟수
 
   const requestBase = {
     model: 'claude-opus-4-5',
@@ -1347,7 +1349,8 @@ export async function sendChatMessage(
           { ...requestBase, messages: safeMessages },
           (delta) => {
             accumulatedText += delta;
-            onTextDelta?.(delta, accumulatedText);
+            // 자동 계속 중이면 누적 텍스트 기준으로 콜백
+            onTextDelta?.(delta, continuationCount > 0 ? totalText + accumulatedText : accumulatedText);
           },
           onArtifactProgress,
         );
@@ -1371,6 +1374,9 @@ export async function sendChatMessage(
         .map((b) => b.text)
         .join('\n');
 
+      // 자동 계속 중이었으면 이전 텍스트와 합치기
+      const finalText = continuationCount > 0 ? totalText + text : text;
+
       // 아티팩트 선언만 하고 툴을 호출하지 않은 경우 → 강제로 재요청
       const ARTIFACT_INTENT = /생성하겠습니다|만들겠습니다|작성하겠습니다|뽑겠습니다|정리하겠습니다/;
       const hasArtifactIntent = ARTIFACT_INTENT.test(text);
@@ -1389,7 +1395,7 @@ export async function sendChatMessage(
         continue;
       }
 
-      return { content: text, toolCalls: allToolCalls };
+      return { content: finalText, toolCalls: allToolCalls };
     }
 
     // ── 도구 호출 처리 ──
@@ -2334,27 +2340,43 @@ function showTab(id){
       }
     };
 
-    // 데이터 수집 완료 & 아티팩트 미생성 → 자동으로 create_artifact 재촉
-    if (hasFetchedData && !hasArtifact && i < MAX_ITERATIONS - 1) {
-      console.log('[Chat] max_tokens 감지: 데이터 수집 완료, 아티팩트 자동 재시도');
+    // 자동 계속 가능한 경우 (이터레이션 여유 있음)
+    if (i < MAX_ITERATIONS - 1) {
       pushAssistantWithOrphanFix(messages);
-      messages.push({
-        role: 'user',
-        content:
-          '수집한 데이터를 바탕으로 즉시 create_artifact 툴을 호출하여 HTML 문서를 생성해주세요. ' +
-          '추가 데이터 조회 없이 현재 데이터만으로 바로 아티팩트를 만들어주세요. ' +
-          '긴 HTML보다는 핵심 내용을 간결하게 담아 토큰을 아껴주세요.',
-      });
+
+      // 데이터 수집 완료 & 아티팩트 미생성 → create_artifact 재촉
+      if (hasFetchedData && !hasArtifact) {
+        console.log('[Chat] max_tokens 감지: 데이터 수집 완료, 아티팩트 자동 재시도');
+        messages.push({
+          role: 'user',
+          content:
+            '수집한 데이터를 바탕으로 즉시 create_artifact 툴을 호출하여 HTML 문서를 생성해주세요. ' +
+            '추가 데이터 조회 없이 현재 데이터만으로 바로 아티팩트를 만들어주세요. ' +
+            '긴 HTML보다는 핵심 내용을 간결하게 담아 토큰을 아껴주세요.',
+        });
+      } else {
+        // 일반 텍스트 잘림 → 누적 후 자동 계속
+        if (truncatedText) {
+          totalText += truncatedText;
+        }
+        continuationCount++;
+        console.log(`[Chat] max_tokens 감지: 텍스트 자동 계속 ${continuationCount}회 (누적 ${totalText.length}자)`);
+        messages.push({
+          role: 'user',
+          content: '이어서 계속 작성해주세요. 바로 이전 텍스트 뒤부터 자연스럽게 이어서 작성하세요. 중복 없이 바로 이어주세요.',
+        });
+      }
       continue;
     }
 
-    // 자동 계속 불가 → rawMessages 저장하여 '계속해줘' 지원
+    // 마지막 이터레이션에서도 잘린 경우 → rawMessages 저장하여 '계속해줘' 지원
     pushAssistantWithOrphanFix(messages);
-    console.log('[Chat] max_tokens: rawMessages 저장 (계속해줘 지원)');
+    const finalTruncatedText = continuationCount > 0 ? totalText + truncatedText : truncatedText;
+    console.log('[Chat] max_tokens: 최대 이터레이션 도달, rawMessages 저장');
     return {
-      content: truncatedText || '(응답이 잘렸습니다)',
+      content: finalTruncatedText || '(응답이 잘렸습니다)',
       toolCalls: allToolCalls,
-      rawMessages: messages, // tool_use/tool_result 전체 컨텍스트 보존
+      rawMessages: messages, // tool_use/tool_result 전체 컨텍스트 보존 (추가 계속 지원)
     };
   }
 
