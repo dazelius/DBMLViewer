@@ -2305,6 +2305,9 @@ export default function ChatPage() {
     finalTc?: ArtifactResult;
   } | null>(null);
 
+  // 생성된 아티팩트 목록 (사이드바용)
+  const [savedArtifacts, setSavedArtifacts] = useState<{ id: string; title: string; tc: ArtifactResult; createdAt: Date }[]>([]);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // historyRef: Claude API에 넘길 대화 이력 — localStorage에서 복원
@@ -2447,6 +2450,12 @@ export default function ChatPage() {
         setArtifactPanel((prev) =>
           prev ? { ...prev, isComplete: true, finalTc: artifactTc } : { html: artifactTc.html ?? '', title: artifactTc.title ?? '', charCount: (artifactTc.html ?? '').length, isComplete: true, finalTc: artifactTc },
         );
+        // 사이드바 목록에도 저장
+        const artifactId = `artifact-${Date.now()}`;
+        setSavedArtifacts((prev) => [
+          { id: artifactId, title: artifactTc.title ?? '문서', tc: artifactTc, createdAt: new Date() },
+          ...prev,
+        ]);
       } else if (artifactPanel) {
         // 아티팩트가 없으면 패널 그대로 유지 (에러 케이스에서도 보이도록)
       }
@@ -2527,6 +2536,39 @@ export default function ChatPage() {
               </div>
             )}
           </div>
+
+          {/* 생성된 문서 목록 */}
+          {savedArtifacts.length > 0 && (
+            <div className="px-3 pt-3 pb-1" style={{ borderBottom: '1px solid var(--border-color)' }}>
+              <div className="text-[11px] font-semibold uppercase tracking-wider mb-2 px-1" style={{ color: 'var(--text-muted)' }}>
+                생성된 문서
+              </div>
+              <div className="space-y-1 max-h-48 overflow-y-auto">
+                {savedArtifacts.map((art) => (
+                  <button
+                    key={art.id}
+                    onClick={() => setArtifactPanel({ html: art.tc.html ?? '', title: art.title, charCount: (art.tc.html ?? '').length, isComplete: true, finalTc: art.tc })}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left interactive group"
+                    style={{ background: artifactPanel?.finalTc === art.tc ? 'rgba(99,102,241,0.15)' : 'transparent' }}
+                    title={art.title}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                         style={{ color: 'var(--accent)', flexShrink: 0 }}>
+                      <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                    </svg>
+                    <span className="text-[11px] truncate flex-1" style={{ color: 'var(--text-secondary)' }}>
+                      {art.title}
+                    </span>
+                    <span className="text-[9px] flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                          style={{ color: 'var(--text-muted)' }}>
+                      {art.createdAt.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* 최근 대화 요약 */}
           <div className="flex-1 overflow-y-auto px-3 py-3">
