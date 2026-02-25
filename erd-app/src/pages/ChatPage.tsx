@@ -20,6 +20,7 @@ import {
   type CharacterProfileResult,
   type CodeSearchResult,
   type CodeFileResult,
+  type CodeGuideResult,
   type DiffFile,
   type DiffHunk,
 } from '../core/ai/chatEngine.ts';
@@ -2542,6 +2543,56 @@ function CodeFileCard({ tc }: { tc: CodeFileResult }) {
   );
 }
 
+function CodeGuideCard({ tc }: { tc: CodeGuideResult }) {
+  const [expanded, setExpanded] = useState(false);
+  const isError = !!tc.error;
+  const lineCount = tc.text.split('\n').length;
+
+  return (
+    <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${isError ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.3)'}` }}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left"
+        style={{ background: 'transparent' }}
+      >
+        {/* 책 아이콘 */}
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: '#818cf8', flexShrink: 0 }}>
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+        </svg>
+        <span className="text-[11px] font-medium flex-1 min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
+          {tc.label}
+        </span>
+        <span className="text-[10px] px-2 py-0.5 rounded-full flex-shrink-0" style={{
+          background: isError ? 'rgba(239,68,68,0.15)' : 'rgba(99,102,241,0.15)',
+          color: isError ? '#f87171' : '#818cf8',
+        }}>
+          {isError ? '오류' : `${lineCount}줄`}
+        </span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="flex-shrink-0"
+          style={{ color: 'var(--text-muted)', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-3">
+          <div
+            className="text-[11px] font-mono overflow-auto rounded-md p-3 max-h-[480px] leading-[1.6] whitespace-pre-wrap"
+            style={{
+              background: 'var(--bg-primary)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-secondary)',
+              fontFamily: '"JetBrains Mono","Cascadia Code","Consolas",monospace',
+            }}
+          >
+            {tc.text}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'schema_card') return <TableSchemaCard tc={tc} />;
   if (tc.kind === 'git_history') return <GitHistoryCard tc={tc} />;
@@ -2551,6 +2602,7 @@ function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'character_profile') return <CharacterProfileCard tc={tc} />;
   if (tc.kind === 'code_search') return <CodeSearchCard tc={tc} />;
   if (tc.kind === 'code_file') return <CodeFileCard tc={tc} />;
+  if (tc.kind === 'code_guide') return <CodeGuideCard tc={tc} />;
   return <DataQueryCard tc={tc} index={index} />;
 }
 

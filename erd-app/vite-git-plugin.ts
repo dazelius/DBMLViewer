@@ -476,6 +476,57 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
+    // ── /api/code/guides : 가이드 파일 목록 ────────────────────────────────────
+    if (req.url?.startsWith('/api/code/guides')) {
+      const guidesDir = join(CODE_DIR, '_guides')
+      if (!existsSync(guidesDir)) {
+        sendJson(res, 200, { guides: [], message: 'No guides found. Run generate_code_guides.ps1 first.' })
+        return
+      }
+      const files = readdirSync(guidesDir)
+        .filter(f => f.endsWith('.md'))
+        .map(f => {
+          const stat = statSync(join(guidesDir, f))
+          return { name: f.replace('.md', ''), sizeKB: Math.round(stat.size / 1024 * 10) / 10 }
+        })
+        .sort((a, b) => a.name.localeCompare(b.name))
+      sendJson(res, 200, { guides: files })
+      return
+    }
+
+    // ── /api/code/guide : 가이드 파일 내용 ──────────────────────────────────────
+    if (req.url?.startsWith('/api/code/guide')) {
+      const url = new URL(req.url, 'http://localhost')
+      const name = (url.searchParams.get('name') || '_OVERVIEW').replace(/[^a-zA-Z0-9_\-]/g, '')
+      const guidesDir = join(CODE_DIR, '_guides')
+      const guidePath = join(guidesDir, `${name}.md`)
+
+      if (!existsSync(guidePath)) {
+        // 유사한 이름 찾기
+        const available = existsSync(guidesDir)
+          ? readdirSync(guidesDir).filter(f => f.endsWith('.md')).map(f => f.replace('.md', ''))
+          : []
+        sendJson(res, 404, {
+          error: `Guide '${name}' not found`,
+          available,
+          hint: 'Run generate_code_guides.ps1 to generate guides',
+        })
+        return
+      }
+
+      const MAX_GUIDE_SIZE = 200 * 1024 // 200KB
+      let content = readFileSync(guidePath, 'utf-8')
+      if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1) // BOM 제거
+      let truncated = false
+      if (content.length > MAX_GUIDE_SIZE) {
+        content = content.slice(0, MAX_GUIDE_SIZE)
+        truncated = true
+      }
+
+      sendJson(res, 200, { name, content, sizeKB: Math.round(content.length / 1024 * 10) / 10, truncated })
+      return
+    }
+
     // ── /api/published : 출판된 문서 목록 (GET) ────────────────────────────────
     if (req.url === '/api/published' && req.method === 'GET') {
       sendJson(res, 200, readPublishedIndex())

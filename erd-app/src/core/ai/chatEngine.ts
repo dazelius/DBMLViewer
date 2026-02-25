@@ -205,7 +205,14 @@ export interface CharacterProfileResult {
   duration?: number;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult;
+export interface CodeGuideResult {
+  kind: 'code_guide';
+  label: string;
+  text: string;
+  error?: string;
+}
+
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -352,6 +359,28 @@ const TOOLS = [
     },
   },
   {
+    name: 'read_code_guide',
+    description:
+      'C# 코드베이스 가이드 문서를 읽습니다. ' +
+      '코드 분석 시 search_code보다 먼저 이 툴로 전체 구조를 파악하세요. ' +
+      '빈 name으로 호출하면 사용 가능한 가이드 목록을 반환합니다. ' +
+      '_OVERVIEW: 전체 폴더구조·네임스페이스·도메인 목록. ' +
+      '_Skill: 스킬 시스템 파일/클래스/메서드. ' +
+      '_Weapon: 무기 시스템. _Character: 캐릭터 시스템. _Combat: 전투 시스템. ' +
+      '_Network: 네트워크. _UI: UI. _Manager: 매니저·컨트롤러 등.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description:
+            '읽을 가이드 이름. 예: "_OVERVIEW"(전체 개요), "_Skill", "_Weapon", "_Character", "_Combat", "_Network", "_UI", "_Manager", "_Data", "_AI", "_Effect", "_Item", "_Map", "_Animation", "_Audio", "_Camera". 빈 문자열("")이면 사용 가능한 가이드 목록 반환.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'search_code',
     description:
       '게임 클라이언트 C# 소스코드를 검색합니다. ' +
@@ -487,6 +516,7 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 및 채팅 임베드 (아이콘, UI 이미지 찾기 요청 시 사용)');
   lines.push('- create_artifact: 수집된 데이터로 완성된 HTML 문서/보고서 생성 (전체화면 프리뷰, PDF 저장 가능)');
   lines.push('- patch_artifact: ⭐ 기존 아티팩트 수정 시 사용 (find/replace 패치만 반환 → 토큰 90% 절약)');
+  lines.push('- read_code_guide: ⭐ 코드 분석 시작점. 코드베이스 가이드 MD 읽기. name="" 로 목록, "_OVERVIEW" 로 전체 구조, "_Skill"/"_Weapon" 등으로 도메인별 파일·클래스·메서드 목록.');
   lines.push('- search_code: C# 게임 클라이언트 소스코드 검색 (클래스/메서드/파일명/내용 전문검색). 코드 구현 방식, 로직, 버그 분석 시 사용.');
   lines.push('- read_code_file: 특정 .cs 파일 전체 내용 읽기. search_code로 경로 확인 후 호출.');
   lines.push('');
@@ -510,7 +540,10 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- 반드시 먼저 다른 툴로 데이터를 충분히 수집한 후 create_artifact를 마지막에 호출하세요.');
   lines.push('- html 파라미터: <!DOCTYPE html> 없이 <body> 내용만 작성 (간결하게 500줄 이내).');
   lines.push('[C# 코드 분석 규칙]');
-  lines.push('- 코드 관련 질문 (구현 방식, 로직, 버그, 특정 시스템 동작): search_code → 필요 시 read_code_file 순서로 호출.');
+  lines.push('- ⭐ 코드 분석 시작 전: read_code_guide(name="_OVERVIEW") 로 전체 폴더 구조를 먼저 파악하세요.');
+  lines.push('- 특정 시스템 분석 시: read_code_guide(name="_Skill"), read_code_guide(name="_Weapon") 등 도메인 가이드를 먼저 읽으세요.');
+  lines.push('- 가이드에서 파일 경로·클래스명·메서드명을 확인한 뒤 search_code 또는 read_code_file로 구체적인 코드를 확인하세요.');
+  lines.push('- 코드 관련 질문 (구현 방식, 로직, 버그, 특정 시스템 동작): read_code_guide → search_code → 필요 시 read_code_file 순서로 호출.');
   lines.push('- 클래스 검색: search_code(query="ClassName", type="class")');
   lines.push('- 메서드 검색: search_code(query="MethodName", type="method")');
   lines.push('- 내용 전문검색: search_code(query="keyword", type="content")');
@@ -1506,6 +1539,42 @@ function showTab(id){
 위 방식으로 각 연결 테이블마다 탭을 추가하세요.`;
               }
             }
+          }
+        }
+
+        // ── read_code_guide ──
+        else if (tb.name === 'read_code_guide') {
+          const guideName = String(inp.name ?? '').trim();
+          const t0 = performance.now();
+          try {
+            if (!guideName) {
+              // 목록 반환
+              const resp = await fetch('/api/code/guides');
+              const data = await resp.json() as { guides: { name: string; sizeKB: number }[]; message?: string };
+              const duration = performance.now() - t0;
+              if (data.message) {
+                resultStr = `가이드 없음: ${data.message}`;
+              } else {
+                const list = data.guides.map(g => `- ${g.name}  (${g.sizeKB} KB)`).join('\n');
+                resultStr = `사용 가능한 코드 가이드 (${data.guides.length}개):\n${list}\n\n먼저 _OVERVIEW를 읽어 전체 구조를 파악하세요. (${duration.toFixed(0)}ms)`;
+              }
+              tc = { kind: 'code_guide', label: '코드 가이드 목록', text: resultStr };
+            } else {
+              const resp = await fetch(`/api/code/guide?name=${encodeURIComponent(guideName)}`);
+              const data = await resp.json() as { name?: string; content?: string; sizeKB?: number; truncated?: boolean; error?: string; available?: string[] };
+              const duration = performance.now() - t0;
+              if (!resp.ok || data.error) {
+                const avail = data.available ? `\n사용 가능: ${data.available.join(', ')}` : '';
+                resultStr = `가이드 '${guideName}' 없음.${avail}`;
+              } else {
+                const truncNote = data.truncated ? `\n\n[주의: 파일이 너무 커서 앞 200KB만 반환됨]` : '';
+                resultStr = `# 코드 가이드: ${data.name}  (${data.sizeKB} KB, ${duration.toFixed(0)}ms)\n\n${data.content}${truncNote}`;
+              }
+              tc = { kind: 'code_guide', label: `코드 가이드: ${guideName}`, text: resultStr };
+            }
+          } catch (e) {
+            resultStr = `가이드 로드 실패: ${String(e)}`;
+            tc = { kind: 'code_guide', label: '코드 가이드 오류', text: resultStr, error: String(e) };
           }
         }
 
