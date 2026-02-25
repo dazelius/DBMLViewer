@@ -7,7 +7,7 @@
  *   quaternion: (-x, -y, z, w)
  *   scale:      (x,  y,  z)   ← 변경 없음
  */
-import { useEffect, useRef, useState, lazy, Suspense } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { TGALoader } from 'three/examples/jsm/loaders/TGALoader.js';
@@ -81,7 +81,7 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setSize(w, h)
     renderer.shadowMap.enabled = true
-    renderer.shadowMap.type    = THREE.PCFSoftShadowMap
+    renderer.shadowMap.type    = THREE.PCFShadowMap   // PCFSoftShadowMap deprecated in r170+
     renderer.outputColorSpace  = THREE.SRGBColorSpace
     renderer.toneMapping       = THREE.ACESFilmicToneMapping
     renderer.toneMappingExposure = 1.2
@@ -120,12 +120,10 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
     const grid = new THREE.GridHelper(1000, 50, 0x1e293b, 0x1e293b)
     scene.add(grid)
 
-    // 애니메이션 루프
+    // 애니메이션 루프 (THREE.Clock deprecated in r170+ → 단순 rAF)
     let animId = 0
-    const clock = new THREE.Clock()
     const animate = () => {
       animId = requestAnimationFrame(animate)
-      clock.getDelta() // tick (no mixer needed for scene overview)
       controls.update()
       renderer.render(scene, camera)
     }
@@ -141,9 +139,7 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
     const ro = new ResizeObserver(onResize)
     ro.observe(el)
 
-    // TGA 로더 등록
-    const tgaLoader = new TGALoader()
-    THREE.DefaultLoadingManager.addHandler(/\.tga$/i, tgaLoader)
+    // TGALoader는 loadingManager 생성 시점에 등록 (아래 async 블록에서)
 
     // ── 씬 데이터 로드 ───────────────────────────────────────────────────────
     ;(async () => {
@@ -165,10 +161,33 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
           return
         }
 
+        // ── 커스텀 LoadingManager: FBX 내부 텍스처 경로를 /api/assets/smart 로 리다이렉트 ──
+        // FBXLoader는 FBX 파일 안에 내장된 텍스처 파일명(예: SafetyZone_Ems.png)을
+        // 로더의 basePath 기준으로 해석하는데, /api/assets/file?path=... 형태의 URL에서
+        // basePath 추출이 잘못되어 /api/assets/SafetyZone_Ems.png → 404가 발생.
+        // setURLModifier로 모든 상대 경로를 smart 검색 API로 우회함.
+        const loadingManager = new THREE.LoadingManager()
+        loadingManager.setURLModifier((url: string) => {
+          // 이미 API URL이거나 절대 URL이면 그대로
+          if (
+            url.startsWith('/api/') ||
+            url.startsWith('http://') ||
+            url.startsWith('https://') ||
+            url.startsWith('data:') ||
+            url.startsWith('blob:')
+          ) return url
+          // 상대 경로 → 파일명만 추출해서 smart 검색
+          const filename = url.split(/[/\\]/).pop() ?? url
+          return `/api/assets/smart?name=${encodeURIComponent(filename)}`
+        })
+        // TGA 핸들러를 커스텀 매니저에 등록
+        const tgaLoaderManaged = new TGALoader(loadingManager)
+        loadingManager.addHandler(/\.tga$/i, tgaLoaderManaged)
+
         // ── FBX 공유 캐시 (같은 경로의 FBX는 한 번만 로드, geometry 공유) ────
         const fbxCache: Record<string, THREE.Group> = {}
-        const fbxLoader = new FBXLoader()
-        const texLoader  = new THREE.TextureLoader()
+        const fbxLoader = new FBXLoader(loadingManager)
+        const texLoader  = new THREE.TextureLoader(loadingManager)
 
         const loadFbx = (url: string): Promise<THREE.Group> => {
           if (fbxCache[url]) return Promise.resolve(fbxCache[url].clone())
@@ -181,8 +200,8 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
           if (!apiUrl) return Promise.resolve(null)
           return new Promise((resolve) => {
             const isTga = /\.tga$/i.test(apiUrl)
-            const ldr = isTga ? tgaLoader : texLoader
-            ;(ldr as THREE.TGALoader).load(apiUrl, (tex) => {
+            const ldr: THREE.Loader = isTga ? tgaLoaderManaged : texLoader
+            ;(ldr as TGALoader).load(apiUrl, (tex: THREE.Texture) => {
               tex.colorSpace = THREE.SRGBColorSpace
               tex.flipY = !isTga
               resolve(tex)
@@ -307,7 +326,6 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
       ro.disconnect()
       controls.dispose()
       renderer.dispose()
-      THREE.DefaultLoadingManager.removeHandler(/\.tga$/i)
       if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement)
     }
     return cleanupRef.current

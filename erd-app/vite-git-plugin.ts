@@ -724,16 +724,46 @@ function createGitMiddleware(options: GitPluginOptions) {
         return null
       }
 
-      /** 파일명(확장자 포함/미포함)으로 인덱스에서 검색 */
+      /** 파일명(확장자 포함/미포함)으로 인덱스에서 검색
+       *  Unity 텍스처 네이밍 컨벤션 지원:
+       *  FBX 내부에서 "SafetyZone_Ems.png" 로 참조되지만
+       *  실제 파일은 "T_SafetyZone_Ems.png" 처럼 프리픽스가 붙어 있는 경우 fuzzy 처리
+       */
       const findInIdx = (filename: string): AssetEntry | undefined => {
         const idx = loadIdx()
         const lc  = filename.toLowerCase()
-        return idx.find(a =>
+        // 1) 정확한 파일명 매칭
+        const exact = idx.find(a =>
           `${a.name}.${a.ext}`.toLowerCase() === lc ||
           a.name.toLowerCase() === lc ||
           a.path.toLowerCase().endsWith('/' + lc) ||
           a.path.toLowerCase().endsWith('\\' + lc)
         )
+        if (exact) return exact
+
+        // 2) Unity 텍스처 프리픽스 추가 매칭 (T_, TX_, Tex_, t_ 등)
+        //    FBX는 "BaseName.png" 로 저장, Unity 는 "T_BaseName.png" 로 임포트
+        const texPrefixes = ['t_', 'tx_', 'tex_', 't ', 'texture_']
+        const prefixed = idx.find(a => {
+          const fullLc = `${a.name}.${a.ext}`.toLowerCase()
+          return texPrefixes.some(pfx => fullLc === pfx + lc || fullLc === pfx.replace('_','') + lc)
+        })
+        if (prefixed) return prefixed
+
+        // 3) 확장자를 제외한 base name 이 포함되는 경우 (예: "SafetyZone_Ems" → "T_SafetyZone_Ems.png")
+        const dotIdx = lc.lastIndexOf('.')
+        const baseLc = dotIdx >= 0 ? lc.slice(0, dotIdx) : lc
+        const extLc  = dotIdx >= 0 ? lc.slice(dotIdx + 1) : ''
+        if (baseLc.length > 3) {
+          return idx.find(a =>
+            a.ext.toLowerCase() === extLc &&
+            (a.name.toLowerCase() === baseLc ||
+             a.name.toLowerCase().endsWith('_' + baseLc) ||
+             a.name.toLowerCase() === `t_${baseLc}` ||
+             a.name.toLowerCase() === `tx_${baseLc}`)
+          )
+        }
+        return undefined
       }
 
       const mimeMap: Record<string, string> = {
