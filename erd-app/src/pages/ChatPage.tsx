@@ -2912,15 +2912,15 @@ function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => v
   /* ── 유저 메시지: 우측 정렬 그라데이션 버블 ─────────────────────────────── */
   if (isUser) {
     return (
-      <div className="flex justify-end px-1">
+      <div className="flex justify-end px-2 py-1">
         <div
-          className="max-w-[72%] rounded-2xl rounded-tr-sm px-5 py-3 shadow-md"
+          className="max-w-[75%] rounded-3xl rounded-tr-md px-6 py-4 shadow-lg"
           style={{
             background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
-            boxShadow: '0 4px 20px rgba(99,102,241,0.35)',
+            boxShadow: '0 6px 24px rgba(99,102,241,0.4)',
           }}
         >
-          <p className="text-[14px] whitespace-pre-wrap leading-relaxed" style={{ color: '#fff' }}>
+          <p className="text-[15px] whitespace-pre-wrap leading-relaxed" style={{ color: '#fff' }}>
             {msg.content}
           </p>
         </div>
@@ -2930,27 +2930,28 @@ function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => v
 
   /* ── AI 메시지: 풀폭, 헤더 + 내용 ──────────────────────────────────────── */
   return (
-    <div className="flex flex-col gap-2 px-1">
+    <div className="flex flex-col gap-3 px-2 py-1">
       {/* AI 헤더 */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2.5">
         <div
-          className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
-          style={{ background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)', boxShadow: '0 2px 8px rgba(99,102,241,0.4)' }}
+          className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+          style={{ background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)', boxShadow: '0 2px 10px rgba(99,102,241,0.45)' }}
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
             <circle cx="12" cy="12" r="3" />
             <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83" />
           </svg>
         </div>
-        <span className="text-[12px] font-semibold" style={{ color: 'var(--accent)' }}>AI Assistant</span>
+        <span className="text-[13px] font-semibold" style={{ color: 'var(--accent)' }}>AI Assistant</span>
       </div>
 
       {/* 내용 */}
       <div
-        className="rounded-2xl rounded-tl-sm px-5 py-4 w-full"
+        className="rounded-3xl rounded-tl-md px-7 py-5 w-full"
         style={{
           background: 'var(--bg-surface)',
           border: '1px solid var(--border-color)',
+          boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
         }}
       >
           {msg.isLoading && !msg.content ? (
@@ -3505,8 +3506,8 @@ export default function ChatPage() {
         {/* ── 채팅 영역 ── */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
           {/* 메시지 목록 */}
-          <div className="flex-1 overflow-y-auto py-6">
-            <div className="w-full px-6 space-y-6">
+          <div className="flex-1 overflow-y-auto py-8">
+            <div className="w-full px-8 space-y-8">
             {messages.length === 0 && (
               <div className="flex flex-col items-center justify-center py-24 text-center" style={{ color: 'var(--text-muted)' }}>
                 <div
