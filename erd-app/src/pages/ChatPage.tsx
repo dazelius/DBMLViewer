@@ -102,6 +102,28 @@ const EMBED_CSS = `
 .mermaid svg { max-width:100% !important; height:auto !important; }
 .embed-audio audio { width:100%; margin-top:6px; border-radius:6px; accent-color:#6366f1; }
 .embed-audio audio::-webkit-media-controls-panel { background:#1e293b; }
+/* diff embed */
+.embed-diff { background:#0d1117; border:1px solid #2d3f5e; border-radius:8px; overflow:hidden; margin:10px 0; font-family:monospace; font-size:11px; }
+.embed-diff-header { background:#1a2035; padding:8px 14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; border-bottom:1px solid #2d3f5e; }
+.embed-diff-file { font-weight:700; color:#e2e8f0; font-size:12px; }
+.embed-diff-stat { color:#64748b; font-size:11px; }
+.embed-diff-hunk { padding:0; }
+.embed-diff-hunk-header { background:#1a2a4e; color:#6496c8; padding:3px 14px; font-size:10px; white-space:pre; }
+.embed-diff-line { display:flex; white-space:pre-wrap; word-break:break-all; }
+.embed-diff-line.add  { background:rgba(46,160,67,.15); color:#4ade80; }
+.embed-diff-line.del  { background:rgba(220,38,38,.12); color:#f87171; }
+.embed-diff-line.ctx  { color:#64748b; }
+.embed-diff-line-num  { min-width:44px; text-align:right; padding:1px 8px 1px 4px; border-right:1px solid #2d3f5e; color:#475569; user-select:none; flex-shrink:0; }
+.embed-diff-line-sign { width:16px; text-align:center; flex-shrink:0; }
+.embed-diff-line-text { padding-left:4px; flex:1; }
+.embed-diff-loading { padding:16px; text-align:center; color:#64748b; font-size:12px; }
+/* table-ref 인라인 링크 */
+.table-ref { display:inline-flex; align-items:center; gap:4px; padding:1px 7px 1px 5px; border-radius:4px; background:rgba(99,102,241,.12); color:#818cf8; font-weight:600; font-size:0.92em; cursor:pointer; border:1px solid rgba(99,102,241,.25); transition:background .15s; vertical-align:middle; }
+.table-ref:hover { background:rgba(99,102,241,.22); }
+.table-ref-icon { font-size:10px; opacity:.7; }
+.table-ref-popup { display:none; position:absolute; z-index:9999; background:#131d2e; border:1px solid #334155; border-radius:8px; box-shadow:0 8px 32px rgba(0,0,0,.5); padding:12px 14px; min-width:280px; max-width:500px; max-height:400px; overflow-y:auto; font-size:11px; }
+.table-ref-popup.open { display:block; }
+.table-ref-wrap { position:relative; display:inline-block; }
 `;
 
 /** Mermaid.js CDN 초기화 스크립트 (아티팩트 HTML 템플릿에 주입) */
@@ -396,6 +418,78 @@ function renderAudioPlayerHtml(src: string, label: string, ext: string): string 
 </div>`;
 }
 
+/** diff embed → 클라이언트 측 fetch 스크립트 포함 HTML */
+function renderDiffEmbedHtml(commit: string, file?: string): string {
+  const safeId = `diff_${commit.slice(0, 8)}_${Math.random().toString(36).slice(2, 6)}`;
+  const fileParam = file ? `&file=${encodeURIComponent(file)}` : '';
+  const label = file ? `📄 ${file.split('/').pop()} @ ${commit.slice(0, 7)}` : `🔀 커밋 ${commit.slice(0, 7)} 변경 내용`;
+  return `<div class="embed-diff" id="${safeId}">
+  <div class="embed-diff-header">
+    <span class="embed-diff-file">${label}</span>
+    <span class="embed-diff-stat embed-diff-loading-label">불러오는 중...</span>
+  </div>
+  <div class="embed-diff-loading">변경 내용 로딩 중...</div>
+</div>
+<script>
+(function(){
+  var root=document.getElementById("${safeId}");
+  if(!root)return;
+  fetch("/api/git/commit-diff?hash=${encodeURIComponent(commit)}${fileParam}")
+    .then(function(r){return r.json();})
+    .then(function(data){
+      var files=data.files||[];
+      var statEl=root.querySelector(".embed-diff-loading-label");
+      var loadEl=root.querySelector(".embed-diff-loading");
+      if(statEl) statEl.textContent=files.length+"개 파일 변경";
+      if(loadEl) loadEl.remove();
+      files.forEach(function(f){
+        var added=0,removed=0;
+        (f.hunks||[]).forEach(function(h){ (h.lines||[]).forEach(function(l){ if(l.type==="add") added++; else if(l.type==="del") removed++; }); });
+        var block=document.createElement("div");
+        block.style.borderTop="1px solid #2d3f5e";
+        var hdr=document.createElement("div");
+        hdr.className="embed-diff-header";
+        hdr.innerHTML='<span class="embed-diff-file">'+f.path+'</span>'
+          +'<span class="embed-diff-stat" style="color:#4ade80">+'+added+'</span>'
+          +'<span class="embed-diff-stat" style="color:#f87171">-'+removed+'</span>';
+        block.appendChild(hdr);
+        (f.hunks||[]).forEach(function(h){
+          var hdiv=document.createElement("div"); hdiv.className="embed-diff-hunk";
+          var hhdr=document.createElement("div"); hhdr.className="embed-diff-hunk-header";
+          hhdr.textContent=h.header||""; hdiv.appendChild(hhdr);
+          (h.lines||[]).forEach(function(l){
+            var row=document.createElement("div");
+            row.className="embed-diff-line "+(l.type==="add"?"add":l.type==="del"?"del":"ctx");
+            var num1=document.createElement("span"); num1.className="embed-diff-line-num"; num1.textContent=l.newLineNo||"";
+            var sign=document.createElement("span"); sign.className="embed-diff-line-sign"; sign.textContent=l.type==="add"?"+":l.type==="del"?"-":" ";
+            var txt=document.createElement("span"); txt.className="embed-diff-line-text"; txt.textContent=l.content||"";
+            row.appendChild(num1); row.appendChild(sign); row.appendChild(txt);
+            hdiv.appendChild(row);
+          });
+          block.appendChild(hdiv);
+        });
+        root.appendChild(block);
+      });
+      if(!files.length){
+        var empty=document.createElement("div"); empty.className="embed-empty"; empty.textContent="변경된 파일 없음";
+        root.appendChild(empty);
+      }
+    })
+    .catch(function(e){ root.innerHTML+='<div class="embed-error">diff 로드 실패: '+e.message+'</div>'; });
+})();
+<\/script>`;
+}
+
+/** [[TableName]] 인라인 테이블 링크 → 클릭 시 schema 팝업 */
+function renderTableRefHtml(tableName: string, schema: ParsedSchema | null): string {
+  const schemaHtml = renderSchemaEmbedHtml(tableName, schema);
+  const safeId = `tref_${tableName.replace(/[^a-z0-9]/gi, '_')}_${Math.random().toString(36).slice(2, 6)}`;
+  return `<span class="table-ref-wrap">`
+    + `<span class="table-ref" onclick="(function(el){var p=document.getElementById('${safeId}');if(p){p.classList.toggle('open');var r=el.getBoundingClientRect();p.style.top=(r.bottom+4)+'px';p.style.left=r.left+'px';}})(this)"><span class="table-ref-icon">📋</span>${tableName}</span>`
+    + `<div class="table-ref-popup" id="${safeId}">${schemaHtml}</div>`
+    + `</span>`;
+}
+
 /** 아티팩트 HTML 내 embed 태그를 실제 콘텐츠로 교체 */
 function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableData: TableDataMap): string {
   // <div data-embed="schema" data-table="TableName"></div>  (속성 순서 무관)
@@ -467,6 +561,38 @@ function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableD
       return renderAudioPlayerHtml(src, label, ext);
     },
   );
+
+  // <div data-embed="diff" data-commit="SHA" [data-file="경로"]></div>
+  html = html.replace(
+    /<div([^>]*?)data-embed=["']diff["']([^>]*?)data-commit=["']([^"']+)["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, _b, commit, rest) => {
+      const fileMatch = ((_ as string) + _a + _b + rest).match(/data-file=["']([^"']+)["']/i);
+      const file = fileMatch ? fileMatch[1] : undefined;
+      return renderDiffEmbedHtml(commit, file);
+    },
+  );
+  // 속성 순서 반대: data-commit 먼저
+  html = html.replace(
+    /<div([^>]*?)data-commit=["']([^"']+)["']([^>]*?)data-embed=["']diff["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, commit, rest) => {
+      const fileMatch = ((rest as string) + _a).match(/data-file=["']([^"']+)["']/i);
+      return renderDiffEmbedHtml(commit, fileMatch ? fileMatch[1] : undefined);
+    },
+  );
+
+  // [[TableName]] → 인라인 테이블 레퍼런스 칩 (클릭 시 schema 팝업)
+  // 스키마에 실제 존재하는 테이블명만 변환
+  if (schema) {
+    const tableNames = schema.tables.map(t => t.name);
+    // 이미 data-embed 태그 안에 있는 경우 제외 → 속성값 내부 [[...]]는 무시하도록 텍스트 노드에만 적용
+    // 간단히: <tag ... > 사이가 아닌 텍스트 부분에만 적용
+    html = html.replace(/\[\[([^\]]+)\]\]/g, (_, name) => {
+      const found = tableNames.find(t => t.toLowerCase() === name.toLowerCase()) ?? name;
+      const exists = tableNames.some(t => t.toLowerCase() === name.toLowerCase());
+      return exists ? renderTableRefHtml(found, schema) : `<span class="table-ref" style="opacity:.5">${found}</span>`;
+    });
+  }
+
   return html;
 }
 
