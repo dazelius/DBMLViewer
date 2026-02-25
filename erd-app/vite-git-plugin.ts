@@ -527,90 +527,148 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
-    // ── /api/assets/index : 에셋 파일 인덱스 ──────────────────────────────────
-    if (req.url?.startsWith('/api/assets/index')) {
+    // ── /api/assets/* : 에셋 엔드포인트 (try-catch로 서버 크래시 방지) ────────────
+    if (req.url?.startsWith('/api/assets/')) {
+      // 공통 헬퍼
       const ASSETS_DIR = join(process.cwd(), '..', '..', 'assets')
-      const idxPath = join(ASSETS_DIR, '.asset_index.json')
-      if (!existsSync(idxPath)) {
-        sendJson(res, 200, { files: [], message: 'No asset index. Run sync_assets.ps1 first.' })
-        return
-      }
-      const url = new URL(req.url, 'http://localhost')
-      const extFilter = (url.searchParams.get('ext') || '').toLowerCase()
-      const q = (url.searchParams.get('q') || '').toLowerCase()
-      let files = JSON.parse(readFileSync(idxPath, 'utf-8')) as { path: string; name: string; ext: string; size: number }[]
-      if (extFilter) files = files.filter(f => f.ext === (extFilter.startsWith('.') ? extFilter : '.' + extFilter))
-      if (q) files = files.filter(f => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q))
-      sendJson(res, 200, { files: files.slice(0, 500), total: files.length })
-      return
-    }
+      const idxPath    = join(ASSETS_DIR, '.asset_index.json')
 
-    // ── /api/assets/file : 에셋 파일 서빙 (FBX / PNG / …) ─────────────────────
-    if (req.url?.startsWith('/api/assets/file')) {
-      const ASSETS_DIR = join(process.cwd(), '..', '..', 'assets')
-      const url = new URL(req.url, 'http://localhost')
-      let pathParam = url.searchParams.get('path') || ''
-      if (!pathParam) { res.writeHead(400); res.end('path required'); return }
+      type AssetEntry = { path: string; name: string; ext: string; sizeKB: number }
 
-      let filePath = join(ASSETS_DIR, pathParam.replace(/\//g, sep))
-      // 직접 경로가 없으면 파일명으로 검색
-      if (!existsSync(filePath)) {
-        const basename = pathParam.split('/').pop() ?? ''
-        const { globSync } = await import('glob')
-        const hits = globSync(`**/${basename}`, { cwd: ASSETS_DIR, nocase: true })
-        if (hits.length > 0) {
-          filePath = join(ASSETS_DIR, hits[0])
-        } else {
-          res.writeHead(404); res.end('File not found: ' + pathParam); return
-        }
+      /** 인덱스 로드 (없으면 빈 배열) */
+      const loadIdx = (): AssetEntry[] => {
+        try {
+          if (!existsSync(idxPath)) return []
+          return JSON.parse(readFileSync(idxPath, 'utf-8')) as AssetEntry[]
+        } catch { return [] }
       }
 
-      const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
+      /** 파일명(확장자 포함/미포함)으로 인덱스에서 검색 */
+      const findInIdx = (filename: string): AssetEntry | undefined => {
+        const idx = loadIdx()
+        const lc  = filename.toLowerCase()
+        return idx.find(a =>
+          `${a.name}.${a.ext}`.toLowerCase() === lc ||
+          a.name.toLowerCase() === lc ||
+          a.path.toLowerCase().endsWith('/' + lc) ||
+          a.path.toLowerCase().endsWith('\\' + lc)
+        )
+      }
+
       const mimeMap: Record<string, string> = {
         fbx: 'application/octet-stream', obj: 'application/octet-stream',
         png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', tga: 'image/x-tga',
+        gif: 'image/gif', bmp: 'image/bmp', tiff: 'image/tiff', dds: 'image/vnd.ms-dds',
         wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', mp4: 'video/mp4',
+        anim: 'application/octet-stream', mat: 'application/octet-stream',
+        prefab: 'application/octet-stream', asset: 'application/octet-stream',
+        txt: 'text/plain', json: 'application/json', xml: 'application/xml',
+        cs: 'text/plain',
       }
-      const mime = mimeMap[ext] ?? 'application/octet-stream'
-      const stat = statSync(filePath)
-      res.writeHead(200, {
-        'Content-Type': mime,
-        'Content-Length': stat.size,
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=86400',
-      })
-      const { createReadStream } = await import('fs')
-      createReadStream(filePath).pipe(res)
-      return
-    }
 
-    // ── /api/assets/smart : 파일명으로 에셋 스마트 검색 ────────────────────────
-    if (req.url?.startsWith('/api/assets/smart')) {
-      const ASSETS_DIR = join(process.cwd(), '..', '..', 'assets')
-      const url = new URL(req.url, 'http://localhost')
-      const name = url.searchParams.get('name') || ''
-      if (!name) { res.writeHead(400); res.end('name required'); return }
-      const { globSync } = await import('glob')
-      const hits = globSync(`**/${name}`, { cwd: ASSETS_DIR, nocase: true })
-      if (hits.length === 0) { res.writeHead(404); res.end('Not found: ' + name); return }
-      const relPath = hits[0].replace(/\\/g, '/')
-      const filePath = join(ASSETS_DIR, hits[0])
-      const ext = name.split('.').pop()?.toLowerCase() ?? ''
-      const mimeMap: Record<string, string> = {
-        fbx: 'application/octet-stream', png: 'image/png', jpg: 'image/jpeg',
+      try {
+        // ── /api/assets/index : 에셋 인덱스 검색 ─────────────────────────────
+        if (req.url.startsWith('/api/assets/index')) {
+          const idx = loadIdx()
+          if (idx.length === 0) {
+            sendJson(res, 200, { results: [], total: 0, message: 'No asset index. Run sync_assets.ps1 first.' })
+            return
+          }
+          const url2     = new URL(req.url, 'http://localhost')
+          const extFilt  = (url2.searchParams.get('ext') || '').toLowerCase().replace(/^\./, '')
+          const q        = (url2.searchParams.get('q')   || '').toLowerCase()
+          let filtered   = idx
+          if (extFilt) filtered = filtered.filter(a => a.ext.toLowerCase() === extFilt)
+          if (q)       filtered = filtered.filter(a =>
+            a.name.toLowerCase().includes(q) ||
+            a.path.toLowerCase().includes(q)
+          )
+          sendJson(res, 200, { results: filtered.slice(0, 200), total: filtered.length })
+          return
+        }
+
+        // ── /api/assets/file : 에셋 파일 직접 서빙 ───────────────────────────
+        if (req.url.startsWith('/api/assets/file')) {
+          const url2     = new URL(req.url, 'http://localhost')
+          const pathParam = url2.searchParams.get('path') || ''
+          if (!pathParam) { res.writeHead(400); res.end('path required'); return }
+
+          let filePath = join(ASSETS_DIR, pathParam.replace(/\//g, sep))
+
+          // 직접 경로가 없으면 인덱스에서 파일명으로 검색
+          if (!existsSync(filePath)) {
+            const baseName = pathParam.split('/').pop() ?? ''
+            const found = findInIdx(baseName)
+            if (found) {
+              filePath = join(ASSETS_DIR, found.path.replace(/\//g, sep))
+            } else {
+              res.writeHead(404, { 'Content-Type': 'text/plain' })
+              res.end(`Asset not found: ${pathParam}\n인덱스에도 없습니다. sync_assets.ps1 실행 후 재시도하세요.`)
+              return
+            }
+          }
+
+          if (!existsSync(filePath)) {
+            res.writeHead(404); res.end('File not found: ' + pathParam); return
+          }
+
+          const fileExt  = filePath.split('.').pop()?.toLowerCase() ?? ''
+          const mime     = mimeMap[fileExt] ?? 'application/octet-stream'
+          const fileStat = statSync(filePath)
+          res.writeHead(200, {
+            'Content-Type': mime,
+            'Content-Length': fileStat.size,
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'public, max-age=86400',
+          })
+          const rs = (await import('fs')).createReadStream(filePath)
+          rs.on('error', (e) => { try { res.destroy(e) } catch { /* ignore */ } })
+          rs.pipe(res)
+          return
+        }
+
+        // ── /api/assets/smart : 파일명으로 에셋 검색 후 서빙 ─────────────────
+        if (req.url.startsWith('/api/assets/smart')) {
+          const url2 = new URL(req.url, 'http://localhost')
+          const name = url2.searchParams.get('name') || ''
+          if (!name) { res.writeHead(400); res.end('name required'); return }
+
+          const found = findInIdx(name)
+          if (!found) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' })
+            res.end(`Asset '${name}' not found in index. Run sync_assets.ps1 first.`)
+            return
+          }
+
+          const filePath = join(ASSETS_DIR, found.path.replace(/\//g, sep))
+          if (!existsSync(filePath)) {
+            res.writeHead(404); res.end('File missing on disk: ' + found.path); return
+          }
+
+          const fileExt  = found.ext.toLowerCase()
+          const mime     = mimeMap[fileExt] ?? 'application/octet-stream'
+          const fileStat = statSync(filePath)
+          res.writeHead(200, {
+            'Content-Type': mime,
+            'Content-Length': fileStat.size,
+            'Access-Control-Allow-Origin': '*',
+            'X-Resolved-Path': found.path,
+            'Cache-Control': 'public, max-age=86400',
+          })
+          const rs = (await import('fs')).createReadStream(filePath)
+          rs.on('error', (e) => { try { res.destroy(e) } catch { /* ignore */ } })
+          rs.pipe(res)
+          return
+        }
+
+      } catch (assetErr) {
+        console.error('[assets endpoint error]', assetErr)
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: String(assetErr) }))
+        }
+        return
       }
-      const mime = mimeMap[ext] ?? 'application/octet-stream'
-      const stat = statSync(filePath)
-      res.writeHead(200, {
-        'Content-Type': mime,
-        'Content-Length': stat.size,
-        'Access-Control-Allow-Origin': '*',
-        'X-Resolved-Path': relPath,
-        'Cache-Control': 'public, max-age=86400',
-      })
-      const { createReadStream } = await import('fs')
-      createReadStream(filePath).pipe(res)
-      return
     }
 
     // ── /api/published : 출판된 문서 목록 (GET) ────────────────────────────────

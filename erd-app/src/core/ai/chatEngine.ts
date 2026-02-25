@@ -1641,18 +1641,20 @@ function showTab(id){
             if (ext) params.set('ext', ext);
             const resp = await fetch(`/api/assets/index?${params.toString()}`);
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const data = await resp.json() as { files: { path: string; name: string; ext: string; size: number }[]; total: number; message?: string };
+            const data = await resp.json() as { results: { path: string; name: string; ext: string; sizeKB: number }[]; total: number; message?: string; error?: string };
             const duration = performance.now() - t0;
-            if (data.message) {
-              resultStr = `에셋 인덱스 없음: ${data.message}\nsync_assets.ps1 을 먼저 실행하세요.`;
-              tc = { kind: 'asset_search', label: '에셋 검색 실패', query, ext, files: [], total: 0, error: data.message } as AssetSearchResult;
+            if (data.error || data.message) {
+              const msg = data.error || data.message || '';
+              resultStr = `에셋 인덱스 없음: ${msg}\nsync_assets.ps1 을 먼저 실행하세요.`;
+              tc = { kind: 'asset_search', label: '에셋 검색 실패', query, ext, files: [], total: 0, error: msg } as AssetSearchResult;
             } else {
-              const lines = data.files.map(f => `${f.path}  (${(f.size / 1024).toFixed(0)} KB)`);
-              resultStr = `에셋 검색: "${query}"${ext ? ` [.${ext}]` : ''} → ${data.total}개 (${duration.toFixed(0)}ms)\n` +
+              const results = data.results ?? [];
+              const lines = results.map(f => `${f.path}  (${f.sizeKB} KB)`);
+              resultStr = `에셋 검색: "${query}"${ext ? ` [.${ext}]` : ''} → ${data.total ?? results.length}개 (${duration.toFixed(0)}ms)\n` +
                 (lines.length > 0 ? lines.join('\n') : '결과 없음') +
-                (data.total > data.files.length ? `\n… 상위 ${data.files.length}개만 표시` : '') +
+                (data.total > results.length ? `\n… 상위 ${results.length}개만 표시` : '') +
                 '\n\n3D 뷰어: FBX 파일은 /api/assets/file?path=<경로> 로 접근 가능';
-              tc = { kind: 'asset_search', label: `에셋 검색: ${query}`, query, ext, files: data.files, total: data.total } as AssetSearchResult;
+              tc = { kind: 'asset_search', label: `에셋 검색: ${query}`, query, ext, files: results, total: data.total ?? results.length } as AssetSearchResult;
             }
           } catch (e) {
             resultStr = `에셋 검색 실패: ${String(e)}`;
