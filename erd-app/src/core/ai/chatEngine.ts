@@ -567,6 +567,16 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- <a href> 링크 절대 사용 금지 (다운로드됨).');
   lines.push('- PNG/이미지도 마찬가지: 아티팩트 html 안에만 <img src="/api/assets/file?path=경로.png">');
   lines.push('');
+  lines.push('[WAV/오디오 임베드 규칙 — 절대 준수]');
+  lines.push('⚠️⚠️⚠️ 오디오 태그도 절대로 채팅 텍스트에 직접 출력하지 마세요! 반드시 create_artifact html 안에만!');
+  lines.push('- 오디오 파일(WAV/MP3/OGG 등)을 아티팩트에 넣는 방법:');
+  lines.push('  <div class="audio-player" data-src="/api/assets/file?path=경로/파일.wav" data-label="사운드명"></div>');
+  lines.push('  → 시스템이 자동으로 재생 컨트롤 UI로 변환합니다.');
+  lines.push('- 여러 사운드 목록:');
+  lines.push('  <div class="audio-player" data-src="/api/assets/file?path=Sound/skill_01.wav" data-label="스킬 발사음"></div>');
+  lines.push('  <div class="audio-player" data-src="/api/assets/file?path=Sound/hit_01.wav" data-label="피격음"></div>');
+  lines.push('- search_assets 툴로 ext="wav" 또는 ext="mp3"로 검색 후 경로를 확인하세요.');
+  lines.push('');
   lines.push('[캐릭터 기획서/프로파일/데이터 시트뷰 — 반드시 준수]');
   lines.push('- "캐릭터 기획서", "[캐릭터명] 기획서", "프로파일", "캐릭터 카드", "개요" 요청 시: build_character_profile 먼저 → create_artifact 순서.');
   lines.push('- "데이터 다 제공해줘", "모든 데이터 보여줘", "시트뷰", "종합해줘", "전체 데이터" 요청 시도 동일하게 build_character_profile 먼저 호출.');

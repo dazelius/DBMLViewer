@@ -100,6 +100,8 @@ const EMBED_CSS = `
 .embed-empty { background:rgba(100,116,139,.1); border-radius:6px; padding:8px 12px; color:#64748b; font-size:12px; margin:6px 0; }
 .mermaid { margin:6px 0; text-align:center; overflow:hidden; }
 .mermaid svg { max-width:100% !important; height:auto !important; }
+.embed-audio audio { width:100%; margin-top:6px; border-radius:6px; accent-color:#6366f1; }
+.embed-audio audio::-webkit-media-controls-panel { background:#1e293b; }
 `;
 
 /** Mermaid.js CDN 초기화 스크립트 (아티팩트 HTML 템플릿에 주입) */
@@ -376,6 +378,24 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
 </div>`;
 }
 
+/** 오디오 플레이어 embed → HTML */
+function renderAudioPlayerHtml(src: string, label: string, ext: string): string {
+  const apiSrc = src.startsWith('/api/') ? src : `/api/assets/file?path=${encodeURIComponent(src)}`;
+  const mimeMap: Record<string, string> = { wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', flac: 'audio/flac', m4a: 'audio/mp4' };
+  const mime = mimeMap[ext.toLowerCase()] ?? 'audio/wav';
+  return `<div class="embed-card embed-audio">
+<div class="embed-header">
+  <span class="embed-icon">🔊</span>
+  <span class="embed-title">${label}</span>
+  <span class="embed-meta">${ext.toUpperCase()}</span>
+</div>
+<audio controls preload="metadata" style="width:100%;margin-top:6px;border-radius:6px;accent-color:#6366f1;">
+  <source src="${apiSrc}" type="${mime}">
+  브라우저가 오디오를 지원하지 않습니다.
+</audio>
+</div>`;
+}
+
 /** 아티팩트 HTML 내 embed 태그를 실제 콘텐츠로 교체 */
 function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableData: TableDataMap): string {
   // <div data-embed="schema" data-table="TableName"></div>  (속성 순서 무관)
@@ -433,6 +453,19 @@ function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableD
   html = html.replace(
     /<div([^>]*?)data-table=["']([^"']+)["']([^>]*?)data-embed=["']graph["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
     (_, _a, tbl) => renderGraphEmbedHtml(tbl, schema),
+  );
+  // <div class="audio-player" data-src="..." data-label="..."></div>
+  html = html.replace(
+    /<div([^>]*?)class=["'][^"']*audio-player[^"']*["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (match, attrs1, attrs2) => {
+      const combined = (attrs1 ?? '') + ' ' + (attrs2 ?? '');
+      const src = (combined.match(/data-src=["']([^"']+)["']/) ?? [])[1] ?? '';
+      const label = (combined.match(/data-label=["']([^"']+)["']/) ?? [])[1]
+        ?? src.split('/').pop()?.split('?')[0] ?? 'Audio';
+      const ext = src.split('.').pop()?.split('?')[0] ?? 'wav';
+      if (!src) return match;
+      return renderAudioPlayerHtml(src, label, ext);
+    },
   );
   return html;
 }
@@ -1801,6 +1834,29 @@ const FBX_VIEWER_SCRIPT = `
       wrap.appendChild(makeFbxButton(apiUrl, d.getAttribute('data-label')||''));
       try { d.parentNode.replaceChild(wrap, d); } catch(ex){}
     });
+    // 3) <div class="audio-player" data-src="..."> → <audio> 플레이어
+    document.querySelectorAll('.audio-player[data-src]').forEach(function(d){
+      if (d.dataset.audioInit) return;
+      d.dataset.audioInit = '1';
+      var src = d.getAttribute('data-src') || '';
+      var label = d.getAttribute('data-label') || src.split('/').pop().split('?')[0] || 'Audio';
+      var ext = src.split('.').pop().split('?')[0].toUpperCase() || 'WAV';
+      var apiSrc = src.startsWith('/api/') ? src : '/api/assets/file?path=' + encodeURIComponent(src);
+      var mimeMap = {WAV:'audio/wav',MP3:'audio/mpeg',OGG:'audio/ogg',FLAC:'audio/flac',M4A:'audio/mp4'};
+      var mime = mimeMap[ext] || 'audio/wav';
+      var wrap = document.createElement('div');
+      wrap.style.cssText = 'background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 14px;margin:8px 0;';
+      wrap.innerHTML =
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">' +
+          '<span style="font-size:16px;">🔊</span>' +
+          '<span style="color:#e2e8f0;font-size:13px;font-weight:600;">' + label + '</span>' +
+          '<span style="color:#64748b;font-size:11px;margin-left:auto;">' + ext + '</span>' +
+        '</div>' +
+        '<audio controls preload="metadata" style="width:100%;border-radius:6px;accent-color:#6366f1;">' +
+          '<source src="' + apiSrc + '" type="' + mime + '">' +
+        '</audio>';
+      try { d.parentNode.replaceChild(wrap, d); } catch(ex){}
+    });
   }
 
   if (document.readyState === 'loading') {
@@ -2871,7 +2927,8 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
   // ext는 dot 없이 저장됨 ("fbx", "png" 등)
   const fbxFiles   = tc.files.filter(f => f.ext?.toLowerCase() === 'fbx');
   const imgFiles   = tc.files.filter(f => ['png','jpg','jpeg','tga','gif','bmp'].includes(f.ext?.toLowerCase() ?? ''));
-  const otherFiles = tc.files.filter(f => !['fbx','png','jpg','jpeg','tga','gif','bmp'].includes(f.ext?.toLowerCase() ?? ''));
+  const audioFiles = tc.files.filter(f => ['wav','mp3','ogg','flac','m4a'].includes(f.ext?.toLowerCase() ?? ''));
+  const otherFiles = tc.files.filter(f => !['fbx','png','jpg','jpeg','tga','gif','bmp','wav','mp3','ogg','flac','m4a'].includes(f.ext?.toLowerCase() ?? ''));
 
   return (
     <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${hasError ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.3)'}` }}>
@@ -2962,6 +3019,43 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
               >
                 {f.name}.{f.ext}
               </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 오디오 파일 목록 */}
+      {audioFiles.length > 0 && (
+        <div className="px-3 pt-2 pb-1">
+          <div className="text-[11px] mb-1.5 font-semibold" style={{ color: '#34d399' }}>
+            🔊 오디오 ({audioFiles.length})
+          </div>
+          <div className="space-y-2">
+            {audioFiles.map((f, i) => (
+              <div key={i} className="rounded-lg overflow-hidden" style={{ background: 'var(--bg-primary)', border: '1px solid rgba(52,211,153,0.15)' }}>
+                <div className="flex items-center gap-2 px-2 py-1.5">
+                  <span className="text-[11px]">🔊</span>
+                  <span className="flex-1 text-[11px] font-mono truncate" style={{ color: '#6ee7b7' }} title={f.path}>
+                    {f.name}.{f.ext}
+                  </span>
+                  <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+                    {f.sizeKB} KB
+                  </span>
+                </div>
+                <audio
+                  controls
+                  preload="metadata"
+                  style={{ width: '100%', display: 'block', borderRadius: '0 0 8px 8px', accentColor: '#34d399' }}
+                >
+                  <source src={`/api/assets/file?path=${encodeURIComponent(f.path)}`} type={
+                    f.ext === 'mp3' ? 'audio/mpeg' :
+                    f.ext === 'ogg' ? 'audio/ogg' :
+                    f.ext === 'flac' ? 'audio/flac' :
+                    f.ext === 'm4a' ? 'audio/mp4' :
+                    'audio/wav'
+                  } />
+                </audio>
+              </div>
             ))}
           </div>
         </div>
