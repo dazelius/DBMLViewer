@@ -1327,7 +1327,7 @@ const STREAM_RECEIVER_SRCDOC = `<!DOCTYPE html>
   *,*::before,*::after{box-sizing:border-box}
   body{margin:20px;font-family:'Segoe UI',Tahoma,sans-serif;font-size:13px;
        background:#0f1117;color:#e2e8f0;line-height:1.6}
-  h1,h2,h3,h4{color:#fff;margin:.8em 0 .4em}
+  h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}
   p{margin:.4em 0}
   table{width:100%;border-collapse:collapse;margin-bottom:1em}
   th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}
@@ -1349,8 +1349,6 @@ const STREAM_RECEIVER_SRCDOC = `<!DOCTYPE html>
       document.body.innerHTML = e.data.html;
     }
   });
-  // 준비 완료 신호
-  window.parent.postMessage({ type: 'artifact-ready' }, '*');
 </script>
 </body></html>`;
 
@@ -1371,67 +1369,48 @@ function ArtifactSidePanel({
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeReady, setIframeReady] = useState(false);
-  const pendingHtmlRef = useRef('');
-  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastFlushRef = useRef(0);
+  // 최신 html을 항상 ref로 추적 (useEffect 클로저 stale 방지)
+  const htmlRef = useRef('');
+  const rafRef = useRef<number | null>(null);
+  const lastSentRef = useRef('');
 
-  const THROTTLE_MS = 300;
-
-  // iframe에 postMessage로 HTML 업데이트 (리로드 없이 innerHTML만 교체)
+  // iframe에 postMessage로 HTML 업데이트
   const sendToIframe = useCallback((bodyHtml: string) => {
     const iframe = iframeRef.current;
-    if (!iframe?.contentWindow) return;
+    if (!iframe?.contentWindow || bodyHtml === lastSentRef.current) return;
     try {
       iframe.contentWindow.postMessage({ type: 'artifact-update', html: bodyHtml }, '*');
-      lastFlushRef.current = Date.now();
+      lastSentRef.current = bodyHtml;
     } catch { /* ignore */ }
   }, []);
 
-  // iframe 준비 완료 신호 수신 (srcdoc 로드 후)
+  // RAF 기반 업데이트 스케줄러 (최대 60fps, 중복 방지)
+  const scheduleUpdate = useCallback(() => {
+    if (rafRef.current !== null) return; // 이미 예약됨
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      if (htmlRef.current) sendToIframe(htmlRef.current);
+    });
+  }, [sendToIframe]);
+
+  // onLoad: srcdoc 로드 완료 → iframeReady (postMessage race condition 완전 우회)
+  const handleIframeLoad = useCallback(() => {
+    setIframeReady(true);
+    // 이미 쌓인 html이 있으면 즉시 전송
+    if (htmlRef.current) sendToIframe(htmlRef.current);
+  }, [sendToIframe]);
+
+  // html prop 변경 → ref 갱신 + RAF 스케줄
   useEffect(() => {
-    const handler = (e: MessageEvent) => {
-      if (e.data?.type === 'artifact-ready') {
-        setIframeReady(true);
-      }
-    };
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-  }, []);
+    if (isComplete) return;
+    htmlRef.current = html;
+    if (iframeReady && html) scheduleUpdate();
+  }, [html, isComplete, iframeReady, scheduleUpdate]);
 
-  // iframe이 준비되면 쌓인 html 즉시 전송
-  useEffect(() => {
-    if (!iframeReady || !pendingHtmlRef.current) return;
-    sendToIframe(pendingHtmlRef.current);
-  }, [iframeReady, sendToIframe]);
-
-  // html prop 변경 시 스로틀링하여 postMessage 전송
-  useEffect(() => {
-    if (isComplete || !html || html.length < 10) return;
-
-    pendingHtmlRef.current = html;
-    if (!iframeReady) return; // iframe 로드 전이면 준비 후 전송
-
-    const now = Date.now();
-    const elapsed = now - lastFlushRef.current;
-
-    if (elapsed >= THROTTLE_MS) {
-      sendToIframe(html);
-      if (flushTimerRef.current) {
-        clearTimeout(flushTimerRef.current);
-        flushTimerRef.current = null;
-      }
-    } else if (!flushTimerRef.current) {
-      flushTimerRef.current = setTimeout(() => {
-        sendToIframe(pendingHtmlRef.current);
-        flushTimerRef.current = null;
-      }, THROTTLE_MS - elapsed);
-    }
-  }, [html, isComplete, iframeReady, sendToIframe]);
-
-  // 언마운트 시 타이머 정리
+  // 언마운트 시 RAF 정리
   useEffect(() => {
     return () => {
-      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
   }, []);
 
@@ -1504,10 +1483,11 @@ function ArtifactSidePanel({
               className="flex-1 border-none min-h-0"
               sandbox="allow-scripts"
               srcDoc={STREAM_RECEIVER_SRCDOC}
+              onLoad={handleIframeLoad}
             />
 
-            {/* 스피너 오버레이: iframe 미준비 or html 미도착 */}
-            {(!iframeReady || html.length < 10) && (
+            {/* 스피너 오버레이: iframe 미준비 (onLoad 전) 또는 html 아직 없음 */}
+            {(!iframeReady || !html) && (
               <div
                 className="absolute inset-0 flex flex-col items-center justify-center gap-3"
                 style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)', zIndex: 2 }}
@@ -1515,12 +1495,15 @@ function ArtifactSidePanel({
                 <svg className="animate-spin w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
                 </svg>
-                <span className="text-[12px]">HTML 생성 중...</span>
+                {charCount > 0
+                  ? <span className="text-[12px]">HTML 작성 중 <span className="font-mono" style={{ color: 'var(--accent)' }}>{charCount.toLocaleString()}자</span></span>
+                  : <span className="text-[12px]">아티팩트 준비 중...</span>
+                }
               </div>
             )}
 
             {/* 하단 타이핑 바 */}
-            {iframeReady && html.length >= 10 && (
+            {iframeReady && html && (
               <div
                 className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5"
                 style={{ background: 'rgba(15,17,23,0.9)', borderTop: '1px solid var(--border-color)' }}
@@ -2313,15 +2296,15 @@ export default function ChatPage() {
         },
         (html, title, charCount) => {
           // 아티팩트 실시간 생성 진행 → 사이드 패널 업데이트
-          // flushSync: 패널이 배칭 지연 없이 즉시 렌더되도록 강제
-          flushSync(() => {
-            setArtifactPanel((prev) => {
-              // 첫 오픈이거나 업데이트
-              if (!prev || !prev.isComplete) {
-                return { html, title: title || prev?.title || '', charCount, isComplete: false };
-              }
-              return prev; // 이미 완료된 경우 유지
-            });
+          setArtifactPanel((prev) => {
+            if (!prev) {
+              // 처음 패널 오픈 — flushSync는 effect 바깥이라 사용 불가, 일반 setState로 충분
+              return { html, title: title || '', charCount, isComplete: false };
+            }
+            if (!prev.isComplete) {
+              return { html, title: title || prev.title || '', charCount, isComplete: false };
+            }
+            return prev; // 이미 완료된 경우 유지
           });
           // 메시지에도 최소 진행 상태 표시
           setMessages((prev) =>
