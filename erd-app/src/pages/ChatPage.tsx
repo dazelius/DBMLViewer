@@ -57,7 +57,20 @@ const EMBED_CSS = `
 .badge-nn { display:inline-block; padding:1px 5px; border-radius:3px; font-size:10px; font-weight:700; background:rgba(100,116,139,.2); color:#94a3b8; margin-right:2px; }
 .embed-error { background:rgba(239,68,68,.1); border:1px solid rgba(239,68,68,.3); border-radius:6px; padding:8px 12px; color:#ef4444; font-size:12px; margin:6px 0; }
 .embed-empty { background:rgba(100,116,139,.1); border-radius:6px; padding:8px 12px; color:#64748b; font-size:12px; margin:6px 0; }
+.mermaid { margin:6px 0; text-align:center; overflow:hidden; }
+.mermaid svg { max-width:100% !important; height:auto !important; }
 `;
+
+/** Mermaid.js CDN 초기화 스크립트 (아티팩트 HTML 템플릿에 주입) */
+const MERMAID_INIT_SCRIPT = '<script type="module">'
+  + 'import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";'
+  + 'mermaid.initialize({startOnLoad:true,theme:"dark",themeVariables:{'
+  + 'primaryColor:"#1e293b",primaryTextColor:"#e2e8f0",primaryBorderColor:"#4f46e5",'
+  + 'lineColor:"#6366f1",secondaryColor:"#0f172a",background:"#0f1117",'
+  + 'mainBkg:"#1e293b",nodeBorder:"#4f46e5",clusterBkg:"#0f172a",'
+  + 'titleColor:"#e2e8f0",edgeLabelBackground:"#0f172a",fontFamily:"Segoe UI,sans-serif"'
+  + '}});'
+  + '</' + 'script>';
 
 /** 스키마 테이블 embed → HTML */
 function renderSchemaEmbedHtml(tableName: string, schema: ParsedSchema | null): string {
@@ -135,6 +148,79 @@ ${outRows || inRows ? `<table class="embed-table"><thead><tr><th>연결 테이�
 </div>`;
 }
 
+/** 관계 그래프 embed → Mermaid LR 다이어그램 HTML */
+function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null): string {
+  if (!schema) return `<div class="embed-error">스키마 없음</div>`;
+
+  const requested = tableNamesRaw.split(',').map(n => n.trim()).filter(Boolean);
+  const nameById = new Map(schema.tables.map(t => [t.id, t.name]));
+  const idByName = new Map(schema.tables.map(t => [t.name.toLowerCase(), t.id]));
+
+  // 요청 테이블 + 직접 FK 연결 테이블 수집
+  const includedIds = new Set<string>();
+  const centerIds = new Set<string>();
+  for (const name of requested) {
+    const id = idByName.get(name.toLowerCase());
+    if (!id) continue;
+    centerIds.add(id);
+    includedIds.add(id);
+    schema.refs.forEach(r => {
+      if (r.fromTable === id) includedIds.add(r.toTable);
+      if (r.toTable === id) includedIds.add(r.fromTable);
+    });
+  }
+
+  if (includedIds.size === 0)
+    return `<div class="embed-error">테이블을 찾을 수 없습니다: ${tableNamesRaw}</div>`;
+
+  // 최대 25개 테이블로 제한 (그래프 과부하 방지)
+  const limitedIds = [...includedIds].slice(0, 25);
+  const limitedSet = new Set(limitedIds);
+
+  // 노드 이름 안전 처리 (Mermaid 식별자 특수문자 회피)
+  const safeId = (name: string) => name.replace(/[^a-zA-Z0-9_가-힣]/g, '_');
+
+  const lines: string[] = ['graph LR'];
+
+  // 노드 정의
+  for (const id of limitedIds) {
+    const name = nameById.get(id) ?? id;
+    const sid = safeId(name);
+    if (centerIds.has(id)) {
+      lines.push(`  ${sid}["<b>${name}</b>"]:::center`);
+    } else {
+      lines.push(`  ${sid}["${name}"]`);
+    }
+  }
+
+  // 스타일 클래스
+  lines.push('  classDef center fill:#312e81,stroke:#6366f1,color:#e2e8f0,font-weight:bold');
+
+  // 엣지 정의 (중복 방지)
+  const addedEdges = new Set<string>();
+  for (const ref of schema.refs) {
+    if (!limitedSet.has(ref.fromTable) || !limitedSet.has(ref.toTable)) continue;
+    const fromName = nameById.get(ref.fromTable) ?? ref.fromTable;
+    const toName   = nameById.get(ref.toTable)   ?? ref.toTable;
+    const key = `${fromName}->${toName}`;
+    if (addedEdges.has(key)) continue;
+    addedEdges.add(key);
+    const fkCol = ref.fromColumns[0] ?? '';
+    const label = fkCol ? `|"${fkCol}"|` : '';
+    lines.push(`  ${safeId(fromName)} -->${label} ${safeId(toName)}`);
+  }
+
+  const mermaidCode = lines.join('\n');
+  const tableCount = limitedIds.length;
+  const edgeCount = addedEdges.size;
+  const truncated = includedIds.size > 25 ? ` (${includedIds.size - 25}개 생략)` : '';
+
+  return `<div class="embed-card embed-graph">
+<div class="embed-header"><span class="embed-icon">🔀</span><span class="embed-title">관계 그래프</span><span class="embed-meta">${requested.join(', ')} 중심 · ${tableCount}개 테이블 · ${edgeCount}개 연결${truncated}</span></div>
+<div class="mermaid">${mermaidCode}</div>
+</div>`;
+}
+
 /** 아티팩트 HTML 내 embed 태그를 실제 콘텐츠로 교체 */
 function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableData: TableDataMap): string {
   // <div data-embed="schema" data-table="TableName"></div>  (속성 순서 무관)
@@ -163,6 +249,24 @@ function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableD
   html = html.replace(
     /<div([^>]*?)data-table=["']([^"']+)["']([^>]*?)data-embed=["']relations["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
     (_, _a, tbl) => renderRelationsEmbedHtml(tbl, schema),
+  );
+  // <div data-embed="graph" data-tables="T1,T2,T3"></div>  (복수 테이블)
+  html = html.replace(
+    /<div([^>]*?)data-embed=["']graph["']([^>]*?)data-tables=["']([^"']+)["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, _b, tbls) => renderGraphEmbedHtml(tbls, schema),
+  );
+  html = html.replace(
+    /<div([^>]*?)data-tables=["']([^"']+)["']([^>]*?)data-embed=["']graph["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, tbls) => renderGraphEmbedHtml(tbls, schema),
+  );
+  // <div data-embed="graph" data-table="T1"></div>  (단일 테이블 + 직접 연결)
+  html = html.replace(
+    /<div([^>]*?)data-embed=["']graph["']([^>]*?)data-table=["']([^"']+)["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, _b, tbl) => renderGraphEmbedHtml(tbl, schema),
+  );
+  html = html.replace(
+    /<div([^>]*?)data-table=["']([^"']+)["']([^>]*?)data-embed=["']graph["']([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, tbl) => renderGraphEmbedHtml(tbl, schema),
   );
   return html;
 }
@@ -1494,7 +1598,7 @@ function ArtifactSidePanel({
     const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
     const fullHtml = resolved.includes('<!DOCTYPE') || resolved.includes('<html')
       ? resolved
-      : `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">${base}<title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}ul,ol{padding-left:1.4em;margin:.4em 0}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script></head><body>${resolved}</body></html>`;
+      : `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">${base}<title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}ul,ol{padding-left:1.4em;margin:.4em 0}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}</head><body>${resolved}</body></html>`;
     const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     setCompleteBlobUrl(url);
@@ -1506,7 +1610,7 @@ function ArtifactSidePanel({
     if (!finalTc) return;
     const origin = window.location.origin;
     const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
-    const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script></head><body>${resolved}</body></html>`;
+    const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}</head><body>${resolved}</body></html>`;
     const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1731,6 +1835,7 @@ function ArtifactCard({ tc }: { tc: ArtifactResult }) {
     }
   </style>
   <script>${IMG_ONERROR_SCRIPT}</script>
+  ${MERMAID_INIT_SCRIPT}
 </head>
 <body>
 ${resolved}
@@ -1738,11 +1843,11 @@ ${resolved}
 </html>`;
     }
 
-    // 3. 완전한 HTML 문서 → <head>에 base + embed CSS 주입
+    // 3. 완전한 HTML 문서 → <head>에 base + embed CSS + Mermaid 주입
     const withBase = resolved.includes('<head>')
-      ? resolved.replace('<head>', `<head>${base}<style>${EMBED_CSS}</style>`)
+      ? resolved.replace('<head>', `<head>${base}<style>${EMBED_CSS}</style>${MERMAID_INIT_SCRIPT}`)
       : resolved.includes('<head ')
-        ? resolved.replace(/<head(\s[^>]*)>/, `<head$1>${base}<style>${EMBED_CSS}</style>`)
+        ? resolved.replace(/<head(\s[^>]*)>/, `<head$1>${base}<style>${EMBED_CSS}</style>${MERMAID_INIT_SCRIPT}`)
         : resolved;
     return withBase;
   }, [tc.html, tc.title, schema, tableData]);
