@@ -160,16 +160,15 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
           if (!apiUrl) return Promise.resolve(null);
           if (texCache[apiUrl] !== undefined) return Promise.resolve(texCache[apiUrl]);
           return new Promise((resolve) => {
-            // TGA는 TGALoader, 그 외 TextureLoader
-            const isTga = apiUrl.toLowerCase().includes('.tga');
+            // TGA: TGALoader가 내부적으로 방향 처리 → flipY=false
+            // PNG/JPG 등: TextureLoader 표준 → flipY=true
+            const isTga = /\.tga$/i.test(apiUrl);
             const loader2 = isTga ? tgaLoader : texLoader;
             (loader2 as THREE.TGALoader).load(
               apiUrl,
               (tex) => {
                 tex.colorSpace = THREE.SRGBColorSpace;
-                // flipY=true (Three.js 표준)
-                // UV V 반전은 아래 지오메트리 UV 직접 보정으로 처리
-                tex.flipY = true;
+                tex.flipY = !isTga; // TGA=false, 나머지=true
                 texCache[apiUrl] = tex;
                 resolve(tex);
               },
@@ -232,7 +231,7 @@ export function FbxViewer({ url, filename, height = 420, className = '' }: FbxVi
                   newMat.normalMap = normalTex;
                   // Unity 노말맵 DirectX→OpenGL: normalScale.y = -1
                   newMat.normalScale.set(1, -1);
-                  normalTex.flipY = true;
+                  // flipY는 loadTex에서 이미 설정됨 (TGA=false, PNG=true)
                   normalTex.colorSpace = THREE.NoColorSpace;
                   normalTex.needsUpdate = true;
                 }
