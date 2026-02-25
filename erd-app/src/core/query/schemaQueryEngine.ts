@@ -22,13 +22,48 @@ function translateSQL(sql: string): string {
 }
 
 /**
+ * alasql에서 테이블명으로 쓰면 파싱 오류가 나는 예약어 목록
+ * (실제 DB 테이블명으로 자주 쓰이는 것들 위주)
+ */
+const ALASQL_RESERVED_AS_TABLE = new Set([
+  'ENUM', 'INDEX', 'KEY', 'VALUE', 'USER', 'VIEW',
+  'SCHEMA', 'STATUS', 'TYPE', 'LEVEL', 'DATA', 'COMMENT',
+  'COLUMN', 'CONSTRAINT', 'INTERVAL', 'TIMESTAMP',
+  'DATE', 'TIME', 'YEAR', 'MONTH', 'DAY',
+  'HOUR', 'MINUTE', 'SECOND', 'GROUP', 'ORDER',
+  'FUNCTION', 'PROCEDURE', 'TRIGGER', 'SEQUENCE',
+  'TRANSACTION', 'SESSION', 'SYSTEM', 'GLOBAL', 'LOCAL',
+]);
+
+/**
+ * 등록된 테이블명 중 alasql 예약어와 겹치는 것을 백틱으로 이스케이프합니다.
+ * FROM/JOIN/INTO 뒤, 혹은 단독으로 나타나는 경우를 처리합니다.
+ */
+function escapeReservedTableNames(sql: string, knownTableNames: string[]): string {
+  let result = sql;
+  for (const name of knownTableNames) {
+    if (!ALASQL_RESERVED_AS_TABLE.has(name.toUpperCase())) continue;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // 이미 백틱/큰따옴표로 감싸진 것은 건너뜀, 단어 경계 기준으로 치환
+    result = result.replace(
+      new RegExp(`(?<!['\`"])\\b${escaped}\\b(?!['\`"])`, 'gi'),
+      `\`${name}\``,
+    );
+  }
+  return result;
+}
+
+/**
  * SQL 식별자를 alasql 호환 형태로 변환합니다.
  * 1) "큰따옴표 식별자" → `백틱 식별자`   예) c."#char_memo" → c.`#char_memo`
  * 2) 따옴표 없는 #컬럼명 → `#컬럼명`     예) s.#name_memo  → s.`#name_memo`
  */
-function normalizeIdentifiers(sql: string): string {
+function normalizeIdentifiers(sql: string, knownTableNames?: string[]): string {
   let result = sql.replace(/"([^"]+)"/g, '`$1`');
   result = result.replace(/(?<!`)#(\w+)/g, '`#$1`');
+  if (knownTableNames && knownTableNames.length > 0) {
+    result = escapeReservedTableNames(result, knownTableNames);
+  }
   return result;
 }
 
@@ -180,9 +215,11 @@ export function executeDataSQL(
       for (const t of schema.tables) properNameMap.set(t.name.toLowerCase(), t.name);
     }
 
-    // alasql 테이블 등록
+    // alasql 테이블 등록 + 등록된 테이블 이름 수집
+    const registeredTableNames: string[] = [];
     for (const [key, { rows }] of tableData) {
       const name = properNameMap.get(key) ?? key;
+      registeredTableNames.push(name);
 
       // 컬럼명 소문자 정규화 (alasql 식별자 처리 방식 대응)
       const normalizedRows = rows.map(row => {
@@ -212,9 +249,9 @@ export function executeDataSQL(
     const stmts = splitStatements(stripped);
 
     if (stmts.length > 1) {
-      // 각 구문을 전처리 후 실행
+      // 각 구문을 전처리 후 실행 (예약어 테이블명 이스케이프 포함)
       const multiResults: SingleResult[] = stmts.map(stmt => {
-        const processed = normalizeIdentifiers(stmt);
+        const processed = normalizeIdentifiers(stmt, registeredTableNames);
         return execOne(processed);
       });
       const totalRows = multiResults.reduce((s, r) => s + r.rowCount, 0);
@@ -225,8 +262,8 @@ export function executeDataSQL(
       };
     }
 
-    // 단일 구문
-    const processed = normalizeIdentifiers(stmts[0]);
+    // 단일 구문 (예약어 테이블명 이스케이프 포함)
+    const processed = normalizeIdentifiers(stmts[0], registeredTableNames);
     const result = alasql(processed) as Row[];
 
     if (!Array.isArray(result)) {
