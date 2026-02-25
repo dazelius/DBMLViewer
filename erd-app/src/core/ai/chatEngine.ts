@@ -674,6 +674,13 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push("- 모든 값은 문자열 → WHERE id = '1001'");
   lines.push('- 숫자 비교: CAST(level AS NUMBER) > 10');
   lines.push('- 컬럼명은 소문자로 저장됨');
+  lines.push('');
+  lines.push('## ⛔ SQL 별칭(AS) 절대 금지 규칙 — 반드시 준수');
+  lines.push('- **AS 뒤 별칭은 반드시 영문·숫자·언더스코어만 사용** (예: AS char_name, AS skill_id)');
+  lines.push('- **한글 별칭 절대 금지** → AS 대상, AS 이름, AS 스킬명, AS 효과타입 등 모두 파싱 오류 발생');
+  lines.push('- 잘못된 예: exec_target AS 대상  →  올바른 예: exec_target AS target');
+  lines.push('- 잘못된 예: effect_type AS 효과타입  →  올바른 예: effect_type');
+  lines.push('- 별칭이 필요 없으면 그냥 컬럼명 원본을 그대로 사용할 것');
 
   return lines.join('\n');
 }

@@ -54,13 +54,27 @@ function escapeReservedTableNames(sql: string, knownTableNames: string[]): strin
 }
 
 /**
+ * AS 뒤에 한글 별칭이 오는 경우를 제거합니다.
+ * alasql은 한글을 INVALID 토큰으로 인식하여 파싱 오류를 냅니다.
+ * 예) exec_target AS 대상  →  exec_target
+ *     effect_type AS 효과타입  →  effect_type
+ */
+function stripKoreanAliases(sql: string): string {
+  // AS 뒤에 한글이 포함된 별칭을 제거 (문자열 리터럴 내부는 제외)
+  // 패턴: \bAS\b 뒤 공백 + 한글 포함 식별자 (백틱/따옴표 없는 경우만)
+  return sql.replace(/\bAS\s+([^\s,)\]`'"]+[\uAC00-\uD7A3\u3131-\u318E][^\s,)\]`'"]*)/gi, '');
+}
+
+/**
  * SQL 식별자를 alasql 호환 형태로 변환합니다.
  * 1) "큰따옴표 식별자" → `백틱 식별자`   예) c."#char_memo" → c.`#char_memo`
  * 2) 따옴표 없는 #컬럼명 → `#컬럼명`     예) s.#name_memo  → s.`#name_memo`
+ * 3) AS 뒤 한글 별칭 제거 (alasql 파싱 오류 방지)
  */
 function normalizeIdentifiers(sql: string, knownTableNames?: string[]): string {
   let result = sql.replace(/"([^"]+)"/g, '`$1`');
   result = result.replace(/(?<!`)#(\w+)/g, '`#$1`');
+  result = stripKoreanAliases(result);
   if (knownTableNames && knownTableNames.length > 0) {
     result = escapeReservedTableNames(result, knownTableNames);
   }
