@@ -1225,23 +1225,40 @@ function createGitMiddleware(options: GitPluginOptions) {
           const fields = url2.searchParams.get('fields') || 'summary,status,assignee,priority,issuetype,created,updated,description,comment,labels,components,fixVersions,reporter'
 
           // Jira Cloud는 project 조건 없는 JQL을 400으로 차단함.
-          // JQL에 project 조건이 없으면 자동으로 전체 프로젝트 목록을 조회해 추가.
+          // JQL에 project 조건이 없으면 env의 기본 프로젝트 키를 사용해 추가.
           const hasProjectClause = /\bproject\b/i.test(jql)
           if (!hasProjectClause) {
             let projectKeys: string[] = []
-            try {
-              const projResp = await fetch(`${baseUrl}/rest/api/3/project/search?maxResults=100&orderBy=name`, {
-                headers: { Authorization: authHeader, Accept: 'application/json' }
-              })
-              if (projResp.ok) {
-                const projData = await projResp.json() as { values?: { key: string }[] }
-                projectKeys = (projData.values ?? []).map((p: { key: string }) => p.key).filter(Boolean)
-              }
-            } catch { /* ignore */ }
 
-            // project/search 결과 없으면 env의 기본 프로젝트 키 사용
-            if (projectKeys.length === 0 && options.jiraDefaultProject) {
+            // 1) .env에 설정된 기본 프로젝트 키 우선 사용
+            if (options.jiraDefaultProject) {
               projectKeys = options.jiraDefaultProject.split(',').map(k => k.trim()).filter(Boolean)
+            }
+
+            // 2) env 설정 없으면 API로 프로젝트 목록 조회
+            if (projectKeys.length === 0) {
+              try {
+                // project/search (Jira Cloud v3) 먼저 시도
+                const projResp = await fetch(`${baseUrl}/rest/api/3/project/search?maxResults=50&orderBy=name`, {
+                  headers: { Authorization: authHeader, Accept: 'application/json' }
+                })
+                if (projResp.ok) {
+                  const projData = await projResp.json() as { values?: { key: string }[] }
+                  projectKeys = (projData.values ?? []).map((p: { key: string }) => p.key).filter(Boolean)
+                }
+                // project/search 실패 시 /project 목록 폴백
+                if (projectKeys.length === 0) {
+                  const projResp2 = await fetch(`${baseUrl}/rest/api/3/project?maxResults=50`, {
+                    headers: { Authorization: authHeader, Accept: 'application/json' }
+                  })
+                  if (projResp2.ok) {
+                    const projData2 = await projResp2.json() as { key: string }[]
+                    if (Array.isArray(projData2)) {
+                      projectKeys = projData2.map((p: { key: string }) => p.key).filter(Boolean)
+                    }
+                  }
+                }
+              } catch { /* ignore */ }
             }
 
             if (projectKeys.length > 0) {
@@ -1255,7 +1272,7 @@ function createGitMiddleware(options: GitPluginOptions) {
               const upperJql = trimmedJql.toUpperCase()
               const orderByIdx = upperJql.indexOf('ORDER BY')
               if (!trimmedJql) {
-                jql = `${projectPart} ORDER BY created DESC`
+                jql = `${projectPart} ORDER BY updated DESC`
               } else if (upperJql.startsWith('ORDER BY')) {
                 jql = `${projectPart} ${trimmedJql}`
               } else if (orderByIdx > 0) {
@@ -1266,6 +1283,7 @@ function createGitMiddleware(options: GitPluginOptions) {
               } else {
                 jql = `${projectPart} AND ${trimmedJql}`
               }
+              console.log(`[Jira] project 자동 추가 → ${jql}`)
             }
           }
 
