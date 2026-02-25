@@ -2682,8 +2682,10 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
   const [fbxName, setFbxName] = useState<string>('');
   const hasError = !!tc.error;
 
-  const fbxFiles = tc.files.filter(f => f.ext === '.fbx');
-  const otherFiles = tc.files.filter(f => f.ext !== '.fbx');
+  // ext는 dot 없이 저장됨 ("fbx", "png" 등)
+  const fbxFiles   = tc.files.filter(f => f.ext?.toLowerCase() === 'fbx');
+  const imgFiles   = tc.files.filter(f => ['png','jpg','jpeg','tga','gif','bmp'].includes(f.ext?.toLowerCase() ?? ''));
+  const otherFiles = tc.files.filter(f => !['fbx','png','jpg','jpeg','tga','gif','bmp'].includes(f.ext?.toLowerCase() ?? ''));
 
   return (
     <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${hasError ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.3)'}` }}>
@@ -2693,20 +2695,30 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
           <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
         </svg>
         <span className="text-[12px] font-semibold" style={{ color: hasError ? '#f87171' : '#818cf8' }}>
-          {tc.label}
+          에셋 검색: {tc.query}{tc.ext ? ` [.${tc.ext}]` : ''}
         </span>
         {!hasError && (
           <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
-            {tc.total}개 {tc.ext ? `[.${tc.ext}]` : ''}
+            {tc.total}개
           </span>
         )}
       </div>
 
-      {/* FBX 뷰어 */}
+      {/* 인라인 FBX 3D 뷰어 */}
       {fbxUrl && (
-        <div className="p-3">
-          {/* lazy import로 FbxViewer 렌더링 */}
-          <FbxViewerLazy url={fbxUrl} filename={fbxName} />
+        <div style={{ position: 'relative' }}>
+          <div style={{ height: 360, background: '#1a1b26' }}>
+            <FbxViewerLazy url={fbxUrl} filename={fbxName} />
+          </div>
+          <button
+            onClick={() => setFbxUrl(null)}
+            style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', borderRadius: 6, padding: '2px 8px', fontSize: 11, cursor: 'pointer' }}
+          >
+            ✕ 닫기
+          </button>
+          <div style={{ padding: '4px 12px 6px', fontSize: 11, color: '#818cf8', background: 'rgba(99,102,241,0.05)' }}>
+            {fbxName}
+          </div>
         </div>
       )}
 
@@ -2714,28 +2726,56 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
       {fbxFiles.length > 0 && (
         <div className="px-3 pt-2 pb-1">
           <div className="text-[11px] mb-1.5 font-semibold" style={{ color: '#818cf8' }}>
-            FBX 3D 모델 ({fbxFiles.length})
+            🧊 FBX 3D 모델 ({fbxFiles.length})
           </div>
           <div className="space-y-1">
             {fbxFiles.map((f, i) => (
               <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2">
-                  <path d="M12 2L2 7l10 5 10-5-10-5z" />
-                </svg>
                 <span className="flex-1 text-[11px] font-mono truncate" style={{ color: 'var(--text-secondary)' }} title={f.path}>
-                  {f.path}
+                  {f.name}.{f.ext}
                 </span>
                 <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
-                  {(f.size / 1024).toFixed(0)} KB
+                  {f.sizeKB} KB
                 </span>
                 <button
-                  onClick={() => { setFbxUrl(`/api/assets/file?path=${encodeURIComponent(f.path)}`); setFbxName(f.name); }}
+                  onClick={() => {
+                    const url = `/api/assets/file?path=${encodeURIComponent(f.path)}`;
+                    if (fbxUrl === url) { setFbxUrl(null); }
+                    else { setFbxUrl(url); setFbxName(`${f.name}.${f.ext}`); }
+                  }}
                   className="flex-shrink-0 text-[10px] px-2 py-0.5 rounded"
-                  style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)' }}
+                  style={{
+                    background: fbxUrl === `/api/assets/file?path=${encodeURIComponent(f.path)}` ? 'rgba(99,102,241,0.4)' : 'rgba(99,102,241,0.15)',
+                    color: '#818cf8', border: '1px solid rgba(99,102,241,0.3)', cursor: 'pointer'
+                  }}
                 >
-                  3D 뷰
+                  {fbxUrl === `/api/assets/file?path=${encodeURIComponent(f.path)}` ? '▼ 닫기' : '▶ 3D 뷰'}
                 </button>
               </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 이미지 파일 목록 */}
+      {imgFiles.length > 0 && (
+        <div className="px-3 pt-2 pb-1">
+          <div className="text-[11px] mb-1.5 font-semibold" style={{ color: 'var(--text-muted)' }}>
+            🖼️ 이미지 ({imgFiles.length})
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {imgFiles.slice(0, 20).map((f, i) => (
+              <a
+                key={i}
+                href={`/api/assets/file?path=${encodeURIComponent(f.path)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[10px] font-mono px-2 py-0.5 rounded hover:underline"
+                style={{ background: 'var(--bg-primary)', color: '#a5b4fc' }}
+                title={f.path}
+              >
+                {f.name}.{f.ext}
+              </a>
             ))}
           </div>
         </div>
@@ -2747,17 +2787,17 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
           <div className="text-[11px] mb-1.5 font-semibold" style={{ color: 'var(--text-muted)' }}>
             기타 에셋 ({otherFiles.length})
           </div>
-          <div className="space-y-0.5 max-h-48 overflow-y-auto">
+          <div className="space-y-0.5 max-h-40 overflow-y-auto">
             {otherFiles.map((f, i) => (
               <div key={i} className="flex items-center gap-2 px-2 py-1 rounded" style={{ background: 'var(--bg-primary)' }}>
-                <span className="text-[10px] font-mono w-8 flex-shrink-0 text-center rounded" style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}>
-                  {f.ext.replace('.', '')}
+                <span className="text-[10px] font-mono w-10 flex-shrink-0 text-center rounded" style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}>
+                  {f.ext}
                 </span>
                 <span className="flex-1 text-[11px] font-mono truncate" style={{ color: 'var(--text-secondary)' }} title={f.path}>
                   {f.path}
                 </span>
                 <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
-                  {(f.size / 1024).toFixed(0)} KB
+                  {f.sizeKB} KB
                 </span>
               </div>
             ))}
