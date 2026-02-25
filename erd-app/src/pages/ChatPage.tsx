@@ -1959,6 +1959,31 @@ function ArtifactSidePanel({
     }
   }, [finalTc, schema, tableData, publishState, onPublished]);
 
+  // 재출판 — 기존 ID 유지하면서 HTML 갱신
+  const handleRepublish = useCallback(async () => {
+    if (!finalTc || !publishedUrl || publishState === 'loading') return;
+    // publishedUrl 에서 id 추출: /api/p/:id 또는 http://host/api/p/:id
+    const idMatch = publishedUrl.match(/\/api\/p\/([a-z0-9_]+)/i);
+    if (!idMatch) return;
+    const id = idMatch[1];
+    setPublishState('loading');
+    try {
+      const origin = window.location.origin;
+      const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
+      const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}</head><body>${resolved}</body></html>`;
+      const res = await fetch(`/api/publish/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: finalTc.title ?? '제목 없음', html: fullHtml, description: finalTc.description ?? '' }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setPublishState('done');
+    } catch (e) {
+      console.error('Republish failed:', e);
+      setPublishState('error');
+    }
+  }, [finalTc, publishedUrl, publishState, schema, tableData]);
+
   const handleCopyUrl = useCallback(() => {
     if (!publishedUrl) return;
     navigator.clipboard.writeText(publishedUrl).then(() => {
@@ -2033,13 +2058,24 @@ function ArtifactSidePanel({
             </button>
             {/* 출판 버튼 */}
             {publishState === 'done' ? (
-              <button onClick={handleCopyUrl} className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium hover:opacity-80 transition-all"
-                style={{ background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.4)', color: '#fbbf24' }} title={publishedUrl ?? ''}>
-                {publishCopied
-                  ? <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>복사됨</>
-                  : <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>URL 복사</>
-                }
-              </button>
+              <>
+                {/* URL 복사 */}
+                <button onClick={handleCopyUrl} className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium hover:opacity-80 transition-all"
+                  style={{ background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.4)', color: '#fbbf24' }} title={publishedUrl ?? ''}>
+                  {publishCopied
+                    ? <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>복사됨</>
+                    : <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>URL 복사</>
+                  }
+                </button>
+                {/* 재출판 */}
+                <button onClick={handleRepublish} className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium hover:opacity-80 transition-all"
+                  style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)', color: '#f59e0b' }} title="내용을 보강하여 같은 URL로 재출판">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.5"/>
+                  </svg>
+                  재출판
+                </button>
+              </>
             ) : (
               <button onClick={handlePublish} disabled={publishState === 'loading'}
                 className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium hover:opacity-80 transition-all disabled:opacity-50"

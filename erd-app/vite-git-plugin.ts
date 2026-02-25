@@ -784,17 +784,23 @@ function createGitMiddleware(options: GitPluginOptions) {
         return
       }
 
-      // PUT /api/publish/:id (메타 업데이트)
+      // PUT /api/publish/:id (메타 + HTML 재출판 업데이트)
       if (req.method === 'PUT' && idParam) {
         const body = await readBody(req)
-        let payload: Partial<PublishedMeta> = {}
+        let payload: Partial<PublishedMeta> & { html?: string } = {}
         try { payload = JSON.parse(body) } catch { sendJson(res, 400, { error: 'Invalid JSON' }); return }
         const list = readPublishedIndex()
         const idx = list.findIndex(m => m.id === idParam)
         if (idx === -1) { sendJson(res, 404, { error: 'Not found' }); return }
+        // HTML 본문이 포함된 경우 파일도 갱신 (재출판)
+        if (payload.html) {
+          const htmlPath = join(PUBLISHED_DIR, `${idParam}.html`)
+          writeFileSync(htmlPath, payload.html, 'utf-8')
+          delete payload.html
+        }
         list[idx] = { ...list[idx], ...payload, updatedAt: new Date().toISOString() }
         writePublishedIndex(list)
-        sendJson(res, 200, list[idx])
+        sendJson(res, 200, { ...list[idx], url: `/api/p/${idParam}` })
         return
       }
 
