@@ -3570,6 +3570,16 @@ export default function ChatPage() {
     } catch { /* 용량 초과 등 무시 */ }
   }, [savedArtifacts]);
 
+  // 스키마 로드 시 DB 가이드 자동 생성 (백그라운드)
+  useEffect(() => {
+    if (!schema) return;
+    fetch('/api/guides/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schema }),
+    }).catch(() => { /* 조용히 실패 */ });
+  }, [schema]);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // historyRef: Claude API에 넘길 대화 이력 — localStorage에서 복원

@@ -476,6 +476,171 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
+    // ── /api/guides/generate : 스키마 기반 DB 가이드 생성 (POST) ────────────────
+    if (req.method === 'POST' && req.url?.startsWith('/api/guides/generate')) {
+      try {
+        const body = await readBody(req)
+        const payload = JSON.parse(body) as { schema?: any; tableData?: Record<string, any[]> }
+        const schema = payload.schema
+        if (!schema || !Array.isArray(schema.tables)) {
+          sendJson(res, 400, { error: 'schema.tables required' }); return
+        }
+        const guidesDir = join(CODE_DIR, '_guides')
+        if (!existsSync(guidesDir)) mkdirSync(guidesDir, { recursive: true })
+
+        // ── 도메인 키워드 그루핑 ──────────────────────────────────────────────
+        const DOMAIN_KEYWORDS: Record<string, string[]> = {
+          '_DB_Character': ['character', 'hero', 'player', 'striker', 'hunter', 'char'],
+          '_DB_Skill':     ['skill', 'ability', 'passive', 'active', 'buff', 'debuff'],
+          '_DB_Weapon':    ['weapon', 'gun', 'rifle', 'pistol', 'shotgun', 'sniper', 'launcher'],
+          '_DB_Item':      ['item', 'equip', 'gear', 'armor', 'helmet', 'boot', 'accessory'],
+          '_DB_Stage':     ['stage', 'map', 'zone', 'dungeon', 'chapter', 'mission'],
+          '_DB_Enemy':     ['enemy', 'monster', 'mob', 'boss', 'npc'],
+          '_DB_Quest':     ['quest', 'mission', 'challenge', 'achievement'],
+          '_DB_Shop':      ['shop', 'store', 'purchase', 'sell', 'price', 'cost', 'reward'],
+          '_DB_User':      ['user', 'account', 'profile', 'social', 'friend', 'guild'],
+        }
+
+        // 테이블을 도메인별로 그룹화
+        const domainMap: Record<string, any[]> = { '_DB_Misc': [] }
+        for (const key of Object.keys(DOMAIN_KEYWORDS)) domainMap[key] = []
+        const assigned = new Set<string>()
+        for (const tbl of schema.tables as any[]) {
+          const tn = tbl.name.toLowerCase()
+          let found = false
+          for (const [domain, keywords] of Object.entries(DOMAIN_KEYWORDS)) {
+            if (keywords.some((k: string) => tn.includes(k))) {
+              domainMap[domain].push(tbl)
+              assigned.add(tbl.name)
+              found = true
+              break
+            }
+          }
+          if (!found) domainMap['_DB_Misc'].push(tbl)
+        }
+
+        // FK 맵 생성
+        const fkLines: string[] = []
+        for (const ref of (schema.refs ?? []) as any[]) {
+          const from = ref.endpoints?.[0]
+          const to   = ref.endpoints?.[1]
+          if (from && to) fkLines.push(`${from.tableName}.${from.fieldNames?.[0]} → ${to.tableName}.${to.fieldNames?.[0]}`)
+        }
+
+        // ── DB 개요 가이드 생성 ──────────────────────────────────────────────
+        const totalCols = (schema.tables as any[]).reduce((s: number, t: any) => s + (t.columns?.length ?? 0), 0)
+        let overview = `# DB 스키마 개요\n\n`
+        overview += `- 테이블: ${schema.tables.length}개 | 컬럼: ${totalCols}개 | 관계(FK): ${schema.refs?.length ?? 0}개 | Enum: ${schema.enums?.length ?? 0}개\n\n`
+        overview += `## 도메인별 테이블\n`
+        for (const [domain, tables] of Object.entries(domainMap) as [string, any[]][]) {
+          if (!tables.length) continue
+          const label = domain.replace('_DB_', '')
+          overview += `\n### ${label}\n`
+          overview += tables.map((t: any) => {
+            const pk = t.columns?.find((c: any) => c.pk)?.name ?? ''
+            const noteStr = t.note ? ` — ${t.note}` : ''
+            return `- **${t.name}**${noteStr} (컬럼 ${t.columns?.length ?? 0}개${pk ? ', PK: ' + pk : ''})`
+          }).join('\n')
+          overview += '\n'
+        }
+        if (schema.enums?.length) {
+          overview += `\n## Enum 목록\n`
+          overview += (schema.enums as any[]).map((e: any) => {
+            const vals = (e.values ?? []).map((v: any) => v.name).slice(0, 10).join(', ')
+            return `- **${e.name}**: ${vals}${(e.values?.length ?? 0) > 10 ? '...' : ''}`
+          }).join('\n')
+          overview += '\n'
+        }
+        if (fkLines.length) {
+          overview += `\n## 주요 FK 관계\n`
+          overview += fkLines.slice(0, 60).map((l: string) => `- ${l}`).join('\n')
+          if (fkLines.length > 60) overview += `\n- ... 외 ${fkLines.length - 60}개`
+          overview += '\n'
+        }
+        writeFileSync(join(guidesDir, '_DB_OVERVIEW.md'), overview, 'utf-8')
+
+        // ── 도메인별 가이드 생성 ──────────────────────────────────────────────
+        const generated: string[] = ['_DB_OVERVIEW']
+        for (const [domain, tables] of Object.entries(domainMap) as [string, any[]][]) {
+          if (!tables.length) continue
+          let md = `# ${domain.replace('_DB_', '')} 관련 테이블\n\n`
+          for (const t of tables) {
+            md += `## ${t.name}${t.note ? ` — ${t.note}` : ''}\n`
+            if (t.columns?.length) {
+              md += `| 컬럼 | 타입 | 속성 | 설명 |\n|---|---|---|---|\n`
+              md += t.columns.map((c: any) => {
+                const attrs = [c.pk && 'PK', c.unique && 'UQ', c.not_null && 'NN'].filter(Boolean).join(' ')
+                return `| ${c.name} | ${c.type?.type_name ?? ''} | ${attrs} | ${c.note ?? ''} |`
+              }).join('\n')
+              md += '\n\n'
+            }
+            // 이 테이블과 관련된 FK
+            const myFks = fkLines.filter(l => l.startsWith(t.name + '.') || l.includes('→ ' + t.name + '.'))
+            if (myFks.length) {
+              md += `**FK 관계:**\n` + myFks.map((l: string) => `- ${l}`).join('\n') + '\n\n'
+            }
+          }
+          writeFileSync(join(guidesDir, `${domain}.md`), md, 'utf-8')
+          generated.push(domain)
+        }
+
+        // Enum 전용 가이드
+        if (schema.enums?.length) {
+          let enumMd = `# Enum 전체 목록\n\n`
+          for (const e of schema.enums as any[]) {
+            enumMd += `## ${e.name}\n`
+            enumMd += (e.values ?? []).map((v: any) => `- \`${v.name}\`${v.note ? ': ' + v.note : ''}`).join('\n')
+            enumMd += '\n\n'
+          }
+          writeFileSync(join(guidesDir, '_DB_Enums.md'), enumMd, 'utf-8')
+          generated.push('_DB_Enums')
+        }
+
+        sendJson(res, 200, { ok: true, generated })
+      } catch (e: any) {
+        sendJson(res, 500, { error: e.message })
+      }
+      return
+    }
+
+    // ── /api/guides/list : 전체 가이드 목록 (코드 + DB) ──────────────────────
+    if (req.url?.startsWith('/api/guides/list')) {
+      const guidesDir = join(CODE_DIR, '_guides')
+      if (!existsSync(guidesDir)) { sendJson(res, 200, { guides: [] }); return }
+      const files = readdirSync(guidesDir)
+        .filter(f => f.endsWith('.md'))
+        .map(f => {
+          const stat = statSync(join(guidesDir, f))
+          const isDb   = f.startsWith('_DB_')
+          const isCode = !isDb
+          return { name: f.replace('.md', ''), sizeKB: Math.round(stat.size / 1024 * 10) / 10, category: isDb ? 'db' : 'code' }
+        })
+        .sort((a, b) => a.name.localeCompare(b.name))
+      sendJson(res, 200, { guides: files })
+      return
+    }
+
+    // ── /api/guides/read : 가이드 내용 (코드 + DB 통합) ──────────────────────
+    if (req.url?.startsWith('/api/guides/read')) {
+      const url = new URL(req.url, 'http://localhost')
+      const name = (url.searchParams.get('name') || '_DB_OVERVIEW').replace(/[^a-zA-Z0-9_\-]/g, '')
+      const guidesDir = join(CODE_DIR, '_guides')
+      const guidePath = join(guidesDir, `${name}.md`)
+      if (!existsSync(guidePath)) {
+        const available = existsSync(guidesDir)
+          ? readdirSync(guidesDir).filter(f => f.endsWith('.md')).map(f => f.replace('.md', ''))
+          : []
+        sendJson(res, 404, { error: `Guide '${name}' not found`, available }); return
+      }
+      const MAX = 200 * 1024
+      let content = readFileSync(guidePath, 'utf-8')
+      if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
+      const truncated = content.length > MAX
+      if (truncated) content = content.slice(0, MAX) + '\n...(truncated)'
+      sendJson(res, 200, { name, content, sizeKB: Math.round(content.length / 1024 * 10) / 10, truncated })
+      return
+    }
+
     // ── /api/code/guides : 가이드 파일 목록 ────────────────────────────────────
     if (req.url?.startsWith('/api/code/guides')) {
       const guidesDir = join(CODE_DIR, '_guides')

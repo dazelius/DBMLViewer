@@ -217,7 +217,7 @@ export interface AssetSearchResult {
   label: string;
   query: string;
   ext: string;
-  files: { path: string; name: string; ext: string; size: number }[];
+  files: { path: string; name: string; ext: string; size?: number; sizeKB?: number }[];
   total: number;
   error?: string;
 }
@@ -369,24 +369,38 @@ const TOOLS = [
     },
   },
   {
-    name: 'read_code_guide',
+    name: 'read_guide',
     description:
-      'C# 코드베이스 가이드 문서를 읽습니다. ' +
-      '코드 분석 시 search_code보다 먼저 이 툴로 전체 구조를 파악하세요. ' +
-      '빈 name으로 호출하면 사용 가능한 가이드 목록을 반환합니다. ' +
-      '_OVERVIEW: 전체 폴더구조·네임스페이스·도메인 목록. ' +
-      '_Skill: 스킬 시스템 파일/클래스/메서드. ' +
-      '_Weapon: 무기 시스템. _Character: 캐릭터 시스템. _Combat: 전투 시스템. ' +
-      '_Network: 네트워크. _UI: UI. _Manager: 매니저·컨트롤러 등.',
+      '⭐ 모든 도메인 가이드를 읽는 통합 툴. 코드(C#) 가이드 + DB/게임 설계 가이드를 모두 포함합니다. ' +
+      '어떤 질문이든 관련 가이드를 먼저 읽고 답변하세요. ' +
+      '빈 name("")으로 호출하면 전체 목록 반환. ' +
+      '── DB/게임 가이드 ──  ' +
+      '_DB_OVERVIEW: 전체 DB 테이블·FK·Enum 개요. ' +
+      '_DB_Character: 캐릭터 테이블 구조. _DB_Skill: 스킬 테이블. _DB_Weapon: 무기 테이블. ' +
+      '_DB_Item: 아이템. _DB_Stage: 스테이지/맵. _DB_Enemy: 적/몬스터. _DB_Enums: 전체 Enum 값 목록. ' +
+      '── C# 코드 가이드 ──  ' +
+      '_OVERVIEW: 전체 폴더구조. _Skill: 스킬 시스템 코드. _Weapon: 무기 코드. _Character: 캐릭터 코드. ' +
+      '_Combat: 전투. _Network: 네트워크. _UI: UI. _Manager: 매니저.',
     input_schema: {
       type: 'object',
       properties: {
         name: {
           type: 'string',
           description:
-            '읽을 가이드 이름. 예: "_OVERVIEW"(전체 개요), "_Skill", "_Weapon", "_Character", "_Combat", "_Network", "_UI", "_Manager", "_Data", "_AI", "_Effect", "_Item", "_Map", "_Animation", "_Audio", "_Camera". 빈 문자열("")이면 사용 가능한 가이드 목록 반환.',
+            '읽을 가이드 이름. DB 가이드: "_DB_OVERVIEW", "_DB_Character", "_DB_Skill", "_DB_Weapon", "_DB_Item", "_DB_Stage", "_DB_Enemy", "_DB_Enums", "_DB_Misc". ' +
+            '코드 가이드: "_OVERVIEW", "_Skill", "_Weapon", "_Character", "_Combat", "_Network", "_UI", "_Manager", "_Data", "_AI", "_Effect", "_Item", "_Map", "_Animation", "_Audio", "_Camera". ' +
+            '빈 문자열("")이면 전체 목록 반환.',
         },
       },
+      required: [],
+    },
+  },
+  {
+    name: 'read_code_guide',
+    description: '(deprecated: read_guide 사용 권장) C# 코드 가이드 읽기.',
+    input_schema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: '가이드 이름' } },
       required: [],
     },
   },
@@ -547,7 +561,10 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 및 채팅 임베드 (아이콘, UI 이미지 찾기 요청 시 사용)');
   lines.push('- create_artifact: 수집된 데이터로 완성된 HTML 문서/보고서 생성 (전체화면 프리뷰, PDF 저장 가능)');
   lines.push('- patch_artifact: ⭐ 기존 아티팩트 수정 시 사용 (find/replace 패치만 반환 → 토큰 90% 절약)');
-  lines.push('- read_code_guide: ⭐ 코드 분석 시작점. 코드베이스 가이드 MD 읽기. name="" 로 목록, "_OVERVIEW" 로 전체 구조, "_Skill"/"_Weapon" 등으로 도메인별 파일·클래스·메서드 목록.');
+  lines.push('- read_guide: ⭐⭐⭐ 최우선 시작점! DB+코드 통합 가이드 MD 읽기. 어떤 질문이든 관련 가이드를 먼저 읽고 답변하세요.');
+  lines.push('  → DB/게임 질문: read_guide("_DB_OVERVIEW") → 도메인 가이드(_DB_Character, _DB_Skill 등)');
+  lines.push('  → 코드 질문:   read_guide("_OVERVIEW") → 도메인 가이드(_Skill, _Weapon, _Character 등)');
+  lines.push('  → 가이드 목록: read_guide("") 로 전체 확인');
   lines.push('- search_code: C# 게임 클라이언트 소스코드 검색 (클래스/메서드/파일명/내용 전문검색). 코드 구현 방식, 로직, 버그 분석 시 사용.');
   lines.push('- read_code_file: 특정 .cs 파일 전체 내용 읽기. search_code로 경로 확인 후 호출.');
   lines.push('- search_assets: Unity 에셋 파일 검색 (FBX 3D 모델, PNG 텍스처, WAV 사운드 등). ext="fbx"로 3D 모델만 검색 가능.');
@@ -597,11 +614,23 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- ⚠️ 절대로 "아티팩트를 만들겠습니다", "HTML을 생성하겠습니다" 등의 선언 후 멈추지 마세요. 선언 없이 즉시 툴을 호출하세요.');
   lines.push('- 반드시 먼저 다른 툴로 데이터를 충분히 수집한 후 create_artifact를 마지막에 호출하세요.');
   lines.push('- html 파라미터: <!DOCTYPE html> 없이 <body> 내용만 작성 (간결하게 500줄 이내).');
+  lines.push('[가이드 우선 원칙 — 모든 질문에 적용]');
+  lines.push('⭐⭐⭐ 어떤 질문이든 답변 전에 반드시 관련 가이드를 먼저 read_guide로 읽으세요!');
+  lines.push('');
+  lines.push('질문 유형별 가이드 우선 순서:');
+  lines.push('- 캐릭터/스킬/무기/아이템 질문 → read_guide("_DB_OVERVIEW") → read_guide("_DB_Character"/"_DB_Skill"/"_DB_Weapon")');
+  lines.push('- Enum/코드값 질문 → read_guide("_DB_Enums")');
+  lines.push('- 게임 데이터 일반 → read_guide("_DB_OVERVIEW") 로 테이블 구조 파악 후 쿼리');
+  lines.push('- 코드 구현/로직 질문 → read_guide("_OVERVIEW") → read_guide("_Skill"/"_Weapon"/"_Character" 등)');
+  lines.push('- 모르는 시스템 → read_guide("") 로 목록 먼저 확인');
+  lines.push('');
+  lines.push('가이드를 읽으면: 테이블 구조, FK 관계, 중요 컬럼, 클래스/메서드 위치를 사전에 알 수 있어 불필요한 탐색을 줄입니다.');
+  lines.push('');
   lines.push('[C# 코드 분석 규칙]');
-  lines.push('- ⭐ 코드 분석 시작 전: read_code_guide(name="_OVERVIEW") 로 전체 폴더 구조를 먼저 파악하세요.');
-  lines.push('- 특정 시스템 분석 시: read_code_guide(name="_Skill"), read_code_guide(name="_Weapon") 등 도메인 가이드를 먼저 읽으세요.');
+  lines.push('- ⭐ 코드 분석 시작 전: read_guide(name="_OVERVIEW") 로 전체 폴더 구조를 먼저 파악하세요.');
+  lines.push('- 특정 시스템 분석 시: read_guide(name="_Skill"), read_guide(name="_Weapon") 등 도메인 가이드를 먼저 읽으세요.');
   lines.push('- 가이드에서 파일 경로·클래스명·메서드명을 확인한 뒤 search_code 또는 read_code_file로 구체적인 코드를 확인하세요.');
-  lines.push('- 코드 관련 질문 (구현 방식, 로직, 버그, 특정 시스템 동작): read_code_guide → search_code → 필요 시 read_code_file 순서로 호출.');
+  lines.push('- 코드 관련 질문 (구현 방식, 로직, 버그, 특정 시스템 동작): read_guide → search_code → 필요 시 read_code_file 순서로 호출.');
   lines.push('- 클래스 검색: search_code(query="ClassName", type="class")');
   lines.push('- 메서드 검색: search_code(query="MethodName", type="method")');
   lines.push('- 내용 전문검색: search_code(query="keyword", type="content")');
@@ -1621,39 +1650,49 @@ function showTab(id){
           }
         }
 
-        // ── read_code_guide ──
-        else if (tb.name === 'read_code_guide') {
+        // ── read_guide (통합: DB + 코드) ──
+        else if (tb.name === 'read_guide' || tb.name === 'read_code_guide') {
           const guideName = String(inp.name ?? '').trim();
           const t0 = performance.now();
           try {
             if (!guideName) {
-              // 목록 반환
-              const resp = await fetch('/api/code/guides');
-              const data = await resp.json() as { guides: { name: string; sizeKB: number }[]; message?: string };
+              // 전체 목록 반환 (통합 /api/guides/list 우선, fallback /api/code/guides)
+              const resp = await fetch('/api/guides/list');
+              const data = await resp.json() as { guides: { name: string; sizeKB: number; category: string }[] };
               const duration = performance.now() - t0;
-              if (data.message) {
-                resultStr = `가이드 없음: ${data.message}`;
-              } else {
-                const list = data.guides.map(g => `- ${g.name}  (${g.sizeKB} KB)`).join('\n');
-                resultStr = `사용 가능한 코드 가이드 (${data.guides.length}개):\n${list}\n\n먼저 _OVERVIEW를 읽어 전체 구조를 파악하세요. (${duration.toFixed(0)}ms)`;
+              const dbGuides   = data.guides.filter(g => g.category === 'db');
+              const codeGuides = data.guides.filter(g => g.category === 'code');
+              let list = '';
+              if (dbGuides.length) {
+                list += `### DB/게임 가이드 (${dbGuides.length}개)\n`;
+                list += dbGuides.map(g => `- ${g.name}  (${g.sizeKB} KB)`).join('\n') + '\n\n';
               }
-              tc = { kind: 'code_guide', label: '코드 가이드 목록', text: resultStr };
+              if (codeGuides.length) {
+                list += `### C# 코드 가이드 (${codeGuides.length}개)\n`;
+                list += codeGuides.map(g => `- ${g.name}  (${g.sizeKB} KB)`).join('\n');
+              }
+              resultStr = `사용 가능한 가이드 (${data.guides.length}개):\n\n${list || '없음'}\n\n(${duration.toFixed(0)}ms)\n먼저 _DB_OVERVIEW 또는 _OVERVIEW를 읽으세요.`;
+              tc = { kind: 'code_guide', label: '가이드 목록', text: resultStr };
             } else {
-              const resp = await fetch(`/api/code/guide?name=${encodeURIComponent(guideName)}`);
+              // 통합 /api/guides/read 우선, fallback /api/code/guide
+              let resp = await fetch(`/api/guides/read?name=${encodeURIComponent(guideName)}`);
+              if (!resp.ok) resp = await fetch(`/api/code/guide?name=${encodeURIComponent(guideName)}`);
               const data = await resp.json() as { name?: string; content?: string; sizeKB?: number; truncated?: boolean; error?: string; available?: string[] };
               const duration = performance.now() - t0;
               if (!resp.ok || data.error) {
                 const avail = data.available ? `\n사용 가능: ${data.available.join(', ')}` : '';
-                resultStr = `가이드 '${guideName}' 없음.${avail}`;
+                resultStr = `가이드 '${guideName}' 없음.${avail}\n빈 name("")으로 전체 목록을 확인하세요.`;
               } else {
+                const isDb = guideName.startsWith('_DB_');
+                const kind = isDb ? 'DB 가이드' : '코드 가이드';
                 const truncNote = data.truncated ? `\n\n[주의: 파일이 너무 커서 앞 200KB만 반환됨]` : '';
-                resultStr = `# 코드 가이드: ${data.name}  (${data.sizeKB} KB, ${duration.toFixed(0)}ms)\n\n${data.content}${truncNote}`;
+                resultStr = `# ${kind}: ${data.name}  (${data.sizeKB} KB, ${duration.toFixed(0)}ms)\n\n${data.content}${truncNote}`;
               }
-              tc = { kind: 'code_guide', label: `코드 가이드: ${guideName}`, text: resultStr };
+              tc = { kind: 'code_guide', label: `가이드: ${guideName}`, text: resultStr };
             }
           } catch (e) {
             resultStr = `가이드 로드 실패: ${String(e)}`;
-            tc = { kind: 'code_guide', label: '코드 가이드 오류', text: resultStr, error: String(e) };
+            tc = { kind: 'code_guide', label: '가이드 오류', text: resultStr, error: String(e) };
           }
         }
 
