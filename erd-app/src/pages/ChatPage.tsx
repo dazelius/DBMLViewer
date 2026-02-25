@@ -2410,9 +2410,67 @@ function CodeSearchCard({ tc }: { tc: CodeSearchResult }) {
   );
 }
 
+// ── C# 신택스 하이라이터 ─────────────────────────────────────────────────────
+function highlightCSharp(code: string): string {
+  const KEYWORDS = /\b(abstract|as|base|bool|break|byte|case|catch|char|checked|class|const|continue|decimal|default|delegate|do|double|else|enum|event|explicit|extern|false|finally|fixed|float|for|foreach|goto|if|implicit|in|int|interface|internal|is|lock|long|namespace|new|null|object|operator|out|override|params|private|protected|public|readonly|ref|return|sbyte|sealed|short|sizeof|stackalloc|static|string|struct|switch|this|throw|true|try|typeof|uint|ulong|unchecked|unsafe|ushort|using|virtual|void|volatile|while|async|await|var|dynamic|partial|yield|get|set|add|remove|value|where|from|select|group|into|orderby|join|let|on|equals|by|ascending|descending)\b/g;
+  const BUILTIN_TYPES = /\b(List|Dictionary|IEnumerable|IList|IDictionary|ICollection|HashSet|Queue|Stack|Task|Action|Func|Predicate|EventHandler|Exception|StringBuilder|Guid|DateTime|TimeSpan|Nullable|Array|Tuple|ValueTuple|ObservableCollection|CancellationToken|CancellationTokenSource|JsonSerializer|JsonDocument|HttpClient|StreamReader|StreamWriter|Encoding|Regex|Thread|Timer|Stopwatch|Debug|Console|Math|Convert|Environment|Path|File|Directory|Enum|Type|Attribute|Assembly|MethodInfo|PropertyInfo|FieldInfo|ParameterInfo|Activator)\b/g;
+
+  // HTML 특수문자 이스케이프
+  let out = code
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // 토큰화: 각 요소를 플레이스홀더로 치환 후 색상 적용
+  const tokens: string[] = [];
+  const ph = (html: string) => { const id = `\x00${tokens.length}\x00`; tokens.push(html); return id; };
+
+  // 1. 블록 주석 /* ... */
+  out = out.replace(/\/\*[\s\S]*?\*\//g, m => ph(`<span style="color:#6a9955;font-style:italic">${m}</span>`));
+  // 2. 한 줄 주석 //
+  out = out.replace(/\/\/[^\n]*/g, m => ph(`<span style="color:#6a9955;font-style:italic">${m}</span>`));
+  // 3. 보간 문자열 $"..." (단순 처리)
+  out = out.replace(/\$&quot;(?:[^&]|&(?!quot;))*&quot;/g, m => ph(`<span style="color:#ce9178">${m}</span>`));
+  // 4. 일반 문자열 "..."
+  out = out.replace(/&quot;(?:[^&]|&(?!quot;))*&quot;/g, m => ph(`<span style="color:#ce9178">${m}</span>`));
+  // 5. 문자 리터럴 '.'
+  out = out.replace(/&#x27;.&#x27;/g, m => ph(`<span style="color:#ce9178">${m}</span>`));
+  // 6. 어트리뷰트 [Attribute]
+  out = out.replace(/\[([A-Z][A-Za-z0-9_.,\s&lt;&gt;"=()]*?)\]/g, (m) =>
+    ph(`<span style="color:#dcdcaa">${m}</span>`));
+  // 7. 전처리기 #region #endregion #if 등
+  out = out.replace(/^([ \t]*)(#\w+.*)/gm, (_, indent, directive) =>
+    indent + ph(`<span style="color:#9b9b9b">${directive}</span>`));
+  // 8. 숫자
+  out = out.replace(/\b(\d+\.?\d*[fFdDmMuUlL]*)\b/g, m => ph(`<span style="color:#b5cea8">${m}</span>`));
+  // 9. 키워드
+  out = out.replace(KEYWORDS, m => ph(`<span style="color:#569cd6;font-weight:600">${m}</span>`));
+  // 10. 내장 타입/클래스
+  out = out.replace(BUILTIN_TYPES, m => ph(`<span style="color:#4ec9b0">${m}</span>`));
+  // 11. 메서드 호출 word(
+  out = out.replace(/\b([A-Z][A-Za-z0-9_]*)(?=\s*(?:&lt;[^&]*&gt;\s*)?\()/g, m => ph(`<span style="color:#dcdcaa">${m}</span>`));
+  // 12. 대문자 시작 식별자 (타입명 추정)
+  out = out.replace(/\b([A-Z][A-Za-z0-9_]{1,})\b/g, m => ph(`<span style="color:#4ec9b0">${m}</span>`));
+
+  // 플레이스홀더 복원
+  out = out.replace(/\x00(\d+)\x00/g, (_, i) => tokens[Number(i)]);
+  return out;
+}
+
 // ── 코드 파일 뷰어 카드 ───────────────────────────────────────────────────────
 function CodeFileCard({ tc }: { tc: CodeFileResult }) {
   const [expanded, setExpanded] = useState(false);
+
+  const highlighted = useMemo(() => {
+    if (!tc.content) return '';
+    // 줄 번호 추가
+    const lines = tc.content.split('\n');
+    const pad = String(lines.length).length;
+    return lines.map((line, i) => {
+      const lineNum = String(i + 1).padStart(pad, ' ');
+      return `<span style="color:#4a5568;user-select:none;margin-right:12px;display:inline-block;min-width:${pad}ch;text-align:right">${lineNum}</span>${highlightCSharp(line)}`;
+    }).join('\n');
+  }, [tc.content]);
 
   return (
     <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
@@ -2449,7 +2507,7 @@ function CodeFileCard({ tc }: { tc: CodeFileResult }) {
             <div className="text-[11px] px-3 py-2 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>{tc.error}</div>
           ) : (
             <>
-              {/* 메타 정보 */}
+              {/* 메타 배지 */}
               {(tc.classes?.length || tc.namespaces?.length) ? (
                 <div className="mb-2 flex flex-wrap gap-1">
                   {tc.namespaces?.map((n, i) => (
@@ -2460,11 +2518,19 @@ function CodeFileCard({ tc }: { tc: CodeFileResult }) {
                   ))}
                 </div>
               ) : null}
-              {/* 코드 내용 */}
-              <pre className="text-[10px] font-mono overflow-auto rounded-md p-3 max-h-96"
-                style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', whiteSpace: 'pre', tabSize: 4 }}>
-                {tc.content}
-              </pre>
+              {/* 코드 블록 — C# 하이라이팅 */}
+              <div
+                className="text-[10.5px] font-mono overflow-auto rounded-md p-3 max-h-[520px] leading-[1.6]"
+                style={{
+                  background: '#1e1e1e',
+                  border: '1px solid #333',
+                  color: '#d4d4d4',
+                  whiteSpace: 'pre',
+                  tabSize: 4,
+                  fontFamily: '"Cascadia Code","Fira Code","JetBrains Mono","Consolas",monospace',
+                }}
+                dangerouslySetInnerHTML={{ __html: highlighted }}
+              />
               {tc.truncated && (
                 <p className="text-[10px] mt-1" style={{ color: '#fbbf24' }}>⚠️ 파일이 크거나 잘렸습니다 (100KB 제한)</p>
               )}
