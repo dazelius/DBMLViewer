@@ -985,29 +985,59 @@ export async function sendChatMessage(
               tc = { kind: 'character_profile', characterName: charName, charTableName: '', charPK: '', character: {}, connections: [], totalRelatedRows: 0, error: '캐릭터 테이블을 찾을 수 없습니다.' } as CharacterProfileResult;
               resultStr = '오류: 캐릭터 테이블 없음';
             } else {
-              // 2. 캐릭터 PK 컬럼 탐색
-              const pkCol = charTable.columns.find(c => c.isPrimaryKey)?.name ?? 'id';
+              // 2. 캐릭터 PK 컬럼 탐색 (소문자로 통일 — executeDataSQL이 컬럼명을 lowercase 정규화)
+              const pkCol = (charTable.columns.find(c => c.isPrimaryKey)?.name ?? 'id').toLowerCase();
 
-              // 3. 캐릭터 이름으로 검색 (name, char_name 등 시도)
+              // 3. 캐릭터 이름으로 검색 — 컬럼명 소문자 필수 (alasql 저장 방식)
+              // 전략 1: name/이름 패턴 컬럼 우선
               const nameColumns = charTable.columns
                 .filter(c => /name|이름/i.test(c.name))
-                .map(c => c.name);
+                .map(c => c.name.toLowerCase());
               if (nameColumns.length === 0) nameColumns.push('name');
 
+              // 전략 2: 전체 컬럼 (영문명, 별칭 등 대비)
+              const allColumns = charTable.columns.map(c => c.name.toLowerCase());
+              const searchCols = [...new Set([...nameColumns, ...allColumns])];
+
+              const safeInput = charName.replace(/'/g, "''");
+
               let character: Record<string, unknown> | null = null;
-              for (const nc of nameColumns) {
+              for (const nc of searchCols) {
                 try {
                   const r = await executeDataSQL(
-                    `SELECT * FROM "${charTable.name}" WHERE LOWER("${nc}") LIKE LOWER('%${charName.replace(/'/g, "''")}%') LIMIT 1`,
+                    // 컬럼명은 따옴표 없이 사용 (alasql 소문자 식별자)
+                    `SELECT * FROM "${charTable.name}" WHERE LOWER(${nc}) LIKE LOWER('%${safeInput}%') LIMIT 1`,
                     tableData,
                   );
                   if (r.rows.length > 0) { character = r.rows[0] as Record<string, unknown>; break; }
-                } catch { /* try next column */ }
+                } catch { /* 비문자열 컬럼 등 스킵 */ }
+              }
+
+              // 전략 3: 모든 행을 가져와서 JS에서 필터 (인코딩 차이 등 최후 대비)
+              if (!character) {
+                try {
+                  const allRows = await executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 200`, tableData);
+                  const lowerInput = charName.toLowerCase();
+                  const found = allRows.rows.find(row =>
+                    Object.values(row as Record<string, unknown>).some(v =>
+                      typeof v === 'string' && v.toLowerCase().includes(lowerInput)
+                    )
+                  );
+                  if (found) character = found as Record<string, unknown>;
+                } catch { /* skip */ }
               }
 
               if (!character) {
-                tc = { kind: 'character_profile', characterName: charName, charTableName: charTable.name, charPK: pkCol, character: {}, connections: [], totalRelatedRows: 0, error: `"${charName}" 캐릭터를 찾을 수 없습니다.`, duration: performance.now() - t0 } as CharacterProfileResult;
-                resultStr = `오류: "${charName}" 캐릭터 없음`;
+                // 샘플 데이터를 포함해 Claude가 올바른 이름을 찾도록 hint 제공
+                let sampleHint = '';
+                try {
+                  const sample = await executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 5`, tableData);
+                  if (sample.rows.length > 0) {
+                    sampleHint = '\n캐릭터 테이블 샘플: ' + JSON.stringify(sample.rows.slice(0, 3));
+                  }
+                } catch { /* skip */ }
+                tc = { kind: 'character_profile', characterName: charName, charTableName: charTable.name, charPK: pkCol, character: {}, connections: [], totalRelatedRows: 0, error: `"${charName}" 캐릭터를 찾을 수 없습니다. 캐릭터 이름이 정확한지 확인하세요.${sampleHint}`, duration: performance.now() - t0 } as CharacterProfileResult;
+                resultStr = `오류: "${charName}" 캐릭터 없음${sampleHint}`;
               } else {
                 const charId = character[pkCol];
 
@@ -1016,21 +1046,21 @@ export async function sendChatMessage(
                 const connections: CharacterProfileNode[] = [];
                 let totalRelated = 0;
 
-                // 5. 각 연결 테이블 쿼리
+                // 5. 각 연결 테이블 쿼리 (컬럼명 소문자 필수)
                 await Promise.all(directRefs.map(async (ref) => {
                   const connTable = resolvedSchema.tables.find(t => t.id === ref.fromTable);
                   if (!connTable) return;
-                  const fkCol = ref.fromColumns[0];
+                  const fkCol = ref.fromColumns[0].toLowerCase(); // 소문자
 
                   try {
                     const res = await executeDataSQL(
-                      `SELECT * FROM "${connTable.name}" WHERE "${fkCol}" = '${String(charId).replace(/'/g, "''")}' LIMIT 5`,
+                      `SELECT * FROM "${connTable.name}" WHERE ${fkCol} = '${String(charId).replace(/'/g, "''")}' LIMIT 5`,
                       tableData,
                     );
                     totalRelated += res.rowCount;
 
                     // 5-1. 이 테이블을 참조하는 2차 연결 탐색
-                    const connPK = connTable.columns.find(c => c.isPrimaryKey)?.name;
+                    const connPK = connTable.columns.find(c => c.isPrimaryKey)?.name?.toLowerCase();
                     const subChildren: CharacterProfileNode['children'] = [];
 
                     if (connPK && res.rows.length > 0) {
@@ -1038,11 +1068,11 @@ export async function sendChatMessage(
                       await Promise.all(subRefs.slice(0, 6).map(async (sref) => {
                         const subTable = resolvedSchema.tables.find(t => t.id === sref.fromTable);
                         if (!subTable) return;
-                        const subFk = sref.fromColumns[0];
+                        const subFk = sref.fromColumns[0].toLowerCase(); // 소문자
                         const ids = res.rows.map(r => `'${String((r as Record<string, unknown>)[connPK]).replace(/'/g, "''")}'`).join(',');
                         try {
                           const subRes = await executeDataSQL(
-                            `SELECT COUNT(*) as cnt FROM "${subTable.name}" WHERE "${subFk}" IN (${ids})`,
+                            `SELECT COUNT(*) as cnt FROM "${subTable.name}" WHERE ${subFk} IN (${ids})`,
                             tableData,
                           );
                           const cnt = Number((subRes.rows[0] as Record<string, unknown>)?.cnt ?? 0);
