@@ -3,6 +3,106 @@ import type { Row, TableDataMap } from '../query/schemaQueryEngine.ts';
 import { executeDataSQL, RESERVED_TABLE_NAMES, VIRTUAL_TABLE_SCHEMA } from '../query/schemaQueryEngine.ts';
 import { useSchemaStore } from '../../store/useSchemaStore.ts';
 
+// ── ADF (Atlassian Document Format) → 플레인텍스트 변환 ──────────────────────
+
+/** Jira ADF(Atlassian Document Format) JSON을 읽기 좋은 플레인텍스트로 변환 */
+function adfToText(node: unknown, depth = 0): string {
+  if (!node || typeof node !== 'object') return '';
+  const n = node as Record<string, unknown>;
+
+  // 텍스트 노드
+  if (n.type === 'text') return String(n.text ?? '');
+
+  // 하드 브레이크
+  if (n.type === 'hardBreak') return '\n';
+
+  // 인라인 카드 (Jira/Confluence 링크)
+  if (n.type === 'inlineCard') {
+    const url = String((n.attrs as Record<string, unknown>)?.url ?? '');
+    // AEGIS-1234 형태 추출
+    const issueMatch = url.match(/browse\/([A-Z]+-\d+)/);
+    return issueMatch ? issueMatch[1] : url;
+  }
+
+  // 미디어/이모지
+  if (n.type === 'emoji') return String((n.attrs as Record<string, unknown>)?.text ?? (n.attrs as Record<string, unknown>)?.shortName ?? '');
+  if (n.type === 'mention') return `@${String((n.attrs as Record<string, unknown>)?.text ?? '')}`;
+
+  // 자식 노드가 있는 컨테이너
+  const children = Array.isArray(n.content) ? n.content : [];
+  const childText = children.map((c: unknown) => adfToText(c, depth + 1)).join('');
+
+  switch (n.type) {
+    case 'doc':
+      return childText.trim();
+    case 'paragraph':
+      return childText + '\n';
+    case 'heading': {
+      const level = Number((n.attrs as Record<string, unknown>)?.level ?? 1);
+      return '#'.repeat(level) + ' ' + childText + '\n';
+    }
+    case 'bulletList':
+      return children.map((c: unknown) => '• ' + adfToText(c, depth + 1).trim()).join('\n') + '\n';
+    case 'orderedList':
+      return children.map((c: unknown, i: number) => `${i + 1}. ` + adfToText(c, depth + 1).trim()).join('\n') + '\n';
+    case 'listItem':
+      return childText;
+    case 'blockquote':
+      return childText.split('\n').map(l => '> ' + l).join('\n') + '\n';
+    case 'codeBlock':
+      return '```\n' + childText + '\n```\n';
+    case 'rule':
+      return '---\n';
+    case 'table':
+      return childText;
+    case 'tableRow':
+      return children.map((c: unknown) => adfToText(c, depth + 1).trim()).join(' | ') + '\n';
+    case 'tableHeader':
+    case 'tableCell':
+      return childText;
+    case 'panel':
+    case 'expand':
+      return childText;
+    case 'mediaGroup':
+    case 'mediaSingle':
+      return '[첨부파일]\n';
+    default:
+      return childText;
+  }
+}
+
+/** ADF JSON 또는 문자열을 안전하게 플레인텍스트로 변환 */
+function parseAdfField(field: unknown): string {
+  if (!field) return '';
+
+  // 이미 문자열인 경우 → JSON 문자열일 수 있으므로 파싱 시도
+  if (typeof field === 'string') {
+    const s = field.trim();
+    if ((s.startsWith('{') && s.includes('"type"')) || (s.startsWith('[') && s.includes('"type"'))) {
+      try {
+        const parsed = JSON.parse(s);
+        return parseAdfField(parsed); // 재귀 호출
+      } catch { /* JSON 파싱 실패 → 원본 문자열 반환 */ }
+    }
+    return field;
+  }
+
+  // 배열인 경우 (content 배열)
+  if (Array.isArray(field)) {
+    return (field as unknown[]).map(c => adfToText(c)).join('').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  // 객체인 경우 (ADF 문서)
+  if (typeof field === 'object') {
+    const obj = field as Record<string, unknown>;
+    if (obj.type === 'doc' || obj.type === 'paragraph' || obj.type === 'text' || Array.isArray(obj.content)) {
+      return adfToText(field).replace(/\n{3,}/g, '\n\n').trim();
+    }
+  }
+
+  return String(field);
+}
+
 // ── 타입 정의 ────────────────────────────────────────────────────────────────
 
 export interface TableColumnInfo {
@@ -230,6 +330,7 @@ export interface JiraSearchResult {
   issues: {
     key: string; id: string; summary: string; status: string;
     assignee: string; priority: string; issuetype: string; updated: string;
+    url: string;
   }[];
   total: number;
   error?: string;
@@ -239,6 +340,7 @@ export interface JiraSearchResult {
 export interface JiraIssueResult {
   kind: 'jira_issue';
   issueKey: string;
+  url?: string;
   summary?: string;
   status?: string;
   issuetype?: string;
@@ -262,18 +364,51 @@ export interface ConfluenceSearchResult {
   duration?: number;
 }
 
+export interface ConfluenceMedia {
+  type: 'image' | 'video' | 'attachment' | 'link';
+  title: string;
+  url: string;
+  mimeType?: string;
+}
+
 export interface ConfluencePageResult {
   kind: 'confluence_page';
   pageId: string;
+  url?: string;
   title?: string;
   space?: string;
   htmlContent?: string;
   version?: number;
+  media?: ConfluenceMedia[];
   error?: string;
   duration?: number;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult | JiraSearchResult | JiraIssueResult | ConfluenceSearchResult | ConfluencePageResult;
+export interface SceneYamlResult {
+  kind: 'scene_yaml';
+  label: string;
+  scenePath: string;
+  fileSizeKB?: number;
+  totalSections?: number;
+  typeCounts?: Record<string, number>;
+  totalFiltered?: number;
+  returnedCount?: number;
+  content: string;
+  error?: string;
+}
+
+export interface PrefabPreviewResult {
+  kind: 'prefab_preview';
+  label: string;
+  prefabPath: string;
+  totalObjects?: number;
+  resolvedFbx?: number;
+  resolvedProBuilder?: number;
+  resolvedBox?: number;
+  error?: string;
+}
+
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult | JiraSearchResult | JiraIssueResult | ConfluenceSearchResult | ConfluencePageResult | SceneYamlResult | PrefabPreviewResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -485,6 +620,64 @@ const TOOLS = [
         },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'read_scene_yaml',
+    description:
+      'Unity .unity 씬 파일의 YAML 원문을 섹션별로 읽어옵니다. ' +
+      '씬의 구조(GameObject, Transform, PrefabInstance, MonoBehaviour, MeshFilter, Light 등)를 분석하거나, ' +
+      '특정 오브젝트의 상세 속성(위치, 회전, 스케일, 컴포넌트, ProBuilder 정점 등)을 확인할 때 사용하세요. ' +
+      'search_assets(ext="unity")로 씬 파일 경로를 먼저 확인한 후 호출합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: '씬 파일 경로 (search_assets 결과의 path). 예: "GameContents/Map/Mirama_01/Factory.unity"',
+        },
+        filter: {
+          type: 'string',
+          description:
+            'YAML 섹션 타입 필터. 예: "PrefabInstance", "GameObject", "MonoBehaviour", "Transform", "MeshFilter", "Light", "1001"(classId). ' +
+            '비워두면 모든 섹션을 조회합니다.',
+        },
+        search: {
+          type: 'string',
+          description: '섹션 내 텍스트 검색. 예: "m_Positions"(ProBuilder), "SafetyZone", "m_LocalPosition". 비워두면 필터 조건만 적용.',
+        },
+        offset: {
+          type: 'number',
+          description: '시작 섹션 인덱스 (페이지네이션). 기본 0.',
+        },
+        limit: {
+          type: 'number',
+          description: '반환할 최대 섹션 수. 기본 20, 최대 100.',
+        },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'preview_prefab',
+    description:
+      'Unity .prefab 프리팹 파일을 3D 뷰어로 미리보기합니다. ' +
+      'FBX 모델, ProBuilder 메시, 박스 콜라이더 등을 포함한 프리팹의 전체 구조를 3D로 렌더링합니다. ' +
+      'search_assets(ext="prefab")로 프리팹 경로를 먼저 확인한 후 호출하세요. ' +
+      '결과는 ChatUI에서 3D 뷰어로 표시되며, 아티팩트에서는 <div data-embed="prefab" data-src="경로"></div>로 임베드할 수 있습니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: '프리팹 파일 경로 (search_assets 결과의 path). 예: "Architectural/Props/Door/Door_Wooden.prefab"',
+        },
+        label: {
+          type: 'string',
+          description: '뷰어에 표시할 이름 (생략 시 파일명 사용)',
+        },
+      },
+      required: ['path'],
     },
   },
   {
@@ -752,6 +945,24 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- /api/assets/scene?path=경로&max=60 API로 씬 오브젝트(FBX+트랜스폼) 목록을 조회할 수 있습니다.');
   lines.push('- ⚠️ 씬 로딩은 build_guid_index.ps1 실행 후에만 작동합니다 (GUID 인덱스 필요).');
   lines.push('');
+  lines.push('[씬 YAML 상세 분석 — read_scene_yaml 도구]');
+  lines.push('- 씬의 내부 구조(오브젝트 구성, 컴포넌트 속성, 트랜스폼 값 등)를 분석할 때 사용');
+  lines.push('- 워크플로: search_assets(ext="unity") → read_scene_yaml(path=...) → 분석 결과 제공');
+  lines.push('- filter 파라미터로 특정 타입만 조회: "PrefabInstance", "GameObject", "Transform", "MonoBehaviour", "MeshFilter", "Light"');
+  lines.push('- search 파라미터로 텍스트 검색: "m_Positions"(ProBuilder), "SafetyZone", "m_LocalScale" 등');
+  lines.push('- 먼저 filter/search 없이 호출하면 씬 구성 요약(타입별 섹션 개수)을 볼 수 있음');
+  lines.push('- 섹션이 많으면 offset/limit로 페이지네이션 (기본 20개씩)');
+  lines.push('- Unity YAML 섹션 타입: !u!1=GameObject, !u!4=Transform, !u!33=MeshFilter, !u!114=MonoBehaviour, !u!1001=PrefabInstance 등');
+  lines.push('');
+  lines.push('[Unity .prefab 프리팹 뷰어 — preview_prefab 도구]');
+  lines.push('⚠️ 프리팹 embed 태그도 채팅 텍스트에 직접 출력 금지! 반드시 create_artifact html 안에만!');
+  lines.push('- Unity .prefab 프리팹을 3D로 보여달라는 요청 → search_assets(ext="prefab")로 프리팹 검색 후 → preview_prefab(path=...) 호출');
+  lines.push('- preview_prefab 결과는 ChatUI에서 3D 뷰어로 자동 표시됨');
+  lines.push('- 아티팩트 HTML 안에서 프리팹 표시 패턴 (아티팩트 html 파라미터 내부에만 사용):');
+  lines.push('  <div data-embed="prefab" data-src="경로/프리팹.prefab" data-label="프리팹 이름"></div>');
+  lines.push('- .prefab 파일은 .unity 씬과 동일한 YAML 포맷 → 동일한 3D 뷰어로 표시');
+  lines.push('- 에셋 검색 결과에서 .prefab 파일은 [프리팹 뷰] 버튼으로 바로 미리보기 가능');
+  lines.push('');
   lines.push('[Jira / Confluence 사용 규칙]');
   lines.push('- 프로젝트 키: AEGIS (cloud.jira.krafton.com 기준)');
   lines.push('- 버그, 이슈, 작업 조회 요청 → search_jira(jql) 호출');
@@ -852,10 +1063,25 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('   → 지정 테이블 간 FK 관계를 Mermaid LR 다이어그램으로 자동 렌더링');
   lines.push('   ⚠️ ASCII 아트(박스 그림)로 직접 그리지 말 것! 이 태그 사용으로 컨텍스트 대폭 절약');
   lines.push('');
-  lines.push('5. Mermaid 커스텀 다이어그램: <div class="mermaid">graph LR\n  A-->B\n  B-->C</div>');
+  lines.push('5. Mermaid 커스텀 다이어그램: <div class="mermaid">graph LR\\n    A-->B\\n    B-->C</div>');
   lines.push('   → Mermaid.js가 자동 렌더링. 플로우차트, 시퀀스, ER 다이어그램 등 가능');
-  lines.push('   예) 시스템 흐름: <div class="mermaid">graph TD\n  Player-->|스킬사용|SkillSystem\n  SkillSystem-->|데미지계산|DamageCalc</div>');
   lines.push('   ⚠️ ASCII 아트 대신 반드시 Mermaid 사용! 훨씬 보기 좋고 토큰도 절약됨');
+  lines.push('');
+  lines.push('   ███ Mermaid 작성 필수 규칙 (이 규칙을 어기면 100% 렌더링 실패) ███');
+  lines.push('   a) 반드시 \\n + 4칸 들여쓰기 사용. 한 줄로 쓰면 파싱 에러남');
+  lines.push('   b) 노드 ID: 영문/숫자/언더스코어만 (한글X, 공백X, 특수문자X)');
+  lines.push('   c) 한글 라벨이 필요하면 반드시 ["..."] 표기: A["한글 라벨"]');
+  lines.push('   d) 엣지(화살표) 라벨: 가급적 사용하지 않거나, 짧은 영문만. 한글 엣지 라벨은 |한글| 대신 생략하거나 노드 안에 포함');
+  lines.push('   e) 특수문자 절대 금지: +, %, &, <, >, ", \', #, {, } 등을 노드ID·라벨에 쓰지 말 것');
+  lines.push('   f) subgraph 제목도 영문만 사용하거나, 한글 시 따옴표로 감싸기: subgraph "전투 시스템"');
+  lines.push('   g) 모든 줄은 \\n으로 구분하고 4칸 들여쓰기. HTML minifier가 줄바꿈을 제거하므로 반드시 \\n 리터럴 사용');
+  lines.push('');
+  lines.push('   ✅ 안전한 예시:');
+  lines.push('   <div class="mermaid">graph TD\\n    Player["플레이어"]-->SkillSys["스킬 시스템"]\\n    SkillSys-->DmgCalc["데미지 계산"]\\n    DmgCalc-->Result["결과 적용"]</div>');
+  lines.push('');
+  lines.push('   ❌ 실패하는 예시 (절대 이렇게 쓰지 말 것):');
+  lines.push('   <div class="mermaid">graph TD\n    플레이어-->스킬시스템</div>  ← 한글 노드ID 에러');
+  lines.push('   <div class="mermaid">graph TD\n    A-->|스킬 사용 & 데미지|B</div>  ← &, 한글 엣지라벨 에러');
   lines.push('');
   lines.push('6. Git Diff 임베드: <div data-embed="diff" data-commit="커밋해시"></div>');
   lines.push('   예) <div data-embed="diff" data-commit="a1b2c3d4"></div>');
@@ -1263,7 +1489,15 @@ async function streamClaude(
               // html 없어도 title은 실시간으로 추출 (패널 타이틀 업데이트)
               const titleMatch = tb._inputStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)/) ;
               const liveTitle = parsed?.title || (titleMatch ? titleMatch[1].replace(/\\"/g, '"') : '');
-              onArtifactProgress(parsed?.html ?? '', liveTitle, parsed?.html.length ?? 0);
+              // ⚠️ charCount는 항상 전체 JSON 길이 사용 → UI가 데이터 수신 중임을 실시간 표시
+              onArtifactProgress(parsed?.html ?? '', liveTitle, tb._inputStr.length);
+            }
+
+            // patch_artifact: JSON 스트리밍 진행 상태 전달
+            if ((b as ToolUseBlock).name === 'patch_artifact' && onArtifactProgress) {
+              const patchCount = (tb._inputStr.match(/"find"/g) || []).length;
+              const charCount = tb._inputStr.length;
+              onArtifactProgress('', `패치 작성 중 (${patchCount}개)`, charCount);
             }
           }
           break;
@@ -1316,6 +1550,17 @@ async function streamClaude(
 
 // ── 메인 함수 ────────────────────────────────────────────────────────────────
 
+/** 실시간 thinking step 정보 */
+export interface ThinkingStep {
+  type: 'iteration_start' | 'streaming' | 'tool_start' | 'tool_done' | 'iteration_done' | 'continuation';
+  iteration: number;
+  maxIterations: number;
+  toolName?: string;
+  toolLabel?: string;
+  detail?: string;
+  timestamp: number;
+}
+
 export async function sendChatMessage(
   userMessage: string,
   history: ChatTurn[],
@@ -1324,6 +1569,7 @@ export async function sendChatMessage(
   onToolCall?: (tc: ToolCallResult, index: number) => void,
   onTextDelta?: (delta: string, fullText: string) => void,
   onArtifactProgress?: (html: string, title: string, charCount: number) => void,
+  onThinkingUpdate?: (step: ThinkingStep) => void,
 ): Promise<{ content: string; toolCalls: ToolCallResult[]; rawMessages?: ClaudeMsg[] }> {
   // 컴포넌트가 아직 로딩 중일 때 schema가 null일 수 있으므로 스토어에서 fallback
   const effectiveSchema = schema ?? useSchemaStore.getState().schema;
@@ -1350,6 +1596,7 @@ export async function sendChatMessage(
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     accumulatedText = '';
     console.log(`[Chat] 이터레이션 ${i + 1}/${MAX_ITERATIONS} 시작, messages: ${messages.length}`);
+    onThinkingUpdate?.({ type: 'iteration_start', iteration: i + 1, maxIterations: MAX_ITERATIONS, timestamp: Date.now() });
 
     // 529 재시도 포함 스트리밍 호출
     let data: ClaudeResponse | null = null;
@@ -1357,10 +1604,15 @@ export async function sendChatMessage(
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt));
       try {
+        let firstDelta = true;
         data = await streamClaude(
           { ...requestBase, messages: safeMessages },
           (delta) => {
             accumulatedText += delta;
+            if (firstDelta) {
+              firstDelta = false;
+              onThinkingUpdate?.({ type: 'streaming', iteration: i + 1, maxIterations: MAX_ITERATIONS, detail: '응답 생성 중', timestamp: Date.now() });
+            }
             // 자동 계속 중이면 누적 텍스트 기준으로 콜백
             onTextDelta?.(delta, continuationCount > 0 ? totalText + accumulatedText : accumulatedText);
           },
@@ -1378,6 +1630,7 @@ export async function sendChatMessage(
     }
     if (!data) throw new Error('Claude API 연결 실패');
     console.log(`[Chat] 이터레이션 ${i + 1} 완료: stop_reason=${data.stop_reason}, blocks=${data.content.length}, text="${accumulatedText.slice(0, 60)}"`);
+    onThinkingUpdate?.({ type: 'iteration_done', iteration: i + 1, maxIterations: MAX_ITERATIONS, detail: `stop_reason=${data.stop_reason}`, timestamp: Date.now() });
 
     // ── 최종 답변 ──
     if (data.stop_reason === 'end_turn' || data.stop_reason === 'stop_sequence') {
@@ -1421,10 +1674,47 @@ export async function sendChatMessage(
       const toolResultsMap = new Map<string, string>();
       const toolCallsMap = new Map<string, ToolCallResult>();
 
+      const TOOL_LABELS: Record<string, string> = {
+        query_game_data: '📊 SQL 쿼리 실행',
+        show_table_schema: '📋 테이블 스키마 조회',
+        search_git_history: '🔍 Git 히스토리 검색',
+        get_revision_diff: '📝 리비전 비교',
+        search_images: '🖼️ 이미지 검색',
+        create_artifact: '📄 아티팩트 생성',
+        patch_artifact: '✏️ 아티팩트 수정',
+        search_jira_issues: '🎫 Jira 이슈 검색',
+        get_jira_issue: '🎫 Jira 이슈 조회',
+        search_confluence: '📚 Confluence 검색',
+        get_confluence_page: '📚 Confluence 페이지 조회',
+        search_code: '💻 코드 검색',
+        read_code_file: '💻 코드 파일 읽기',
+        get_code_guide: '💻 코드 가이드',
+        search_assets: '🎨 에셋 검색',
+        get_scene_yaml: '🎮 씬 데이터 조회',
+        preview_prefab: '🧩 프리펩 미리보기',
+        get_character_profile: '👤 캐릭터 프로필 조회',
+      };
+
       await Promise.all(toolBlocks.map(async (tb) => {
         const inp = tb.input as Record<string, unknown>;
         let resultStr = '';
         let tc: ToolCallResult;
+
+        const toolLabel = TOOL_LABELS[tb.name] ?? `🔧 ${tb.name}`;
+        // 도구별 상세 정보
+        const toolDetail = tb.name === 'query_game_data' ? String(inp.sql ?? '').slice(0, 80)
+          : tb.name === 'show_table_schema' ? String(inp.table_name ?? '')
+          : tb.name === 'search_git_history' ? String(inp.keyword ?? '')
+          : tb.name === 'create_artifact' ? String(inp.title ?? '')
+          : tb.name === 'search_jira_issues' ? String(inp.jql ?? '')
+          : tb.name === 'search_confluence' ? String(inp.query ?? '')
+          : tb.name === 'search_code' ? String(inp.query ?? '')
+          : tb.name === 'search_assets' ? String(inp.query ?? '')
+          : tb.name === 'get_scene_yaml' ? String(inp.path ?? '')
+          : tb.name === 'preview_prefab' ? String(inp.path ?? '')
+          : tb.name === 'get_character_profile' ? String(inp.character_id ?? '')
+          : undefined;
+        onThinkingUpdate?.({ type: 'tool_start', iteration: i + 1, maxIterations: MAX_ITERATIONS, toolName: tb.name, toolLabel, detail: toolDetail, timestamp: Date.now() });
 
         // ── query_game_data ──
         if (tb.name === 'query_game_data') {
@@ -1942,6 +2232,129 @@ function showTab(id){
           }
         }
 
+        // ── read_scene_yaml ──
+        else if (tb.name === 'read_scene_yaml') {
+          const scenePath = String(inp.path ?? '');
+          const filter = String(inp.filter ?? '');
+          const search = String(inp.search ?? '');
+          const offsetVal = typeof inp.offset === 'number' ? inp.offset : 0;
+          const limitVal = Math.min(typeof inp.limit === 'number' ? inp.limit : 20, 100);
+
+          if (!scenePath) {
+            resultStr = 'path 파라미터가 필요합니다. search_assets(ext="unity")로 씬 파일 경로를 먼저 확인하세요.';
+            tc = { kind: 'scene_yaml', label: '씬 YAML 조회 실패', scenePath: '', content: resultStr } as SceneYamlResult;
+          } else {
+            try {
+              const params = new URLSearchParams({ path: scenePath, offset: String(offsetVal), limit: String(limitVal) });
+              if (filter) params.set('filter', filter);
+              if (search) params.set('search', search);
+              const resp = await fetch(`/api/assets/scene-yaml?${params.toString()}`);
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${(await resp.json().catch(() => ({}))).error || resp.statusText}`);
+
+              const data = await resp.json() as {
+                scenePath: string;
+                fileSizeKB: number;
+                totalSections: number;
+                typeCounts: Record<string, number>;
+                filter: string | null;
+                search: string | null;
+                totalFiltered: number;
+                offset: number;
+                returnedCount: number;
+                sections: { classId: number; objectId: string; typeName: string; lineCount: number; truncated: boolean; text: string }[];
+              };
+
+              // 타입 카운트 요약
+              const typeCountStr = Object.entries(data.typeCounts)
+                .sort(([,a], [,b]) => b - a)
+                .map(([type, count]) => `  ${type}: ${count}개`)
+                .join('\n');
+
+              // 섹션 텍스트
+              const sectionTexts = data.sections.map((s, i) => {
+                const header = `── [${offsetVal + i}] ${s.typeName} (classId=${s.classId}, objectId=${s.objectId}, ${s.lineCount}줄${s.truncated ? ', 잘림' : ''}) ──`;
+                return `${header}\n${s.text}`;
+              }).join('\n\n');
+
+              resultStr = `씬 YAML 분석: ${data.scenePath} (${data.fileSizeKB} KB)\n` +
+                `총 섹션: ${data.totalSections}개\n` +
+                `타입별 구성:\n${typeCountStr}\n\n` +
+                (filter || search ? `필터: ${filter || '없음'}, 검색: ${search || '없음'} → ${data.totalFiltered}개 매칭\n` : '') +
+                `반환: [${data.offset}~${data.offset + data.returnedCount - 1}] (${data.returnedCount}/${data.totalFiltered}개)\n\n` +
+                sectionTexts;
+
+              // resultStr이 너무 길면 잘라서 보내기 (Claude 토큰 제한 보호)
+              if (resultStr.length > 60000) {
+                resultStr = resultStr.substring(0, 60000) + '\n\n... (결과가 너무 길어 잘림. offset/limit를 조정하세요)';
+              }
+
+              tc = {
+                kind: 'scene_yaml',
+                label: `씬 YAML: ${scenePath.split('/').pop()} ${filter ? `[${filter}]` : ''} ${search ? `"${search}"` : ''}`,
+                scenePath,
+                fileSizeKB: data.fileSizeKB,
+                totalSections: data.totalSections,
+                typeCounts: data.typeCounts,
+                totalFiltered: data.totalFiltered,
+                returnedCount: data.returnedCount,
+                content: `${data.totalSections}개 섹션, ${data.totalFiltered}개 매칭, ${data.returnedCount}개 반환`,
+              } as SceneYamlResult;
+            } catch (e) {
+              resultStr = `씬 YAML 조회 실패: ${String(e)}`;
+              tc = { kind: 'scene_yaml', label: '씬 YAML 조회 오류', scenePath, content: String(e), error: String(e) } as SceneYamlResult;
+            }
+          }
+        }
+
+        // ── preview_prefab ──
+        else if (tb.name === 'preview_prefab') {
+          const prefabPath = String(inp.path ?? '');
+          const label = String(inp.label ?? prefabPath.split('/').pop()?.replace(/\.prefab$/i, '') ?? 'Prefab');
+
+          if (!prefabPath) {
+            resultStr = 'path 파라미터가 필요합니다. search_assets(ext="prefab")로 프리팹 경로를 먼저 확인하세요.';
+            tc = { kind: 'prefab_preview', label: '프리팹 미리보기 실패', prefabPath: '', error: resultStr } as PrefabPreviewResult;
+          } else {
+            try {
+              const resp = await fetch(`/api/assets/prefab?path=${encodeURIComponent(prefabPath)}&max=200`);
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${(await resp.json().catch(() => ({}))).error || resp.statusText}`);
+
+              const data = await resp.json() as {
+                scenePath: string;
+                totalPrefabs: number;
+                totalDirect: number;
+                resolvedCount: number;
+                resolvedFbx?: number;
+                resolvedProBuilder?: number;
+                resolvedBox?: number;
+                objects: unknown[];
+                hierarchy?: unknown[];
+              };
+
+              const totalObjects = data.objects?.length ?? 0;
+              resultStr = `프리팹 3D 미리보기: ${label}\n` +
+                `경로: ${prefabPath}\n` +
+                `오브젝트: ${totalObjects}개 (FBX: ${data.resolvedFbx ?? 0}, ProBuilder: ${data.resolvedProBuilder ?? 0}, Box: ${data.resolvedBox ?? 0})\n` +
+                `프리팹 인스턴스: ${data.totalPrefabs}개, 직접 배치: ${data.totalDirect}개\n` +
+                `3D 뷰어가 ChatUI에 표시됩니다.\n\n` +
+                `아티팩트 임베드: <div data-embed="prefab" data-src="${prefabPath}" data-label="${label}"></div>`;
+
+              tc = {
+                kind: 'prefab_preview',
+                label,
+                prefabPath,
+                totalObjects,
+                resolvedFbx: data.resolvedFbx,
+                resolvedProBuilder: data.resolvedProBuilder,
+                resolvedBox: data.resolvedBox,
+              } as PrefabPreviewResult;
+            } catch (e) {
+              resultStr = `프리팹 미리보기 실패: ${String(e)}`;
+              tc = { kind: 'prefab_preview', label, prefabPath, error: String(e) } as PrefabPreviewResult;
+            }
+          }
+        }
+
         // ── search_code ──
         else if (tb.name === 'search_code') {
           const query = String(inp.query ?? '');
@@ -2129,25 +2542,32 @@ function showTab(id){
               type JiraIssue = { id: string; key: string; fields: Record<string, unknown> };
               const issues = (Array.isArray((data2 as Record<string,unknown>).issues) ? (data2 as Record<string,unknown>).issues : []) as JiraIssue[];
               const total = Number((data2 as Record<string,unknown>).total ?? issues.length);
+              // Jira browse URL 생성: self 필드에서 base URL 추출
+              const jiraBase0 = String((issues[0] as Record<string,unknown>)?.self ?? '').split('/rest/')[0];
               const summaryLines = issues.map((iss) => {
                 const f = iss.fields;
                 const status = (f.status as Record<string,unknown>)?.name ?? '?';
                 const assignee = ((f.assignee as Record<string,unknown>)?.displayName ?? '미배정') as string;
                 const priority = (f.priority as Record<string,unknown>)?.name ?? '-';
                 const summary = String(f.summary ?? '');
-                return `[${iss.key}] [${status}] [${priority}] ${summary} (담당: ${assignee})`;
+                const issUrl = jiraBase0 ? `${jiraBase0}/browse/${iss.key}` : '';
+                return `[${iss.key}](${issUrl}) [${status}] [${priority}] ${summary} (담당: ${assignee})`;
               });
               resultStr = `Jira 검색: "${jql}" → ${total}건 (${duration.toFixed(0)}ms)\n` +
                 (summaryLines.length > 0 ? summaryLines.join('\n') : '결과 없음');
-              tc = { kind: 'jira_search', jql, issues: issues.map(i => ({
-                key: i.key, id: i.id,
-                summary: String(i.fields.summary ?? ''),
-                status: String((i.fields.status as Record<string,unknown>)?.name ?? ''),
-                assignee: String((i.fields.assignee as Record<string,unknown>)?.displayName ?? '미배정'),
-                priority: String((i.fields.priority as Record<string,unknown>)?.name ?? ''),
-                issuetype: String((i.fields.issuetype as Record<string,unknown>)?.name ?? ''),
-                updated: String(i.fields.updated ?? ''),
-              })), total, duration } as JiraSearchResult;
+              tc = { kind: 'jira_search', jql, issues: issues.map(i => {
+                const base = jiraBase0 || String((i as Record<string,unknown>).self ?? '').split('/rest/')[0];
+                return {
+                  key: i.key, id: i.id,
+                  summary: String(i.fields.summary ?? ''),
+                  status: String((i.fields.status as Record<string,unknown>)?.name ?? ''),
+                  assignee: String((i.fields.assignee as Record<string,unknown>)?.displayName ?? '미배정'),
+                  priority: String((i.fields.priority as Record<string,unknown>)?.name ?? ''),
+                  issuetype: String((i.fields.issuetype as Record<string,unknown>)?.name ?? ''),
+                  updated: String(i.fields.updated ?? ''),
+                  url: base ? `${base}/browse/${i.key}` : '',
+                };
+              }), total, duration } as JiraSearchResult;
             }
           } catch (e) {
             resultStr = `Jira 검색 오류: ${String(e)}`;
@@ -2169,15 +2589,20 @@ function showTab(id){
             } else {
               const f = (data2.fields ?? {}) as Record<string, unknown>;
               const comments = ((f.comment as Record<string,unknown>)?.comments ?? []) as Array<Record<string,unknown>>;
+              // ADF → 플레인텍스트 파싱
+              const descText = parseAdfField(f.description);
               const commentLines = comments.slice(-5).map((c) => {
                 const author = String((c.author as Record<string,unknown>)?.displayName ?? 'unknown');
-                const bodyContent = (c.body as Record<string,unknown>)?.content
-                const body = typeof c.body === 'string' ? c.body.slice(0, 200) :
-                  JSON.stringify(Array.isArray(bodyContent) ? bodyContent[0] : bodyContent ?? '').slice(0, 200);
+                const body = parseAdfField(c.body).slice(0, 200);
                 return `  [${author}]: ${body}`;
               });
+              // Jira browse URL 생성
+              const selfUrl = String(data2.self ?? '');
+              const jiraBase1 = selfUrl.split('/rest/')[0];
+              const issueUrl = jiraBase1 ? `${jiraBase1}/browse/${issueKey}` : '';
               resultStr = [
-                `이슈: ${issueKey} - ${String(f.summary ?? '')}`,
+                `이슈: [${issueKey}](${issueUrl}) - ${String(f.summary ?? '')}`,
+                `URL: ${issueUrl}`,
                 `상태: ${String((f.status as Record<string,unknown>)?.name ?? '')}`,
                 `유형: ${String((f.issuetype as Record<string,unknown>)?.name ?? '')}`,
                 `우선순위: ${String((f.priority as Record<string,unknown>)?.name ?? '')}`,
@@ -2186,10 +2611,11 @@ function showTab(id){
                 `생성: ${String(f.created ?? '')}  수정: ${String(f.updated ?? '')}`,
                 `컴포넌트: ${((f.components as Array<Record<string,unknown>>) ?? []).map(c => c.name).join(', ') || '-'}`,
                 `레이블: ${((f.labels as string[]) ?? []).join(', ') || '-'}`,
-                `설명: ${String(typeof f.description === 'string' ? f.description : JSON.stringify((f.description as Record<string,unknown>)?.content ?? '')).slice(0, 500)}`,
+                descText ? `설명:\n${descText.slice(0, 500)}` : '',
                 comments.length > 0 ? `\n최근 댓글 (${comments.length}개 중 최대 5개):\n${commentLines.join('\n')}` : '',
               ].filter(Boolean).join('\n');
               tc = { kind: 'jira_issue', issueKey,
+                url: jiraBase1 ? `${jiraBase1}/browse/${issueKey}` : '',
                 summary: String(f.summary ?? ''),
                 status: String((f.status as Record<string,unknown>)?.name ?? ''),
                 issuetype: String((f.issuetype as Record<string,unknown>)?.name ?? ''),
@@ -2198,10 +2624,10 @@ function showTab(id){
                 reporter: String((f.reporter as Record<string,unknown>)?.displayName ?? ''),
                 created: String(f.created ?? ''),
                 updated: String(f.updated ?? ''),
-                description: String(typeof f.description === 'string' ? f.description : JSON.stringify((f.description as Record<string,unknown>)?.content ?? '')).slice(0, 1000),
+                description: descText.slice(0, 1000),
                 comments: comments.slice(-5).map(c => ({
                   author: String((c.author as Record<string,unknown>)?.displayName ?? ''),
-                  body: String(typeof c.body === 'string' ? c.body : JSON.stringify((c.body as Record<string,unknown>)?.content ?? '')).slice(0, 300),
+                  body: parseAdfField(c.body).slice(0, 300),
                   created: String(c.created ?? ''),
                 })),
                 duration,
@@ -2240,7 +2666,11 @@ function showTab(id){
               const summaryLines = results.map((p) => {
                 const pageId = p.content?.id ?? '';
                 const spaceKey = (p.content?.space as Record<string,unknown>)?.key ?? p.resultGlobalContainer?.title ?? '-';
-                return `[${pageId}] ${p.title ?? '(제목 없음)'} (Space: ${spaceKey})`;
+                const relUrl = String(p.content?._links?.webui ?? p.url ?? '');
+                const fullUrl = relUrl.startsWith('http') ? relUrl : (baseUrl ? `${baseUrl}/wiki${relUrl}` : '');
+                return fullUrl
+                  ? `[${p.title ?? '(제목 없음)'}](${fullUrl}) (Space: ${spaceKey}, ID: ${pageId})`
+                  : `[${pageId}] ${p.title ?? '(제목 없음)'} (Space: ${spaceKey})`;
               });
               resultStr = `Confluence 검색: "${cql}" → ${total}건 (${duration.toFixed(0)}ms)\n` +
                 (summaryLines.length > 0 ? summaryLines.join('\n') : '결과 없음') +
@@ -2276,18 +2706,117 @@ function showTab(id){
               tc = { kind: 'confluence_page', pageId, error: resultStr, duration } as ConfluencePageResult;
             } else {
               const body = (data2.body as Record<string,unknown>)?.storage as Record<string,unknown>
-              const htmlContent = String(body?.value ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 3000)
+              const rawHtml = String(body?.value ?? '');
+              const htmlContent = rawHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 3000)
               const space = (data2.space as Record<string,unknown>)?.key ?? ''
+              // Confluence 페이지 URL 생성: _links.base + _links.webui
+              const confLinks = (data2._links ?? {}) as Record<string,unknown>;
+              const confBase = String(confLinks.base ?? (data2 as Record<string,unknown>)._confluenceBaseUrl ?? '');
+              const confWebui = String(confLinks.webui ?? '');
+              const confPageUrl = confBase && confWebui ? `${confBase}${confWebui}` : '';
+
+              // ── 미디어 추출 ──
+              const media: ConfluenceMedia[] = [];
+              const wikiBase = String((data2 as Record<string,unknown>)._confluenceBaseUrl ?? confBase);
+
+              // Confluence 호스팅 URL을 프록시 URL로 변환하는 헬퍼
+              const toProxyUrl = (url: string): string => {
+                // 이미 프록시 경로이면 그대로
+                if (url.startsWith('/api/confluence/attachment')) return url;
+                // 외부 URL (Confluence가 아닌)은 그대로
+                if (url.startsWith('http') && !url.includes('atlassian.net') && !url.includes(wikiBase.replace(/^https?:\/\//, ''))) return url;
+                // Confluence 호스팅 URL → 프록시
+                const absUrl = url.startsWith('http') ? url : `${wikiBase}${url.startsWith('/') ? '' : '/'}${url}`;
+                return `/api/confluence/attachment?url=${encodeURIComponent(absUrl)}`;
+              };
+
+              // 1) Confluence 첨부 이미지: <ac:image><ri:attachment ri:filename="..." /></ac:image>
+              const attachImgRe = /<ac:image[^>]*>[\s\S]*?<ri:attachment\s+ri:filename="([^"]+)"[^/]*\/>[\s\S]*?<\/ac:image>/gi;
+              let m: RegExpExecArray | null;
+              while ((m = attachImgRe.exec(rawHtml)) !== null) {
+                const fname = m[1];
+                const rawUrl = `${wikiBase}/wiki/download/attachments/${pageId}/${encodeURIComponent(fname)}`;
+                media.push({
+                  type: 'image', title: fname,
+                  url: toProxyUrl(rawUrl),
+                });
+              }
+
+              // 2) 외부 URL 이미지: <ac:image><ri:url ri:value="..." /></ac:image>
+              const extImgRe = /<ac:image[^>]*>[\s\S]*?<ri:url\s+ri:value="([^"]+)"[^/]*\/>[\s\S]*?<\/ac:image>/gi;
+              while ((m = extImgRe.exec(rawHtml)) !== null) {
+                media.push({ type: 'image', title: m[1].split('/').pop() || 'image', url: toProxyUrl(m[1]) });
+              }
+
+              // 3) 일반 <img src="..."> 태그
+              const imgTagRe = /<img\s+[^>]*src="([^"]+)"[^>]*>/gi;
+              while ((m = imgTagRe.exec(rawHtml)) !== null) {
+                const src = m[1];
+                const fullSrc = src.startsWith('http') ? src : (wikiBase ? `${wikiBase}${src}` : src);
+                media.push({ type: 'image', title: src.split('/').pop() || 'image', url: toProxyUrl(fullSrc) });
+              }
+
+              // 4) 영상 매크로: <ac:structured-macro ac:name="widget"> 또는 multimedia
+              const videoMacroRe = /<ac:structured-macro[^>]*ac:name="(widget|multimedia)"[^>]*>[\s\S]*?<ac:parameter\s+ac:name="url">([^<]+)<\/ac:parameter>[\s\S]*?<\/ac:structured-macro>/gi;
+              while ((m = videoMacroRe.exec(rawHtml)) !== null) {
+                media.push({ type: 'video', title: m[2].split('/').pop() || 'video', url: toProxyUrl(m[2]) });
+              }
+
+              // 5) 첨부파일 목록 (API children.attachment)
+              const attachChildren = (data2.children as Record<string,unknown>)?.attachment as Record<string,unknown>;
+              const attachResults = (attachChildren?.results ?? []) as Array<Record<string,unknown>>;
+              for (const att of attachResults) {
+                const attTitle = String(att.title ?? '');
+                const attLinks = (att._links ?? {}) as Record<string,unknown>;
+                const downloadPath = String(attLinks.download ?? '');
+                const rawAttUrl = downloadPath.startsWith('http') ? downloadPath : (wikiBase ? `${wikiBase}/wiki${downloadPath}` : downloadPath);
+                const ext = attTitle.split('.').pop()?.toLowerCase() ?? '';
+                const isImg = ['png','jpg','jpeg','gif','webp','bmp','svg'].includes(ext);
+                const isVideo = ['mp4','webm','avi','mov','mkv'].includes(ext);
+                // 이미 추출된 이미지와 중복 방지
+                if (!media.some(md => md.title === attTitle)) {
+                  media.push({
+                    type: isImg ? 'image' : isVideo ? 'video' : 'attachment',
+                    title: attTitle,
+                    url: toProxyUrl(rawAttUrl),
+                    mimeType: String(att.mediaType ?? ''),
+                  });
+                }
+              }
+
+              // 6) 외부 링크: <a href="http...">
+              const linkRe = /<a\s+[^>]*href="(https?:\/\/[^"]+)"[^>]*>([^<]*)<\/a>/gi;
+              while ((m = linkRe.exec(rawHtml)) !== null) {
+                const linkUrl = m[1];
+                const linkText = m[2] || linkUrl;
+                // 이미 추출된 미디어와 중복 방지
+                if (!media.some(md => md.url === linkUrl)) {
+                  media.push({ type: 'link', title: linkText, url: linkUrl });
+                }
+              }
+
+              // resultStr 구성
+              const mediaLines = media.length > 0
+                ? `\n첨부/미디어 (${media.length}개):\n` + media.map(md => {
+                    const icon = md.type === 'image' ? '🖼️' : md.type === 'video' ? '🎬' : md.type === 'attachment' ? '📎' : '🔗';
+                    return `${icon} [${md.title}](${md.url})`;
+                  }).join('\n')
+                : '';
+
               resultStr = [
-                `Confluence 페이지: ${String(data2.title ?? '')} (ID: ${pageId})`,
+                `Confluence 페이지: [${String(data2.title ?? '')}](${confPageUrl || `ID:${pageId}`})`,
+                confPageUrl ? `URL: ${confPageUrl}` : `ID: ${pageId}`,
                 `Space: ${space}`,
                 `버전: ${String((data2.version as Record<string,unknown>)?.number ?? '')}`,
+                mediaLines,
                 `내용 (HTML 태그 제거):\n${htmlContent}`,
-              ].join('\n');
+              ].filter(Boolean).join('\n');
               tc = { kind: 'confluence_page', pageId,
+                url: confPageUrl,
                 title: String(data2.title ?? ''),
                 space: String(space),
-                htmlContent: String((data2.body as Record<string,unknown>)?.storage ? ((data2.body as Record<string,unknown>).storage as Record<string,unknown>).value : ''),
+                htmlContent: rawHtml,
+                media: media.length > 0 ? media : undefined,
                 version: Number((data2.version as Record<string,unknown>)?.number ?? 0),
                 duration,
               } as ConfluencePageResult;
@@ -2317,6 +2846,10 @@ function showTab(id){
       }
 
       console.log(`[Chat] 툴 처리 완료: ${toolBlocks.map(t => t.name).join(', ')}`);
+      for (const tb of toolBlocks) {
+        const label = TOOL_LABELS[tb.name] ?? `🔧 ${tb.name}`;
+        onThinkingUpdate?.({ type: 'tool_done', iteration: i + 1, maxIterations: MAX_ITERATIONS, toolName: tb.name, toolLabel: label, timestamp: Date.now() });
+      }
       messages.push({ role: 'user', content: toolResults });
       continue;
     }
@@ -2373,6 +2906,7 @@ function showTab(id){
         }
         continuationCount++;
         console.log(`[Chat] max_tokens 감지: 텍스트 자동 계속 ${continuationCount}회 (누적 ${totalText.length}자)`);
+        onThinkingUpdate?.({ type: 'continuation', iteration: i + 1, maxIterations: MAX_ITERATIONS, detail: `자동 계속 ${continuationCount}회 (${totalText.length}자)`, timestamp: Date.now() });
         messages.push({
           role: 'user',
           content: '이어서 계속 작성해주세요. 바로 이전 텍스트 뒤부터 자연스럽게 이어서 작성하세요. 중복 없이 바로 이어주세요.',

@@ -26,8 +26,12 @@ import {
   type JiraIssueResult,
   type ConfluenceSearchResult,
   type ConfluencePageResult,
+  type ConfluenceMedia,
+  type SceneYamlResult,
+  type PrefabPreviewResult,
   type DiffFile,
   type DiffHunk,
+  type ThinkingStep,
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
 import type { ParsedSchema } from '../core/schema/types.ts';
@@ -139,25 +143,106 @@ const MERMAID_INIT_SCRIPT = '<script type="module">'
   + 'mainBkg:"#1e293b",nodeBorder:"#4f46e5",clusterBkg:"#0f172a",'
   + 'titleColor:"#e2e8f0",edgeLabelBackground:"#0f172a",fontFamily:"Segoe UI,sans-serif"'
   + '}});'
-  // DOM 준비 후 .mermaid 요소 렌더링 — \\n 리터럴 → 실제 줄바꿈 전처리 후 실행
+  // sanitizeMermaid: 한글 노드 ID → 영문 ID + ["한글 라벨"], 특수문자 제거, 엣지 라벨 클린업
+  + 'function sanitizeMermaid(code){'
+  + '  var lines=code.split("\\n");'
+  + '  var idMap={};var idCnt=0;'
+  // 한글/특수문자 포함된 bare 노드 ID를 안전한 ID + ["라벨"]로 변환
+  + '  function safeId(name){'
+  + '    name=name.trim();'
+  + '    if(!name)return"_empty";'
+  // 이미 안전한 ID면 그대로
+  + '    if(/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))return name;'
+  // 이미 매핑됨
+  + '    if(idMap[name])return idMap[name];'
+  + '    var safe="N"+(idCnt++);'
+  + '    idMap[name]=safe;'
+  + '    return safe;'
+  + '  }'
+  // 라벨 내 특수문자 이스케이프
+  + '  function escLabel(s){'
+  + '    return s.replace(/["&<>#{}]/g,function(c){'
+  + '      return{"&":"and","<":"lt",">":"gt","#":"no","{":"(","}":")",\'"\':""}[c]||c;'
+  + '    });'
+  + '  }'
+  + '  var out=[];'
+  + '  for(var i=0;i<lines.length;i++){'
+  + '    var line=lines[i];'
+  + '    var trimmed=line.trim();'
+  // 그래프 선언 줄은 그대로
+  + '    if(/^(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|gantt|pie|gitGraph|erDiagram|journey|mindmap|timeline|quadrantChart|sankey|xychart)\\b/i.test(trimmed)){'
+  + '      out.push(line);continue;'
+  + '    }'
+  // subgraph 제목 보호
+  + '    if(/^subgraph\\s/.test(trimmed)){'
+  + '      var sg=trimmed.replace(/^subgraph\\s+/,"").trim();'
+  + '      if(sg&&!/^"/.test(sg)&&/[^A-Za-z0-9_ ]/.test(sg)){'
+  + '        line=line.replace(sg,\'"\'+ escLabel(sg)+\'"\');'
+  + '      }'
+  + '      out.push(line);continue;'
+  + '    }'
+  // end, style, class 등 키워드 줄은 그대로
+  + '    if(/^(end|style|class|click|linkStyle|classDef)\\b/.test(trimmed)){out.push(line);continue;}'
+  // 빈 줄/주석
+  + '    if(!trimmed||trimmed.startsWith("%%")){out.push(line);continue;}'
+  // 엣지 라인 처리: A-->B, A-->|label|B, A["라벨"]-->B 등
+  + '    line=line.replace(/\\|([^|]*[^A-Za-z0-9_ ][^|]*)\\|/g,function(_,lbl){'
+  + '      var clean=lbl.replace(/[&<>#{}+%]/g,"").trim();'
+  + '      return clean?"|"+clean+"|":"";'
+  + '    });'
+  // 한글 bare 노드 ID를 ["라벨"] 형태로 변환 (A --> 한글노드 → A --> N0["한글노드"])
+  // 패턴: 화살표 뒤의 bare 한글 노드
+  + '    line=line.replace(/(-->|---|-\\.->|==>|-.->|~~>|--?>|--x|--o|<-->)\\s*([\\u3131-\\uD79D][\\w\\u3131-\\uD79D ]*)/g,function(_,arrow,name){'
+  + '      var id=safeId(name.trim());'
+  + '      return arrow+" "+id+\'["\'+escLabel(name.trim())+\'"]\';'
+  + '    });'
+  // 줄 시작 bare 한글 노드 (화살표 전)
+  + '    line=line.replace(/^(\\s*)([\\u3131-\\uD79D][\\w\\u3131-\\uD79D ]*)\\s*(-->|---|-\\.->|==>|-.->|~~>|--?>|--x|--o|<-->)/,function(_,ws,name,arrow){'
+  + '      var id=safeId(name.trim());'
+  + '      return ws+id+\'["\'+escLabel(name.trim())+\'"]  \'+arrow;'
+  + '    });'
+  // 단독 한글 노드 선언 (화살표 없는 줄)
+  + '    if(/^\\s*[\\u3131-\\uD79D]/.test(line)&&!/(-->|---|-\\.->|==>)/.test(line)){'
+  + '      line=line.replace(/^(\\s*)([\\u3131-\\uD79D][\\w\\u3131-\\uD79D ]*)$/,function(_,ws,name){'
+  + '        var id=safeId(name.trim());'
+  + '        return ws+id+\'["\'+escLabel(name.trim())+\'"]\';'
+  + '      });'
+  + '    }'
+  + '    out.push(line);'
+  + '  }'
+  + '  return out.join("\\n");'
+  + '}'
+  // DOM 준비 후 .mermaid 요소 렌더링
   + 'async function renderAll(){'
   + '  const els=document.querySelectorAll(".mermaid");'
   + '  for(const el of els){'
+  + '    const origText=el.textContent||"";'
   + '    try{'
-  // Claude가 \\n을 리터럴로 출력할 경우 실제 줄바꿈으로 치환
-  + '      const raw=el.textContent.replace(/\\\\n/g,"\\n");'
+  // \\n 리터럴 → 실제 줄바꿈, HTML entity 디코드
+  + '      var raw=origText.replace(/\\\\n/g,"\\n").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&amp;/g,"&");'
+  // sanitize 적용
+  + '      raw=sanitizeMermaid(raw);'
   + '      el.textContent=raw;'
   + '      const {svg}=await mermaid.render("m"+Math.random().toString(36).slice(2),raw);'
   + '      el.innerHTML=svg;'
   + '    }catch(e){'
-  // 에러 시 원본 코드 표시 (bomb 아이콘 대신)
+  // 에러 시 원본 코드 + 에러 메시지 표시
   + '      el.innerHTML=`<pre style="background:#1e1e2e;color:#ef4444;padding:10px;border-radius:6px;font-size:11px;overflow:auto;white-space:pre-wrap">'
-  + '⚠️ Mermaid 렌더링 실패\\n${e.message||e}\\n\\n원본:\\n${el.textContent.trim()}</pre>`;'
+  + '⚠️ Mermaid 렌더링 실패\\n${e.message||e}\\n\\n원본:\\n${origText.trim()}</pre>`;'
   + '    }'
   + '  }'
   + '}'
   + 'if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",renderAll);'
   + 'else renderAll();'
+  // MutationObserver: 동적으로 추가된 .mermaid 요소도 자동 렌더링
+  + 'new MutationObserver(function(muts){'
+  + '  for(var m of muts)for(var n of m.addedNodes){'
+  + '    if(n.nodeType===1){'
+  + '      if(n.classList&&n.classList.contains("mermaid"))renderAll();'
+  + '      else if(n.querySelector&&n.querySelector(".mermaid"))renderAll();'
+  + '    }'
+  + '  }'
+  + '}).observe(document.body,{childList:true,subtree:true});'
   + '</' + 'script>';
 
 /** 스키마 테이블 embed → HTML */
@@ -567,25 +652,45 @@ function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableD
   );
 
   // <div data-embed="scene" data-src="path/to/scene.unity" [data-label="씬 이름"]></div>
-  // → scene viewer placeholder (실제 렌더는 ArtifactSidePanel iframe 내에서 postMessage 불가이므로
-  //   클라이언트 렌더링 컴포넌트로 대체. 여기서는 iframe 안에서 로드 가능한 마크업 생성)
+  // → postMessage 기반 씬 뷰어 버튼 (클릭 시 parent에서 SceneViewer 모달 렌더)
   html = html.replace(
     /<div([^>]*?)data-embed=["']scene["']([^>]*?)data-src=["']([^"']+)["']([^>]*?)(?:data-label=["']([^"']+)["'])?([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
     (_, _a, _b, src, _c, label) => {
-      const apiUrl = src.startsWith('/api/') ? src : `/api/assets/scene?path=${encodeURIComponent(src)}&max=60`;
       const sceneName = label ?? src.split('/').pop()?.replace('.unity', '') ?? 'Scene';
-      return `<div class="embed-card embed-scene" style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin:12px 0;">
-  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+      return `<div class="embed-card embed-scene" data-scene-path="${src}" data-scene-label="${sceneName}" style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin:12px 0;cursor:pointer;" onclick="try{parent.postMessage({type:'openScene',scenePath:'${src.replace(/'/g, "\\'")}',label:'${sceneName.replace(/'/g, "\\'")}'},'*')}catch(e){}">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2">
       <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/>
     </svg>
     <span style="color:#e2e8f0;font-weight:700;font-size:14px;">${sceneName}</span>
     <span style="color:#64748b;font-size:12px;">.unity</span>
   </div>
-  <div style="color:#94a3b8;font-size:12px;background:#0f172a;border-radius:6px;padding:10px;">
-    씬 API: <code style="color:#a78bfa;">${apiUrl}</code><br>
-    <small style="color:#64748b;">💡 채팅창의 에셋 검색으로 씬 파일을 찾아 [씬 뷰] 버튼으로 3D 뷰를 열 수 있습니다.</small>
+  <button style="display:inline-flex;align-items:center;gap:6px;background:#3730a3;color:#e0e7ff;border:1px solid #4f46e5;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/><line x1="12" y1="22" x2="12" y2="15.5"/><polyline points="22 8.5 12 15.5 2 8.5"/></svg>
+    🎮 3D 씬 뷰어 열기
+  </button>
+</div>`;
+    },
+  );
+
+  // <div data-embed="prefab" data-src="path/to/file.prefab" [data-label="이름"]></div>
+  // → postMessage 기반 프리팹 뷰어 버튼 (클릭 시 parent에서 PrefabViewer 모달 렌더)
+  html = html.replace(
+    /<div([^>]*?)data-embed=["']prefab["']([^>]*?)data-src=["']([^"']+)["']([^>]*?)(?:data-label=["']([^"']+)["'])?([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, _b, src, _c, label) => {
+      const prefabName = label ?? src.split('/').pop()?.replace('.prefab', '') ?? 'Prefab';
+      return `<div class="embed-card embed-prefab" data-prefab-path="${src}" data-prefab-label="${prefabName}" style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin:12px 0;cursor:pointer;" onclick="try{parent.postMessage({type:'openPrefab',prefabPath:'${src.replace(/'/g, "\\'")}',label:'${prefabName.replace(/'/g, "\\'")}'},'*')}catch(e){}">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2">
+      <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+    </svg>
+    <span style="color:#e2e8f0;font-weight:700;font-size:14px;">${prefabName}</span>
+    <span style="color:#64748b;font-size:12px;">.prefab</span>
   </div>
+  <button style="display:inline-flex;align-items:center;gap:6px;background:#065f46;color:#d1fae5;border:1px solid #059669;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+    🧩 3D 프리팹 뷰어 열기
+  </button>
 </div>`;
     },
   );
@@ -637,6 +742,19 @@ interface Message {
   liveToolCalls?: ToolCallResult[]; // 스트리밍 중 실시간 tool_calls
   artifactProgress?: { html: string; title: string; charCount: number }; // 아티팩트 생성 진행
   isTruncated?: boolean; // max_tokens로 잘린 응답 (계속 생성 버튼 표시용)
+  thinkingSteps?: ThinkingStepUI[]; // 실시간 thinking 진행
+}
+
+/** UI용 thinking step (chatEngine의 ThinkingStep + UI 상태) */
+interface ThinkingStepUI {
+  type: 'iteration_start' | 'streaming' | 'tool_start' | 'tool_done' | 'iteration_done' | 'continuation';
+  iteration: number;
+  maxIterations: number;
+  toolName?: string;
+  toolLabel?: string;
+  detail?: string;
+  timestamp: number;
+  elapsed?: number; // 이전 스텝과의 시간 차이 (ms)
 }
 
 // ── localStorage 캐시 키 ──────────────────────────────────────────────────────
@@ -864,10 +982,15 @@ function renderMarkdown(text: string): React.ReactNode[] {
       const imgMatch = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
       if (imgMatch) {
         const [, alt, url] = imgMatch;
+        // Confluence URL이면 프록시 사용
+        const isConfBlock = /atlassian\.net\/wiki\//.test(url) && !url.startsWith('/api/');
+        const proxiedBlockUrl = isConfBlock
+          ? `/api/confluence/attachment?url=${encodeURIComponent(url)}`
+          : url;
         nodes.push(
           <div key={i} className="my-2">
             <img
-              src={url}
+              src={proxiedBlockUrl}
               alt={alt}
               style={{ maxWidth: '100%', maxHeight: '280px', borderRadius: '6px', display: 'block' }}
               onError={(e) => {
@@ -1044,8 +1167,9 @@ function InlineImageCell({ text }: { text: string }) {
 }
 
 function inlineMarkdown(text: string): React.ReactNode {
-  // 이미지, 링크, 볼드, 코드, 이탤릭을 순서대로 파싱
-  const INLINE_RE = /!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]*)\]\(([^)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|\*([^*]+)\*/g;
+  // 이미지, 링크, 볼드, 코드, 이탤릭, .prefab 경로, bare URL 순서대로 파싱
+  // ⚠️ 순서 중요: 이미지 > 링크 > bold > code > italic > .prefab > bare URL
+  const INLINE_RE = /!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]*)\]\(([^)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|\*([^*]+)\*|([\w.+\-/]+\.prefab)\b|(https?:\/\/[^\s<>"'\)\]，。、！？；：]+)/g;
   const segments: React.ReactNode[] = [];
   let lastIndex = 0;
   let key = 0;
@@ -1055,14 +1179,18 @@ function inlineMarkdown(text: string): React.ReactNode {
     // 매치 앞 평문 텍스트
     if (match.index > lastIndex) segments.push(text.slice(lastIndex, match.index));
 
-    const [full, imgAlt, imgUrl, linkText, linkUrl, boldText, codeText, italicText] = match;
+    const [full, imgAlt, imgUrl, linkText, linkUrl, boldText, codeText, italicText, prefabPath, bareUrl] = match;
 
     if (imgUrl !== undefined) {
-      // 이미지: ![alt](url)
+      // 이미지: ![alt](url) — Confluence URL이면 프록시 사용
+      const isConfImg = /atlassian\.net\/wiki\//.test(imgUrl) && !imgUrl.startsWith('/api/');
+      const proxiedImgUrl = isConfImg
+        ? `/api/confluence/attachment?url=${encodeURIComponent(imgUrl)}`
+        : imgUrl;
       segments.push(
         <img
           key={key++}
-          src={imgUrl}
+          src={proxiedImgUrl}
           alt={imgAlt ?? ''}
           style={{ maxWidth: '100%', maxHeight: '120px', borderRadius: '4px', verticalAlign: 'middle', display: 'inline-block' }}
           onError={(e) => {
@@ -1079,12 +1207,20 @@ function inlineMarkdown(text: string): React.ReactNode {
         />,
       );
     } else if (linkUrl !== undefined) {
+      // Confluence/Atlassian 호스팅 URL → 프록시 경로로 변환
+      const isConfluenceHosted = /atlassian\.net\/wiki\//.test(linkUrl) && !linkUrl.startsWith('/api/');
+      const effectiveUrl = isConfluenceHosted
+        ? `/api/confluence/attachment?url=${encodeURIComponent(linkUrl)}`
+        : linkUrl;
+      const isProxied = effectiveUrl.startsWith('/api/confluence/attachment');
       // 링크: [text](url) — 이미지 URL이면 img로 렌더
-      if (/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(linkUrl) || linkUrl.includes('/api/images/')) {
+      const isImageUrl = /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(linkUrl) || linkUrl.includes('/api/images/') || isProxied;
+      if (isImageUrl && !isConfluenceHosted && !isProxied) {
+        // 로컬/외부 이미지만 인라인 렌더
         segments.push(
           <img
             key={key++}
-            src={linkUrl}
+            src={effectiveUrl}
             alt={linkText ?? ''}
             style={{ maxWidth: '100%', maxHeight: '120px', borderRadius: '4px', verticalAlign: 'middle', display: 'inline-block' }}
             onError={(e) => {
@@ -1099,31 +1235,141 @@ function inlineMarkdown(text: string): React.ReactNode {
             }}
           />,
         );
-      } else {
+      } else if (isProxied || (isImageUrl && isConfluenceHosted)) {
+        // Confluence 프록시 이미지 → 썸네일 + 링크
         segments.push(
-          <a key={key++} href={linkUrl} target="_blank" rel="noreferrer"
-             style={{ color: 'var(--accent)', textDecoration: 'underline' }}>
-            {linkText}
+          <a key={key++} href={effectiveUrl} target="_blank" rel="noreferrer"
+             className="inline-flex items-center gap-1"
+             style={{ color: '#60a5fa', textDecoration: 'none' }}>
+            <img
+              src={effectiveUrl}
+              alt={linkText ?? ''}
+              style={{ maxWidth: '80px', maxHeight: '50px', borderRadius: '4px', verticalAlign: 'middle', display: 'inline-block', border: '1px solid rgba(96,165,250,0.3)' }}
+              onError={(e) => { (e.currentTarget).style.display = 'none'; }}
+            />
+            <span style={{ textDecoration: 'underline', textUnderlineOffset: '2px', fontSize: '12px' }}>🖼️ {linkText || '이미지'}</span>
           </a>,
         );
+      } else {
+        // .prefab 경로가 링크 텍스트에 있으면 프리팹 프리뷰 버튼 추가
+        const isPrefabLink = /\.prefab$/i.test((linkText ?? '').trim()) || /\.prefab$/i.test((linkUrl ?? '').trim());
+        if (isPrefabLink) {
+          const pPath = /\.prefab$/i.test((linkText ?? '').trim()) ? (linkText ?? '').trim() : (linkUrl ?? '').trim();
+          const pLabel = pPath.split('/').pop()?.replace('.prefab', '') ?? 'Prefab';
+          segments.push(
+            <span
+              key={key++}
+              className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity"
+              style={{ color: '#34d399', fontFamily: 'var(--font-mono)', fontSize: '0.9em', textDecoration: 'underline', textUnderlineOffset: '2px' }}
+              title={`프리팹 미리보기: ${pPath}`}
+              onClick={() => { window.dispatchEvent(new CustomEvent('openPrefabPreview', { detail: { path: pPath, label: pLabel } })); }}
+            >
+              🧩 {linkText || pPath}
+            </span>,
+          );
+        } else {
+          // 일반 링크
+          const isAtlassian = /atlassian\.net|jira|confluence/i.test(linkUrl);
+          const linkIcon = isAtlassian ? '🔗 ' : '';
+          segments.push(
+            <a key={key++} href={linkUrl} target="_blank" rel="noreferrer"
+               style={{ color: '#60a5fa', textDecoration: 'underline', textUnderlineOffset: '2px' }}>
+              {linkIcon}{linkText}
+            </a>,
+          );
+        }
       }
     } else if (boldText !== undefined) {
-      segments.push(<strong key={key++} style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{boldText}</strong>);
+      const isPrefabBold = /\.prefab$/i.test(boldText.trim());
+      if (isPrefabBold) {
+        const pPath = boldText.trim();
+        const pLabel = pPath.split('/').pop()?.replace('.prefab', '') ?? 'Prefab';
+        segments.push(
+          <strong
+            key={key++}
+            className="cursor-pointer hover:opacity-80 transition-opacity"
+            style={{ color: '#34d399', fontWeight: 700 }}
+            title={`프리팹 미리보기: ${pPath}`}
+            onClick={() => { window.dispatchEvent(new CustomEvent('openPrefabPreview', { detail: { path: pPath, label: pLabel } })); }}
+          >
+            🧩 {boldText}
+          </strong>,
+        );
+      } else {
+        segments.push(<strong key={key++} style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{boldText}</strong>);
+      }
     } else if (codeText !== undefined) {
+      // .prefab 경로면 클릭 가능한 프리팹 뷰어 링크로 변환
+      const isPrefabCode = /\.prefab$/i.test(codeText.trim());
+      if (isPrefabCode) {
+        const pPath = codeText.trim();
+        const pLabel = pPath.split('/').pop()?.replace('.prefab', '') ?? 'Prefab';
+        segments.push(
+          <code
+            key={key++}
+            className="px-1.5 py-0.5 rounded text-[12px] cursor-pointer hover:opacity-80 transition-opacity"
+            style={{ background: 'rgba(52,211,153,0.1)', color: '#34d399', fontFamily: 'var(--font-mono)', border: '1px solid rgba(52,211,153,0.2)' }}
+            title={`프리팹 미리보기: ${pPath}`}
+            onClick={() => { window.dispatchEvent(new CustomEvent('openPrefabPreview', { detail: { path: pPath, label: pLabel } })); }}
+          >
+            🧩 {codeText}
+          </code>,
+        );
+      } else {
+        segments.push(
+          <code key={key++} className="px-1 py-0.5 rounded text-[12px]"
+                style={{ background: 'var(--bg-secondary)', color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>
+            {codeText}
+          </code>,
+        );
+      }
+    } else if (prefabPath !== undefined) {
+      // .prefab 경로 (코드 블록 밖 plain text) → 클릭 시 프리팹 뷰어 열기
+      const pLabel = prefabPath.split('/').pop()?.replace('.prefab', '') ?? 'Prefab';
       segments.push(
-        <code key={key++} className="px-1 py-0.5 rounded text-[12px]"
-              style={{ background: 'var(--bg-secondary)', color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>
-          {codeText}
-        </code>,
+        <span
+          key={key++}
+          className="inline-flex items-center gap-0.5 cursor-pointer hover:opacity-80 transition-opacity"
+          style={{ color: '#34d399', fontFamily: 'var(--font-mono)', fontSize: '0.9em', textDecoration: 'underline', textUnderlineOffset: '2px' }}
+          title={`프리팹 미리보기: ${prefabPath}`}
+          onClick={() => { window.dispatchEvent(new CustomEvent('openPrefabPreview', { detail: { path: prefabPath, label: pLabel } })); }}
+        >
+          🧩 {prefabPath}
+        </span>,
       );
     } else if (italicText !== undefined) {
       segments.push(<em key={key++}>{italicText}</em>);
+    } else if (bareUrl !== undefined) {
+      // bare URL 자동 링크: https://... 형태를 자동으로 클릭 가능한 링크로 변환
+      const isAtlassian = /atlassian\.net|jira|confluence/i.test(bareUrl);
+      // URL에서 표시용 짧은 레이블 생성
+      let label = bareUrl;
+      try {
+        const u = new URL(bareUrl);
+        const pathParts = u.pathname.split('/').filter(Boolean);
+        if (isAtlassian && pathParts.length > 0) {
+          // Confluence/Jira URL → 마지막 의미있는 부분 표시
+          label = pathParts.slice(-2).join('/') || u.hostname;
+        } else if (bareUrl.length > 60) {
+          label = u.hostname + '/…' + u.pathname.slice(-20);
+        }
+      } catch { /* ignore */ }
+      segments.push(
+        <a key={key++} href={bareUrl} target="_blank" rel="noreferrer"
+           style={{ color: '#60a5fa', textDecoration: 'underline', textUnderlineOffset: '2px', wordBreak: 'break-all' }}>
+          {isAtlassian ? '🔗 ' : '🌐 '}{label}
+        </a>,
+      );
     }
 
     lastIndex = match.index + full.length;
   }
 
-  if (lastIndex < text.length) segments.push(text.slice(lastIndex));
+  // 남은 텍스트 추가
+  if (lastIndex < text.length) {
+    const remainder = text.slice(lastIndex);
+    segments.push(remainder);
+  }
   if (segments.length === 0) return text;
   if (segments.length === 1) return segments[0];
   return <>{segments}</>;
@@ -1877,6 +2123,209 @@ th,td{border:1px solid #334155;padding:6px;font-size:12px}th{background:#1e293b}
   );
 }
 
+// ── 아티팩트 코드 스트리밍 오버레이 (채팅 영역에 표시) ────────────────────────
+function ArtifactStreamOverlay({ html, title, charCount }: { html: string; title: string; charCount: number }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // ── Progressive Reveal: 데이터가 한꺼번에 도착해도 부드럽게 보이도록 ──
+  // 실제 html이 burst로 도착하면 animatedChars를 점진적으로 html.length까지 증가시킴
+  const [animatedChars, setAnimatedChars] = useState(0);
+  const targetRef = useRef(0);
+  const rafRef = useRef(0);
+  const lastTimeRef = useRef(0);
+
+  useEffect(() => {
+    targetRef.current = html.length;
+
+    // 이미 RAF 루프가 돌고 있으면 중복 시작 안 함
+    if (rafRef.current) return;
+
+    const tick = (now: number) => {
+      if (!lastTimeRef.current) lastTimeRef.current = now;
+      lastTimeRef.current = now;
+
+      setAnimatedChars((prev) => {
+        const target = targetRef.current;
+        if (prev >= target) return prev;
+        // 일정한 타이핑 속도: ~3000자/초 (60fps 기준 ~50자/frame)
+        // 작은 문서는 빠르게, 큰 문서도 최대 5초 안에 완료
+        const charsPerFrame = Math.max(30, Math.ceil(target / (60 * 3))); // target/(60*3초)
+        return Math.min(prev + charsPerFrame, target);
+      });
+
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
+    };
+  }, [html]);
+
+  // 컴포넌트 unmount 시 클린업
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
+    };
+  }, []);
+
+  // 애니메이션된 HTML에서 라인 추출
+  const displayedHtml = html.slice(0, animatedChars);
+  const lines = displayedHtml.split('\n');
+  const totalLines = html.split('\n').length;
+  const visibleLines = lines.slice(-24);
+  const startLineNo = Math.max(1, lines.length - 23);
+
+  // 스크롤 아래로
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [animatedChars]);
+
+  return (
+    <div
+      className="rounded-xl overflow-hidden mb-3"
+      style={{
+        border: '1px solid rgba(99,102,241,0.4)',
+        boxShadow: '0 0 24px rgba(99,102,241,0.08)',
+        background: '#0d1117',
+      }}
+    >
+      {/* 헤더 */}
+      <div
+        className="flex items-center gap-2 px-3 py-2"
+        style={{ background: 'rgba(99,102,241,0.12)', borderBottom: '1px solid rgba(99,102,241,0.25)' }}
+      >
+        <span className="relative flex h-2.5 w-2.5 flex-shrink-0">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ background: 'var(--accent)' }} />
+          <span className="relative inline-flex rounded-full h-2.5 w-2.5" style={{ background: 'var(--accent)' }} />
+        </span>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: 'var(--accent)', flexShrink: 0 }}>
+          <polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" />
+        </svg>
+        <span className="font-bold text-[12px]" style={{ color: 'var(--text-primary)' }}>
+          아티팩트 코드 생성 중{title ? `: ${title}` : ''}
+        </span>
+        <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--accent)', opacity: 0.8 }}>
+          {charCount.toLocaleString()}자 · {totalLines}줄
+        </span>
+      </div>
+
+      {/* 코드 스트리밍 영역 — flex-end로 내용을 항상 하단 정렬 */}
+      <div
+        ref={scrollRef}
+        className="relative overflow-hidden flex flex-col justify-end"
+        style={{ height: 180 }}
+      >
+        {/* 상단 페이드 (내용이 많아졌을 때만 효과) */}
+        {lines.length > 8 && (
+          <div
+            className="absolute inset-x-0 top-0 h-10 z-10 pointer-events-none"
+            style={{ background: 'linear-gradient(to bottom, #0d1117, transparent)' }}
+          />
+        )}
+        <pre
+          className="px-3 py-2 overflow-hidden text-[11px] leading-[18px]"
+          style={{ fontFamily: 'var(--font-mono)', color: '#7c8b9a', margin: 0, background: 'transparent' }}
+        >
+          {visibleLines.map((line, i) => {
+            const lineNo = startLineNo + i;
+            const isLast = i === visibleLines.length - 1;
+            return (
+              <div key={lineNo} className="flex" style={{ opacity: isLast ? 1 : 0.5 + (i / visibleLines.length) * 0.5 }}>
+                <span
+                  className="select-none flex-shrink-0 text-right pr-3"
+                  style={{ width: 36, color: '#3d4856', fontSize: 10 }}
+                >
+                  {lineNo}
+                </span>
+                <span style={{ color: isLast ? '#e2e8f0' : '#8b949e', whiteSpace: 'pre', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {colorizeHtmlLine(line)}
+                </span>
+                {isLast && (
+                  <span
+                    className="inline-block w-[2px] h-[14px] ml-0.5 rounded-sm animate-pulse align-middle"
+                    style={{ background: 'var(--accent)' }}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </pre>
+      </div>
+
+      {/* 하단 상태바 + 프로그레스 바 */}
+      <div
+        className="px-3 py-1.5 flex items-center gap-2"
+        style={{ borderTop: '1px solid rgba(99,102,241,0.15)', background: 'rgba(99,102,241,0.05)' }}
+      >
+        <svg className="animate-spin w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ color: 'var(--accent)' }}>
+          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+        </svg>
+        <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+          HTML 코드 작성 중... 완료 후 오른쪽 패널에서 미리보기 가능
+        </span>
+        {/* 프로그레스 바 느낌 */}
+        <div className="ml-auto flex gap-0.5">
+          {[0, 1, 2].map(i => (
+            <span
+              key={i}
+              className="w-1 h-1 rounded-full"
+              style={{
+                background: 'var(--accent)',
+                animation: `chatDot 1.4s ease-in-out ${i * 0.16}s infinite`,
+              }}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** HTML 라인에 간단한 구문 하이라이팅 적용 */
+function colorizeHtmlLine(line: string): React.ReactNode {
+  // 태그, 속성, 문자열, 주석 등을 색칠
+  const parts: React.ReactNode[] = [];
+  let remaining = line;
+  let key = 0;
+
+  // 빈 줄은 그대로
+  if (!remaining.trim()) return remaining;
+
+  // 간단한 토큰 매칭 (성능 위해 최소한으로)
+  const TOKEN_RE = /(<!--[\s\S]*?-->)|(<\/?[a-zA-Z][\w-]*)|(\s[a-zA-Z][\w-]*(?==))|("[^"]*"|'[^']*')|(\/?>)|(&[a-z]+;|&#\d+;)/g;
+  let lastIdx = 0;
+  let m: RegExpExecArray | null;
+
+  while ((m = TOKEN_RE.exec(remaining)) !== null) {
+    if (m.index > lastIdx) {
+      parts.push(<span key={key++}>{remaining.slice(lastIdx, m.index)}</span>);
+    }
+    const [full, comment, tag, attr, str, close, entity] = m;
+    if (comment) {
+      parts.push(<span key={key++} style={{ color: '#6a737d' }}>{full}</span>);
+    } else if (tag) {
+      parts.push(<span key={key++} style={{ color: '#ff7b72' }}>{full}</span>);
+    } else if (attr) {
+      parts.push(<span key={key++} style={{ color: '#79c0ff' }}>{full}</span>);
+    } else if (str) {
+      parts.push(<span key={key++} style={{ color: '#a5d6ff' }}>{full}</span>);
+    } else if (close) {
+      parts.push(<span key={key++} style={{ color: '#ff7b72' }}>{full}</span>);
+    } else if (entity) {
+      parts.push(<span key={key++} style={{ color: '#d2a8ff' }}>{full}</span>);
+    } else {
+      parts.push(<span key={key++}>{full}</span>);
+    }
+    lastIdx = m.index + full.length;
+  }
+  if (lastIdx < remaining.length) {
+    parts.push(<span key={key++}>{remaining.slice(lastIdx)}</span>);
+  }
+  return <>{parts}</>;
+}
+
 // ── 아티팩트 사이드 패널 (우측 절반 스트리밍 뷰) ────────────────────────────
 
 /**
@@ -1988,7 +2437,31 @@ const FBX_VIEWER_SCRIPT = `
       wrap.appendChild(makeFbxButton(apiUrl, d.getAttribute('data-label')||''));
       try { d.parentNode.replaceChild(wrap, d); } catch(ex){}
     });
-    // 3) <div class="audio-player" data-src="..."> → <audio> 플레이어
+    // 3) <div data-embed="scene" data-scene-path="..."> → 씬 뷰어 버튼
+    document.querySelectorAll('.embed-scene[data-scene-path]').forEach(function(d){
+      if (d.dataset.sceneInit) return;
+      d.dataset.sceneInit = '1';
+      var scenePath = d.getAttribute('data-scene-path') || '';
+      var label = d.getAttribute('data-scene-label') || scenePath.split('/').pop().replace('.unity','') || 'Scene';
+      d.style.cursor = 'pointer';
+      d.addEventListener('click', function(e){
+        e.preventDefault(); e.stopPropagation();
+        try { parent.postMessage({ type: 'openScene', scenePath: scenePath, label: label }, '*'); } catch(ex){}
+      });
+    });
+    // 4) <div data-embed="prefab" data-prefab-path="..."> → 프리팹 뷰어 버튼
+    document.querySelectorAll('.embed-prefab[data-prefab-path]').forEach(function(d){
+      if (d.dataset.prefabInit) return;
+      d.dataset.prefabInit = '1';
+      var prefabPath = d.getAttribute('data-prefab-path') || '';
+      var label = d.getAttribute('data-prefab-label') || prefabPath.split('/').pop().replace('.prefab','') || 'Prefab';
+      d.style.cursor = 'pointer';
+      d.addEventListener('click', function(e){
+        e.preventDefault(); e.stopPropagation();
+        try { parent.postMessage({ type: 'openPrefab', prefabPath: prefabPath, label: label }, '*'); } catch(ex){}
+      });
+    });
+    // 5) <div class="audio-player" data-src="..."> → <audio> 플레이어
     document.querySelectorAll('.audio-player[data-src]').forEach(function(d){
       if (d.dataset.audioInit) return;
       d.dataset.audioInit = '1';
@@ -2078,15 +2551,63 @@ function ArtifactSidePanel({
   // html 이 빨리 와도 iframe 이 아직 로드 전일 수 있으므로 ref 에 최신 값 캐시
   const pendingHtmlRef = useRef('');
 
+  // ── 스트리밍 오버레이 전환: isComplete 후에도 최소 시간 동안 오버레이 유지 ──
+  const [keepOverlay, setKeepOverlay] = useState(false);
+  const overlayStartRef = useRef(0);
+  useEffect(() => {
+    if (!isComplete && charCount > 0 && !overlayStartRef.current) {
+      // 스트리밍 시작
+      overlayStartRef.current = performance.now();
+      setKeepOverlay(true);
+    }
+    if (isComplete && overlayStartRef.current && keepOverlay) {
+      // 완료됨 → 최소 2초 또는 HTML 크기 비례 시간 유지 후 전환
+      const elapsed = performance.now() - overlayStartRef.current;
+      const minTime = Math.min(3000, Math.max(1500, (html?.length ?? 0) / 5));
+      if (elapsed >= minTime) {
+        setKeepOverlay(false);
+      } else {
+        const timer = setTimeout(() => setKeepOverlay(false), minTime - elapsed);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [isComplete, charCount, html, keepOverlay]);
+
+  // isComplete이 다시 false 되면 (새 아티팩트) 리셋
+  useEffect(() => {
+    if (!isComplete) {
+      overlayStartRef.current = 0;
+    }
+  }, [isComplete]);
+
+  // 실제 렌더링 조건: isComplete가 false이거나, keepOverlay가 true인 동안 스트리밍 오버레이 표시
+  const showAsStreaming = !isComplete || keepOverlay;
+
   // ── FBX 모달 (postMessage로 iframe → 부모 전달) ──────────────────────────────
   const [fbxModalUrl, setFbxModalUrl] = useState<string | null>(null);
   const [fbxModalLabel, setFbxModalLabel] = useState('');
+
+  // ── Scene 모달 (postMessage로 iframe → 부모 전달) ─────────────────────────────
+  const [sceneModalPath, setSceneModalPath] = useState<string | null>(null);
+  const [sceneModalLabel, setSceneModalLabel] = useState('');
+
+  // ── Prefab 모달 (postMessage로 iframe → 부모 전달) ────────────────────────────
+  const [prefabModalPath, setPrefabModalPath] = useState<string | null>(null);
+  const [prefabModalLabel, setPrefabModalLabel] = useState('');
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (e.data?.type === 'openFbx' && e.data.url) {
         setFbxModalUrl(e.data.url);
         setFbxModalLabel(e.data.label || '');
+      }
+      if (e.data?.type === 'openScene' && e.data.scenePath) {
+        setSceneModalPath(e.data.scenePath);
+        setSceneModalLabel(e.data.label || '');
+      }
+      if (e.data?.type === 'openPrefab' && e.data.prefabPath) {
+        setPrefabModalPath(e.data.prefabPath);
+        setPrefabModalLabel(e.data.label || '');
       }
     };
     window.addEventListener('message', handler);
@@ -2364,9 +2885,47 @@ function ArtifactSidePanel({
         </div>
       )}
 
+      {/* ── Scene 모달 오버레이 (postMessage from iframe) ── */}
+      {sceneModalPath && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.8)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: '90vw', maxWidth: 1100, background: '#0f1117', borderRadius: 12, overflow: 'hidden', border: '1px solid #334155', boxShadow: '0 24px 64px rgba(0,0,0,0.7)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', background: '#1e293b', borderBottom: '1px solid #334155' }}>
+              <span style={{ color: '#a78bfa', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/></svg>
+                🎮 {sceneModalLabel || sceneModalPath.split('/').pop()?.replace('.unity', '')}
+              </span>
+              <button
+                onClick={() => setSceneModalPath(null)}
+                style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6, padding: '3px 10px', fontSize: 12, cursor: 'pointer' }}
+              >✕ 닫기</button>
+            </div>
+            <SceneViewerLazy scenePath={sceneModalPath} height={Math.min(600, Math.floor(window.innerHeight * 0.65))} />
+          </div>
+        </div>
+      )}
+
+      {/* ── Prefab 모달 오버레이 (postMessage from iframe) ── */}
+      {prefabModalPath && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.8)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: '90vw', maxWidth: 1100, background: '#0f1117', borderRadius: 12, overflow: 'hidden', border: '1px solid #334155', boxShadow: '0 24px 64px rgba(0,0,0,0.7)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', background: '#1e293b', borderBottom: '1px solid #334155' }}>
+              <span style={{ color: '#34d399', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                🧩 {prefabModalLabel || prefabModalPath.split('/').pop()?.replace('.prefab', '')}
+              </span>
+              <button
+                onClick={() => setPrefabModalPath(null)}
+                style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6, padding: '3px 10px', fontSize: 12, cursor: 'pointer' }}
+              >✕ 닫기</button>
+            </div>
+            <PrefabViewerLazy prefabPath={prefabModalPath} height={Math.min(600, Math.floor(window.innerHeight * 0.65))} />
+          </div>
+        </div>
+      )}
+
       {/* ── 콘텐츠 영역 ── */}
       <div className="flex-1 overflow-hidden flex flex-col relative min-h-0">
-        {isComplete && finalTc ? (
+        {!showAsStreaming && isComplete && finalTc ? (
           /* 완료 → 전체 높이 iframe + 수정 요청 바 */
           <>
             {completeBlobUrl
@@ -2440,21 +2999,67 @@ function ArtifactSidePanel({
             )}
           </>
         ) : (
-          /* ── 스트리밍 중: iframe 으로 직접 body.innerHTML 갱신 ──────────────── */
+          /* ── 스트리밍 중: 코드 스트리밍 오버레이 + iframe 병행 ───────────── */
           <>
-            {/* HTML 아직 없으면 스피너 오버레이 */}
-            {!html && (
+            {/* 코드 스트리밍 오버레이 (html이 충분해질 때까지 표시) */}
+            {(!html || html.length < 100) && (
               <div
-                className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10"
-                style={{ background: '#0f1117', color: 'var(--text-muted)' }}
+                className="absolute inset-0 z-10 flex flex-col"
+                style={{ background: '#0d1117' }}
               >
-                <svg className="animate-spin w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                </svg>
-                {charCount > 0
-                  ? <span className="text-[12px]">HTML 작성 중 <span className="font-mono" style={{ color: 'var(--accent)' }}>{charCount.toLocaleString()}자</span></span>
-                  : <span className="text-[12px]">아티팩트 준비 중...</span>
-                }
+                {/* 코드 영역 */}
+                <div className="flex-1 overflow-hidden flex flex-col justify-end px-3 py-2">
+                  {charCount > 0 ? (
+                    <pre
+                      className="text-[11px] leading-[18px] overflow-hidden"
+                      style={{ fontFamily: 'var(--font-mono)', margin: 0, background: 'transparent', color: '#7c8b9a' }}
+                    >
+                      {(() => {
+                        const sideLines = html.split('\n');
+                        const visibleSideLines = sideLines.slice(-16);
+                        const startNo = Math.max(1, sideLines.length - 15);
+                        return visibleSideLines.map((line, i) => {
+                          const lineNo = startNo + i;
+                          const isLast = i === visibleSideLines.length - 1;
+                          return (
+                            <div key={lineNo} className="flex" style={{ opacity: isLast ? 1 : 0.4 + (i / visibleSideLines.length) * 0.6 }}>
+                              <span className="select-none flex-shrink-0 text-right pr-3" style={{ width: 32, color: '#3d4856', fontSize: 10 }}>
+                                {lineNo}
+                              </span>
+                              <span style={{ color: isLast ? '#e2e8f0' : '#6b7685', whiteSpace: 'pre', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {colorizeHtmlLine(line)}
+                              </span>
+                              {isLast && (
+                                <span className="inline-block w-[2px] h-[13px] ml-0.5 rounded-sm animate-pulse align-middle" style={{ background: 'var(--accent)' }} />
+                              )}
+                            </div>
+                          );
+                        });
+                      })()}
+                    </pre>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center flex-1 gap-3" style={{ color: 'var(--text-muted)' }}>
+                      <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                      </svg>
+                      <span className="text-[12px]">아티팩트 준비 중...</span>
+                    </div>
+                  )}
+                </div>
+                {/* 하단 상태 바 */}
+                <div className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5" style={{ borderTop: '1px solid rgba(99,102,241,0.2)', background: 'rgba(99,102,241,0.06)' }}>
+                  <svg className="animate-spin w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ color: 'var(--accent)' }}>
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                  </svg>
+                  <span className="text-[10px] font-mono truncate" style={{ color: 'var(--text-muted)' }}>
+                    {charCount > 0 ? `HTML 코드 작성 중... ${charCount.toLocaleString()}자` : 'HTML 코드 생성 대기 중...'}
+                  </span>
+                  <div className="ml-auto flex gap-0.5">
+                    {[0, 1, 2].map(j => (
+                      <span key={j} className="w-1 h-1 rounded-full" style={{ background: 'var(--accent)', animation: `chatDot 1.4s ease-in-out ${j * 0.16}s infinite` }} />
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -3121,7 +3726,11 @@ function JiraSearchCard({ tc }: { tc: JiraSearchResult }) {
                 <span style={{ fontSize: 13 }}>{typeIcon(iss.issuetype)}</span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 mb-0.5">
-                    <span className="text-[11px] font-mono font-bold" style={{ color: '#60a5fa' }}>{iss.key}</span>
+                    {iss.url ? (
+                      <a href={iss.url} target="_blank" rel="noopener noreferrer" className="text-[11px] font-mono font-bold hover:underline" style={{ color: '#60a5fa' }}>{iss.key}</a>
+                    ) : (
+                      <span className="text-[11px] font-mono font-bold" style={{ color: '#60a5fa' }}>{iss.key}</span>
+                    )}
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: statusColor(iss.status) + '22', color: statusColor(iss.status) }}>{iss.status}</span>
                     <span className="text-[11px]">{priorityIcon(iss.priority)}</span>
                   </div>
@@ -3137,6 +3746,62 @@ function JiraSearchCard({ tc }: { tc: JiraSearchResult }) {
   );
 }
 
+// ── ADF JSON → 플레인텍스트 (UI 폴백) ────────────────────────────────────────
+function clientAdfToText(node: unknown): string {
+  if (!node || typeof node !== 'object') return '';
+  const n = node as Record<string, unknown>;
+  if (n.type === 'text') {
+    let t = String(n.text ?? '');
+    const marks = Array.isArray(n.marks) ? n.marks as Record<string,unknown>[] : [];
+    const linkMark = marks.find(m => m.type === 'link');
+    if (linkMark) {
+      const href = String((linkMark.attrs as Record<string,unknown>)?.href ?? '');
+      if (href) t = `[${t}](${href})`;
+    }
+    return t;
+  }
+  if (n.type === 'hardBreak') return '\n';
+  if (n.type === 'inlineCard') {
+    const url = String((n.attrs as Record<string,unknown>)?.url ?? '');
+    const m = url.match(/browse\/([A-Z]+-\d+)/);
+    return m ? m[1] : url;
+  }
+  if (n.type === 'mention') return `@${String((n.attrs as Record<string,unknown>)?.text ?? '')}`;
+  if (n.type === 'emoji') return String((n.attrs as Record<string,unknown>)?.text ?? '');
+  const children = Array.isArray(n.content) ? n.content : [];
+  const childText = children.map((c: unknown) => clientAdfToText(c)).join('');
+  switch (n.type) {
+    case 'doc': return childText.trim();
+    case 'paragraph': return childText + '\n';
+    case 'heading': return '#'.repeat(Number((n.attrs as Record<string,unknown>)?.level ?? 1)) + ' ' + childText + '\n';
+    case 'bulletList': return children.map((c: unknown) => '• ' + clientAdfToText(c).trim()).join('\n') + '\n';
+    case 'orderedList': return children.map((c: unknown, i: number) => `${i+1}. ` + clientAdfToText(c).trim()).join('\n') + '\n';
+    case 'listItem': return childText;
+    case 'blockquote': return childText.split('\n').map(l => '> ' + l).join('\n') + '\n';
+    case 'codeBlock': return '```\n' + childText + '\n```\n';
+    case 'mediaGroup': case 'mediaSingle': return '[첨부파일]\n';
+    default: return childText;
+  }
+}
+
+/** 문자열이 ADF JSON이면 플레인텍스트로 변환, 아니면 그대로 반환 */
+function cleanAdfText(text: string): string {
+  if (!text) return '';
+  const s = text.trim();
+  if ((s.startsWith('[{') || s.startsWith('{"type"')) && s.includes('"type"')) {
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) {
+        return parsed.map(c => clientAdfToText(c)).join('').replace(/\n{3,}/g, '\n\n').trim();
+      }
+      if (typeof parsed === 'object' && parsed.type) {
+        return clientAdfToText(parsed).replace(/\n{3,}/g, '\n\n').trim();
+      }
+    } catch { /* JSON 파싱 실패 */ }
+  }
+  return text;
+}
+
 // ── JiraIssueCard ─────────────────────────────────────────────────────────────
 function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
   const [showComments, setShowComments] = useState(false);
@@ -3150,7 +3815,11 @@ function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
     <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
       <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: 'rgba(37,99,235,0.15)', borderBottom: '1px solid var(--border)' }}>
         <span style={{ color: '#60a5fa', fontSize: 16 }}>🎫</span>
-        <span className="font-semibold text-[13px] font-mono" style={{ color: '#60a5fa' }}>{tc.issueKey}</span>
+        {tc.url ? (
+          <a href={tc.url} target="_blank" rel="noopener noreferrer" className="font-semibold text-[13px] font-mono hover:underline" style={{ color: '#60a5fa' }}>{tc.issueKey}</a>
+        ) : (
+          <span className="font-semibold text-[13px] font-mono" style={{ color: '#60a5fa' }}>{tc.issueKey}</span>
+        )}
         {tc.status && (
           <span className="text-[10px] px-2 py-0.5 rounded-full ml-1" style={{ background: statusColor + '22', color: statusColor }}>{tc.status}</span>
         )}
@@ -3173,11 +3842,14 @@ function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
               </div>
             ))}
           </div>
-          {tc.description && (
-            <div className="text-[12px] p-2 rounded" style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', maxHeight: 120, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
-              {tc.description.slice(0, 400)}{tc.description.length > 400 ? '…' : ''}
-            </div>
-          )}
+          {tc.description && (() => {
+            const desc = cleanAdfText(tc.description);
+            return desc ? (
+              <div className="text-[12px] p-2 rounded" style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', maxHeight: 160, overflowY: 'auto' }}>
+                {renderMarkdown(desc.slice(0, 600) + (desc.length > 600 ? '\n…' : ''))}
+              </div>
+            ) : null;
+          })()}
           {tc.comments && tc.comments.length > 0 && (
             <div>
               <button onClick={() => setShowComments(!showComments)} className="text-[11px] px-2 py-1 rounded" style={{ background: 'rgba(96,165,250,0.1)', color: '#60a5fa', border: '1px solid rgba(96,165,250,0.3)', cursor: 'pointer' }}>
@@ -3185,12 +3857,15 @@ function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
               </button>
               {showComments && (
                 <div className="mt-2 space-y-1.5">
-                  {tc.comments.map((c, i) => (
-                    <div key={i} className="px-2 py-1.5 rounded text-[11px]" style={{ background: 'var(--bg-primary)' }}>
-                      <div className="font-semibold mb-0.5" style={{ color: '#60a5fa' }}>{c.author} <span style={{ color: 'var(--text-muted)', fontWeight: 'normal' }}>{c.created?.slice(0,10)}</span></div>
-                      <div style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{c.body}</div>
-                    </div>
-                  ))}
+                  {tc.comments.map((c, i) => {
+                    const body = cleanAdfText(c.body);
+                    return (
+                      <div key={i} className="px-2 py-1.5 rounded text-[11px]" style={{ background: 'var(--bg-primary)' }}>
+                        <div className="font-semibold mb-0.5" style={{ color: '#60a5fa' }}>{c.author} <span style={{ color: 'var(--text-muted)', fontWeight: 'normal' }}>{c.created?.slice(0,10)}</span></div>
+                        <div style={{ color: 'var(--text-secondary)' }}>{renderMarkdown(body)}</div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -3241,6 +3916,87 @@ function ConfluenceSearchCard({ tc }: { tc: ConfluenceSearchResult }) {
   );
 }
 
+// ── ConfluenceMediaSection ────────────────────────────────────────────────────
+function ConfluenceMediaSection({ media }: { media: ConfluenceMedia[] }) {
+  const [expanded, setExpanded] = useState(true);
+  const images = media.filter(m => m.type === 'image');
+  const videos = media.filter(m => m.type === 'video');
+  const attachments = media.filter(m => m.type === 'attachment');
+  const links = media.filter(m => m.type === 'link');
+
+  return (
+    <div className="space-y-2">
+      <button onClick={() => setExpanded(!expanded)} className="text-[11px] px-2 py-1 rounded flex items-center gap-1" style={{ background: 'rgba(103,232,249,0.1)', color: '#67e8f9', border: '1px solid rgba(103,232,249,0.2)', cursor: 'pointer' }}>
+        {expanded ? '▲' : '▼'} 미디어 · 첨부파일 ({media.length}개)
+      </button>
+      {expanded && (
+        <div className="space-y-2">
+          {/* 이미지 */}
+          {images.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>🖼️ 이미지 ({images.length})</div>
+              <div className="flex flex-wrap gap-2">
+                {images.map((img, i) => (
+                  <a key={i} href={img.url} target="_blank" rel="noopener noreferrer"
+                    className="block rounded overflow-hidden hover:opacity-80 transition-opacity"
+                    style={{ border: '1px solid var(--border)', maxWidth: 180 }}>
+                    <img src={img.url} alt={img.title}
+                      style={{ maxWidth: 180, maxHeight: 120, objectFit: 'cover', display: 'block' }}
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).parentElement!.innerHTML = `<div class="px-2 py-1 text-[10px]" style="color: var(--text-muted)">🖼️ ${img.title}</div>`; }}
+                    />
+                    <div className="text-[9px] px-1.5 py-0.5 truncate" style={{ color: 'var(--text-muted)', background: 'var(--bg-primary)' }}>{img.title}</div>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* 영상 */}
+          {videos.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>🎬 영상 ({videos.length})</div>
+              {videos.map((vid, i) => (
+                <a key={i} href={vid.url} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-2 py-1.5 rounded hover:opacity-80" style={{ background: 'var(--bg-primary)' }}>
+                  <span style={{ fontSize: 14 }}>▶️</span>
+                  <span className="text-[11px] truncate" style={{ color: '#67e8f9' }}>{vid.title}</span>
+                  <span className="text-[9px] ml-auto truncate" style={{ color: 'var(--text-muted)', maxWidth: 200 }}>{vid.url}</span>
+                </a>
+              ))}
+            </div>
+          )}
+          {/* 첨부파일 */}
+          {attachments.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>📎 첨부파일 ({attachments.length})</div>
+              {attachments.map((att, i) => (
+                <a key={i} href={att.url} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-2 py-1 rounded hover:opacity-80" style={{ background: 'var(--bg-primary)' }}>
+                  <span style={{ fontSize: 12 }}>📄</span>
+                  <span className="text-[11px] truncate" style={{ color: '#67e8f9' }}>{att.title}</span>
+                  {att.mimeType && <span className="text-[9px] ml-auto" style={{ color: 'var(--text-muted)' }}>{att.mimeType}</span>}
+                </a>
+              ))}
+            </div>
+          )}
+          {/* 외부 링크 */}
+          {links.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>🔗 링크 ({links.length})</div>
+              {links.map((lnk, i) => (
+                <a key={i} href={lnk.url} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-2 py-1 rounded hover:opacity-80" style={{ background: 'var(--bg-primary)' }}>
+                  <span style={{ fontSize: 11 }}>🔗</span>
+                  <span className="text-[11px] truncate" style={{ color: '#67e8f9' }}>{lnk.title}</span>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ConfluencePageCard ────────────────────────────────────────────────────────
 function ConfluencePageCard({ tc }: { tc: ConfluencePageResult }) {
   const [showHtml, setShowHtml] = useState(false);
@@ -3251,14 +4007,34 @@ function ConfluencePageCard({ tc }: { tc: ConfluencePageResult }) {
         <span style={{ color: '#67e8f9', fontSize: 16 }}>📋</span>
         <span className="font-semibold text-[13px]" style={{ color: '#67e8f9' }}>Confluence 페이지</span>
         {tc.space && <span className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'rgba(103,232,249,0.1)', color: '#67e8f9' }}>{tc.space}</span>}
+        {tc.media && tc.media.length > 0 && (
+          <span className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'rgba(103,232,249,0.08)', color: '#67e8f9' }}>
+            미디어 {tc.media.length}
+          </span>
+        )}
         {tc.duration && <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{tc.duration.toFixed(0)}ms</span>}
       </div>
       {tc.error ? (
         <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{tc.error}</div>
       ) : (
         <div className="px-4 py-3 space-y-2">
-          <div className="font-semibold text-[14px]" style={{ color: 'var(--text-primary)' }}>{tc.title}</div>
-          <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>ID: {tc.pageId} · 버전: {tc.version}</div>
+          {tc.url ? (
+            <a href={tc.url} target="_blank" rel="noopener noreferrer" className="font-semibold text-[14px] hover:underline block" style={{ color: '#67e8f9' }}>{tc.title}</a>
+          ) : (
+            <div className="font-semibold text-[14px]" style={{ color: 'var(--text-primary)' }}>{tc.title}</div>
+          )}
+          <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            {tc.url ? (
+              <a href={tc.url} target="_blank" rel="noopener noreferrer" className="hover:underline" style={{ color: '#67e8f9' }}>📎 페이지 열기</a>
+            ) : (
+              <span>ID: {tc.pageId}</span>
+            )}
+            {' · '}버전: {tc.version}
+          </div>
+          {/* 미디어 섹션 */}
+          {tc.media && tc.media.length > 0 && (
+            <ConfluenceMediaSection media={tc.media} />
+          )}
           {textContent && (
             <div className="text-[12px] p-2 rounded" style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', maxHeight: 160, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
               {textContent}{(tc.htmlContent?.length ?? 0) > 800 ? '…' : ''}
@@ -3279,18 +4055,84 @@ function ConfluencePageCard({ tc }: { tc: ConfluencePageResult }) {
 }
 
 // ── AssetSearchCard ────────────────────────────────────────────────────────────
+// ── 씬 YAML 분석 카드 ────────────────────────────────────────────────────────
+function SceneYamlCard({ tc }: { tc: SceneYamlResult }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (tc.error && !tc.totalSections) {
+    return (
+      <div className="rounded-lg my-2 overflow-hidden" style={{ border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.05)' }}>
+        <div className="px-3 py-2 text-[11px]" style={{ color: '#ef4444' }}>✕ {tc.label}</div>
+        <div className="px-3 py-1 text-[10px]" style={{ color: '#94a3b8' }}>{tc.error}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg my-2 overflow-hidden" style={{ border: '1px solid rgba(167,139,250,0.3)', background: 'rgba(167,139,250,0.04)' }}>
+      {/* 헤더 */}
+      <div
+        className="flex items-center gap-2 px-3 py-2 cursor-pointer"
+        style={{ borderBottom: '1px solid rgba(167,139,250,0.15)' }}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2">
+          <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/>
+        </svg>
+        <span className="text-[11px] font-semibold" style={{ color: '#a78bfa' }}>{tc.label}</span>
+        {tc.fileSizeKB != null && (
+          <span className="text-[10px] ml-auto" style={{ color: '#64748b' }}>
+            {tc.fileSizeKB} KB · {tc.totalSections ?? 0}개 섹션
+            {tc.totalFiltered != null && tc.totalFiltered !== tc.totalSections && ` → ${tc.totalFiltered}개 매칭`}
+            {tc.returnedCount != null && ` · ${tc.returnedCount}개 반환`}
+          </span>
+        )}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2"
+             style={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </div>
+
+      {/* 타입 카운트 뱃지 */}
+      {tc.typeCounts && (
+        <div className="flex flex-wrap gap-1 px-3 py-1.5" style={{ borderBottom: expanded ? '1px solid rgba(167,139,250,0.1)' : 'none' }}>
+          {Object.entries(tc.typeCounts)
+            .sort(([,a], [,b]) => b - a)
+            .slice(0, 12)
+            .map(([type, count]) => (
+              <span key={type} className="text-[9px] px-1.5 py-0.5 rounded"
+                    style={{ background: 'rgba(167,139,250,0.1)', color: '#a78bfa' }}>
+                {type} {count}
+              </span>
+            ))
+          }
+        </div>
+      )}
+
+      {/* 상세 내용 (확장 시) */}
+      {expanded && (
+        <div className="px-3 py-2 text-[10px] overflow-auto" style={{ maxHeight: 300, color: '#94a3b8' }}>
+          <div>{tc.content}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
   const [fbxUrl, setFbxUrl] = useState<string | null>(null);
   const [fbxName, setFbxName] = useState<string>('');
   const [sceneViewPath, setSceneViewPath] = useState<string | null>(null);
+  const [prefabViewPath, setPrefabViewPath] = useState<string | null>(null);
   const hasError = !!tc.error;
 
-  // ext는 dot 없이 저장됨 ("fbx", "png", "unity" 등)
-  const fbxFiles   = tc.files.filter(f => f.ext?.toLowerCase() === 'fbx');
-  const imgFiles   = tc.files.filter(f => ['png','jpg','jpeg','tga','gif','bmp'].includes(f.ext?.toLowerCase() ?? ''));
-  const audioFiles = tc.files.filter(f => ['wav','mp3','ogg','flac','m4a'].includes(f.ext?.toLowerCase() ?? ''));
-  const unityFiles = tc.files.filter(f => f.ext?.toLowerCase() === 'unity');
-  const otherFiles = tc.files.filter(f => !['fbx','png','jpg','jpeg','tga','gif','bmp','wav','mp3','ogg','flac','m4a','unity'].includes(f.ext?.toLowerCase() ?? ''));
+  // ext는 dot 없이 저장됨 ("fbx", "png", "unity", "prefab" 등)
+  const fbxFiles    = tc.files.filter(f => f.ext?.toLowerCase() === 'fbx');
+  const imgFiles    = tc.files.filter(f => ['png','jpg','jpeg','tga','gif','bmp'].includes(f.ext?.toLowerCase() ?? ''));
+  const audioFiles  = tc.files.filter(f => ['wav','mp3','ogg','flac','m4a'].includes(f.ext?.toLowerCase() ?? ''));
+  const unityFiles  = tc.files.filter(f => f.ext?.toLowerCase() === 'unity');
+  const prefabFiles = tc.files.filter(f => f.ext?.toLowerCase() === 'prefab');
+  const otherFiles  = tc.files.filter(f => !['fbx','png','jpg','jpeg','tga','gif','bmp','wav','mp3','ogg','flac','m4a','unity','prefab'].includes(f.ext?.toLowerCase() ?? ''));
 
   return (
     <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${hasError ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.3)'}` }}>
@@ -3333,6 +4175,19 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
           <SceneViewerLazy scenePath={sceneViewPath} height={480} />
           <button
             onClick={() => setSceneViewPath(null)}
+            style={{ position: 'absolute', top: 42, right: 8, background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', borderRadius: 6, padding: '2px 8px', fontSize: 11, cursor: 'pointer', zIndex: 10 }}
+          >
+            ✕ 닫기
+          </button>
+        </div>
+      )}
+
+      {/* 인라인 프리팹 뷰어 (.prefab → scene 파서 재사용) */}
+      {prefabViewPath && (
+        <div style={{ position: 'relative' }}>
+          <PrefabViewerLazy prefabPath={prefabViewPath} height={480} />
+          <button
+            onClick={() => setPrefabViewPath(null)}
             style={{ position: 'absolute', top: 42, right: 8, background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', borderRadius: 6, padding: '2px 8px', fontSize: 11, cursor: 'pointer', zIndex: 10 }}
           >
             ✕ 닫기
@@ -3469,6 +4324,43 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
         </div>
       )}
 
+      {/* 프리팹 파일 목록 */}
+      {prefabFiles.length > 0 && (
+        <div className="px-3 pt-2 pb-1">
+          <div className="text-[11px] mb-1.5 font-semibold" style={{ color: '#34d399' }}>
+            🧩 프리팹 ({prefabFiles.length})
+          </div>
+          <div className="space-y-1">
+            {prefabFiles.map((f, i) => (
+              <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#34d399" strokeWidth="2">
+                  <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+                </svg>
+                <span className="flex-1 text-[11px] font-mono truncate" style={{ color: '#6ee7b7' }} title={f.path}>
+                  {f.name}.prefab
+                </span>
+                <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+                  {f.sizeKB} KB
+                </span>
+                <button
+                  onClick={() => {
+                    if (prefabViewPath === f.path) { setPrefabViewPath(null); }
+                    else { setPrefabViewPath(f.path); setFbxUrl(null); setSceneViewPath(null); }
+                  }}
+                  className="flex-shrink-0 text-[10px] px-2 py-0.5 rounded"
+                  style={{
+                    background: prefabViewPath === f.path ? 'rgba(52,211,153,0.4)' : 'rgba(52,211,153,0.15)',
+                    color: '#34d399', border: '1px solid rgba(52,211,153,0.3)', cursor: 'pointer'
+                  }}
+                >
+                  {prefabViewPath === f.path ? '▼ 닫기' : '🧩 프리팹 뷰'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 기타 파일 목록 */}
       {otherFiles.length > 0 && (
         <div className="px-3 pt-2 pb-3">
@@ -3524,6 +4416,77 @@ function SceneViewerLazy({ scenePath, height }: { scenePath: string; height?: nu
   return <Comp scenePath={scenePath} height={height ?? 520} />;
 }
 
+// PrefabViewer lazy wrapper (.prefab → SceneViewer 재사용, API만 /api/assets/prefab 사용)
+function PrefabViewerLazy({ prefabPath, height }: { prefabPath: string; height?: number }) {
+  const apiUrl = prefabPath.startsWith('/api/')
+    ? prefabPath
+    : `/api/assets/prefab?path=${encodeURIComponent(prefabPath)}&max=200`;
+  return <SceneViewerLazy scenePath={apiUrl} height={height} />;
+}
+
+// 프리팹 프리뷰 카드 (3D 뷰어)
+function PrefabPreviewCard({ tc }: { tc: PrefabPreviewResult }) {
+  const [showViewer, setShowViewer] = useState(false);
+  const hasError = !!tc.error;
+
+  return (
+    <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${hasError ? 'rgba(239,68,68,0.3)' : 'rgba(52,211,153,0.3)'}` }}>
+      {/* 헤더 */}
+      <div className="flex items-center gap-2 px-3 py-2" style={{ background: hasError ? 'rgba(239,68,68,0.08)' : 'rgba(52,211,153,0.08)' }}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={hasError ? '#f87171' : '#34d399'} strokeWidth="2">
+          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+        </svg>
+        <span className="text-[12px] font-semibold" style={{ color: hasError ? '#f87171' : '#34d399' }}>
+          🧩 프리팹: {tc.label}
+        </span>
+        {!hasError && tc.totalObjects != null && (
+          <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+            {tc.totalObjects}개 오브젝트
+            {tc.resolvedFbx ? ` · FBX ${tc.resolvedFbx}` : ''}
+            {tc.resolvedProBuilder ? ` · PB ${tc.resolvedProBuilder}` : ''}
+            {tc.resolvedBox ? ` · Box ${tc.resolvedBox}` : ''}
+          </span>
+        )}
+      </div>
+
+      {/* 3D 뷰어 토글 */}
+      {!hasError && (
+        <div className="px-3 py-2">
+          <button
+            onClick={() => setShowViewer(!showViewer)}
+            className="text-[11px] px-3 py-1.5 rounded-lg"
+            style={{
+              background: showViewer ? 'rgba(52,211,153,0.3)' : 'rgba(52,211,153,0.12)',
+              color: '#34d399',
+              border: '1px solid rgba(52,211,153,0.3)',
+              cursor: 'pointer',
+            }}
+          >
+            {showViewer ? '▼ 뷰어 닫기' : '🧩 3D 프리팹 뷰어 열기'}
+          </button>
+        </div>
+      )}
+
+      {/* 인라인 3D 뷰어 */}
+      {showViewer && (
+        <div style={{ position: 'relative' }}>
+          <PrefabViewerLazy prefabPath={tc.prefabPath} height={480} />
+        </div>
+      )}
+
+      {/* 에러 표시 */}
+      {hasError && (
+        <div className="px-3 pb-3 text-[11px]" style={{ color: '#f87171' }}>{tc.error}</div>
+      )}
+
+      {/* 경로 표시 */}
+      <div className="px-3 pb-2">
+        <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>{tc.prefabPath}</span>
+      </div>
+    </div>
+  );
+}
+
 function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'schema_card') return <TableSchemaCard tc={tc} />;
   if (tc.kind === 'git_history') return <GitHistoryCard tc={tc} />;
@@ -3535,6 +4498,8 @@ function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'code_file') return <CodeFileCard tc={tc} />;
   if (tc.kind === 'code_guide') return <CodeGuideCard tc={tc} />;
   if (tc.kind === 'asset_search') return <AssetSearchCard tc={tc} />;
+  if (tc.kind === 'scene_yaml') return <SceneYamlCard tc={tc} />;
+  if (tc.kind === 'prefab_preview') return <PrefabPreviewCard tc={tc} />;
   if (tc.kind === 'jira_search') return <JiraSearchCard tc={tc} />;
   if (tc.kind === 'jira_issue') return <JiraIssueCard tc={tc} />;
   if (tc.kind === 'confluence_search') return <ConfluenceSearchCard tc={tc} />;
@@ -3740,6 +4705,191 @@ function DataQueryCard({ tc, index }: { tc: DataQueryResult; index: number }) {
 
 // ── 로딩 인디케이터 ──────────────────────────────────────────────────────────
 
+// ── Cursor-style 씽킹 패널 ──────────────────────────────────────────────────
+
+function ThinkingPanel({ steps, isActive }: { steps: ThinkingStepUI[]; isActive: boolean }) {
+  const [expanded, setExpanded] = useState(isActive); // 활성 중에는 펼침, 완료 시 접힘
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [elapsed, setElapsed] = useState(0);
+
+  // 타이머: isActive일 때 1초마다 업데이트
+  useEffect(() => {
+    if (!isActive) return;
+    const t = setInterval(() => setElapsed(s => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [isActive]);
+
+  // 자동 스크롤
+  useEffect(() => {
+    if (scrollRef.current && expanded) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [steps, expanded]);
+
+  if (steps.length === 0) return null;
+
+  // 현재 상태 요약
+  const lastStep = steps[steps.length - 1];
+  const currentIteration = lastStep.iteration;
+  const activeTools = steps.filter(s => s.type === 'tool_start' && !steps.some(d => d.type === 'tool_done' && d.toolName === s.toolName && d.timestamp > s.timestamp));
+  const completedTools = steps.filter(s => s.type === 'tool_done').length;
+  const totalToolStarts = steps.filter(s => s.type === 'tool_start').length;
+
+  // 상태 텍스트
+  const statusText = !isActive
+    ? `완료 · ${steps.filter(s => s.type === 'iteration_done').length}회 반복`
+    : lastStep.type === 'iteration_start' ? '모델 호출 중...'
+    : lastStep.type === 'streaming' ? '응답 생성 중...'
+    : lastStep.type === 'tool_start' ? `${lastStep.toolLabel ?? lastStep.toolName} 실행 중...`
+    : lastStep.type === 'tool_done' ? '도구 결과 분석 중...'
+    : lastStep.type === 'continuation' ? '이어서 생성 중...'
+    : '처리 중...';
+
+  // 전체 경과 시간
+  const firstTimestamp = steps[0].timestamp;
+  const totalElapsed = isActive ? Date.now() - firstTimestamp : (lastStep.timestamp - firstTimestamp);
+  const totalSec = Math.floor(totalElapsed / 1000);
+
+  return (
+    <div
+      className="rounded-xl overflow-hidden mb-2 transition-all"
+      style={{
+        border: isActive ? '1px solid rgba(99,102,241,0.35)' : '1px solid rgba(255,255,255,0.06)',
+        background: isActive ? 'rgba(99,102,241,0.04)' : 'rgba(255,255,255,0.02)',
+      }}
+    >
+      {/* 헤더 — 클릭으로 접기/펼치기 */}
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-white/[0.02]"
+      >
+        {/* 아이콘 */}
+        {isActive ? (
+          <span className="relative flex h-2.5 w-2.5 flex-shrink-0">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60" style={{ background: '#818cf8' }} />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5" style={{ background: '#818cf8' }} />
+          </span>
+        ) : (
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" className="flex-shrink-0">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+        )}
+
+        {/* 상태 텍스트 */}
+        <span className="text-[12px] font-medium flex-1 truncate" style={{ color: isActive ? '#a5b4fc' : 'var(--text-muted)' }}>
+          {statusText}
+        </span>
+
+        {/* 메타: 이터레이션/시간 */}
+        <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>
+          {currentIteration > 1 && `#${currentIteration} · `}{totalSec}초
+        </span>
+
+        {/* 접기/펼치기 화살표 */}
+        <svg
+          width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+          className="flex-shrink-0 transition-transform"
+          style={{ color: 'var(--text-muted)', opacity: 0.5, transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {/* 펼쳐진 내용 */}
+      {expanded && (
+        <div
+          ref={scrollRef}
+          className="px-3 pb-2 overflow-y-auto"
+          style={{ maxHeight: 200 }}
+        >
+          <div className="flex flex-col gap-0.5">
+            {steps.map((step, idx) => (
+              <ThinkingStepRow key={idx} step={step} idx={idx} steps={steps} isLast={idx === steps.length - 1 && isActive} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThinkingStepRow({ step, idx, steps, isLast }: { step: ThinkingStepUI; idx: number; steps: ThinkingStepUI[]; isLast: boolean }) {
+  // 시간 계산 (이전 step과의 차이)
+  const prevTs = idx > 0 ? steps[idx - 1].timestamp : step.timestamp;
+  const dt = step.timestamp - prevTs;
+  const dtStr = dt > 0 ? `+${dt >= 1000 ? (dt / 1000).toFixed(1) + 's' : dt + 'ms'}` : '';
+
+  // 아이콘 + 색상 + 텍스트
+  let icon: React.ReactNode;
+  let color: string;
+  let text: string;
+
+  switch (step.type) {
+    case 'iteration_start':
+      icon = <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>;
+      color = '#818cf8';
+      text = step.iteration === 1 ? '모델에 요청 전송' : `${step.iteration}번째 반복 시작`;
+      break;
+    case 'streaming':
+      icon = <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>;
+      color = '#a5b4fc';
+      text = '응답 작성 중';
+      break;
+    case 'tool_start':
+      icon = <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/></svg>;
+      color = '#fbbf24';
+      text = step.toolLabel ?? step.toolName ?? '도구 실행 중';
+      if (step.detail) text += ` — ${step.detail.length > 60 ? step.detail.slice(0, 57) + '...' : step.detail}`;
+      break;
+    case 'tool_done':
+      icon = <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>;
+      color = '#4ade80';
+      text = `${step.toolLabel ?? step.toolName ?? '도구'} 완료`;
+      break;
+    case 'iteration_done':
+      icon = <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>;
+      color = '#34d399';
+      text = `반복 ${step.iteration} 완료`;
+      if (step.detail) text += ` (${step.detail})`;
+      break;
+    case 'continuation':
+      icon = <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>;
+      color = '#f59e0b';
+      text = step.detail ?? '자동 계속 생성';
+      break;
+    default:
+      icon = null;
+      color = 'var(--text-muted)';
+      text = step.type;
+  }
+
+  return (
+    <div className="flex items-start gap-2 py-0.5" style={{ opacity: isLast ? 1 : 0.7 }}>
+      {/* 타임라인 라인 */}
+      <div className="flex flex-col items-center flex-shrink-0" style={{ width: 12, marginTop: 3 }}>
+        <span style={{ color }}>{icon}</span>
+      </div>
+
+      {/* 텍스트 */}
+      <span className="text-[11px] leading-[16px] flex-1" style={{ color }}>
+        {text}
+      </span>
+
+      {/* 시간 */}
+      {dtStr && (
+        <span className="text-[9px] font-mono flex-shrink-0 mt-0.5" style={{ color: 'var(--text-muted)', opacity: 0.5 }}>
+          {dtStr}
+        </span>
+      )}
+
+      {/* 활성 표시 */}
+      {isLast && (
+        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1" style={{ background: color, animation: 'chatDot 1.2s ease-in-out infinite' }} />
+      )}
+    </div>
+  );
+}
+
 function ThinkingIndicator({ liveToolCalls }: { liveToolCalls?: ToolCallResult[] }) {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -3776,7 +4926,7 @@ function ThinkingIndicator({ liveToolCalls }: { liveToolCalls?: ToolCallResult[]
 
 // ── 메시지 버블 ──────────────────────────────────────────────────────────────
 
-function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => void }) {
+function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; onContinue?: () => void; artifactStreaming?: { html: string; title: string; charCount: number; isComplete: boolean } | null }) {
   const isUser = msg.role === 'user';
 
   /* ── 유저 메시지: 우측 정렬 그라데이션 버블 ─────────────────────────────── */
@@ -3852,30 +5002,43 @@ function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => v
           boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
         }}
       >
-          {msg.isLoading && !msg.content ? (
-            <ThinkingIndicator liveToolCalls={msg.liveToolCalls} />
-          ) : msg.isLoading && (msg.content || msg.artifactProgress || (msg.liveToolCalls && msg.liveToolCalls.length > 0)) ? (
-            // 스트리밍 중 — 텍스트 실시간 표시 + 커서
+          {msg.isLoading && !msg.content && !(artifactStreaming && !artifactStreaming.isComplete) ? (
+            <>
+              {/* Thinking 패널 (로딩 + 아직 텍스트 없음) */}
+              {msg.thinkingSteps && msg.thinkingSteps.length > 0 && (
+                <ThinkingPanel steps={msg.thinkingSteps} isActive={true} />
+              )}
+              <ThinkingIndicator liveToolCalls={msg.liveToolCalls} />
+            </>
+          ) : msg.isLoading && (msg.content || msg.artifactProgress || (msg.liveToolCalls && msg.liveToolCalls.length > 0) || (artifactStreaming && !artifactStreaming.isComplete)) ? (
+            // 스트리밍 중 — 텍스트 실시간 표시 + 커서 + 아티팩트 오버레이
             <div className="space-y-0.5">
+              {/* Thinking 패널 (스트리밍 중) */}
+              {msg.thinkingSteps && msg.thinkingSteps.length > 0 && (
+                <ThinkingPanel steps={msg.thinkingSteps} isActive={true} />
+              )}
               {msg.liveToolCalls && msg.liveToolCalls.length > 0 && (
                 <div className="mb-3 space-y-1">
                   {msg.liveToolCalls.map((tc, i) => <ToolCallCard key={i} tc={tc} index={i} />)}
                 </div>
               )}
-              {/* 아티팩트 실시간 생성 → 오른쪽 패널에서 표시, 여기선 뱃지만 */}
-              {msg.artifactProgress && (
-                <div className="flex items-center gap-2 px-3 py-2 rounded-lg mb-2" style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.25)' }}>
-                  <span className="relative flex h-2 w-2 flex-shrink-0">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ background: 'var(--accent)' }} />
-                    <span className="relative inline-flex rounded-full h-2 w-2" style={{ background: 'var(--accent)' }} />
-                  </span>
-                  <span className="text-[12px]" style={{ color: 'var(--accent)' }}>
-                    아티팩트 생성 중{msg.artifactProgress.title ? `: ${msg.artifactProgress.title}` : ''}
-                  </span>
-                  <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
-                    {msg.artifactProgress.charCount.toLocaleString()}자 · 오른쪽 패널 ›
-                  </span>
-                </div>
+              {/* 아티팩트 실시간 생성 → HTML 코드가 있으면 코드 오버레이, 없으면 진행 표시 */}
+              {artifactStreaming && !artifactStreaming.isComplete && artifactStreaming.charCount > 0 && (
+                artifactStreaming.html ? (
+                  <ArtifactStreamOverlay
+                    html={artifactStreaming.html}
+                    title={artifactStreaming.title}
+                    charCount={artifactStreaming.charCount}
+                  />
+                ) : (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-lg mb-2" style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)' }}>
+                    <svg className="animate-spin w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    <span className="text-[12px]" style={{ color: '#a5b4fc' }}>
+                      ✏️ {artifactStreaming.title ? `${artifactStreaming.title} 준비 중` : '아티팩트 코드 준비 중'}
+                    </span>
+                    <span className="text-[10px] font-mono ml-auto" style={{ color: 'var(--text-muted)' }}>{artifactStreaming.charCount.toLocaleString()}자</span>
+                  </div>
+                )
               )}
               {msg.content && (
                 <div className="text-[14px] leading-relaxed" style={{ color: 'var(--text-primary)' }}>
@@ -3889,6 +5052,10 @@ function MessageBubble({ msg, onContinue }: { msg: Message; onContinue?: () => v
             </div>
           ) : (
             <div className="space-y-2">
+              {/* Thinking 패널 (완료 — 접힌 상태) */}
+              {msg.thinkingSteps && msg.thinkingSteps.length > 1 && (
+                <ThinkingPanel steps={msg.thinkingSteps} isActive={false} />
+              )}
               {/* Tool calls */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="mb-3 space-y-1">
@@ -3982,6 +5149,18 @@ export default function ChatPage() {
     finalTc?: ArtifactResult;
     artifactId?: string; // 저장된 아티팩트 id (출판 URL 연결용)
   } | null>(null);
+
+  // 채팅 내 프리팹 경로 클릭 → 프리팹 미리보기 모달
+  const [chatPrefabPath, setChatPrefabPath] = useState<string | null>(null);
+  const [chatPrefabLabel, setChatPrefabLabel] = useState('');
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { path, label } = (e as CustomEvent).detail ?? {};
+      if (path) { setChatPrefabPath(path); setChatPrefabLabel(label ?? ''); }
+    };
+    window.addEventListener('openPrefabPreview', handler);
+    return () => window.removeEventListener('openPrefabPreview', handler);
+  }, []);
 
   // 생성된 아티팩트 목록 (사이드바용) — localStorage 복원
   const [savedArtifacts, setSavedArtifacts] = useState<{ id: string; title: string; tc: ArtifactResult; createdAt: Date; publishedUrl?: string }[]>(() => {
@@ -4081,6 +5260,9 @@ export default function ChatPage() {
 
     const loadingId = loadingMsg.id;
 
+    // 아티팩트 스트리밍 로그 스로틀 타임스탬프
+    let _lastArtifactUpdate = 0;
+
     try {
       const { content, toolCalls, rawMessages } = await sendChatMessage(
         text.trim(),
@@ -4108,8 +5290,14 @@ export default function ChatPage() {
           );
         },
         (html, title, charCount) => {
-          // 아티팩트 실시간 생성 진행 → 사이드 패널만 업데이트
-          // ⚠️ setMessages 는 제거: 매 delta마다 메시지 목록 전체 재렌더 → 심각한 성능 저하
+          // 아티팩트 실시간 생성 진행 → React 18 자동 배치에 의존 (스로틀 없음)
+          // 동일 microtask 내 여러 호출은 React가 자동으로 마지막 값만 렌더링
+          const now = performance.now();
+          // 로깅만 스로틀 (상태 업데이트는 항상 수행)
+          if (_lastArtifactUpdate === 0 || now - _lastArtifactUpdate >= 200) {
+            _lastArtifactUpdate = now;
+            console.log(`[ArtifactStream] charCount=${charCount}, htmlLen=${html.length}, title="${title}"`);
+          }
           setArtifactPanel((prev) => {
             if (!prev) {
               return { html, title: title || '', charCount, isComplete: false };
@@ -4117,8 +5305,27 @@ export default function ChatPage() {
             if (!prev.isComplete) {
               return { html, title: title || prev.title || '', charCount, isComplete: false };
             }
-            return prev; // 이미 완료된 경우 유지
+            return prev;
           });
+        },
+        (step: ThinkingStep) => {
+          // 실시간 thinking 업데이트
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === loadingId
+                ? {
+                    ...m,
+                    thinkingSteps: [
+                      ...(m.thinkingSteps ?? []),
+                      { ...step, elapsed: (m.thinkingSteps?.length ?? 0) > 0
+                        ? step.timestamp - (m.thinkingSteps![m.thinkingSteps!.length - 1].timestamp)
+                        : 0
+                      },
+                    ],
+                  }
+                : m,
+            ),
+          );
         },
       );
 
@@ -4158,7 +5365,7 @@ export default function ChatPage() {
       } else if (patchTc && patchTc.patches.length > 0) {
         // patch_artifact: 현재 열린 아티팩트에 패치 적용
         setArtifactPanel((prev) => {
-          if (!prev?.finalTc) return prev;
+          if (!prev?.finalTc) return null; // patch_artifact 스트리밍 중 생긴 임시 패널 → 정리
           const originalHtml = prev.finalTc.html ?? '';
           const { html: patchedHtml, applied, failed } = applyPatches(originalHtml, patchTc.patches);
           console.log(`[Patch] 적용 ${applied}/${patchTc.patches.length}개${failed.length ? `, 실패: ${failed.join(' | ')}` : ''}`);
@@ -4473,6 +5680,10 @@ export default function ChatPage() {
                     ? () => sendMessage('계속해서 아티팩트를 완성해주세요. 이미 조회된 데이터를 재활용하세요.')
                     : undefined
                 }
+                artifactStreaming={
+                  // 마지막 로딩 중인 메시지에만 아티팩트 스트리밍 전달
+                  msg.isLoading && idx === messages.length - 1 ? artifactPanel : undefined
+                }
               />
             ))}
 
@@ -4591,6 +5802,28 @@ export default function ChatPage() {
         )}
         </div>{/* ── /채팅+패널 래퍼 ── */}
       </div>
+
+      {/* 채팅 내 프리팹 경로 클릭 → 프리팹 미리보기 모달 */}
+      {chatPrefabPath && (
+        <div
+          style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.8)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget) setChatPrefabPath(null); }}
+        >
+          <div style={{ width: '90vw', maxWidth: 1100, background: '#0f1117', borderRadius: 12, overflow: 'hidden', border: '1px solid #334155', boxShadow: '0 24px 64px rgba(0,0,0,0.7)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', background: '#1e293b', borderBottom: '1px solid #334155' }}>
+              <span style={{ color: '#34d399', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+                🧩 {chatPrefabLabel || chatPrefabPath.split('/').pop()?.replace('.prefab', '')}
+                <span style={{ color: '#64748b', fontSize: 11, fontFamily: 'var(--font-mono)' }}>.prefab</span>
+              </span>
+              <button
+                onClick={() => setChatPrefabPath(null)}
+                style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6, padding: '3px 10px', fontSize: 12, cursor: 'pointer' }}
+              >✕ 닫기</button>
+            </div>
+            <PrefabViewerLazy prefabPath={chatPrefabPath} height={Math.min(600, Math.floor(window.innerHeight * 0.65))} />
+          </div>
+        </div>
+      )}
 
       {/* CSS 애니메이션 */}
       <style>{`

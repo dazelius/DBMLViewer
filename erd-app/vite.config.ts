@@ -51,6 +51,12 @@ export default defineConfig(({ mode }) => {
     preview: {
       host: '0.0.0.0',
       port: 5173,
+      headers: {
+        // HTML은 항상 최신 빌드를 로드하도록 캐시 방지
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+      },
     },
   }
 })
