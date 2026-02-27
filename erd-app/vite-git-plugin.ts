@@ -145,6 +145,301 @@ function readBody(req: IncomingMessage): Promise<string> {
   })
 }
 
+// ── 독립 FBX+애니메이션 뷰어 HTML 생성 ──────────────────────────────────────
+function buildFbxViewerHtml(modelUrl: string, label: string, animApiUrl: string): string {
+  return `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>${label} - Animation Viewer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f1117;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:hidden;height:100vh;display:flex;flex-direction:column}
+#header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#1e293b;border-bottom:1px solid #334155;font-size:12px;min-height:36px}
+#header .title{color:#a5b4fc;font-weight:600}
+#header .badge{margin-left:auto;font-size:10px;color:#818cf8;background:rgba(99,102,241,0.15);padding:2px 8px;border-radius:10px}
+#main{display:flex;flex:1;min-height:0}
+#viewport{flex:1;position:relative}
+canvas{display:block;width:100%!important;height:100%!important}
+#sidebar{width:220px;background:rgba(15,17,23,0.95);border-left:1px solid #334155;display:flex;flex-direction:column;overflow:hidden}
+#sidebar .sh{padding:8px 10px;border-bottom:1px solid #334155;display:flex;align-items:center;gap:6px}
+#sidebar .sh span{color:#e2e8f0;font-size:12px;font-weight:600}
+#sidebar .sh .cnt{color:#64748b;font-size:10px;margin-left:auto}
+#cats{padding:4px 8px;display:flex;flex-wrap:wrap;gap:3px;border-bottom:1px solid #1e293b}
+#cats button{padding:1px 6px;border-radius:4px;font-size:10px;border:none;cursor:pointer;background:#1e293b;color:#94a3b8}
+#cats button.active{background:#6366f1;color:#fff}
+#animlist{flex:1;overflow-y:auto;padding:4px 0}
+#animlist button{width:100%;padding:5px 10px;background:transparent;border:none;border-left:3px solid transparent;cursor:pointer;text-align:left;display:flex;align-items:center;gap:6px;font-size:11px;color:#94a3b8;transition:background .15s}
+#animlist button:hover{background:rgba(255,255,255,0.05)}
+#animlist button.active{background:rgba(99,102,241,0.2);border-left-color:#6366f1;color:#e2e8f0;font-weight:600}
+#animlist button.loading{cursor:wait;opacity:.6}
+#controls{display:none;align-items:center;gap:8px;padding:6px 12px;background:#1e293b;border-top:1px solid #334155}
+#controls.visible{display:flex}
+#controls .name{color:#a5b4fc;font-size:11px;font-weight:600;min-width:60;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#pbar{flex:1;height:4px;background:#334155;border-radius:2px;position:relative;cursor:pointer}
+#pbar .fill{position:absolute;left:0;top:0;height:100%;background:#6366f1;border-radius:2px;transition:width .1s}
+#controls .time{color:#64748b;font-size:10px;min-width:45px;text-align:right}
+#controls select{background:#0f1117;border:1px solid #334155;border-radius:4px;color:#94a3b8;font-size:10px;padding:2px 4px;cursor:pointer}
+#controls button{background:none;border:none;cursor:pointer;color:#e2e8f0;font-size:16px;line-height:1;padding:2px}
+#overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(15,17,23,0.85)}
+#overlay.hidden{display:none}
+#overlay .spin{width:32px;height:32px;border:3px solid #334155;border-top-color:#6366f1;border-radius:50%;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+#overlay .msg{font-size:12px;color:#94a3b8}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head>
+<body>
+<div id="header">
+  <span style="font-size:14px">🎬</span>
+  <span class="title">${label}</span>
+  <span class="badge">드래그 회전 · 휠 줌</span>
+</div>
+<div id="main">
+  <div id="viewport">
+    <div id="overlay"><div class="spin"></div><div class="msg">모델 로딩 중...</div></div>
+  </div>
+  <div id="sidebar">
+    <div class="sh"><span>🎬 애니메이션</span><span class="cnt" id="animCount">-</span></div>
+    <div id="cats"></div>
+    <div id="animlist"></div>
+  </div>
+</div>
+<div id="controls">
+  <button id="btnPlay" title="재생/일시정지">⏸</button>
+  <span class="name" id="animName">-</span>
+  <div id="pbar"><div class="fill" id="pbarFill"></div></div>
+  <span class="time" id="animTime">0.0s / 0.0s</span>
+  <select id="speed"><option value="0.25">0.25x</option><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="1.5">1.5x</option><option value="2">2x</option></select>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import {FBXLoader} from 'three/addons/loaders/FBXLoader.js';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+
+const viewport = document.getElementById('viewport');
+const overlay = document.getElementById('overlay');
+const overlayMsg = overlay.querySelector('.msg');
+const animListEl = document.getElementById('animlist');
+const catsEl = document.getElementById('cats');
+const controlsEl = document.getElementById('controls');
+const btnPlay = document.getElementById('btnPlay');
+const animNameEl = document.getElementById('animName');
+const pbarFill = document.getElementById('pbarFill');
+const animTimeEl = document.getElementById('animTime');
+const speedEl = document.getElementById('speed');
+const animCountEl = document.getElementById('animCount');
+
+// Three.js setup
+const w = viewport.clientWidth, h = viewport.clientHeight;
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(w,h);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+viewport.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x111827);
+scene.fog = new THREE.Fog(0x111827, 800, 2000);
+
+const camera = new THREE.PerspectiveCamera(45, w/h, 0.1, 2000);
+camera.position.set(0,100,300);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+scene.add(new THREE.AmbientLight(0xffffff,1.5));
+const dir = new THREE.DirectionalLight(0xffffff,2);
+dir.position.set(300,600,300);
+scene.add(dir);
+scene.add(new THREE.DirectionalLight(0xaabbff,0.8).translateX(-200).translateY(200).translateZ(-200));
+scene.add(new THREE.HemisphereLight(0x8899ff,0x334155,0.6));
+scene.add(new THREE.GridHelper(600,30,0x334155,0x1e293b));
+
+let mixer = null, currentAction = null, currentClip = null;
+const clock = new THREE.Clock();
+const clipCache = new Map();
+let isPlaying = true;
+
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  if(mixer){
+    mixer.update(dt);
+    if(currentAction && currentClip){
+      const prog = currentAction.time / currentClip.duration;
+      pbarFill.style.width = (prog*100)+'%';
+      animTimeEl.textContent = currentAction.time.toFixed(1)+'s / '+currentClip.duration.toFixed(1)+'s';
+    }
+  }
+  controls.update();
+  renderer.render(scene,camera);
+}
+animate();
+
+new ResizeObserver(()=>{
+  const nw=viewport.clientWidth, nh=viewport.clientHeight;
+  camera.aspect=nw/nh; camera.updateProjectionMatrix();
+  renderer.setSize(nw,nh);
+}).observe(viewport);
+
+// Load model
+const loader = new FBXLoader();
+overlayMsg.textContent = '모델 로딩 중...';
+
+loader.load('${modelUrl}', fbx=>{
+  const box = new THREE.Box3().setFromObject(fbx);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const fov = camera.fov*(Math.PI/180);
+  const camDist = Math.abs(maxDim/2/Math.tan(fov/2))*1.6;
+
+  fbx.position.sub(center);
+  camera.position.set(0, maxDim*0.4, camDist);
+  camera.lookAt(0,0,0);
+  controls.target.set(0,0,0);
+  controls.maxDistance = camDist*5;
+  controls.update();
+
+  mixer = new THREE.AnimationMixer(fbx);
+
+  // embedded animations
+  if(fbx.animations.length>0){
+    const clip = fbx.animations[0];
+    clip.name = clip.name || 'embedded';
+    currentClip = clip;
+    currentAction = mixer.clipAction(clip);
+    currentAction.play();
+    controlsEl.classList.add('visible');
+    animNameEl.textContent = clip.name;
+  }
+
+  scene.add(fbx);
+  overlay.classList.add('hidden');
+
+  // Load animations
+  loadAnimations();
+}, undefined, err=>{
+  overlayMsg.textContent = '로드 실패: '+(err.message||err);
+});
+
+// animations
+let allAnims = [];
+let filterCat = null;
+
+async function loadAnimations(){
+  try{
+    const resp = await fetch('${animApiUrl}');
+    if(!resp.ok) return;
+    const data = await resp.json();
+    allAnims = data.animations || [];
+    animCountEl.textContent = allAnims.length+'개';
+
+    // categories
+    const cats = [...new Set(allAnims.map(a=>a.category||'other'))].sort();
+    if(cats.length>1){
+      const catMeta = {idle:'🧍',walk:'🚶',locomotion:'🏃',jump:'⬆️',combat:'⚔️',skill:'✨',hit:'💥',dodge:'🌀',reload:'🔄',interaction:'🤝',other:'🎬'};
+      let html = '<button class="active" data-cat="">ALL</button>';
+      cats.forEach(c=>{
+        html += '<button data-cat="'+c+'">'+(catMeta[c]||'🎬')+' '+c+'</button>';
+      });
+      catsEl.innerHTML = html;
+      catsEl.querySelectorAll('button').forEach(btn=>{
+        btn.addEventListener('click',()=>{
+          filterCat = btn.dataset.cat || null;
+          catsEl.querySelectorAll('button').forEach(b=>b.classList.remove('active'));
+          btn.classList.add('active');
+          renderAnimList();
+        });
+      });
+    }
+    renderAnimList();
+  }catch(e){console.warn('Anim load error',e)}
+}
+
+function renderAnimList(){
+  const list = filterCat ? allAnims.filter(a=>(a.category||'other')===filterCat) : allAnims;
+  const catMeta = {idle:'🧍',walk:'🚶',locomotion:'🏃',jump:'⬆️',combat:'⚔️',skill:'✨',hit:'💥',dodge:'🌀',reload:'🔄',interaction:'🤝',other:'🎬'};
+  animListEl.innerHTML = list.map(a=>{
+    const icon = catMeta[a.category||'other']||'🎬';
+    const isActive = currentClip && currentClip.name === a.name;
+    return '<button data-url="'+a.url+'" data-name="'+a.name+'" class="'+(isActive?'active':'')+'"><span>'+icon+'</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">'+a.name+'</span></button>';
+  }).join('');
+
+  animListEl.querySelectorAll('button').forEach(btn=>{
+    btn.addEventListener('click',()=>playAnim(btn.dataset.url, btn.dataset.name));
+  });
+}
+
+async function playAnim(url, name){
+  if(!mixer) return;
+  // check cache
+  let clip = clipCache.get(url);
+  if(!clip){
+    const btn = animListEl.querySelector('[data-url="'+CSS.escape(url)+'"]');
+    if(btn) btn.classList.add('loading');
+    try{
+      const animFbx = await new Promise((res,rej)=>new FBXLoader().load(url,res,undefined,rej));
+      if(animFbx.animations.length>0){
+        clip = animFbx.animations[0];
+        clip.name = name;
+        clipCache.set(url, clip);
+      }
+    }catch(e){console.warn('Anim load fail',name,e)}
+    if(btn) btn.classList.remove('loading');
+  }
+  if(!clip) return;
+
+  const newAction = mixer.clipAction(clip);
+  if(currentAction && currentAction !== newAction){
+    newAction.reset();
+    newAction.setEffectiveTimeScale(parseFloat(speedEl.value));
+    newAction.setEffectiveWeight(1);
+    newAction.play();
+    currentAction.crossFadeTo(newAction, 0.3, true);
+  } else {
+    newAction.reset();
+    newAction.setEffectiveTimeScale(parseFloat(speedEl.value));
+    newAction.play();
+  }
+  currentAction = newAction;
+  currentClip = clip;
+  isPlaying = true;
+  btnPlay.textContent = '⏸';
+  controlsEl.classList.add('visible');
+  animNameEl.textContent = name;
+
+  // highlight
+  animListEl.querySelectorAll('button').forEach(b=>b.classList.remove('active'));
+  const activeBtn = animListEl.querySelector('[data-name="'+CSS.escape(name)+'"]');
+  if(activeBtn) activeBtn.classList.add('active');
+}
+
+// Controls
+btnPlay.addEventListener('click',()=>{
+  if(!currentAction) return;
+  isPlaying = !isPlaying;
+  currentAction.paused = !isPlaying;
+  btnPlay.textContent = isPlaying ? '⏸' : '▶️';
+});
+
+speedEl.addEventListener('change',()=>{
+  if(currentAction) currentAction.setEffectiveTimeScale(parseFloat(speedEl.value));
+});
+
+document.getElementById('pbar').addEventListener('click',e=>{
+  if(!currentAction || !currentClip) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  currentAction.time = ((e.clientX-rect.left)/rect.width)*currentClip.duration;
+});
+</script>
+</body></html>`
+}
+
 const fileCache = new Map<string, { commit: string; count: number; files: { name: string; path: string; base64: string }[] }>()
 
 // ── Presence (접속자 수 실시간 추적) ─────────────────────────────────────────
@@ -227,7 +522,7 @@ function createGitMiddleware(options: GitPluginOptions) {
 
         proxyReq.write(rawBody)
         proxyReq.end()
-      } else {
+        } else {
         // ── 비스트리밍: fetch 사용 ──
         try {
           const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
@@ -245,9 +540,9 @@ function createGitMiddleware(options: GitPluginOptions) {
             'Access-Control-Allow-Origin': '*',
           })
           res.end(data)
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err)
-          sendJson(res, 500, { error: msg })
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        sendJson(res, 500, { error: msg })
         }
       }
       return
@@ -918,6 +1213,153 @@ function createGitMiddleware(options: GitPluginOptions) {
           return
         }
 
+        // ── /api/assets/animations : 모델 FBX 경로 → 관련 애니메이션 FBX 목록 ──
+        if (req.url.startsWith('/api/assets/animations')) {
+          const url2 = new URL(req.url, 'http://localhost')
+          const modelPath = url2.searchParams.get('model') || ''
+          const q = (url2.searchParams.get('q') || '').toLowerCase()
+
+          // 에셋 인덱스에서 애니메이션 FBX 검색
+          const idx = loadIdx()
+          const allAnimFiles = idx.filter(a =>
+            a.ext.toLowerCase() === 'fbx' &&
+            a.path.toLowerCase().includes('animation')
+          )
+
+          // ── 모델 경로 기반 관련 애니메이션 스마트 필터링 ──
+          // 일반적인 단어를 키워드에서 제외하여 정확한 매칭
+          const GENERIC_WORDS = new Set([
+            'character', 'player', 'gamecontents', 'animation', 'animations',
+            'assets', 'devassets(not packed)', 'devassets', '_3dmodel', '_animation',
+            'weapon', 'common', 'runtime', 'models', 'model', 'prefabs', 'prefab',
+            'resources', 'scripts', 'fx', 'players', 'shared assets', 'shared',
+            'devassets(not packed)', 'not packed', 'packed', 'plugins', 'storeplugins',
+            'client', 'project_aegis', 'not', 'starter assets', 'starter',
+            'thirdpersoncontroller', 'humanoid', 'demo', 'example', 'walkthrough',
+          ])
+
+          let animFiles = allAnimFiles
+
+          if (modelPath) {
+            const normModel = modelPath.replace(/\\/g, '/')
+            const pathParts = normModel.split('/')
+            const modelFileName = pathParts[pathParts.length - 1].replace(/\.fbx$/i, '').toLowerCase()
+
+            // 모델 파일명에서 의미 있는 키워드 추출
+            // 예: striker_low → ['striker'], musket_base_rig → ['musket']
+            // _low, _high, _mid, _base, _rig 등 서픽스 제거
+            const nameParts = modelFileName.split(/[_\-]/).filter(p =>
+              p.length > 2 && !['low', 'high', 'mid', 'base', 'rig', 'lod', 'mesh', 'fbx', 'model'].includes(p)
+            )
+
+            // 경로에서도 의미 있는 폴더명 추출 (일반 단어 제외)
+            const dirKeywords = pathParts.slice(0, -1)
+              .map(p => p.toLowerCase())
+              .filter(p => p.length > 2 && !GENERIC_WORDS.has(p) && !p.includes('.'))
+
+            // 모든 후보 키워드 합침 (모델 파일명 파트 + 디렉토리 키워드)
+            const allKeywords = [...new Set([...nameParts, ...dirKeywords])]
+
+            // 3단계 필터링: 엄격 → 보통 → 느슨
+            // 1단계: 모델 파일명의 핵심 키워드(첫 번째 파트)로 애니메이션 파일명 매칭
+            //   예: striker_low.fbx → 파일명에 "striker" 포함하는 애니메이션
+            const coreKeyword = nameParts[0] || ''
+            let matched: typeof allAnimFiles = []
+
+            if (coreKeyword) {
+              // 파일명에 핵심 키워드가 포함된 애니메이션 (가장 정확)
+              matched = allAnimFiles.filter(a => {
+                const an = a.name.toLowerCase()
+                return an.includes(coreKeyword)
+              })
+            }
+
+            // 2단계: 파일명 매칭 안 되면, 같은 폴더명의 애니메이션 폴더 매칭
+            //   예: Striker 폴더 → GameContents/Animation/Striker/ 하위
+            if (matched.length === 0 && coreKeyword) {
+              matched = allAnimFiles.filter(a => {
+                const ap = a.path.toLowerCase().replace(/\\/g, '/')
+                // 애니메이션 경로에서 폴더 이름이 키워드와 매칭
+                const animParts = ap.split('/')
+                return animParts.some(part => part === coreKeyword)
+              })
+            }
+
+            // 3단계: 그래도 없으면, 의미 있는 키워드 any로 폴더 매칭
+            if (matched.length === 0 && allKeywords.length > 0) {
+              matched = allAnimFiles.filter(a => {
+                const ap = a.path.toLowerCase().replace(/\\/g, '/')
+                const animParts = ap.split('/')
+                return allKeywords.some(kw => animParts.some(part => part === kw))
+              })
+            }
+
+            // 매칭된 게 있으면 사용, 없으면 빈 배열 (모든 애니메이션을 보여주지 않음)
+            animFiles = matched
+          }
+
+          // 추가 검색어 필터
+          if (q) {
+            animFiles = animFiles.filter(a =>
+              a.name.toLowerCase().includes(q) || a.path.toLowerCase().includes(q)
+            )
+          }
+
+          // 결과 반환 (이름, 경로, API URL)
+          const results = animFiles.slice(0, 200).map(a => ({
+            name: a.name.replace(/\.fbx$/i, ''),
+            path: a.path,
+            url: `/api/assets/file?path=${encodeURIComponent(a.path)}`,
+            // 애니메이션 카테고리 추출 (idle, walk, run, attack, death 등)
+            category: (() => {
+              const n = a.name.toLowerCase()
+              if (n.includes('idle')) return 'idle'
+              if (n.includes('walk')) return 'walk'
+              if (n.includes('jog') || n.includes('run')) return 'locomotion'
+              if (n.includes('jump')) return 'jump'
+              if (n.includes('attack') || n.includes('fire') || n.includes('aim')) return 'combat'
+              if (n.includes('skill')) return 'skill'
+              if (n.includes('death') || n.includes('knockdown') || n.includes('knockback')) return 'hit'
+              if (n.includes('rolling') || n.includes('dodge')) return 'dodge'
+              if (n.includes('reload')) return 'reload'
+              if (n.includes('interact') || n.includes('pickup') || n.includes('potion')) return 'interaction'
+              return 'other'
+            })()
+          }))
+
+          sendJson(res, 200, {
+            model: modelPath,
+            animations: results,
+            total: animFiles.length,
+            categories: [...new Set(results.map(r => r.category))].sort()
+          })
+          return
+        }
+
+        // ── /api/assets/fbx-viewer : 독립 FBX+애니메이션 뷰어 HTML 페이지 ──
+        if (req.url.startsWith('/api/assets/fbx-viewer')) {
+          const url2 = new URL(req.url, 'http://localhost')
+          const modelParam = url2.searchParams.get('model') || ''
+          const labelParam = url2.searchParams.get('label') || modelParam.split('/').pop()?.replace(/\.fbx$/i, '') || 'FBX'
+          const catParam = url2.searchParams.get('categories') || '' // comma-separated
+
+          // 모델 URL
+          const modelUrl = `/api/assets/file?path=${encodeURIComponent(modelParam)}`
+
+          // 애니메이션 API URL
+          let animApiUrl = `/api/assets/animations?model=${encodeURIComponent(modelParam)}`
+          if (catParam) animApiUrl += `&categories=${encodeURIComponent(catParam)}`
+
+          const viewerHtml = buildFbxViewerHtml(modelUrl, labelParam, animApiUrl)
+          res.writeHead(200, {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'no-cache',
+          })
+          res.end(viewerHtml)
+          return
+        }
+
         // ── /api/assets/materials : FBX 경로 → 머터리얼/텍스처 맵 ─────────────
         if (req.url.startsWith('/api/assets/materials')) {
           const url2        = new URL(req.url, 'http://localhost')
@@ -1347,9 +1789,9 @@ function createGitMiddleware(options: GitPluginOptions) {
           const tfEntry = Object.entries(tfMap).find(([, t]) => !t.stripped && t.goId === mf.goId)
           if (tfEntry) {
             const world = getWorldTf(tfEntry[0])  // 월드 좌표로 변환
-            directObjects.push({
-              name: goName,
-              meshGuid: mf.meshGuid,
+          directObjects.push({
+            name: goName,
+            meshGuid: mf.meshGuid,
               pos: world.pos, rot: world.rot, scale: world.scale,
             })
           } else {
@@ -1511,15 +1953,15 @@ function createGitMiddleware(options: GitPluginOptions) {
           const fbxRel = resolvePrefabFbx(p.sourcePrefabGuid)
           if (fbxRel) {
             resolvedIds.add(p.id)
-            sceneObjects.push({
-              id: p.id,
-              name: p.prefabName,
+          sceneObjects.push({
+            id: p.id,
+            name: p.prefabName,
               type: 'fbx',
-              fbxPath: fbxRel,
-              fbxUrl: `/api/assets/file?path=${encodeURIComponent(fbxRel)}`,
-              pos: p.pos, rot: p.rot, scale: p.scale,
-            })
-          }
+            fbxPath: fbxRel,
+            fbxUrl: `/api/assets/file?path=${encodeURIComponent(fbxRel)}`,
+            pos: p.pos, rot: p.rot, scale: p.scale,
+          })
+        }
         }
         const fbxResolved = sceneObjects.length
 
@@ -2784,6 +3226,30 @@ function getOrCreateSession(id?: string): ChatSession {
 }
 
 // ── 서버사이드 xlsx 데이터 로딩 ──
+
+/** 첫 5행 중 컬럼 헤더로 가장 적합한 행 인덱스를 반환 (클라이언트 findHeaderRow 와 동일 로직) */
+function serverFindHeaderRow(raw: unknown[][]): number {
+  const scanLimit = Math.min(5, raw.length)
+  let bestIdx = 0
+  let bestScore = -1
+  for (let r = 0; r < scanLimit; r++) {
+    const row = (raw[r] as unknown[]) ?? []
+    const cells = row.map(v => String(v ?? '').trim().toLowerCase()).filter(Boolean)
+    if (cells.length === 0) continue
+    // DataGroup 행 건너뛰기 (Row 0은 보통 ["DataGroup","테이블명",null,...])
+    if (cells[0] === 'datagroup') continue
+    // 비숫자 문자열이 많은 행이 헤더일 가능성 높음
+    const stringCells = cells.filter(c => isNaN(Number(c)))
+    if (stringCells.length > bestScore) {
+      bestScore = stringCells.length
+      bestIdx = r
+    }
+  }
+  return bestIdx
+}
+
+const META_SHEET_NAMES = new Set(['define', 'enum', 'tablegroup', 'ref', 'tabledefine', 'sheet1'])
+
 function loadServerData(gitRepoDir: string) {
   if (_serverDataLoaded) return
   console.log('[ChatAPI] 서버사이드 데이터 로딩 시작...')
@@ -2798,40 +3264,66 @@ function loadServerData(gitRepoDir: string) {
       try {
         const buf = readFileSync(fp)
         const wb = XLSX.read(buf, { type: 'buffer' })
-        const fileName = fp.split(/[\\/]/).pop()!.replace(/\.xlsx$/i, '').replace(/^DataDefine_/i, '')
 
         for (const sheetName of wb.SheetNames) {
-          if (/^(Define|Enum|TableGroup|Ref)$/i.test(sheetName)) continue
+          // 메타 시트 건너뛰기 (Define, Enum, TableGroup, Ref, TableDefine, #접두사)
+          if (META_SHEET_NAMES.has(sheetName.toLowerCase())) continue
+          if (sheetName.includes('#')) continue
+
           const ws = wb.Sheets[sheetName]
           if (!ws) continue
-          const jsonRows = XLSX.utils.sheet_to_json(ws, { defval: '' }) as Record<string, unknown>[]
-          if (jsonRows.length === 0) continue
 
-          const headers = Object.keys(jsonRows[0]).map(h => String(h))
-          const rows = jsonRows.map((r: Record<string, unknown>) => {
-            const row: Record<string, string> = {}
-            for (const h of headers) row[h] = r[h] != null ? String(r[h]) : ''
-            return row
-          })
+          // ── header: 1 모드로 2D 배열 읽기 (클라이언트와 동일) ──
+          const raw = XLSX.utils.sheet_to_json(ws, { header: 1 }) as unknown[][]
+          if (raw.length < 2) continue
 
-          // 테이블명: 시트 1개짜리 파일은 파일명, 여러 시트는 '파일명_시트명'
-          const tableName = wb.SheetNames.length === 1 || sheetName === 'Sheet1'
-            ? fileName
-            : `${fileName}_${sheetName}`
+          // 헤더 행 자동 탐지 (보통 Row1이 실제 컬럼명)
+          const headerIdx = serverFindHeaderRow(raw)
+          const headerRow = (raw[headerIdx] as unknown[]).map(h => String(h ?? '').trim())
+          const validHeaders = headerRow.filter(Boolean)
+          if (validHeaders.length === 0) continue
 
-          _serverTableData.set(tableName.toLowerCase(), { headers, rows })
-          tableList.push({ name: tableName, columns: headers, rowCount: rows.length })
+          // 데이터 행 파싱
+          const rows: Record<string, string>[] = []
+          for (let i = headerIdx + 1; i < raw.length; i++) {
+            const rowArr = raw[i] as unknown[]
+            if (!rowArr || rowArr.every(v => v == null || String(v).trim() === '')) continue
+            const record: Record<string, string> = {}
+            for (let j = 0; j < headerRow.length; j++) {
+              if (!headerRow[j]) continue
+              record[headerRow[j]] = rowArr[j] != null ? String(rowArr[j]).trim() : ''
+            }
+            rows.push(record)
+          }
+          if (rows.length === 0) continue
+
+          // 테이블명: 시트명 그대로 사용 (웹 UI와 동일)
+          // 동일 시트명이 여러 파일에 있을 경우 행 수 더 많은 쪽 우선
+          const tableName = sheetName
+          const lowerKey = tableName.toLowerCase()
+          const existing = _serverTableData.get(lowerKey)
+          if (!existing || rows.length > existing.rows.length) {
+            _serverTableData.set(lowerKey, { headers: validHeaders, rows })
+            // 원본 대소문자 시트명 기록 (나중에 tableList 빌드용)
+            tableList.push({ name: tableName, columns: validHeaders, rowCount: rows.length })
+          }
         }
       } catch (e) {
         console.warn(`[ChatAPI] xlsx 파싱 실패: ${fp}`, e)
       }
     }
 
-    _serverTableList = tableList
+    // _serverTableData 기반으로 중복 없는 테이블 목록 빌드
+    _serverTableList = []
+    for (const [key, { headers, rows }] of _serverTableData) {
+      // 원본 대소문자 이름 복원 (마지막에 등록된 시트명)
+      const originalName = tableList.find(t => t.name.toLowerCase() === key)?.name ?? key
+      _serverTableList.push({ name: originalName, columns: headers, rowCount: rows.length })
+    }
 
-    // 스키마 설명 텍스트 빌드
+    // 스키마 설명 텍스트 빌드 (_serverTableList 사용 — 중복 제거됨)
     const lines: string[] = ['사용 가능한 게임 데이터 테이블:']
-    for (const t of tableList) {
+    for (const t of _serverTableList) {
       lines.push(`\n${t.name} (${t.rowCount}행)`)
       lines.push(`  컬럼: ${t.columns.join(', ')}`)
       const tableEntry = _serverTableData.get(t.name.toLowerCase())
@@ -2843,13 +3335,31 @@ function loadServerData(gitRepoDir: string) {
     }
     _serverSchemaDesc = lines.join('\n')
     _serverDataLoaded = true
-    console.log(`[ChatAPI] 데이터 로딩 완료: ${tableList.length}개 테이블, ${tableList.reduce((s, t) => s + t.rowCount, 0)}행 (${Date.now() - t0}ms)`)
+    console.log(`[ChatAPI] 데이터 로딩 완료: ${_serverTableList.length}개 테이블, ${_serverTableList.reduce((s, t) => s + t.rowCount, 0)}행 (${Date.now() - t0}ms)`)
   } catch (e) {
     console.error('[ChatAPI] 데이터 로딩 실패:', e)
   }
 }
 
 // ── 서버사이드 SQL 실행 (alasql) ──
+// 예약어 테이블명 remap 캐시
+const _serverTableRemap = new Map<string, string>() // 원본명 → 내부명 (__u_xxx)
+
+function serverRemapReservedNames(sql: string): string {
+  if (_serverTableRemap.size === 0) return sql
+  let result = sql
+  for (const [original, internal] of _serverTableRemap) {
+    const esc = original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // FROM/JOIN 뒤의 bare 식별자만 치환 (backtick/quote 포함)
+    const pattern = '(\\bFROM|\\bJOIN|\\bINTO|\\bUPDATE|\\bTABLE)\\s+[`"]?' + esc + '[`"]?(?=\\s|$|\\)|,|;)'
+    result = result.replace(
+      new RegExp(pattern, 'gi'),
+      (_match, prefix) => `${prefix} ${internal}`
+    )
+  }
+  return result
+}
+
 function serverExecuteSQL(sql: string): { columns: string[]; rows: Record<string, unknown>[]; rowCount: number; error?: string } {
   try {
     const alasql = _require('alasql')
@@ -2862,9 +3372,19 @@ function serverExecuteSQL(sql: string): { columns: string[]; rows: Record<string
       })
       // key는 이미 소문자. _serverTableList에서 원본명을 찾음
       const original = _serverTableList.find(t => t.name.toLowerCase() === key)?.name ?? key
-      for (const tName of new Set([key, original, original.toUpperCase()])) {
-        if (!alasql.tables[tName]) alasql(`CREATE TABLE IF NOT EXISTS \`${tName}\``)
-        alasql.tables[tName].data = normalizedRows
+
+      if (SERVER_RESERVED_TABLE_NAMES.has(original.toUpperCase())) {
+        // 예약어 테이블: 안전한 내부명으로 등록
+        const internal = serverSafeInternalName(original)
+        _serverTableRemap.set(original, internal)
+        if (!alasql.tables[internal]) alasql(`CREATE TABLE IF NOT EXISTS \`${internal}\``)
+        alasql.tables[internal].data = normalizedRows
+      } else {
+        // 일반 테이블: 소문자·원본·대문자 세 변형 모두 등록
+        for (const tName of new Set([key, original, original.toUpperCase()])) {
+          if (!alasql.tables[tName]) alasql(`CREATE TABLE IF NOT EXISTS \`${tName}\``)
+          alasql.tables[tName].data = normalizedRows
+        }
       }
     }
     // 주석 제거
@@ -2873,12 +3393,25 @@ function serverExecuteSQL(sql: string): { columns: string[]; rows: Record<string
     // 식별자 정규화 (" → `, 따옴표 없는 #컬럼 → `#컬럼`)
     let processed = cleaned.replace(/"([^"]+)"/g, '`$1`')
     processed = processed.replace(/(?<!`)#(\w+)/g, '`#$1`')
+    // 예약어 테이블명 치환
+    processed = serverRemapReservedNames(processed)
     const result = alasql(processed) as Record<string, unknown>[]
     if (!Array.isArray(result)) return { columns: [], rows: [], rowCount: 0, error: 'SELECT 문만 지원합니다.' }
     const columns = result.length > 0 ? Object.keys(result[0]) : []
     return { columns, rows: result, rowCount: result.length }
   } catch (e: unknown) {
-    return { columns: [], rows: [], rowCount: 0, error: e instanceof Error ? e.message : String(e) }
+    // 예약어 테이블 관련 오류 힌트 제공
+    const errMsg = e instanceof Error ? e.message : String(e)
+    if (/Table.*does not exist/i.test(errMsg)) {
+      const match = errMsg.match(/Table "?(\w+)"? does not exist/i)
+      if (match) {
+        const bad = match[1]
+        if (SERVER_RESERVED_TABLE_NAMES.has(bad.toUpperCase())) {
+          return { columns: [], rows: [], rowCount: 0, error: `"${bad}"은 alasql 예약어입니다. FROM __u_${bad.toLowerCase()} 으로 쿼리하세요.` }
+        }
+      }
+    }
+    return { columns: [], rows: [], rowCount: 0, error: errMsg }
   }
 }
 
@@ -3007,7 +3540,7 @@ function serverStreamClaude(
   })
 }
 
-// ── 서버사이드 Tool 정의 (API용 — UI 전용 툴 제외) ──
+// ── 서버사이드 Tool 정의 (API용 — 전체 도구 포함) ──
 const API_TOOLS = [
   {
     name: 'query_game_data',
@@ -3015,7 +3548,7 @@ const API_TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        sql: { type: 'string', description: '실행할 SQL SELECT 쿼리. 모든 값은 문자열입니다.' },
+        sql: { type: 'string', description: '실행할 SQL SELECT 쿼리. 모든 값은 문자열입니다. #으로 시작하는 컬럼명은 백틱으로 감싸세요.' },
         reason: { type: 'string', description: '이 쿼리를 실행하는 이유.' },
       },
       required: ['sql'],
@@ -3034,13 +3567,14 @@ const API_TOOLS = [
   },
   {
     name: 'query_git_history',
-    description: 'Git 히스토리를 검색합니다 (변경 이력, 커밋 로그).',
+    description: 'Git 히스토리를 검색합니다 (변경 이력, 커밋 로그). repo="data"(aegisdata, 기본값), "aegis"(코드 저장소).',
     input_schema: {
       type: 'object',
       properties: {
         keyword: { type: 'string', description: '검색 키워드 (커밋 메시지, 파일명 등)' },
         count: { type: 'number', description: '조회할 커밋 수 (기본 10)' },
         file_path: { type: 'string', description: '특정 파일 경로로 필터링' },
+        repo: { type: 'string', enum: ['data', 'aegis'], description: '저장소: "data"(기본), "aegis"(코드)' },
       },
       required: [],
     },
@@ -3058,6 +3592,144 @@ const API_TOOLS = [
       required: ['title', 'html'],
     },
   },
+  // ── 코드 검색/읽기 ──
+  {
+    name: 'search_code',
+    description: '게임 클라이언트 C# 소스코드를 검색합니다. type="class"로 클래스명 검색, type="method"로 메서드 검색, type="content"로 파일 내용 전문 검색.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '검색 키워드 (클래스명, 메서드명, 변수명 등)' },
+        type: { type: 'string', enum: ['class', 'method', 'file', 'content', ''], description: '검색 타입' },
+        scope: { type: 'string', description: '검색 범위 (폴더/파일 제한)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'read_code_file',
+    description: '특정 C# 소스 파일의 전체 내용을 읽습니다. search_code로 경로를 찾은 후 호출하세요.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '파일 상대 경로 (예: "Combat/DamageSystem.cs")' },
+      },
+      required: ['path'],
+    },
+  },
+  // ── Jira ──
+  {
+    name: 'search_jira',
+    description: 'Jira 이슈를 JQL로 검색합니다. 버그, 작업 목록, 스프린트 이슈 조회에 사용.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        jql: { type: 'string', description: 'JQL 쿼리 문자열. 예: "project = AEGIS AND status = \\"In Progress\\""' },
+        maxResults: { type: 'number', description: '최대 반환 건수 (기본 20, 최대 50)' },
+      },
+      required: ['jql'],
+    },
+  },
+  {
+    name: 'get_jira_issue',
+    description: 'Jira 이슈 키(예: AEGIS-1234)로 이슈 상세 정보를 조회합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        issueKey: { type: 'string', description: 'Jira 이슈 키. 예: "AEGIS-1234"' },
+      },
+      required: ['issueKey'],
+    },
+  },
+  // ── Confluence ──
+  {
+    name: 'search_confluence',
+    description: 'Confluence 페이지를 CQL로 검색합니다. 기획 문서, 스펙, 회의록 등.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        cql: { type: 'string', description: 'CQL 쿼리. 예: "text ~ \\"스킬 시스템\\" AND type = page"' },
+        limit: { type: 'number', description: '최대 반환 건수 (기본 10, 최대 20)' },
+      },
+      required: ['cql'],
+    },
+  },
+  {
+    name: 'get_confluence_page',
+    description: 'Confluence 페이지 ID로 페이지 전체 내용을 조회합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pageId: { type: 'string', description: 'Confluence 페이지 ID (숫자 문자열)' },
+      },
+      required: ['pageId'],
+    },
+  },
+  // ── 에셋 검색 ──
+  {
+    name: 'search_assets',
+    description: 'Unity 프로젝트 에셋 파일을 검색합니다 (FBX 3D 모델, PNG 텍스처, WAV/MP3 사운드 등).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '검색 키워드 (파일명 일부). 예: "striker", "skill_fire"' },
+        ext: { type: 'string', description: '확장자 필터. 예: "fbx", "png", "wav". 비워두면 전체 검색.' },
+      },
+      required: ['query'],
+    },
+  },
+  // ── 애니메이션 프리뷰 ──
+  {
+    name: 'preview_fbx_animation',
+    description: 'FBX 캐릭터 모델에 애니메이션 FBX를 적용하여 3D 뷰어에서 실시간 재생합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        model_path: { type: 'string', description: 'FBX 모델 파일 경로. 예: "DevAssets(not packed)/_3DModel/musket/base_rig.fbx"' },
+        animation_paths: { type: 'array', items: { type: 'string' }, description: '재생할 애니메이션 FBX 파일 경로 배열 (비워두면 자동 검색)' },
+        categories: { type: 'array', items: { type: 'string' }, description: '필요한 카테고리만 필터. 예: ["idle","combat"]. 값: idle, walk, locomotion, jump, combat, skill, hit, dodge, reload, interaction' },
+        label: { type: 'string', description: '뷰어에 표시할 이름' },
+      },
+      required: ['model_path'],
+    },
+  },
+  // ── 이미지 검색 ──
+  {
+    name: 'find_resource_image',
+    description: '게임 리소스 이미지(PNG)를 이름으로 검색합니다. 아이콘, UI 이미지, 스프라이트 등.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '검색할 이미지 이름 또는 키워드' },
+      },
+      required: ['query'],
+    },
+  },
+  // ── 캐릭터 프로파일 ──
+  {
+    name: 'build_character_profile',
+    description: '캐릭터 이름으로 해당 캐릭터의 모든 연관 데이터를 FK 관계를 따라 자동 수집합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        character_name: { type: 'string', description: '캐릭터 이름 (한글/영문, 부분 일치)' },
+        character_id: { type: 'string', description: 'PK ID로 직접 검색' },
+      },
+      required: [],
+    },
+  },
+  // ── 가이드 ──
+  {
+    name: 'read_guide',
+    description: '코드/DB 가이드를 읽습니다. 빈 name("")이면 전체 목록 반환. DB: "_DB_OVERVIEW", "_DB_Character" 등. 코드: "_OVERVIEW", "_Skill" 등.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '가이드 이름. 빈 문자열이면 전체 목록.' },
+      },
+      required: [],
+    },
+  },
 ]
 
 // ── 서버사이드 Tool 실행 ──
@@ -3072,23 +3744,61 @@ function serverExecuteTool(
       const qr = serverExecuteSQL(sql)
       if (qr.error) return { result: `SQL 오류: ${qr.error}` }
       if (qr.rowCount === 0) return { result: '결과 없음 (0행)' }
-      const data = { rowCount: qr.rowCount, columns: qr.columns, rows: qr.rows.slice(0, 100) }
-      return { result: JSON.stringify(data), data }
+      const displayRows = qr.rows.slice(0, 50)
+      // 사람이 읽기 쉬운 마크다운 테이블 형식
+      let resultText = `${qr.rowCount}행 조회됨 (표시: ${displayRows.length}행)\n`
+      resultText += `컬럼: ${qr.columns.join(', ')}\n\n`
+      // 마크다운 테이블
+      resultText += `| ${qr.columns.join(' | ')} |\n`
+      resultText += `| ${qr.columns.map(() => '---').join(' | ')} |\n`
+      for (const row of displayRows) {
+        resultText += `| ${qr.columns.map(c => String(row[c] ?? '').replace(/\|/g, '\\|').slice(0, 50)).join(' | ')} |\n`
+      }
+      if (qr.rowCount > 50) resultText += `\n... 외 ${qr.rowCount - 50}행 (LIMIT으로 더 조회 가능)`
+      const data = { rowCount: qr.rowCount, columns: qr.columns, rows: displayRows }
+      return { result: resultText, data }
     }
     case 'show_table_schema': {
-      const tableName = String(input.table_name ?? '').toLowerCase()
-      const tableEntry = _serverTableData.get(tableName)
-      const listEntry = _serverTableList.find(t => t.name.toLowerCase() === tableName)
-      if (!tableEntry || !listEntry) return { result: `테이블 "${input.table_name}" 을(를) 찾을 수 없습니다. 사용 가능: ${_serverTableList.map(t => t.name).join(', ')}` }
-      const info = { name: listEntry.name, columns: listEntry.columns, rowCount: listEntry.rowCount, sample: tableEntry.rows.slice(0, 2) }
-      return { result: JSON.stringify(info), data: info }
+      const rawName = String(input.table_name ?? '')
+      const lowerName = rawName.toLowerCase()
+
+      // 1) 정확 매치
+      let listEntry = _serverTableList.find(t => t.name.toLowerCase() === lowerName)
+      // 2) 부분 매치 (앞뒤 포함)
+      if (!listEntry) listEntry = _serverTableList.find(t => t.name.toLowerCase().includes(lowerName) || lowerName.includes(t.name.toLowerCase()))
+      // 3) 여러 후보 중 가장 짧은 이름 우선 (가장 기본 테이블)
+      if (!listEntry) {
+        const candidates = _serverTableList.filter(t => t.name.toLowerCase().startsWith(lowerName) || t.name.toLowerCase().endsWith(lowerName))
+        if (candidates.length > 0) listEntry = candidates.sort((a, b) => a.name.length - b.name.length)[0]
+      }
+
+      if (!listEntry) {
+        const available = _serverTableList.map(t => t.name).join(', ')
+        return { result: `테이블 "${rawName}" 을(를) 찾을 수 없습니다. 사용 가능: ${available}` }
+      }
+
+      const tableEntry = _serverTableData.get(listEntry.name.toLowerCase())
+      if (!tableEntry) return { result: `테이블 "${rawName}" 데이터를 찾을 수 없습니다.` }
+
+      // 사람이 읽기 쉬운 형식
+      let resultText = `테이블: ${listEntry.name} (${listEntry.rowCount}행)\n`
+      resultText += `컬럼 (${listEntry.columns.length}개): ${listEntry.columns.join(', ')}\n\n`
+      if (tableEntry.rows.length > 0) {
+        resultText += '샘플 데이터:\n'
+        for (const row of tableEntry.rows.slice(0, 3)) {
+          resultText += Object.entries(row).map(([k, v]) => `  ${k}: ${v}`).join('\n') + '\n---\n'
+        }
+      }
+      const data = { name: listEntry.name, columns: listEntry.columns, rowCount: listEntry.rowCount, sample: tableEntry.rows.slice(0, 3) }
+      return { result: resultText, data }
     }
     case 'query_git_history': {
       const keyword = String(input.keyword ?? '')
       const count = Number(input.count ?? 10)
       const filePath = input.file_path ? String(input.file_path) : undefined
+      const repo = String(input.repo ?? 'data')
       try {
-        const dir = options.localDir
+        const dir = repo === 'aegis' && options.repo2LocalDir ? options.repo2LocalDir : options.localDir
         if (!existsSync(join(dir, '.git'))) return { result: 'Git 저장소가 없습니다.' }
         let cmd = `git log --oneline -n ${count}`
         if (keyword) cmd += ` --grep="${keyword.replace(/"/g, '\\"')}"`
@@ -3098,7 +3808,7 @@ function serverExecuteTool(
           const [hash, ...rest] = line.split(' ')
           return { hash, message: rest.join(' ') }
         })
-        return { result: JSON.stringify({ count: commits.length, commits }), data: commits }
+        return { result: JSON.stringify({ repo, count: commits.length, commits }), data: commits }
       } catch (e) {
         return { result: `Git 조회 오류: ${e instanceof Error ? e.message : String(e)}` }
       }
@@ -3108,22 +3818,641 @@ function serverExecuteTool(
       const title = String(input.title ?? '')
       return { result: `아티팩트 생성 완료: "${title}" (${html.length}자)`, data: { title, html, charCount: html.length } }
     }
+
+    // ── search_code ──
+    case 'search_code': {
+      const query = String(input.query ?? '').toLowerCase()
+      const searchType = String(input.type ?? '')
+      const scope = input.scope ? String(input.scope).toLowerCase() : ''
+      if (!query) return { result: '검색어가 필요합니다.' }
+
+      try {
+        if (searchType === 'content') {
+          // 전문 검색 (grep)
+          const all: { name: string; path: string; relPath: string }[] = []
+          walkCode(CODE_DIR, '', all)
+          const filtered = scope ? all.filter(f => f.relPath.toLowerCase().includes(scope)) : all
+          const hits: { path: string; matches: { line: number; lineContent: string }[] }[] = []
+          for (const f of filtered) {
+            if (hits.length >= 20) break
+            try {
+              let raw = readFileSync(f.path, 'utf-8')
+              if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
+              const lines = raw.split('\n')
+              const matches: { line: number; lineContent: string }[] = []
+              for (let i = 0; i < lines.length; i++) {
+                if (lines[i].toLowerCase().includes(query)) {
+                  matches.push({ line: i + 1, lineContent: lines[i].trim().slice(0, 200) })
+                  if (matches.length >= 5) break
+                }
+              }
+              if (matches.length > 0) hits.push({ path: f.relPath, matches })
+            } catch { /* skip */ }
+          }
+          const resultText = hits.length > 0
+            ? `"${query}" 전문검색 → ${hits.length}개 파일\n` + hits.slice(0, 10).map(r =>
+                `  📄 ${r.path}\n` + r.matches.slice(0, 3).map(m => `    L${m.line}: ${m.lineContent}`).join('\n')
+              ).join('\n')
+            : `"${query}" 코드에서 찾을 수 없음`
+          return { result: resultText, data: { type: 'content', totalFiles: hits.length, results: hits } }
+        } else {
+          // 인덱스 검색
+          const index = loadCodeIndex()
+          let results = index
+          if (query) {
+            results = index.filter(e => {
+              if (searchType === 'class')  return e.classes.some(c => c.toLowerCase().includes(query))
+              if (searchType === 'method') return e.methods.some(m => m.toLowerCase().includes(query))
+              if (searchType === 'file')   return e.name.toLowerCase().includes(query) || e.path.toLowerCase().includes(query)
+              return e.name.toLowerCase().includes(query) || e.path.toLowerCase().includes(query) ||
+                e.classes.some(c => c.toLowerCase().includes(query)) ||
+                e.namespaces.some(n => n.toLowerCase().includes(query)) ||
+                e.methods.some(m => m.toLowerCase().includes(query))
+            })
+          }
+          // 인덱스에서 못 찾으면 전문 검색 폴백
+          if (results.length === 0 && query) {
+            const all: { name: string; path: string; relPath: string }[] = []
+            walkCode(CODE_DIR, '', all)
+            const contentHits: { path: string; matches: { line: number; lineContent: string }[] }[] = []
+            for (const f of all) {
+              if (contentHits.length >= 20) break
+              try {
+                let raw = readFileSync(f.path, 'utf-8')
+                if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
+                const lines = raw.split('\n')
+                const matches: { line: number; lineContent: string }[] = []
+                for (let i = 0; i < lines.length; i++) {
+                  if (lines[i].toLowerCase().includes(query)) {
+                    matches.push({ line: i + 1, lineContent: lines[i].trim().slice(0, 200) })
+                    if (matches.length >= 5) break
+                  }
+                }
+                if (matches.length > 0) contentHits.push({ path: f.relPath, matches })
+              } catch { /* skip */ }
+            }
+            if (contentHits.length > 0) {
+              return {
+                result: `"${query}" 인덱스에 없어 전문검색 → ${contentHits.length}개 파일\n` +
+                  contentHits.slice(0, 5).map(r => `  📄 ${r.path}\n` + r.matches.slice(0, 3).map(m => `    L${m.line}: ${m.lineContent}`).join('\n')).join('\n'),
+                data: { type: 'content_fallback', totalFiles: contentHits.length, results: contentHits }
+              }
+            }
+            return { result: `"${query}" 코드에서 찾을 수 없음 (전체 ${index.length}개 파일)` }
+          }
+          const resultText = results.length > 0
+            ? `"${query}" 검색 결과 ${results.length}개:\n` + results.slice(0, 15).map(r =>
+                `  📄 ${r.path}  클래스: ${r.classes.join(', ') || '없음'} | 네임스페이스: ${r.namespaces.join(', ') || '없음'}`
+              ).join('\n')
+            : `"${query}" 코드에서 찾을 수 없음`
+          return {
+            result: resultText,
+            data: { type: 'index', total: index.length, matched: results.length, results: results.slice(0, 30).map(e => ({ path: e.path, name: e.name, classes: e.classes, namespaces: e.namespaces, methods: e.methods.slice(0, 10) })) }
+          }
+        }
+      } catch (e) {
+        return { result: `코드 검색 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
+    // ── read_code_file ──
+    case 'read_code_file': {
+      const relPath = String(input.path ?? '').replace(/\.\./g, '').replace(/\\/g, '/')
+      if (!relPath) return { result: '오류: path 파라미터 필요' }
+      try {
+        let resolvedPath = join(CODE_DIR, relPath.replace(/\//g, '\\'))
+        let resolvedRel = relPath
+        if (!resolvedPath.startsWith(CODE_DIR) || !existsSync(resolvedPath)) {
+          const fileName = relPath.split('/').pop()!.toLowerCase()
+          const all: { name: string; path: string; relPath: string }[] = []
+          walkCode(CODE_DIR, '', all)
+          const match = all.find(f => f.relPath.toLowerCase().endsWith(relPath.toLowerCase())) ??
+            all.find(f => f.name.toLowerCase() === fileName) ??
+            all.find(f => f.name.toLowerCase().includes(fileName.replace('.cs', '')))
+          if (!match) return { result: `파일 없음: ${relPath}` }
+          resolvedPath = match.path
+          resolvedRel = match.relPath
+        }
+        const stat = statSync(resolvedPath)
+        const MAX_SIZE = 100 * 1024
+        let raw = readFileSync(resolvedPath, 'utf-8')
+        if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
+        let truncated = false
+        if (raw.length > MAX_SIZE) { raw = raw.slice(0, MAX_SIZE); truncated = true }
+        return {
+          result: `파일: ${resolvedRel} (${(stat.size / 1024).toFixed(1)}KB${truncated ? ', 잘림' : ''})\n\n${raw}`,
+          data: { path: resolvedRel, size: stat.size, truncated, content: raw }
+        }
+      } catch (e) {
+        return { result: `파일 읽기 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
+    // ── search_assets ──
+    case 'search_assets': {
+      const query = String(input.query ?? '').toLowerCase()
+      const ext = String(input.ext ?? '').toLowerCase().replace(/^\./, '')
+      if (!query) return { result: '검색어가 필요합니다.' }
+      try {
+        const ASSETS_DIR = join(process.cwd(), '..', '..', 'assets')
+        const idxPath = join(ASSETS_DIR, '.asset_index.json')
+        if (!existsSync(idxPath)) return { result: '에셋 인덱스 없음. sync_assets.ps1 을 먼저 실행하세요.' }
+        let rawIdx = readFileSync(idxPath, 'utf-8')
+        if (rawIdx.charCodeAt(0) === 0xFEFF) rawIdx = rawIdx.slice(1)
+        const idx = JSON.parse(rawIdx) as { path: string; name: string; ext: string; sizeKB: number }[]
+        let filtered = idx
+        if (ext) filtered = filtered.filter(a => a.ext.toLowerCase() === ext)
+        filtered = filtered.filter(a => a.name.toLowerCase().includes(query) || a.path.toLowerCase().includes(query))
+        const results = filtered.slice(0, 200)
+        const resultText = `에셋 검색: "${query}"${ext ? ` [.${ext}]` : ''} → ${filtered.length}개\n` +
+          (results.length > 0 ? results.slice(0, 30).map(f => `  ${f.path}  (${f.sizeKB} KB)`).join('\n') : '결과 없음') +
+          (filtered.length > 30 ? `\n… 상위 30개만 표시 (전체 ${filtered.length}개)` : '')
+        return { result: resultText, data: { total: filtered.length, results } }
+      } catch (e) {
+        return { result: `에셋 검색 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
+    // ── preview_fbx_animation ──
+    case 'preview_fbx_animation': {
+      const modelPathVal = String(input.model_path ?? '')
+      const label = String(input.label ?? modelPathVal.split('/').pop()?.replace(/\.fbx$/i, '') ?? 'FBX Animation')
+      const animPaths = Array.isArray(input.animation_paths) ? (input.animation_paths as string[]) : []
+      const catFilter = Array.isArray(input.categories) ? (input.categories as string[]).map((c: string) => c.toLowerCase()) : []
+
+      if (!modelPathVal) return { result: 'model_path 파라미터가 필요합니다.' }
+      try {
+        const modelUrl = `/api/assets/file?path=${encodeURIComponent(modelPathVal)}`
+        let animList: { name: string; url: string; category?: string }[] = []
+
+        if (animPaths.length > 0) {
+          animList = animPaths.map(p => ({
+            name: p.split('/').pop()?.replace(/\.fbx$/i, '') ?? p,
+            url: `/api/assets/file?path=${encodeURIComponent(p)}`,
+            category: 'other',
+          }))
+        } else {
+          // 자동 검색 (에셋 인덱스에서)
+          const ASSETS_DIR2 = join(process.cwd(), '..', '..', 'assets')
+          const idxPath = join(ASSETS_DIR2, '.asset_index.json')
+          if (existsSync(idxPath)) {
+            let rawIdx = readFileSync(idxPath, 'utf-8')
+            if (rawIdx.charCodeAt(0) === 0xFEFF) rawIdx = rawIdx.slice(1)
+            const idx = JSON.parse(rawIdx) as { path: string; name: string; ext: string }[]
+            // 모델 경로에서 키워드 추출
+            const pathParts = modelPathVal.replace(/\\/g, '/').split('/')
+            const keywords = pathParts.filter(p =>
+              p && !p.includes('.') && !['_3dmodel', '_animation', 'devassets(not packed)', 'weapon'].includes(p.toLowerCase())
+            ).map(p => p.toLowerCase())
+
+            let animFiles = idx.filter(a =>
+              a.ext.toLowerCase() === 'fbx' &&
+              a.path.toLowerCase().includes('animation')
+            )
+            if (keywords.length > 0) {
+              animFiles = animFiles.filter(a => keywords.some(kw => a.path.toLowerCase().includes(kw)))
+            }
+            animList = animFiles.slice(0, 200).map(a => {
+              const n = a.name.toLowerCase()
+              let cat = 'other'
+              if (n.includes('idle')) cat = 'idle'
+              else if (n.includes('walk')) cat = 'walk'
+              else if (n.includes('jog') || n.includes('run')) cat = 'locomotion'
+              else if (n.includes('jump')) cat = 'jump'
+              else if (n.includes('attack') || n.includes('fire') || n.includes('aim')) cat = 'combat'
+              else if (n.includes('skill')) cat = 'skill'
+              else if (n.includes('death') || n.includes('knockdown')) cat = 'hit'
+              else if (n.includes('rolling') || n.includes('dodge')) cat = 'dodge'
+              return { name: a.name.replace(/\.fbx$/i, ''), url: `/api/assets/file?path=${encodeURIComponent(a.path)}`, category: cat }
+            })
+          }
+        }
+
+        // 카테고리 필터 적용
+        if (catFilter.length > 0) {
+          animList = animList.filter(a => catFilter.includes((a.category ?? 'other').toLowerCase()))
+        }
+
+        const categories = [...new Set(animList.map(a => a.category ?? 'other'))].sort()
+        const resultText = `FBX 애니메이션 뷰어: ${label}\n` +
+          `모델: ${modelPathVal}\n` +
+          `애니메이션: ${animList.length}개 (${categories.join(', ')})\n` +
+          `3D 뷰어 + 애니메이션 플레이어가 ChatUI에 표시됩니다.`
+        return { result: resultText, data: { modelUrl, animations: animList, totalAnimations: animList.length, categories } }
+      } catch (e) {
+        return { result: `애니메이션 미리보기 실패: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
+    // ── find_resource_image ──
+    case 'find_resource_image': {
+      const query = String(input.query ?? '').toLowerCase()
+      if (!query) return { result: '검색어가 필요합니다.' }
+      try {
+        const all: { name: string; path: string; relPath: string }[] = []
+        walkImages(IMAGES_DIR, '', all)
+        const results = all.filter(f => f.name.toLowerCase().includes(query)).slice(0, 30)
+        if (results.length === 0) return { result: `"${query}" 이미지 없음 (전체 ${all.length}개 중)` }
+        return {
+          result: `${results.length}개 이미지 발견: ${results.map(i => i.name).join(', ')}`,
+          data: { total: results.length, images: results.map(r => ({ name: r.name, relPath: r.relPath, url: `/api/images/file?path=${encodeURIComponent(r.relPath)}` })) }
+        }
+      } catch (e) {
+        return { result: `이미지 검색 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
+    // ── build_character_profile ──
+    case 'build_character_profile': {
+      const charName = String(input.character_name ?? input.character_id ?? '')
+      const directCharId = input.character_id ? String(input.character_id) : null
+      if (!charName && !directCharId) return { result: 'character_name 또는 character_id를 지정해주세요.' }
+      try {
+        // 캐릭터 테이블 찾기
+        const charTableEntry = _serverTableList.find(t => t.name.toLowerCase().includes('character'))
+        if (!charTableEntry) return { result: '캐릭터 테이블을 찾을 수 없습니다.' }
+        const tblData = _serverTableData.get(charTableEntry.name.toLowerCase())
+        if (!tblData || tblData.rows.length === 0) return { result: `테이블 ${charTableEntry.name}에 데이터가 없습니다.` }
+        // 검색
+        let character: Record<string, string> | undefined
+        if (directCharId) {
+          character = tblData.rows.find(r => Object.values(r).some(v => v === directCharId))
+        }
+        if (!character && charName) {
+          const lc = charName.toLowerCase()
+          character = tblData.rows.find(r => Object.values(r).some(v => v.toLowerCase().includes(lc)))
+        }
+        if (!character) {
+          const list = tblData.rows.slice(0, 50).map((r, i) =>
+            `[${i + 1}] ${Object.entries(r).slice(0, 5).map(([k, v]) => `${k}=${v}`).join(', ')}`
+          ).join('\n')
+          return { result: `"${charName}" 찾지 못함. 전체 목록:\n${list}\n\ncharacter_id로 재호출하세요.` }
+        }
+        const charSummary = Object.entries(character).map(([k, v]) => `${k}: ${v}`).join(', ')
+        return { result: `캐릭터 프로파일: ${charName}\n${charSummary}`, data: { character, tableName: charTableEntry.name } }
+      } catch (e) {
+        return { result: `캐릭터 프로파일 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
+    // ── read_guide ──
+    case 'read_guide': {
+      const guideName = String(input.name ?? '').trim()
+      const guidesDir = join(CODE_DIR, '_guides')
+      try {
+        if (!guideName) {
+          // 전체 목록
+          if (!existsSync(guidesDir)) return { result: '가이드 없음. generate_code_guides.ps1 을 실행하세요.' }
+          const files = readdirSync(guidesDir).filter(f => f.endsWith('.md')).map(f => {
+            const s = statSync(join(guidesDir, f))
+            const isDb = f.startsWith('_DB_')
+            return { name: f.replace('.md', ''), sizeKB: Math.round(s.size / 1024 * 10) / 10, category: isDb ? 'db' : 'code' }
+          }).sort((a, b) => a.name.localeCompare(b.name))
+          const dbGuides = files.filter(g => g.category === 'db')
+          const codeGuides = files.filter(g => g.category === 'code')
+          let list = ''
+          if (dbGuides.length) list += `### DB 가이드 (${dbGuides.length}개)\n` + dbGuides.map(g => `- ${g.name} (${g.sizeKB}KB)`).join('\n') + '\n\n'
+          if (codeGuides.length) list += `### 코드 가이드 (${codeGuides.length}개)\n` + codeGuides.map(g => `- ${g.name} (${g.sizeKB}KB)`).join('\n')
+          return { result: `가이드 목록 (${files.length}개):\n\n${list}`, data: { guides: files } }
+        }
+        const safeName = guideName.replace(/[^a-zA-Z0-9_\-]/g, '')
+        const guidePath = join(guidesDir, `${safeName}.md`)
+        if (!existsSync(guidePath)) {
+          const available = existsSync(guidesDir) ? readdirSync(guidesDir).filter(f => f.endsWith('.md')).map(f => f.replace('.md', '')) : []
+          return { result: `가이드 '${safeName}' 없음. 사용 가능: ${available.join(', ')}` }
+        }
+        const MAX = 200 * 1024
+        let content = readFileSync(guidePath, 'utf-8')
+        if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
+        const truncated = content.length > MAX
+        if (truncated) content = content.slice(0, MAX) + '\n...(truncated)'
+        const isDb = safeName.startsWith('_DB_')
+        return {
+          result: `# ${isDb ? 'DB' : '코드'} 가이드: ${safeName}\n\n${content}`,
+          data: { name: safeName, sizeKB: Math.round(content.length / 1024 * 10) / 10, truncated }
+        }
+      } catch (e) {
+        return { result: `가이드 로드 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
     default:
       return { result: `알 수 없는 도구: ${toolName}` }
   }
 }
 
-// ── 서버사이드 시스템 프롬프트 ──
+// ── 서버사이드 Async Tool 실행 (Jira/Confluence 등 네트워크 호출 필요) ──
+async function serverExecuteToolAsync(
+  toolName: string,
+  input: Record<string, unknown>,
+  options: GitPluginOptions,
+): Promise<{ result: string; data?: unknown }> {
+  // 동기 도구는 기존 함수 위임
+  const syncTools = ['query_game_data', 'show_table_schema', 'query_git_history', 'create_artifact',
+    'search_code', 'read_code_file', 'search_assets', 'preview_fbx_animation', 'find_resource_image',
+    'build_character_profile', 'read_guide']
+  if (syncTools.includes(toolName)) return serverExecuteTool(toolName, input, options)
+
+  const jiraToken = options.jiraApiToken || ''
+  const jiraEmail = options.jiraUserEmail || ''
+  const jiraBase = (options.jiraBaseUrl || '').replace(/\/$/, '')
+  const confluenceBase = (options.confluenceBaseUrl || jiraBase).replace(/\/$/, '')
+  const confToken = options.confluenceApiToken || jiraToken
+  const confEmail = options.confluenceUserEmail || jiraEmail
+  const authHeader = jiraEmail ? 'Basic ' + Buffer.from(`${jiraEmail}:${jiraToken}`).toString('base64') : 'Bearer ' + jiraToken
+  const confAuthHeader = confEmail ? 'Basic ' + Buffer.from(`${confEmail}:${confToken}`).toString('base64') : 'Bearer ' + confToken
+
+  switch (toolName) {
+    // ── search_jira ──
+    case 'search_jira': {
+      let jql = String(input.jql ?? '')
+      const maxResults = Math.min(Number(input.maxResults ?? 20), 50)
+      if (!jiraToken || !jiraBase) return { result: 'Jira 연결 정보가 설정되지 않았습니다 (.env 파일 확인).' }
+      try {
+        // project 조건 자동 추가
+        if (!/\bproject\b/i.test(jql) && options.jiraDefaultProject) {
+          const keys = options.jiraDefaultProject.split(',').map(k => k.trim()).filter(Boolean)
+          const proj = keys.length === 1 ? `project = ${keys[0]}` : `project IN (${keys.join(',')})`
+          jql = jql.trim() ? `${proj} AND ${jql}` : `${proj} ORDER BY updated DESC`
+        }
+        const apiUrl = `${jiraBase}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=summary,status,assignee,priority,issuetype,updated`
+        const resp = await fetch(apiUrl, { headers: { Authorization: authHeader, Accept: 'application/json' } })
+        const data = await resp.json() as Record<string, unknown>
+        if (!resp.ok) return { result: `Jira 검색 실패: ${(data?.errorMessages as string[])?.[0] ?? resp.status}` }
+        type JIss = { id: string; key: string; self?: string; fields: Record<string, unknown> }
+        const issues = (Array.isArray(data.issues) ? data.issues : []) as JIss[]
+        const total = Number(data.total ?? issues.length)
+        const base0 = String(issues[0]?.self ?? '').split('/rest/')[0]
+        const lines = issues.map(i => {
+          const f = i.fields
+          const url = base0 ? `${base0}/browse/${i.key}` : ''
+          return `[${i.key}](${url}) [${(f.status as Record<string,unknown>)?.name ?? '?'}] ${f.summary ?? ''} (담당: ${(f.assignee as Record<string,unknown>)?.displayName ?? '미배정'})`
+        })
+        return {
+          result: `Jira: "${jql}" → ${total}건\n${lines.join('\n') || '결과 없음'}`,
+          data: { total, issues: issues.map(i => ({ key: i.key, summary: String(i.fields.summary ?? ''), status: String((i.fields.status as Record<string,unknown>)?.name ?? ''), url: base0 ? `${base0}/browse/${i.key}` : '' })) }
+        }
+      } catch (e) { return { result: `Jira 검색 오류: ${e instanceof Error ? e.message : String(e)}` } }
+    }
+
+    // ── get_jira_issue ──
+    case 'get_jira_issue': {
+      const issueKey = String(input.issueKey ?? '')
+      if (!issueKey) return { result: 'issueKey가 필요합니다.' }
+      if (!jiraToken || !jiraBase) return { result: 'Jira 연결 정보가 설정되지 않았습니다.' }
+      try {
+        const apiUrl = `${jiraBase}/rest/api/3/issue/${issueKey}?expand=renderedFields&fields=summary,status,assignee,priority,issuetype,created,updated,description,comment,reporter`
+        const resp = await fetch(apiUrl, { headers: { Authorization: authHeader, Accept: 'application/json' } })
+        const data = await resp.json() as Record<string, unknown>
+        if (!resp.ok) return { result: `Jira 이슈 조회 실패: ${(data?.errorMessages as string[])?.[0] ?? resp.status}` }
+        const f = (data.fields ?? {}) as Record<string, unknown>
+        const selfUrl = String(data.self ?? '')
+        const base0 = selfUrl.split('/rest/')[0]
+        const url = base0 ? `${base0}/browse/${issueKey}` : ''
+        // ADF 파싱 (간단 텍스트 추출)
+        const descContent = f.description as Record<string, unknown> | undefined
+        let descText = ''
+        if (descContent && typeof descContent === 'object') {
+          const extractText = (node: unknown): string => {
+            if (!node || typeof node !== 'object') return ''
+            const n = node as Record<string, unknown>
+            if (n.type === 'text') return String(n.text ?? '')
+            if (Array.isArray(n.content)) return (n.content as unknown[]).map(extractText).join('')
+            return ''
+          }
+          descText = extractText(descContent).replace(/\n{3,}/g, '\n\n').trim()
+        } else if (typeof f.description === 'string') {
+          descText = f.description
+        }
+        const comments = ((f.comment as Record<string,unknown>)?.comments ?? []) as Array<Record<string,unknown>>
+        const commentLines = comments.slice(-5).map(c => {
+          const author = String((c.author as Record<string,unknown>)?.displayName ?? '')
+          let body = ''
+          if (c.body && typeof c.body === 'object') {
+            const extractText = (node: unknown): string => {
+              if (!node || typeof node !== 'object') return ''
+              const n = node as Record<string, unknown>
+              if (n.type === 'text') return String(n.text ?? '')
+              if (Array.isArray(n.content)) return (n.content as unknown[]).map(extractText).join('')
+              return ''
+            }
+            body = extractText(c.body).slice(0, 200)
+          }
+          return `  [${author}]: ${body}`
+        })
+        const resultText = [
+          `이슈: [${issueKey}](${url}) - ${f.summary ?? ''}`,
+          `URL: ${url}`,
+          `상태: ${(f.status as Record<string,unknown>)?.name ?? ''}`,
+          `유형: ${(f.issuetype as Record<string,unknown>)?.name ?? ''}`,
+          `우선순위: ${(f.priority as Record<string,unknown>)?.name ?? ''}`,
+          `담당자: ${(f.assignee as Record<string,unknown>)?.displayName ?? '미배정'}`,
+          `보고자: ${(f.reporter as Record<string,unknown>)?.displayName ?? ''}`,
+          `생성: ${f.created ?? ''}  수정: ${f.updated ?? ''}`,
+          descText ? `설명:\n${descText.slice(0, 500)}` : '',
+          comments.length > 0 ? `\n최근 댓글 (${comments.length}개):\n${commentLines.join('\n')}` : '',
+        ].filter(Boolean).join('\n')
+        return {
+          result: resultText,
+          data: { issueKey, url, summary: String(f.summary ?? ''), status: String((f.status as Record<string,unknown>)?.name ?? ''), description: descText.slice(0, 1000) }
+        }
+      } catch (e) { return { result: `Jira 이슈 조회 오류: ${e instanceof Error ? e.message : String(e)}` } }
+    }
+
+    // ── search_confluence ──
+    case 'search_confluence': {
+      const cql = String(input.cql ?? '')
+      const limit = Math.min(Number(input.limit ?? 10), 20)
+      if (!confToken || !confluenceBase) return { result: 'Confluence 연결 정보가 설정되지 않았습니다.' }
+      try {
+        const apiUrl = `${confluenceBase}/wiki/rest/api/search?cql=${encodeURIComponent(cql)}&limit=${limit}&expand=body.storage,version,space`
+        const resp = await fetch(apiUrl, { headers: { Authorization: confAuthHeader, Accept: 'application/json', 'X-Atlassian-Token': 'no-check' } })
+        const data = await resp.json() as Record<string, unknown>
+        if (!resp.ok) return { result: `Confluence 검색 실패: ${(data?.message as string) ?? resp.status}` }
+        type CHit = { content?: { id?: string; type?: string; _links?: Record<string,unknown>; space?: Record<string,unknown> }; title?: string; url?: string }
+        const results = (Array.isArray(data.results) ? data.results : []) as CHit[]
+        const total = Number(data.totalSize ?? results.length)
+        const lines = results.map(p => {
+          const pageId = p.content?.id ?? ''
+          const spaceKey = (p.content?.space as Record<string,unknown>)?.key ?? '-'
+          const relUrl = String(p.content?._links?.webui ?? p.url ?? '')
+          const fullUrl = relUrl.startsWith('http') ? relUrl : (confluenceBase ? `${confluenceBase}/wiki${relUrl}` : '')
+          return `[${p.title ?? '(제목 없음)'}](${fullUrl}) (Space: ${spaceKey}, ID: ${pageId})`
+        })
+        return {
+          result: `Confluence: "${cql}" → ${total}건\n${lines.join('\n') || '결과 없음'}\n\n페이지 내용이 필요하면 get_confluence_page(pageId) 호출`,
+          data: { total, pages: results.map(p => ({ id: p.content?.id ?? '', title: p.title ?? '', space: String((p.content?.space as Record<string,unknown>)?.key ?? '') })) }
+        }
+      } catch (e) { return { result: `Confluence 검색 오류: ${e instanceof Error ? e.message : String(e)}` } }
+    }
+
+    // ── get_confluence_page ──
+    case 'get_confluence_page': {
+      const pageId = String(input.pageId ?? '')
+      if (!pageId) return { result: 'pageId가 필요합니다.' }
+      if (!confToken || !confluenceBase) return { result: 'Confluence 연결 정보가 설정되지 않았습니다.' }
+      try {
+        const apiUrl = `${confluenceBase}/wiki/rest/api/content/${pageId}?expand=body.storage,version,space`
+        const resp = await fetch(apiUrl, { headers: { Authorization: confAuthHeader, Accept: 'application/json' } })
+        const data = await resp.json() as Record<string, unknown>
+        if (!resp.ok) return { result: `Confluence 페이지 조회 실패: ${(data?.message as string) ?? resp.status}` }
+        const body = (data.body as Record<string,unknown>)?.storage as Record<string,unknown>
+        const rawHtml = String(body?.value ?? '')
+        const htmlContent = rawHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 3000)
+        const space = String((data.space as Record<string,unknown>)?.key ?? '')
+        const confLinks = (data._links ?? {}) as Record<string,unknown>
+        const confWebui = String(confLinks.webui ?? '')
+        const confPageUrl = confluenceBase && confWebui ? `${confluenceBase}${confWebui}` : ''
+        return {
+          result: `Confluence 페이지: ${data.title ?? ''}\nURL: ${confPageUrl}\nSpace: ${space}\n내용:\n${htmlContent}`,
+          data: { pageId, title: String(data.title ?? ''), space, url: confPageUrl, contentLength: htmlContent.length }
+        }
+      } catch (e) { return { result: `Confluence 페이지 조회 오류: ${e instanceof Error ? e.message : String(e)}` } }
+    }
+
+    default:
+      return serverExecuteTool(toolName, input, options)
+  }
+}
+
+// ── alasql 예약어 목록 (서버사이드) ──
+const SERVER_RESERVED_TABLE_NAMES = new Set([
+  'ENUM', 'INDEX', 'KEY', 'VALUE', 'USER', 'VIEW',
+  'SCHEMA', 'STATUS', 'TYPE', 'LEVEL', 'DATA', 'COMMENT',
+  'COLUMN', 'CONSTRAINT', 'INTERVAL', 'TIMESTAMP',
+  'DATE', 'TIME', 'YEAR', 'MONTH', 'DAY',
+  'HOUR', 'MINUTE', 'SECOND', 'GROUP', 'ORDER',
+  'FUNCTION', 'PROCEDURE', 'TRIGGER', 'SEQUENCE',
+  'TRANSACTION', 'SESSION', 'SYSTEM', 'GLOBAL', 'LOCAL',
+])
+
+function serverSafeInternalName(name: string): string {
+  return `__u_${name.toLowerCase()}`
+}
+
+// ── 서버사이드 시스템 프롬프트 (웹 UI 수준으로 강화) ──
 function buildServerSystemPrompt(): string {
   const lines: string[] = []
-  lines.push('당신은 게임 데이터 전문 어시스턴트입니다.')
+
+  // ── 역할 및 도구 설명 ──
+  lines.push('당신은 이 게임의 모든 데이터를 꿰뚫고 있는 전문 게임 데이터 어시스턴트입니다.')
   lines.push('사용자의 질문에 답하기 위해 아래 도구들을 적극 활용하세요:')
   lines.push('- query_game_data: 실제 게임 데이터를 SQL로 조회')
-  lines.push('- show_table_schema: 테이블 구조 조회')
-  lines.push('- query_git_history: Git 변경 이력 조회')
-  lines.push('- create_artifact: HTML 문서/보고서 생성')
+  lines.push('- show_table_schema: 테이블의 스키마 구조(컬럼, 타입, 행 수) 조회')
+  lines.push('- query_git_history: Git 변경 이력 조회. repo="data"(aegisdata 데이터 저장소, 기본값) 또는 repo="aegis"(aegis 코드 저장소)')
+  lines.push('- create_artifact: HTML 문서/보고서 생성. 분석 결과를 정리된 문서로 제공할 때 사용')
+  lines.push('- search_code: C# 게임 클라이언트 소스코드 검색 (클래스/메서드/파일명/내용 전문검색). 코드 구현 방식, 로직, 버그 분석 시 사용')
+  lines.push('- read_code_file: 특정 .cs 파일 전체 내용 읽기. search_code로 경로 확인 후 호출')
+  lines.push('- search_jira: Jira 이슈 JQL 검색 (버그/작업/스프린트 조회)')
+  lines.push('- get_jira_issue: Jira 이슈 상세 조회 (AEGIS-1234 등 이슈 키 직접 지정)')
+  lines.push('- search_confluence: Confluence 문서 CQL 검색 (기획서/스펙/회의록 등)')
+  lines.push('- get_confluence_page: Confluence 페이지 전체 내용 조회 (pageId 필요)')
+  lines.push('- search_assets: Unity 에셋 파일 검색 (FBX 3D 모델, PNG 텍스처, WAV/MP3 사운드 등). ext="fbx"로 3D 모델만 검색 가능')
+  lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 (아이콘, UI 이미지, 스프라이트)')
+  lines.push('- build_character_profile: 캐릭터명 → FK 연결 모든 데이터 자동 수집. 이름 검색 실패 시 전체 목록 반환 → character_id로 재호출')
+  lines.push('- read_guide: ⭐⭐⭐ 최우선 시작점! DB+코드 통합 가이드 MD 읽기. 어떤 질문이든 관련 가이드를 먼저 읽고 답변하세요')
+  lines.push('  → DB/게임 질문: read_guide("_DB_OVERVIEW") → 도메인 가이드(_DB_Character, _DB_Skill 등)')
+  lines.push('  → 코드 질문:   read_guide("_OVERVIEW") → 도메인 가이드(_Skill, _Weapon, _Character 등)')
+  lines.push('  → 가이드 목록: read_guide("") 로 전체 확인')
   lines.push('')
+
+  // ── 가이드 우선 원칙 ──
+  lines.push('[가이드 우선 원칙 — 모든 질문에 적용]')
+  lines.push('⭐⭐⭐ 어떤 질문이든 답변 전에 반드시 관련 가이드를 먼저 read_guide로 읽으세요!')
+  lines.push('질문 유형별 가이드 우선 순서:')
+  lines.push('- 캐릭터/스킬/무기/아이템 질문 → read_guide("_DB_OVERVIEW") → read_guide("_DB_Character"/"_DB_Skill"/"_DB_Weapon")')
+  lines.push('- Enum/코드값 질문 → read_guide("_DB_Enums")')
+  lines.push('- 게임 데이터 일반 → read_guide("_DB_OVERVIEW") 로 테이블 구조 파악 후 쿼리')
+  lines.push('- 코드 구현/로직 질문 → read_guide("_OVERVIEW") → read_guide("_Skill"/"_Weapon"/"_Character" 등)')
+  lines.push('- 모르는 시스템 → read_guide("") 로 목록 먼저 확인')
+  lines.push('가이드를 읽으면: 테이블 구조, FK 관계, 중요 컬럼, 클래스/메서드 위치를 사전에 알 수 있어 불필요한 탐색을 줄입니다.')
+  lines.push('')
+
+  // ── SQL 규칙 ──
+  lines.push('[SQL 규칙 — 반드시 준수]')
+  lines.push('- 테이블명: 대소문자 무시 (skill, Skill, SKILL 모두 동작)')
+  lines.push('- #접두사 컬럼: 반드시 백틱 → `#char_memo`')
+  lines.push('- 모든 값은 문자열 → WHERE id = \'1001\'')
+  lines.push('- 숫자 비교: CAST(level AS NUMBER) > 10')
+  lines.push('- 컬럼명은 소문자로 저장됨')
+  lines.push('- LIMIT 사용: 큰 테이블은 LIMIT 50 등으로 제한')
+  lines.push('')
+  lines.push('[SQL 별칭(AS) 절대 금지 규칙]')
+  lines.push('- AS 뒤 별칭은 반드시 영문·숫자·언더스코어만 사용 (예: AS char_name, AS skill_id)')
+  lines.push('- 한글 별칭 절대 금지 → AS 대상, AS 이름, AS 스킬명 등 모두 파싱 오류 발생')
+  lines.push('- 잘못된 예: exec_target AS 대상  →  올바른 예: exec_target AS target')
+  lines.push('- 별칭이 필요 없으면 그냥 컬럼명 원본을 그대로 사용할 것')
+  lines.push('')
+
+  // ── 예약어 테이블명 ──
+  const reservedTables: string[] = []
+  for (const t of _serverTableList) {
+    if (SERVER_RESERVED_TABLE_NAMES.has(t.name.toUpperCase())) {
+      reservedTables.push(t.name)
+    }
+  }
+  if (reservedTables.length > 0) {
+    lines.push('[alasql 예약어 테이블명 규칙 — 반드시 준수]')
+    lines.push('아래 테이블명은 alasql 예약어이므로 SQL에서 직접 사용 불가. 내부명(__u_xxx)으로 쿼리할 것:')
+    for (const name of reservedTables) {
+      lines.push(`- "${name}" 게임데이터 테이블 → SELECT * FROM __u_${name.toLowerCase()} WHERE ... (절대 FROM ${name} 사용 금지)`)
+    }
+    lines.push('')
+  }
+
+  // ── Jira / Confluence 규칙 ──
+  lines.push('[Jira / Confluence 사용 규칙]')
+  lines.push('- 프로젝트 키: AEGIS (cloud.jira.krafton.com)')
+  lines.push('- 버그, 이슈, 작업 조회 요청 → search_jira(jql) 호출')
+  lines.push('- 특정 이슈 번호 언급 (예: AEGIS-1234) → get_jira_issue("AEGIS-1234") 바로 호출')
+  lines.push('- 기획서/스펙 문서 요청 → search_confluence(cql) 호출')
+  lines.push('- 검색 결과에서 특정 페이지 내용이 필요하면 get_confluence_page(pageId) 호출')
+  lines.push('')
+  lines.push('[JQL 작성 규칙]')
+  lines.push('- 기본: "project = AEGIS ORDER BY updated DESC"')
+  lines.push('- ⚠️ 날짜 필터(updated >= -Nd)는 사용자가 명시적으로 "최근 N일"을 요청할 때만 사용')
+  lines.push('- 일반 이슈: "project = AEGIS AND status != Done ORDER BY updated DESC"')
+  lines.push('- 버그: "project = AEGIS AND issuetype = Bug AND status != Done ORDER BY updated DESC"')
+  lines.push('- 진행 중: "project = AEGIS AND status = \\"In Progress\\" ORDER BY updated DESC"')
+  lines.push('- 담당자: "project = AEGIS AND assignee = \\"이름\\" ORDER BY updated DESC"')
+  lines.push('- 텍스트 검색: "project = AEGIS AND text ~ \\"검색어\\" ORDER BY updated DESC"')
+  lines.push('- CQL: "space = \\"AEGIS\\" AND text ~ \\"캐릭터 스킬\\" AND type = page ORDER BY lastModified DESC"')
+  lines.push('')
+
+  // ── 코드 분석 규칙 ──
+  lines.push('[C# 코드 분석 규칙]')
+  lines.push('- ⭐ 코드 분석 시작 전: read_guide(name="_OVERVIEW") 로 전체 폴더 구조를 먼저 파악')
+  lines.push('- 특정 시스템: read_guide(name="_Skill"), read_guide(name="_Weapon") 등 도메인 가이드 먼저 읽기')
+  lines.push('- 코드 관련 질문: read_guide → search_code → 필요 시 read_code_file 순서')
+  lines.push('- 클래스 검색: search_code(query="ClassName", type="class")')
+  lines.push('- 메서드 검색: search_code(query="MethodName", type="method")')
+  lines.push('- 내용 전문검색: search_code(query="keyword", type="content")')
+  lines.push('')
+
+  // ── 캐릭터 프로파일 규칙 ──
+  lines.push('[캐릭터 기획서/프로파일 규칙]')
+  lines.push('- "캐릭터 기획서", "프로파일", "캐릭터 카드", "개요" 요청 시: build_character_profile 먼저 → create_artifact 순서')
+  lines.push('- "데이터 다 제공해줘", "모든 데이터 보여줘" 요청도 동일하게 build_character_profile 먼저 호출')
+  lines.push('')
+
+  // ── 아티팩트 생성 규칙 ──
+  lines.push('[아티팩트 생성 규칙]')
+  lines.push('- "정리해줘", "문서로", "보고서", "시트 만들어줘" 등 시각적 결과물 요청 시 create_artifact 호출')
+  lines.push('- 데이터 수집이 끝나면 즉시 create_artifact를 호출 (선언 없이)')
+  lines.push('- html 파라미터: 완전한 HTML 콘텐츠. 다크 테마(배경 #0f1117, 텍스트 #e2e8f0, 포인트 #6366f1) 스타일 권장')
+  lines.push('')
+
+  // ── 응답 규칙 ──
+  lines.push('[응답 규칙]')
+  lines.push('- 답변은 반드시 한국어로 작성')
+  lines.push('- 단순 나열이 아닌, 의미있는 해석과 함께 친절하게 설명')
+  lines.push('- 데이터를 보여줄 때는 테이블 형식(마크다운)으로 정리')
+  lines.push('- 쿼리 결과가 많으면 주요 패턴이나 인사이트를 요약')
+  lines.push('')
+
+  // ── 스키마 정보 ──
   lines.push(_serverSchemaDesc)
+
   return lines.join('\n')
 }
 
@@ -3206,7 +4535,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
 
       const session = getOrCreateSession(body.session_id)
       const isStream = body.stream === true
-      const MAX_ITERATIONS = 8
+      const MAX_ITERATIONS = 12
       const systemPrompt = buildServerSystemPrompt()
 
       // Claude messages 빌드 (히스토리 + 새 메시지)
@@ -3215,7 +4544,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
         { role: 'user', content: userMessage },
       ]
 
-      const allToolCalls: Array<{ tool: string; input: unknown; result: unknown }> = []
+      const allToolCalls: Array<{ tool: string; input: unknown; result: unknown; summary?: string }> = []
 
       if (isStream) {
         // ── SSE 스트리밍 모드 ──
@@ -3261,10 +4590,10 @@ function createChatApiMiddleware(options: GitPluginOptions) {
 
               for (const tb of toolBlocks) {
                 res.write(`event: tool_start\ndata: ${JSON.stringify({ tool: tb.name, input: tb.input })}\n\n`)
-                const { result, data: toolData } = serverExecuteTool(tb.name!, tb.input ?? {}, options)
-                allToolCalls.push({ tool: tb.name!, input: tb.input, result: toolData ?? result })
+                const { result, data: toolData } = await serverExecuteToolAsync(tb.name!, tb.input ?? {}, options)
+                allToolCalls.push({ tool: tb.name!, input: tb.input, result: toolData ?? result, summary: result.slice(0, 300) })
                 toolResults.push({ type: 'tool_result', tool_use_id: tb.id!, content: result })
-                res.write(`event: tool_done\ndata: ${JSON.stringify({ tool: tb.name, summary: result.slice(0, 200) })}\n\n`)
+                res.write(`event: tool_done\ndata: ${JSON.stringify({ tool: tb.name, summary: result.slice(0, 300) })}\n\n`)
               }
               messages.push({ role: 'user', content: toolResults })
               continue
@@ -3319,8 +4648,8 @@ function createChatApiMiddleware(options: GitPluginOptions) {
             const toolResults: Array<{ type: string; tool_use_id: string; content: string }> = []
 
             for (const tb of toolBlocks) {
-              const { result, data: toolData } = serverExecuteTool(tb.name!, tb.input ?? {}, options)
-              allToolCalls.push({ tool: tb.name!, input: tb.input, result: toolData ?? result })
+              const { result, data: toolData } = await serverExecuteToolAsync(tb.name!, tb.input ?? {}, options)
+              allToolCalls.push({ tool: tb.name!, input: tb.input, result: toolData ?? result, summary: result.slice(0, 300) })
               toolResults.push({ type: 'tool_result', tool_use_id: tb.id!, content: result })
             }
             messages.push({ role: 'user', content: toolResults })
@@ -3328,7 +4657,15 @@ function createChatApiMiddleware(options: GitPluginOptions) {
           }
           break
         }
-        sendJson(res, 200, { session_id: session.id, content: '(max iterations reached)', tool_calls: allToolCalls })
+        // max iterations에 도달해도 마지막 텍스트 추출
+        const lastAssistant = messages.filter(m => m.role === 'assistant').pop()
+        let lastText = ''
+        if (lastAssistant && Array.isArray(lastAssistant.content)) {
+          lastText = (lastAssistant.content as Array<{type: string; text?: string}>).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n')
+        } else if (typeof lastAssistant?.content === 'string') {
+          lastText = lastAssistant.content
+        }
+        sendJson(res, 200, { session_id: session.id, content: lastText || '(응답 생성 완료 — 도구 호출 결과를 tool_calls에서 확인하세요)', tool_calls: allToolCalls })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         sendJson(res, 500, { error: msg })
@@ -3507,13 +4844,35 @@ for line in resp.iter_lines():
   <p>세션을 삭제합니다.</p>
 </div>
 
+<h2>🛠️ AI가 사용하는 도구 목록</h2>
+<p>챗봇이 자동으로 사용하는 도구들입니다. <code>tool_calls</code>에서 어떤 도구가 사용되었는지 확인 가능합니다.</p>
+<table>
+  <tr><th>도구</th><th>설명</th></tr>
+  <tr><td><code>query_game_data</code></td><td>SQL로 게임 데이터 조회</td></tr>
+  <tr><td><code>show_table_schema</code></td><td>테이블 구조/컬럼 정보</td></tr>
+  <tr><td><code>query_git_history</code></td><td>Git 변경 이력 (data/aegis 저장소)</td></tr>
+  <tr><td><code>create_artifact</code></td><td>HTML 문서/보고서 생성</td></tr>
+  <tr><td><code>search_code</code></td><td>C# 소스코드 검색 (클래스, 메서드, 전문검색)</td></tr>
+  <tr><td><code>read_code_file</code></td><td>C# 파일 내용 읽기</td></tr>
+  <tr><td><code>search_jira</code></td><td>Jira 이슈 JQL 검색</td></tr>
+  <tr><td><code>get_jira_issue</code></td><td>Jira 이슈 상세 조회</td></tr>
+  <tr><td><code>search_confluence</code></td><td>Confluence 문서 CQL 검색</td></tr>
+  <tr><td><code>get_confluence_page</code></td><td>Confluence 페이지 전체 내용</td></tr>
+  <tr><td><code>search_assets</code></td><td>Unity 에셋 파일 검색 (FBX, PNG, WAV 등)</td></tr>
+  <tr><td><code>find_resource_image</code></td><td>게임 리소스 이미지 검색</td></tr>
+  <tr><td><code>build_character_profile</code></td><td>캐릭터 연관 데이터 자동 수집</td></tr>
+  <tr><td><code>read_guide</code></td><td>코드/DB 가이드 문서 읽기</td></tr>
+</table>
+
 <h2>💡 사용 팁</h2>
 <ul style="padding-left:1.5em;color:#94a3b8">
   <li><code>session_id</code>를 재사용하면 대화 맥락이 유지됩니다</li>
-  <li>AI는 자동으로 SQL 쿼리, Git 히스토리 조회 등 도구를 사용합니다</li>
-  <li><code>tool_calls</code> 배열에서 AI가 어떤 도구를 사용했는지 확인할 수 있습니다</li>
+  <li>AI는 자동으로 SQL 쿼리, Git 히스토리, Jira/Confluence 검색, 코드 검색 등 도구를 사용합니다</li>
+  <li><code>tool_calls</code> 배열에서 AI가 어떤 도구를 사용했는지, 어떤 결과를 받았는지 확인할 수 있습니다</li>
   <li>SSE 스트리밍 모드(<code>"stream": true</code>)로 실시간 응답을 받을 수 있습니다</li>
   <li><code>/api/v1/query</code>로 AI 없이 직접 SQL을 실행할 수도 있습니다</li>
+  <li>코드 관련 질문은 <code>search_code</code> → <code>read_code_file</code> 순서로 자동 호출됩니다</li>
+  <li>Jira 이슈 번호(예: AEGIS-1234)를 직접 언급하면 바로 상세 조회합니다</li>
 </ul>
 </body></html>`
 }

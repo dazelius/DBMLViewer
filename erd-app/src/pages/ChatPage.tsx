@@ -29,6 +29,7 @@ import {
   type ConfluenceMedia,
   type SceneYamlResult,
   type PrefabPreviewResult,
+  type FbxAnimationResult,
   type DiffFile,
   type DiffHunk,
   type ThinkingStep,
@@ -691,6 +692,19 @@ function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableD
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
     🧩 3D 프리팹 뷰어 열기
   </button>
+</div>`;
+    },
+  );
+
+  // <div data-embed="fbx-anim" data-model="path/to/model.fbx" [data-label="이름"]></div>
+  // → 인라인 iframe 애니메이션 뷰어 (사이드패널 포함)
+  html = html.replace(
+    /<div([^>]*?)data-embed=["']fbx-anim["']([^>]*?)data-model=["']([^"']+)["']([^>]*?)(?:data-label=["']([^"']+)["'])?([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
+    (_, _a, _b, model, _c, label) => {
+      const animName = label ?? model.split('/').pop()?.replace('.fbx', '') ?? 'Animation';
+      const viewerUrl = `/api/assets/fbx-viewer?model=${encodeURIComponent(model)}&label=${encodeURIComponent(animName)}`;
+      return `<div class="embed-card embed-fbx-anim" style="background:#0f1117;border:1px solid #334155;border-radius:10px;overflow:hidden;margin:12px 0;">
+  <iframe src="${viewerUrl}" style="width:100%;height:480px;border:none;display:block;" allow="autoplay"></iframe>
 </div>`;
     },
   );
@@ -2461,7 +2475,13 @@ const FBX_VIEWER_SCRIPT = `
         try { parent.postMessage({ type: 'openPrefab', prefabPath: prefabPath, label: label }, '*'); } catch(ex){}
       });
     });
-    // 5) <div class="audio-player" data-src="..."> → <audio> 플레이어
+    // 5) <div data-embed="fbx-anim"> → 인라인 iframe 애니메이션 뷰어 (이미 iframe이 삽입된 경우 스킵)
+    document.querySelectorAll('.embed-fbx-anim').forEach(function(d){
+      if (d.dataset.animInit) return;
+      d.dataset.animInit = '1';
+      // 이미 iframe이 내부에 있으면 스킵 (processArtifactHtml에서 이미 처리됨)
+    });
+    // 6) <div class="audio-player" data-src="..."> → <audio> 플레이어
     document.querySelectorAll('.audio-player[data-src]').forEach(function(d){
       if (d.dataset.audioInit) return;
       d.dataset.audioInit = '1';
@@ -2595,6 +2615,10 @@ function ArtifactSidePanel({
   const [prefabModalPath, setPrefabModalPath] = useState<string | null>(null);
   const [prefabModalLabel, setPrefabModalLabel] = useState('');
 
+  // ── FBX Animation 모달 ──
+  const [animModalModelPath, setAnimModalModelPath] = useState<string | null>(null);
+  const [animModalLabel, setAnimModalLabel] = useState('');
+
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (e.data?.type === 'openFbx' && e.data.url) {
@@ -2608,6 +2632,10 @@ function ArtifactSidePanel({
       if (e.data?.type === 'openPrefab' && e.data.prefabPath) {
         setPrefabModalPath(e.data.prefabPath);
         setPrefabModalLabel(e.data.label || '');
+      }
+      if (e.data?.type === 'openFbxAnim' && e.data.modelPath) {
+        setAnimModalModelPath(e.data.modelPath);
+        setAnimModalLabel(e.data.label || '');
       }
     };
     window.addEventListener('message', handler);
@@ -2919,6 +2947,28 @@ function ArtifactSidePanel({
               >✕ 닫기</button>
             </div>
             <PrefabViewerLazy prefabPath={prefabModalPath} height={Math.min(600, Math.floor(window.innerHeight * 0.65))} />
+          </div>
+        </div>
+      )}
+
+      {/* ── FBX Animation 모달 오버레이 (postMessage from iframe) ── */}
+      {animModalModelPath && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.8)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: '90vw', maxWidth: 1100, background: '#0f1117', borderRadius: 12, overflow: 'hidden', border: '1px solid #334155', boxShadow: '0 24px 64px rgba(0,0,0,0.7)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', background: '#1e293b', borderBottom: '1px solid #334155' }}>
+              <span style={{ color: '#a5b4fc', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+                🎬 {animModalLabel || animModalModelPath.split('/').pop()?.replace('.fbx', '')}
+              </span>
+              <button
+                onClick={() => setAnimModalModelPath(null)}
+                style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6, padding: '3px 10px', fontSize: 12, cursor: 'pointer' }}
+              >✕ 닫기</button>
+            </div>
+            <FbxViewerLazy
+              url={`/api/assets/file?path=${encodeURIComponent(animModalModelPath)}`}
+              filename={animModalLabel || animModalModelPath.split('/').pop()?.replace('.fbx', '') || 'FBX Animation'}
+              modelPath={animModalModelPath}
+            />
           </div>
         </div>
       )}
@@ -4393,13 +4443,19 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
 }
 
 // FbxViewer lazy wrapper (Three.js는 무거우므로 필요할 때만 렌더)
-function FbxViewerLazy({ url, filename }: { url: string; filename: string }) {
-  const [Comp, setComp] = useState<React.ComponentType<{ url: string; filename?: string }> | null>(null);
+function FbxViewerLazy({ url, filename, modelPath, animationUrls }: {
+  url: string; filename: string; modelPath?: string;
+  animationUrls?: { name: string; url: string; category?: string }[];
+}) {
+  const [Comp, setComp] = useState<React.ComponentType<{
+    url: string; filename?: string; modelPath?: string;
+    animationUrls?: { name: string; url: string; category?: string }[];
+  }> | null>(null);
   useEffect(() => {
     import('../components/FbxViewer').then(m => setComp(() => m.FbxViewer));
   }, []);
   if (!Comp) return <div className="flex items-center justify-center h-24 text-[12px]" style={{ color: 'var(--text-muted)' }}>3D 뷰어 로딩 중...</div>;
-  return <Comp url={url} filename={filename} />;
+  return <Comp url={url} filename={filename} modelPath={modelPath} animationUrls={animationUrls} />;
 }
 
 // SceneViewer lazy wrapper (.unity 씬 파일 뷰어)
@@ -4487,6 +4543,70 @@ function PrefabPreviewCard({ tc }: { tc: PrefabPreviewResult }) {
   );
 }
 
+// FBX 애니메이션 뷰어 카드
+function FbxAnimationCard({ tc }: { tc: FbxAnimationResult }) {
+  const [showViewer, setShowViewer] = useState(false);
+  const hasError = !!tc.error;
+
+  return (
+    <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${hasError ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.3)'}` }}>
+      {/* 헤더 */}
+      <div className="flex items-center gap-2 px-3 py-2" style={{ background: hasError ? 'rgba(239,68,68,0.08)' : 'rgba(99,102,241,0.08)' }}>
+        <span style={{ fontSize: 14 }}>🎬</span>
+        <span className="text-[12px] font-semibold" style={{ color: hasError ? '#f87171' : '#a5b4fc' }}>
+          애니메이션: {tc.label}
+        </span>
+        {!hasError && (
+          <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+            {tc.totalAnimations}개 애니메이션
+            {tc.categories.length > 0 && ` · ${tc.categories.join(', ')}`}
+          </span>
+        )}
+      </div>
+
+      {/* 뷰어 토글 */}
+      {!hasError && (
+        <div className="px-3 py-2">
+          <button
+            onClick={() => setShowViewer(!showViewer)}
+            className="text-[11px] px-3 py-1.5 rounded-lg"
+            style={{
+              background: showViewer ? 'rgba(99,102,241,0.3)' : 'rgba(99,102,241,0.12)',
+              color: '#a5b4fc',
+              border: '1px solid rgba(99,102,241,0.3)',
+              cursor: 'pointer',
+            }}
+          >
+            {showViewer ? '▼ 뷰어 닫기' : '🎬 애니메이션 뷰어 열기'}
+          </button>
+        </div>
+      )}
+
+      {/* 인라인 3D 뷰어 + 애니메이션 */}
+      {showViewer && (
+        <div style={{ position: 'relative' }}>
+          <FbxViewerLazy
+            url={tc.modelUrl}
+            filename={tc.label}
+            modelPath={tc.modelPath}
+            animationUrls={tc.animations}
+          />
+        </div>
+      )}
+
+      {/* 에러 표시 */}
+      {hasError && (
+        <div className="px-3 pb-3 text-[11px]" style={{ color: '#f87171' }}>{tc.error}</div>
+      )}
+
+      {/* 경로 표시 */}
+      <div className="px-3 pb-2">
+        <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>{tc.modelPath}</span>
+      </div>
+    </div>
+  );
+}
+
 function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'schema_card') return <TableSchemaCard tc={tc} />;
   if (tc.kind === 'git_history') return <GitHistoryCard tc={tc} />;
@@ -4500,6 +4620,7 @@ function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'asset_search') return <AssetSearchCard tc={tc} />;
   if (tc.kind === 'scene_yaml') return <SceneYamlCard tc={tc} />;
   if (tc.kind === 'prefab_preview') return <PrefabPreviewCard tc={tc} />;
+  if (tc.kind === 'fbx_animation') return <FbxAnimationCard tc={tc} />;
   if (tc.kind === 'jira_search') return <JiraSearchCard tc={tc} />;
   if (tc.kind === 'jira_issue') return <JiraIssueCard tc={tc} />;
   if (tc.kind === 'confluence_search') return <ConfluenceSearchCard tc={tc} />;

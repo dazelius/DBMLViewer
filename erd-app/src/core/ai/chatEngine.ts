@@ -408,7 +408,18 @@ export interface PrefabPreviewResult {
   error?: string;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult | JiraSearchResult | JiraIssueResult | ConfluenceSearchResult | ConfluencePageResult | SceneYamlResult | PrefabPreviewResult;
+export interface FbxAnimationResult {
+  kind: 'fbx_animation';
+  label: string;
+  modelPath: string;
+  modelUrl: string;
+  animations: { name: string; url: string; category?: string }[];
+  totalAnimations: number;
+  categories: string[];
+  error?: string;
+}
+
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult | JiraSearchResult | JiraIssueResult | ConfluenceSearchResult | ConfluencePageResult | SceneYamlResult | PrefabPreviewResult | FbxAnimationResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -678,6 +689,38 @@ const TOOLS = [
         },
       },
       required: ['path'],
+    },
+  },
+  {
+    name: 'preview_fbx_animation',
+    description:
+      'FBX 캐릭터 모델에 애니메이션 FBX를 적용하여 3D 뷰어에서 실시간 재생합니다. ' +
+      '캐릭터 모델(.fbx)과 애니메이션(.fbx)을 함께 로드하여 걷기/달리기/공격/사망 등의 애니메이션을 시뮬레이션할 수 있습니다. ' +
+      'search_assets(ext="fbx")로 모델 경로를 먼저 확인한 후, model_path에 모델 경로를 넣으면 자동으로 관련 애니메이션을 검색합니다. ' +
+      '결과는 ChatUI에서 3D 뷰어 + 애니메이션 재생 컨트롤러로 표시됩니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        model_path: {
+          type: 'string',
+          description: 'FBX 모델 파일 경로. 예: "DevAssets(not packed)/_3DModel/musket/base_rig.fbx"',
+        },
+        animation_paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '재생할 애니메이션 FBX 파일 경로 배열 (선택). 비워두면 모델에 관련된 모든 애니메이션을 자동 검색합니다.',
+        },
+        categories: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '필요한 애니메이션 카테고리만 필터링. 예: ["idle","combat","skill"]. 가능한 값: idle, walk, locomotion, jump, combat, skill, hit, dodge, reload, interaction, other. 비워두면 전체.',
+        },
+        label: {
+          type: 'string',
+          description: '뷰어에 표시할 이름 (생략 시 모델 파일명 사용)',
+        },
+      },
+      required: ['model_path'],
     },
   },
   {
@@ -953,6 +996,15 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- 먼저 filter/search 없이 호출하면 씬 구성 요약(타입별 섹션 개수)을 볼 수 있음');
   lines.push('- 섹션이 많으면 offset/limit로 페이지네이션 (기본 20개씩)');
   lines.push('- Unity YAML 섹션 타입: !u!1=GameObject, !u!4=Transform, !u!33=MeshFilter, !u!114=MonoBehaviour, !u!1001=PrefabInstance 등');
+  lines.push('');
+  lines.push('[FBX 애니메이션 뷰어 — preview_fbx_animation 도구]');
+  lines.push('- 캐릭터 애니메이션을 보여달라는 요청 → search_assets(ext="fbx")로 모델 검색 → preview_fbx_animation(model_path=...) 호출');
+  lines.push('- 모델에 관련된 애니메이션을 자동 검색하여 3D 뷰어 + 애니메이션 플레이어로 표시');
+  lines.push('- 애니메이션 카테고리: idle, walk, locomotion, jump, combat, skill, hit, dodge, reload, interaction');
+  lines.push('- 주요 모델 경로: _3DModel/ 하위 (musket/, striker/, vanguard/, Agent/, Mechanic/ 등)');
+  lines.push('- 주요 애니메이션 경로: _Animation/ 하위 (musket/ 등)');
+  lines.push('- 아티팩트 HTML에서 애니메이션 임베드: <div data-embed="fbx-anim" data-model="모델경로" data-label="이름"></div>');
+  lines.push('  → 아티팩트에서 인라인 3D 뷰어 + 애니메이션 사이드패널이 직접 표시됨 (480px 높이)');
   lines.push('');
   lines.push('[Unity .prefab 프리팹 뷰어 — preview_prefab 도구]');
   lines.push('⚠️ 프리팹 embed 태그도 채팅 텍스트에 직접 출력 금지! 반드시 create_artifact html 안에만!');
@@ -1692,6 +1744,7 @@ export async function sendChatMessage(
         search_assets: '🎨 에셋 검색',
         get_scene_yaml: '🎮 씬 데이터 조회',
         preview_prefab: '🧩 프리펩 미리보기',
+        preview_fbx_animation: '🎬 애니메이션 미리보기',
         get_character_profile: '👤 캐릭터 프로필 조회',
       };
 
@@ -1712,6 +1765,7 @@ export async function sendChatMessage(
           : tb.name === 'search_assets' ? String(inp.query ?? '')
           : tb.name === 'get_scene_yaml' ? String(inp.path ?? '')
           : tb.name === 'preview_prefab' ? String(inp.path ?? '')
+          : tb.name === 'preview_fbx_animation' ? String(inp.model_path ?? '')
           : tb.name === 'get_character_profile' ? String(inp.character_id ?? '')
           : undefined;
         onThinkingUpdate?.({ type: 'tool_start', iteration: i + 1, maxIterations: MAX_ITERATIONS, toolName: tb.name, toolLabel, detail: toolDetail, timestamp: Date.now() });
@@ -2351,6 +2405,70 @@ function showTab(id){
             } catch (e) {
               resultStr = `프리팹 미리보기 실패: ${String(e)}`;
               tc = { kind: 'prefab_preview', label, prefabPath, error: String(e) } as PrefabPreviewResult;
+            }
+          }
+        }
+
+        // ── preview_fbx_animation ──
+        else if (tb.name === 'preview_fbx_animation') {
+          const modelPathVal = String(inp.model_path ?? '');
+          const label = String(inp.label ?? modelPathVal.split('/').pop()?.replace(/\.fbx$/i, '') ?? 'FBX Animation');
+          const animPaths = Array.isArray(inp.animation_paths) ? (inp.animation_paths as string[]) : [];
+          const catFilter = Array.isArray(inp.categories) ? (inp.categories as string[]).map(c => c.toLowerCase()) : [];
+
+          if (!modelPathVal) {
+            resultStr = 'model_path 파라미터가 필요합니다. search_assets(ext="fbx")로 모델 경로를 먼저 확인하세요.';
+            tc = { kind: 'fbx_animation', label, modelPath: '', modelUrl: '', animations: [], totalAnimations: 0, categories: [], error: resultStr } as FbxAnimationResult;
+          } else {
+            try {
+              // 모델 URL 생성
+              const modelUrl = `/api/assets/file?path=${encodeURIComponent(modelPathVal)}`;
+
+              // 애니메이션 목록: 직접 지정했으면 사용, 아니면 API로 자동 검색
+              let animList: { name: string; url: string; category?: string }[] = [];
+              let categories: string[] = [];
+
+              if (animPaths.length > 0) {
+                animList = animPaths.map(p => ({
+                  name: p.split('/').pop()?.replace(/\.fbx$/i, '') ?? p,
+                  url: `/api/assets/file?path=${encodeURIComponent(p)}`,
+                  category: 'other',
+                }));
+              } else {
+                // 자동 검색
+                const resp = await fetch(`/api/assets/animations?model=${encodeURIComponent(modelPathVal)}`);
+                if (resp.ok) {
+                  const data = await resp.json() as { animations: { name: string; url: string; category?: string }[]; total: number; categories: string[] };
+                  animList = data.animations ?? [];
+                  categories = data.categories ?? [];
+                }
+              }
+
+              // 카테고리 필터 적용 (사용자가 필요한 것만 바인딩)
+              if (catFilter.length > 0) {
+                animList = animList.filter(a => catFilter.includes((a.category ?? 'other').toLowerCase()));
+              }
+
+              categories = categories.length > 0 ? categories : [...new Set(animList.map(a => a.category ?? 'other'))];
+
+              resultStr = `FBX 애니메이션 뷰어: ${label}\n` +
+                `모델: ${modelPathVal}\n` +
+                `애니메이션: ${animList.length}개 발견 (${categories.join(', ')})\n` +
+                `3D 뷰어 + 애니메이션 플레이어가 ChatUI에 표시됩니다.\n\n` +
+                `아티팩트 임베드: <div data-embed="fbx-anim" data-model="${modelPathVal}" data-label="${label}"></div>`;
+
+              tc = {
+                kind: 'fbx_animation',
+                label,
+                modelPath: modelPathVal,
+                modelUrl,
+                animations: animList,
+                totalAnimations: animList.length,
+                categories,
+              } as FbxAnimationResult;
+            } catch (e) {
+              resultStr = `애니메이션 미리보기 실패: ${String(e)}`;
+              tc = { kind: 'fbx_animation', label, modelPath: modelPathVal, modelUrl: '', animations: [], totalAnimations: 0, categories: [], error: String(e) } as FbxAnimationResult;
             }
           }
         }
