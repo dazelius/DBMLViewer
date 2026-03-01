@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect, lazy, Suspense } from 'react';
 import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import Toolbar from '../components/Layout/Toolbar.tsx';
@@ -37,6 +37,8 @@ import {
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
 import type { ParsedSchema } from '../core/schema/types.ts';
+
+const MiniRagGraph = lazy(() => import('../components/Chat/MiniRagGraph.tsx'));
 
 // ── HTML 압축 (수정 요청 시 스타일/스크립트 제거 → 입력 토큰 절약) ─────────────
 function compressHtmlForEdit(html: string): string {
@@ -804,8 +806,8 @@ function renderMarkdown(text: string): React.ReactNode[] {
         >
           {/* 코드블록 헤더 바 */}
           <div
-            className="flex items-center justify-between px-4 py-1.5"
-            style={{ background: 'rgba(255,255,255,0.04)', borderBottom: '1px solid var(--border-color)' }}
+            className="flex items-center justify-between"
+            style={{ background: 'rgba(255,255,255,0.04)', borderBottom: '1px solid var(--border-color)', padding: '8px 18px' }}
           >
             <span className="text-[11px] font-mono font-semibold" style={{ color: '#7c8b9a' }}>
               {lang || 'code'}
@@ -817,8 +819,8 @@ function renderMarkdown(text: string): React.ReactNode[] {
             </div>
           </div>
           <pre
-            className="px-5 py-4 overflow-x-auto text-[13px] leading-relaxed"
-            style={{ fontFamily: 'var(--font-mono)', color: '#e2e8f0', margin: 0, background: 'transparent' }}
+            className="overflow-x-auto text-[13px] leading-relaxed"
+            style={{ fontFamily: 'var(--font-mono)', color: '#e2e8f0', margin: 0, background: 'transparent', padding: '16px 20px' }}
           >
             {codeLines.join('\n')}
           </pre>
@@ -855,7 +857,7 @@ function renderMarkdown(text: string): React.ReactNode[] {
     }
     if (line.startsWith('### ')) {
       nodes.push(
-        <h3 key={i} className="text-[13px] font-bold mt-4 mb-1" style={{ color: 'var(--text-primary)' }}>
+        <h3 key={i} className="text-[13px] font-bold mt-4 mb-1.5" style={{ color: 'var(--text-primary)' }}>
           {inlineMarkdown(line.slice(4))}
         </h3>,
       );
@@ -864,7 +866,7 @@ function renderMarkdown(text: string): React.ReactNode[] {
     }
     if (line.startsWith('## ')) {
       nodes.push(
-        <h2 key={i} className="text-[14px] font-bold mt-4 mb-1" style={{ color: 'var(--text-primary)' }}>
+        <h2 key={i} className="text-[14px] font-bold mt-5 mb-2" style={{ color: 'var(--text-primary)' }}>
           {inlineMarkdown(line.slice(3))}
         </h2>,
       );
@@ -873,7 +875,7 @@ function renderMarkdown(text: string): React.ReactNode[] {
     }
     if (line.startsWith('# ')) {
       nodes.push(
-        <h1 key={i} className="text-[15px] font-bold mt-4 mb-2" style={{ color: 'var(--text-primary)' }}>
+        <h1 key={i} className="text-[15px] font-bold mt-5 mb-2.5" style={{ color: 'var(--text-primary)' }}>
           {inlineMarkdown(line.slice(2))}
         </h1>,
       );
@@ -889,9 +891,9 @@ function renderMarkdown(text: string): React.ReactNode[] {
         i++;
       }
       nodes.push(
-        <ul key={i} className="my-1 pl-4 space-y-0.5" style={{ listStyleType: 'disc' }}>
+        <ul key={i} className="my-2 pl-5 space-y-1" style={{ listStyleType: 'disc' }}>
           {items.map((item, j) => (
-            <li key={j} className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+            <li key={j} className="text-[13px]" style={{ color: 'var(--text-secondary)', paddingLeft: 4 }}>
               {inlineMarkdown(item)}
             </li>
           ))}
@@ -908,9 +910,9 @@ function renderMarkdown(text: string): React.ReactNode[] {
         i++;
       }
       nodes.push(
-        <ol key={i} className="my-1 pl-4 space-y-0.5" style={{ listStyleType: 'decimal' }}>
+        <ol key={i} className="my-2 pl-5 space-y-1" style={{ listStyleType: 'decimal' }}>
           {items.map((item, j) => (
-            <li key={j} className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+            <li key={j} className="text-[13px]" style={{ color: 'var(--text-secondary)', paddingLeft: 4 }}>
               {inlineMarkdown(item)}
             </li>
           ))}
@@ -945,8 +947,8 @@ function renderMarkdown(text: string): React.ReactNode[] {
                   {headerRow.map((cell, ci) => (
                     <th
                       key={ci}
-                      className="px-3 py-2 text-left font-semibold whitespace-nowrap"
-                      style={{ color: 'var(--text-primary)', borderBottom: '2px solid var(--border-color)' }}
+                      className="text-left font-semibold whitespace-nowrap"
+                      style={{ color: 'var(--text-primary)', borderBottom: '2px solid var(--border-color)', padding: '10px 16px' }}
                     >
                       {inlineMarkdown(cell)}
                     </th>
@@ -973,8 +975,7 @@ function renderMarkdown(text: string): React.ReactNode[] {
                     return (
                       <td
                         key={ci}
-                        className="px-3 py-2"
-                        style={{ color: ci === 0 ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                        style={{ color: ci === 0 ? 'var(--text-primary)' : 'var(--text-secondary)', padding: '9px 16px' }}
                       >
                         {looksLikeTableName(rawCell)
                           ? <TableNameLink name={rawCell} />
@@ -1038,14 +1039,14 @@ function renderMarkdown(text: string): React.ReactNode[] {
 
     // 빈 줄
     if (line.trim() === '') {
-      nodes.push(<div key={i} className="h-2" />);
+      nodes.push(<div key={i} className="h-3" />);
       i++;
       continue;
     }
 
     // 일반 텍스트
     nodes.push(
-      <p key={i} className="text-[13px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+      <p key={i} className="text-[13px] leading-relaxed my-0.5" style={{ color: 'var(--text-secondary)' }}>
         {inlineMarkdown(line)}
       </p>,
     );
@@ -1333,8 +1334,8 @@ function inlineMarkdown(text: string): React.ReactNode {
         );
       } else {
         segments.push(
-          <code key={key++} className="px-1 py-0.5 rounded text-[12px]"
-                style={{ background: 'var(--bg-secondary)', color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>
+          <code key={key++} className="rounded text-[12px]"
+                style={{ background: 'var(--bg-secondary)', color: 'var(--accent)', fontFamily: 'var(--font-mono)', padding: '2px 7px' }}>
             {codeText}
           </code>,
         );
@@ -2379,7 +2380,7 @@ ul,ol{padding-left:1.4em;margin:.4em 0}a{color:#818cf8;text-decoration:none}
 .tag{background:rgba(99,102,241,0.15);color:#818cf8;padding:2px 6px;border-radius:4px;font-size:11px}
 code{background:#1e293b;padding:1px 5px;border-radius:3px;font-size:12px;font-family:monospace;color:#a5b4fc}
 pre{background:#1e293b;border:1px solid #334155;border-radius:6px;padding:12px;overflow-x:auto;font-size:12px;line-height:1.6}
-blockquote{border-left:3px solid #6366f1;margin:0;padding:4px 12px;background:rgba(99,102,241,.05);color:#94a3b8}
+blockquote{border-left:3px solid #6366f1;margin:8px 0;padding:10px 18px;background:rgba(99,102,241,.05);color:#94a3b8;border-radius:0 8px 8px 0}
 hr{border:none;border-top:1px solid #334155;margin:16px 0}
 </style>
 <script>
@@ -3446,17 +3447,18 @@ function CodeSearchCard({ tc }: { tc: CodeSearchResult }) {
   const hasResults = (tc.results?.length ?? 0) > 0 || (tc.contentHits?.length ?? 0) > 0;
 
   return (
-    <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+    <div className="rounded-xl overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(34,211,238,0.2)' }}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left"
+        className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left"
         style={{ background: 'transparent' }}
       >
-        {/* 코드 아이콘 */}
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: '#22d3ee', flexShrink: 0 }}>
-          <polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" />
-        </svg>
-        <span className="text-[11px] font-medium flex-1 min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
+        <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(34,211,238,0.12)' }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: '#22d3ee' }}>
+            <polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" />
+          </svg>
+        </div>
+        <span className="text-[12px] font-medium flex-1 min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
           코드 검색: &quot;{tc.query}&quot;
           {tc.searchType === 'content' ? ' (전문검색)' : ' (인덱스)'}
         </span>
@@ -3480,19 +3482,19 @@ function CodeSearchCard({ tc }: { tc: CodeSearchResult }) {
       {expanded && (
         <div className="px-3 pb-3">
           {tc.error ? (
-            <div className="text-[11px] px-3 py-2 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>{tc.error}</div>
+            <div className="text-[11px] rounded-lg" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171', padding: '10px 16px' }}>{tc.error}</div>
           ) : tc.searchType === 'content' ? (
             /* 전문 검색 결과 */
             <div className="space-y-2">
               {(tc.contentHits ?? []).map((hit, i) => (
-                <div key={i} className="rounded-md overflow-hidden" style={{ border: '1px solid var(--border-color)' }}>
-                  <div className="px-3 py-1.5 flex items-center gap-2" style={{ background: 'var(--bg-tertiary)' }}>
+                <div key={i} className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border-color)' }}>
+                  <div className="flex items-center gap-2" style={{ background: 'var(--bg-tertiary)', padding: '8px 14px' }}>
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#22d3ee', flexShrink: 0 }}>
                       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
                     </svg>
                     <span className="text-[10px] font-mono" style={{ color: 'var(--text-primary)' }}>{hit.path}</span>
                   </div>
-                  <div className="px-3 py-2">
+                  <div style={{ padding: '10px 14px' }}>
                     {hit.matches.slice(0, 5).map((m, j) => (
                       <div key={j} className="flex gap-2 mb-1">
                         <span className="text-[10px] font-mono flex-shrink-0 w-8 text-right" style={{ color: 'var(--text-muted)' }}>L{m.line}</span>
@@ -3641,7 +3643,7 @@ function CodeFileCard({ tc }: { tc: CodeFileResult }) {
       {expanded && (
         <div className="px-3 pb-3">
           {tc.error ? (
-            <div className="text-[11px] px-3 py-2 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>{tc.error}</div>
+            <div className="text-[11px] rounded-lg" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171', padding: '10px 16px' }}>{tc.error}</div>
           ) : (
             <>
               {/* 메타 배지 */}
@@ -3685,17 +3687,18 @@ function CodeGuideCard({ tc }: { tc: CodeGuideResult }) {
   const lineCount = tc.text.split('\n').length;
 
   return (
-    <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${isError ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.3)'}` }}>
+    <div className="rounded-xl overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${isError ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.2)'}` }}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left"
+        className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left"
         style={{ background: 'transparent' }}
       >
-        {/* 책 아이콘 */}
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: '#818cf8', flexShrink: 0 }}>
-          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-        </svg>
-        <span className="text-[11px] font-medium flex-1 min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
+        <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0" style={{ background: isError ? 'rgba(239,68,68,0.12)' : 'rgba(99,102,241,0.12)' }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: isError ? '#f87171' : '#818cf8' }}>
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+          </svg>
+        </div>
+        <span className="text-[12px] font-medium flex-1 min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
           {tc.label}
         </span>
         <span className="text-[10px] px-2 py-0.5 rounded-full flex-shrink-0" style={{
@@ -3713,12 +3716,13 @@ function CodeGuideCard({ tc }: { tc: CodeGuideResult }) {
       {expanded && (
         <div className="px-3 pb-3">
           <div
-            className="text-[11px] font-mono overflow-auto rounded-md p-3 max-h-[480px] leading-[1.6] whitespace-pre-wrap"
+            className="text-[11px] font-mono overflow-auto rounded-lg max-h-[480px] leading-[1.6] whitespace-pre-wrap"
             style={{
               background: 'var(--bg-primary)',
               border: '1px solid var(--border-color)',
               color: 'var(--text-secondary)',
               fontFamily: '"JetBrains Mono","Cascadia Code","Consolas",monospace',
+              padding: '14px 18px',
             }}
           >
             {tc.text}
@@ -3756,25 +3760,30 @@ function JiraSearchCard({ tc }: { tc: JiraSearchResult }) {
     return '🎫';
   };
   return (
-    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
-      <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: 'rgba(37,99,235,0.15)', borderBottom: '1px solid var(--border)' }}>
-        <span style={{ color: '#60a5fa', fontSize: 16 }}>🔵</span>
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(37,99,235,0.25)' }}>
+      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: 'rgba(37,99,235,0.12)', borderBottom: '1px solid rgba(37,99,235,0.18)' }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(37,99,235,0.2)' }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ color: '#60a5fa' }}>
+            <path d="M11.53 2c0 4.97 3.23 8.44 8.47 8.44v2.27c-5.24 0-8.47 3.47-8.47 8.44h-2.27c0-4.97-3.23-8.44-8.47-8.44v-2.27c5.24 0 8.47-3.47 8.47-8.44h2.27z" fill="currentColor" opacity="0.6"/>
+            <path d="M12.68 2.86L21.14 10.47a1.5 1.5 0 0 1 0 2.16l-8.46 7.61c-.42.38-1.07.38-1.49 0L2.73 12.63a1.5 1.5 0 0 1 0-2.16l8.46-7.61c.42-.38 1.07-.38 1.49 0z" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+          </svg>
+        </div>
         <span className="font-semibold text-[13px]" style={{ color: '#60a5fa' }}>Jira 검색</span>
-        <span className="ml-auto text-[11px] font-mono px-2 py-0.5 rounded" style={{ background: 'rgba(96,165,250,0.15)', color: '#60a5fa' }}>
+        <span className="ml-auto text-[11px] font-mono px-2.5 py-1 rounded-md" style={{ background: 'rgba(96,165,250,0.15)', color: '#60a5fa' }}>
           {tc.total}건
         </span>
         {tc.duration && <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{tc.duration.toFixed(0)}ms</span>}
       </div>
-      <div className="px-3 py-2">
-        <div className="text-[11px] font-mono px-2 py-1 rounded mb-2" style={{ background: 'var(--bg-primary)', color: 'var(--text-muted)' }}>{tc.jql}</div>
+      <div className="px-4 py-3">
+        <div className="text-[11px] font-mono rounded-lg mb-3" style={{ background: 'var(--bg-primary)', color: 'var(--text-muted)', padding: '10px 16px' }}>{tc.jql}</div>
         {tc.error ? (
-          <div className="text-[12px] px-3 py-2 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>{tc.error}</div>
+          <div className="text-[12px] rounded-lg" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171', padding: '10px 16px' }}>{tc.error}</div>
         ) : tc.issues.length === 0 ? (
           <div className="text-[12px] text-center py-3" style={{ color: 'var(--text-muted)' }}>결과 없음</div>
         ) : (
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             {tc.issues.map((iss) => (
-              <div key={iss.key} className="flex items-start gap-2 px-2 py-2 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+              <div key={iss.key} className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
                 <span style={{ fontSize: 13 }}>{typeIcon(iss.issuetype)}</span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 mb-0.5">
@@ -3864,9 +3873,11 @@ function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
     return '#a3a3a3';
   })();
   return (
-    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
-      <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: 'rgba(37,99,235,0.15)', borderBottom: '1px solid var(--border)' }}>
-        <span style={{ color: '#60a5fa', fontSize: 16 }}>🎫</span>
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(37,99,235,0.25)' }}>
+      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: 'rgba(37,99,235,0.12)', borderBottom: '1px solid rgba(37,99,235,0.18)' }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(37,99,235,0.2)' }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 12l2 2 4-4"/></svg>
+        </div>
         {tc.url ? (
           <a href={tc.url} target="_blank" rel="noopener noreferrer" className="font-semibold text-[13px] font-mono hover:underline" style={{ color: '#60a5fa' }}>{tc.issueKey}</a>
         ) : (
@@ -3880,9 +3891,9 @@ function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
       {tc.error ? (
         <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{tc.error}</div>
       ) : (
-        <div className="px-4 py-3 space-y-2">
+        <div className="px-4 py-4 space-y-3">
           <div className="font-semibold text-[14px]" style={{ color: 'var(--text-primary)' }}>{tc.summary}</div>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px]">
             {[
               ['유형', tc.issuetype], ['우선순위', tc.priority],
               ['담당자', tc.assignee], ['보고자', tc.reporter],
@@ -3897,7 +3908,7 @@ function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
           {tc.description && (() => {
             const desc = cleanAdfText(tc.description);
             return desc ? (
-              <div className="text-[12px] p-2 rounded" style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', maxHeight: 160, overflowY: 'auto' }}>
+              <div className="text-[12px] rounded-lg" style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', maxHeight: 160, overflowY: 'auto', padding: '12px 16px' }}>
                 {renderMarkdown(desc.slice(0, 600) + (desc.length > 600 ? '\n…' : ''))}
               </div>
             ) : null;
@@ -3912,7 +3923,7 @@ function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
                   {tc.comments.map((c, i) => {
                     const body = cleanAdfText(c.body);
                     return (
-                      <div key={i} className="px-2 py-1.5 rounded text-[11px]" style={{ background: 'var(--bg-primary)' }}>
+                      <div key={i} className="rounded-lg text-[11px]" style={{ background: 'var(--bg-primary)', padding: '10px 14px' }}>
                         <div className="font-semibold mb-0.5" style={{ color: '#60a5fa' }}>{c.author} <span style={{ color: 'var(--text-muted)', fontWeight: 'normal' }}>{c.created?.slice(0,10)}</span></div>
                         <div style={{ color: 'var(--text-secondary)' }}>{renderMarkdown(body)}</div>
                       </div>
@@ -3931,24 +3942,36 @@ function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
 // ── ConfluenceSearchCard ──────────────────────────────────────────────────────
 function ConfluenceSearchCard({ tc }: { tc: ConfluenceSearchResult }) {
   return (
-    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
-      <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: 'rgba(23,162,184,0.15)', borderBottom: '1px solid var(--border)' }}>
-        <span style={{ color: '#67e8f9', fontSize: 16 }}>📄</span>
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(23,162,184,0.25)' }}>
+      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: 'rgba(23,162,184,0.1)', borderBottom: '1px solid rgba(23,162,184,0.18)' }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(23,162,184,0.2)' }}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ color: '#67e8f9' }}>
+            <path d="M4 4h5v5H4V4z" stroke="currentColor" strokeWidth="1.5" fill="currentColor" fillOpacity="0.2"/>
+            <path d="M4 15h5v5H4v-5z" stroke="currentColor" strokeWidth="1.5" fill="currentColor" fillOpacity="0.2"/>
+            <path d="M15 4h5v5h-5V4z" stroke="currentColor" strokeWidth="1.5" fill="currentColor" fillOpacity="0.2"/>
+            <path d="M15 15h5v5h-5v-5z" stroke="currentColor" strokeWidth="1.5" fill="currentColor" fillOpacity="0.2"/>
+            <path d="M9 6.5h6M9 17.5h6M6.5 9v6M17.5 9v6" stroke="currentColor" strokeWidth="1.2" opacity="0.5"/>
+          </svg>
+        </div>
         <span className="font-semibold text-[13px]" style={{ color: '#67e8f9' }}>Confluence 검색</span>
-        <span className="ml-auto text-[11px] font-mono px-2 py-0.5 rounded" style={{ background: 'rgba(103,232,249,0.15)', color: '#67e8f9' }}>{tc.total}건</span>
+        <span className="ml-auto text-[11px] font-mono px-2.5 py-1 rounded-md" style={{ background: 'rgba(103,232,249,0.15)', color: '#67e8f9' }}>{tc.total}건</span>
         {tc.duration && <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{tc.duration.toFixed(0)}ms</span>}
       </div>
-      <div className="px-3 py-2">
-        <div className="text-[11px] font-mono px-2 py-1 rounded mb-2" style={{ background: 'var(--bg-primary)', color: 'var(--text-muted)' }}>{tc.cql}</div>
+      <div className="px-4 py-3">
+        <div className="text-[11px] font-mono rounded-lg mb-3" style={{ background: 'var(--bg-primary)', color: 'var(--text-muted)', padding: '10px 16px' }}>{tc.cql}</div>
         {tc.error ? (
-          <div className="text-[12px] px-3 py-2 rounded" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>{tc.error}</div>
+          <div className="text-[12px] rounded-lg" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171', padding: '10px 16px' }}>{tc.error}</div>
         ) : tc.pages.length === 0 ? (
           <div className="text-[12px] text-center py-3" style={{ color: 'var(--text-muted)' }}>결과 없음</div>
         ) : (
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             {tc.pages.map((p) => (
-              <div key={p.id} className="flex items-center gap-2 px-2 py-2 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
-                <span style={{ fontSize: 12 }}>{p.type === 'blogpost' ? '📝' : '📄'}</span>
+              <div key={p.id} className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+                <div className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(103,232,249,0.1)' }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#67e8f9" strokeWidth="2" strokeLinecap="round">
+                    {p.type === 'blogpost' ? <><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></> : <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></>}
+                  </svg>
+                </div>
                 <div className="flex-1 min-w-0">
                   {p.url ? (
                     <a href={p.url} target="_blank" rel="noopener noreferrer"
@@ -4054,9 +4077,13 @@ function ConfluencePageCard({ tc }: { tc: ConfluencePageResult }) {
   const [showHtml, setShowHtml] = useState(false);
   const textContent = tc.htmlContent?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 800) ?? '';
   return (
-    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
-      <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: 'rgba(23,162,184,0.15)', borderBottom: '1px solid var(--border)' }}>
-        <span style={{ color: '#67e8f9', fontSize: 16 }}>📋</span>
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(23,162,184,0.25)' }}>
+      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: 'rgba(23,162,184,0.1)', borderBottom: '1px solid rgba(23,162,184,0.18)' }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(23,162,184,0.2)' }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#67e8f9" strokeWidth="2" strokeLinecap="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+        </div>
         <span className="font-semibold text-[13px]" style={{ color: '#67e8f9' }}>Confluence 페이지</span>
         {tc.space && <span className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'rgba(103,232,249,0.1)', color: '#67e8f9' }}>{tc.space}</span>}
         {tc.media && tc.media.length > 0 && (
@@ -4088,7 +4115,7 @@ function ConfluencePageCard({ tc }: { tc: ConfluencePageResult }) {
             <ConfluenceMediaSection media={tc.media} />
           )}
           {textContent && (
-            <div className="text-[12px] p-2 rounded" style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', maxHeight: 160, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+            <div className="text-[12px] rounded-lg" style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', maxHeight: 160, overflowY: 'auto', whiteSpace: 'pre-wrap', padding: '12px 16px' }}>
               {textContent}{(tc.htmlContent?.length ?? 0) > 800 ? '…' : ''}
             </div>
           )}
@@ -4187,12 +4214,14 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
   const otherFiles  = tc.files.filter(f => !['fbx','png','jpg','jpeg','tga','gif','bmp','wav','mp3','ogg','flac','m4a','unity','prefab'].includes(f.ext?.toLowerCase() ?? ''));
 
   return (
-    <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${hasError ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.3)'}` }}>
+    <div className="rounded-xl overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${hasError ? 'rgba(239,68,68,0.25)' : 'rgba(99,102,241,0.2)'}` }}>
       {/* 헤더 */}
-      <div className="flex items-center gap-2 px-3 py-2" style={{ background: hasError ? 'rgba(239,68,68,0.08)' : 'rgba(99,102,241,0.08)' }}>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={hasError ? '#f87171' : '#818cf8'} strokeWidth="2">
-          <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
-        </svg>
+      <div className="flex items-center gap-2.5 px-4 py-2.5" style={{ background: hasError ? 'rgba(239,68,68,0.06)' : 'rgba(99,102,241,0.06)' }}>
+        <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0" style={{ background: hasError ? 'rgba(239,68,68,0.15)' : 'rgba(99,102,241,0.15)' }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={hasError ? '#f87171' : '#818cf8'} strokeWidth="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
+          </svg>
+        </div>
         <span className="text-[12px] font-semibold" style={{ color: hasError ? '#f87171' : '#818cf8' }}>
           에셋 검색: {tc.query}{tc.ext ? ` [.${tc.ext}]` : ''}
         </span>
@@ -4736,20 +4765,22 @@ function DataQueryCard({ tc, index }: { tc: DataQueryResult; index: number }) {
 
   return (
     <div
-      className="rounded-lg overflow-hidden mb-2"
-      style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}
+      className="rounded-xl overflow-hidden mb-2"
+      style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(99,102,241,0.2)' }}
     >
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left"
+        className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left"
         style={{ background: 'transparent' }}
       >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: 'var(--accent)', flexShrink: 0 }}>
-          <ellipse cx="12" cy="5" rx="9" ry="3" />
-          <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
-          <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
-        </svg>
-        <span className="text-[11px] font-medium flex-1 min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
+        <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(99,102,241,0.12)' }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: 'var(--accent)' }}>
+            <ellipse cx="12" cy="5" rx="9" ry="3" />
+            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+          </svg>
+        </div>
+        <span className="text-[12px] font-medium flex-1 min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
           {tc.reason || `Query ${index + 1}`}
         </span>
         <span
@@ -4776,25 +4807,25 @@ function DataQueryCard({ tc, index }: { tc: DataQueryResult; index: number }) {
 
       {expanded && (
         <div style={{ borderTop: '1px solid var(--border-color)' }}>
-          <div className="px-3 py-2">
-            <div className="text-[10px] font-semibold mb-1 uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>SQL</div>
+          <div style={{ padding: '12px 16px' }}>
+            <div className="text-[10px] font-semibold mb-1.5 uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>SQL</div>
             <pre className="text-[11px] overflow-x-auto whitespace-pre-wrap" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
               {tc.sql}
             </pre>
           </div>
           {tc.error && (
-            <div className="mx-3 mb-2 px-3 py-2 rounded text-[11px]" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>
+            <div className="mx-3 mb-2 rounded-lg text-[11px]" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171', padding: '10px 16px' }}>
               {tc.error}
             </div>
           )}
           {!tc.error && tc.rows.length > 0 && (
-            <div className="overflow-x-auto mx-3 mb-2 rounded" style={{ border: '1px solid var(--border-color)' }}>
+            <div className="overflow-x-auto mx-4 mb-3 rounded-lg" style={{ border: '1px solid var(--border-color)' }}>
               <table className="text-[11px] w-full" style={{ borderCollapse: 'collapse' }}>
                 <thead>
                   <tr style={{ background: 'var(--bg-hover)' }}>
                     {tc.columns.map((col) => (
-                      <th key={col} className="px-2 py-1 text-left font-semibold whitespace-nowrap"
-                        style={{ color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
+                      <th key={col} className="text-left font-semibold whitespace-nowrap"
+                        style={{ color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)', padding: '8px 14px' }}>
                         {col}
                       </th>
                     ))}
@@ -4804,8 +4835,8 @@ function DataQueryCard({ tc, index }: { tc: DataQueryResult; index: number }) {
                   {tc.rows.slice(0, 10).map((row, ri) => (
                     <tr key={ri} style={{ borderBottom: '1px solid var(--border-color)', background: ri % 2 === 0 ? 'transparent' : 'var(--bg-hover)' }}>
                       {tc.columns.map((col) => (
-                        <td key={col} className="px-2 py-1 whitespace-nowrap max-w-[200px] overflow-hidden text-ellipsis"
-                          style={{ color: 'var(--text-secondary)' }} title={String(row[col] ?? '')}>
+                        <td key={col} className="whitespace-nowrap max-w-[200px] overflow-hidden text-ellipsis"
+                          style={{ color: 'var(--text-secondary)', padding: '7px 14px' }} title={String(row[col] ?? '')}>
                           {String(row[col] ?? '')}
                         </td>
                       ))}
@@ -4998,12 +5029,12 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
 
   return (
     <div
-      className="rounded-lg overflow-hidden mt-1 mb-1 transition-all"
+      className="rounded-xl overflow-hidden mt-3 mb-1 transition-all"
       style={{ border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}
     >
       <button
         onClick={() => setExpanded(e => !e)}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-white/[0.02]"
+        className="w-full flex items-center gap-2.5 px-4 py-2 text-left transition-colors hover:bg-white/[0.02]"
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0" style={{ stroke: '#818cf8' }}>
           <path d="M12 2v20M2 12h20M6 6l12 12M18 6L6 18" />
@@ -5033,7 +5064,7 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
       </button>
 
       {expanded && (
-        <div className="px-3 pb-2.5 pt-0.5 space-y-2">
+        <div className="px-4 pb-3 pt-1 space-y-2.5">
           {/* 큰 바 + 범례 */}
           <div className="flex items-center gap-3" style={{ height: 20 }}>
             <div className="flex-1 h-3 rounded-full overflow-hidden flex" style={{ background: 'rgba(255,255,255,0.06)' }}>
@@ -5158,7 +5189,7 @@ function ThinkingPanel({ steps, isActive }: { steps: ThinkingStepUI[]; isActive:
 
   return (
     <div
-      className="rounded-xl overflow-hidden mb-2 transition-all"
+      className="rounded-xl overflow-hidden mb-3 transition-all"
       style={{
         border: isActive ? '1px solid rgba(99,102,241,0.35)' : '1px solid rgba(255,255,255,0.06)',
         background: isActive ? 'rgba(99,102,241,0.04)' : 'rgba(255,255,255,0.02)',
@@ -5167,7 +5198,7 @@ function ThinkingPanel({ steps, isActive }: { steps: ThinkingStepUI[]; isActive:
       {/* 헤더 — 클릭으로 접기/펼치기 */}
       <button
         onClick={() => setExpanded(e => !e)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-white/[0.02]"
+        className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-white/[0.02]"
       >
         {/* 아이콘 */}
         {isActive ? (
@@ -5205,7 +5236,7 @@ function ThinkingPanel({ steps, isActive }: { steps: ThinkingStepUI[]; isActive:
       {expanded && (
         <div
           ref={scrollRef}
-          className="px-3 pb-2 overflow-y-auto"
+          className="px-4 pb-3 overflow-y-auto"
           style={{ maxHeight: 200 }}
         >
           <div className="flex flex-col gap-0.5">
@@ -5270,27 +5301,27 @@ function ThinkingStepRow({ step, idx, steps, isLast }: { step: ThinkingStepUI; i
   }
 
   return (
-    <div className="flex items-start gap-2 py-0.5" style={{ opacity: isLast ? 1 : 0.7 }}>
-      {/* 타임라인 라인 */}
-      <div className="flex flex-col items-center flex-shrink-0" style={{ width: 12, marginTop: 3 }}>
+    <div className="flex items-center gap-2.5 py-1" style={{ opacity: isLast ? 1 : 0.6 }}>
+      {/* 아이콘 */}
+      <div className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0" style={{ background: color + '18' }}>
         <span style={{ color }}>{icon}</span>
       </div>
 
       {/* 텍스트 */}
-      <span className="text-[11px] leading-[16px] flex-1" style={{ color }}>
+      <span className="text-[11px] leading-[18px] flex-1" style={{ color }}>
         {text}
       </span>
 
       {/* 시간 */}
       {dtStr && (
-        <span className="text-[9px] font-mono flex-shrink-0 mt-0.5" style={{ color: 'var(--text-muted)', opacity: 0.5 }}>
+        <span className="text-[9px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)', opacity: 0.5 }}>
           {dtStr}
         </span>
       )}
 
       {/* 활성 표시 */}
       {isLast && (
-        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1" style={{ background: color, animation: 'chatDot 1.2s ease-in-out infinite' }} />
+        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color, animation: 'chatDot 1.2s ease-in-out infinite' }} />
       )}
     </div>
   );
@@ -5304,17 +5335,17 @@ function ThinkingIndicator({ liveToolCalls }: { liveToolCalls?: ToolCallResult[]
   }, []);
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-3">
       {/* 실시간 tool calls */}
       {liveToolCalls && liveToolCalls.length > 0 && (
-        <div className="space-y-1">
+        <div className="space-y-2.5">
           {liveToolCalls.map((tc, i) => (
             <ToolCallCard key={i} tc={tc} index={i} />
           ))}
         </div>
       )}
       {/* 타이핑 인디케이터 */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2.5">
         <div className="flex gap-1">
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--accent)', animation: 'chatDot 1.2s ease-in-out infinite 0s' }} />
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--accent)', animation: 'chatDot 1.2s ease-in-out infinite 0.2s' }} />
@@ -5341,7 +5372,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; o
     const userParts = msg.content.split(/(```[\s\S]*?```)/g);
     const hasCodeBlock = userParts.length > 1;
     return (
-      <div className="flex justify-end px-2 py-1">
+      <div className="flex justify-end px-2 py-2">
         <div
           className={`${hasCodeBlock ? 'max-w-[90%]' : 'max-w-[75%]'} rounded-3xl rounded-tr-md overflow-hidden shadow-lg`}
           style={{
@@ -5355,7 +5386,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; o
               const lang = lines[0].slice(3).trim();
               const codeBody = lines.slice(1, lines[lines.length - 1] === '```' ? -1 : undefined).join('\n');
               return (
-                <div key={idx} className="mx-3 my-2 rounded-xl overflow-hidden" style={{ background: '#0d1117', border: '1px solid rgba(255,255,255,0.12)' }}>
+                <div key={idx} className="mx-5 my-3 rounded-xl overflow-hidden" style={{ background: '#0d1117', border: '1px solid rgba(255,255,255,0.12)' }}>
                   <div className="flex items-center justify-between px-4 py-1.5" style={{ background: 'rgba(255,255,255,0.06)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
                     <span className="text-[11px] font-mono font-semibold" style={{ color: '#7c8b9a' }}>{lang || 'code'}</span>
                     <div className="flex gap-1.5">
@@ -5372,7 +5403,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; o
             }
             if (!part.trim()) return null;
             return (
-              <p key={idx} className="text-[15px] whitespace-pre-wrap leading-relaxed px-6 py-4" style={{ color: '#fff' }}>
+              <p key={idx} className="text-[15px] whitespace-pre-wrap leading-relaxed" style={{ color: '#fff', padding: '14px 24px' }}>
                 {part}
               </p>
             );
@@ -5384,7 +5415,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; o
 
   /* ── AI 메시지: 풀폭, 헤더 + 내용 ──────────────────────────────────────── */
   return (
-    <div className="flex flex-col gap-3 px-2 py-1">
+    <div className="flex flex-col gap-4 px-2 py-3">
       {/* AI 헤더 */}
       <div className="flex items-center gap-2.5">
         <div
@@ -5401,7 +5432,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; o
 
       {/* 내용 */}
       <div
-        className="rounded-3xl rounded-tl-md px-7 py-5 w-full"
+        className="rounded-3xl rounded-tl-md px-7 py-6 w-full"
         style={{
           background: 'var(--bg-surface)',
           border: '1px solid var(--border-color)',
@@ -5421,13 +5452,13 @@ function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; o
             </>
           ) : msg.isLoading && (msg.content || msg.artifactProgress || (msg.liveToolCalls && msg.liveToolCalls.length > 0) || (artifactStreaming && !artifactStreaming.isComplete)) ? (
             // 스트리밍 중 — 텍스트 실시간 표시 + 커서 + 아티팩트 오버레이
-            <div className="space-y-0.5">
+            <div className="space-y-2">
               {/* Thinking 패널 (스트리밍 중) */}
               {msg.thinkingSteps && msg.thinkingSteps.length > 0 && (
                 <ThinkingPanel steps={msg.thinkingSteps} isActive={true} />
               )}
               {msg.liveToolCalls && msg.liveToolCalls.length > 0 && (
-                <div className="mb-3 space-y-1">
+                <div className="mb-4 space-y-2.5">
                   {msg.liveToolCalls.map((tc, i) => <ToolCallCard key={i} tc={tc} index={i} />)}
                 </div>
               )}
@@ -5460,14 +5491,14 @@ function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; o
               )}
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-3">
               {/* Thinking 패널 (완료 — 접힌 상태) */}
               {msg.thinkingSteps && msg.thinkingSteps.length > 1 && (
                 <ThinkingPanel steps={msg.thinkingSteps} isActive={false} />
               )}
               {/* Tool calls */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
-                <div className="mb-3 space-y-1">
+                <div className="mb-4 space-y-2.5">
                   {msg.toolCalls.map((tc, i) => (
                     <ToolCallCard key={i} tc={tc} index={i} />
                   ))}
@@ -5520,7 +5551,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; o
             </div>
           )}
         </div>
-        <span className="text-[11px] mt-1 px-1" style={{ color: 'var(--text-muted)' }}>
+        <span className="text-[11px] mt-2 px-1" style={{ color: 'var(--text-muted)' }}>
           {msg.timestamp.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
         </span>
     </div>
@@ -5553,6 +5584,7 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [showRagGraph, setShowRagGraph] = useState(false);
 
   // 아티팩트 사이드 패널 상태
   const [artifactPanel, setArtifactPanel] = useState<{
@@ -6133,6 +6165,22 @@ export default function ChatPage() {
                 }}
                 onFocus={() => {}}
               >
+                {/* RAG Graph 토글 버튼 */}
+                <button
+                  onClick={() => setShowRagGraph(v => !v)}
+                  className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-all"
+                  style={{
+                    background: showRagGraph ? 'rgba(129,140,248,0.15)' : 'var(--bg-hover)',
+                    border: showRagGraph ? '1px solid rgba(129,140,248,0.3)' : '1px solid transparent',
+                    color: showRagGraph ? '#818cf8' : 'var(--text-muted)',
+                  }}
+                  title={showRagGraph ? 'RAG Graph 숨기기' : 'RAG Graph 보기'}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>
+                    <line x1="12" y1="7" x2="5" y2="17"/><line x1="12" y1="7" x2="19" y2="17"/>
+                  </svg>
+                </button>
                 <textarea
                   ref={textareaRef}
                   value={input}
@@ -6184,8 +6232,8 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
-        {/* ── 아티팩트 사이드 패널 (우측 절반) ── */}
-        {artifactPanel && (
+        {/* ── 우측 사이드 패널: 아티팩트 또는 RAG Graph ── */}
+        {artifactPanel ? (
           <div className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
             <ArtifactSidePanel
               html={artifactPanel.html}
@@ -6225,7 +6273,51 @@ export default function ChatPage() {
               }}
             />
           </div>
-        )}
+        ) : showRagGraph ? (
+          <div className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0" style={{ background: '#05060a', borderLeft: '1px solid var(--border-color)' }}>
+            {/* RAG Graph 헤더 */}
+            <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', background: 'rgba(5,6,10,0.95)' }}>
+              <span className="text-[11px] font-bold flex-1" style={{ color: '#818cf8', textShadow: '0 0 10px rgba(129,140,248,0.3)' }}>
+                ⚡ RAG Graph
+              </span>
+              {isLoading && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[8px]" style={{
+                  background: 'rgba(244,114,182,0.15)', color: '#f472b6', border: '1px solid rgba(244,114,182,0.2)',
+                }}>
+                  <span className="w-1 h-1 rounded-full bg-pink-400 animate-pulse" />
+                  LIVE
+                </span>
+              )}
+              <button
+                onClick={() => setShowRagGraph(false)}
+                className="w-6 h-6 rounded flex items-center justify-center transition-colors"
+                style={{ background: 'rgba(255,255,255,0.04)', color: '#64748b' }}
+                title="RAG Graph 닫기"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            {/* RAG Graph 본문 */}
+            <div className="flex-1 relative">
+              <Suspense fallback={
+                <div className="flex items-center justify-center h-full" style={{ color: '#475569', fontSize: 11 }}>
+                  <div className="text-center">
+                    <div className="w-6 h-6 mx-auto mb-2 rounded-full animate-pulse" style={{ background: 'rgba(129,140,248,0.3)' }} />
+                    RAG Graph 로딩...
+                  </div>
+                </div>
+              }>
+                <MiniRagGraph
+                  liveToolCalls={(() => {
+                    const loading = messages.find(m => m.isLoading);
+                    return loading?.liveToolCalls ?? loading?.toolCalls;
+                  })()}
+                  isStreaming={isLoading}
+                />
+              </Suspense>
+            </div>
+          </div>
+        ) : null}
         </div>{/* ── /채팅+패널 래퍼 ── */}
       </div>
 

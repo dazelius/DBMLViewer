@@ -433,6 +433,61 @@ export interface ChatTurn {
   rawMessages?: ClaudeMsg[];
 }
 
+// ── Graph 연동: 도구 메타데이터 & 도메인 키워드 (GraphPage와 완전 동기화) ────
+
+export interface ToolMeta {
+  name: string;
+  label: string;
+  emoji: string;
+  dataSources: string[];
+}
+
+export const TOOL_META: ToolMeta[] = [
+  { name: 'query_game_data',        label: 'SQL 쿼리',           emoji: '📊', dataSources: ['excel'] },
+  { name: 'show_table_schema',      label: '스키마 조회',         emoji: '📋', dataSources: ['excel'] },
+  { name: 'query_git_history',      label: 'Git 이력',           emoji: '🔍', dataSources: ['git_data', 'git_code'] },
+  { name: 'show_revision_diff',     label: '리비전 Diff',        emoji: '📝', dataSources: ['git_data', 'git_code'] },
+  { name: 'find_resource_image',    label: '이미지 검색',         emoji: '🖼️', dataSources: ['images'] },
+  { name: 'build_character_profile',label: '캐릭터 프로필',       emoji: '👤', dataSources: ['excel'] },
+  { name: 'read_guide',             label: '가이드 읽기',         emoji: '📖', dataSources: ['guides'] },
+  { name: 'search_assets',          label: '에셋 검색',           emoji: '🎨', dataSources: ['unity'] },
+  { name: 'read_scene_yaml',        label: '씬 데이터',           emoji: '🎮', dataSources: ['unity'] },
+  { name: 'preview_prefab',         label: '프리팹 뷰',           emoji: '🧩', dataSources: ['unity'] },
+  { name: 'preview_fbx_animation',  label: '애니메이션 뷰',       emoji: '🎬', dataSources: ['unity'] },
+  { name: 'search_code',            label: '코드 검색',           emoji: '💻', dataSources: ['csharp'] },
+  { name: 'read_code_file',         label: '코드 읽기',           emoji: '💻', dataSources: ['csharp'] },
+  { name: 'create_artifact',        label: '아티팩트 생성',       emoji: '📄', dataSources: [] },
+  { name: 'patch_artifact',         label: '아티팩트 수정',       emoji: '✏️', dataSources: [] },
+  { name: 'search_jira',            label: 'Jira 검색',          emoji: '🎫', dataSources: ['jira'] },
+  { name: 'get_jira_issue',         label: 'Jira 이슈',          emoji: '🎫', dataSources: ['jira'] },
+  { name: 'search_confluence',      label: 'Confluence 검색',    emoji: '📚', dataSources: ['confluence'] },
+  { name: 'get_confluence_page',    label: 'Confluence 페이지',   emoji: '📚', dataSources: ['confluence'] },
+];
+
+export const DATA_SOURCE_META: Array<{ name: string; label: string; emoji: string }> = [
+  { name: 'excel',      label: 'Excel 데이터',    emoji: '📊' },
+  { name: 'git_data',   label: 'Git (데이터)',     emoji: '📂' },
+  { name: 'git_code',   label: 'Git (코드)',       emoji: '📂' },
+  { name: 'csharp',     label: 'C# 소스코드',     emoji: '💻' },
+  { name: 'guides',     label: 'MD 가이드',       emoji: '📖' },
+  { name: 'images',     label: '리소스 이미지',    emoji: '🖼️' },
+  { name: 'unity',      label: 'Unity Assets',   emoji: '🎮' },
+  { name: 'jira',       label: 'Jira',           emoji: '🎫' },
+  { name: 'confluence',  label: 'Confluence',      emoji: '📚' },
+];
+
+export const DOMAIN_KEYWORDS: Record<string, string[]> = {
+  'Character': ['character', 'hero', 'player', 'striker', 'hunter', 'char'],
+  'Skill':     ['skill', 'ability', 'passive', 'active', 'buff', 'debuff'],
+  'Weapon':    ['weapon', 'gun', 'rifle', 'pistol', 'shotgun', 'sniper', 'launcher'],
+  'Item':      ['item', 'equip', 'gear', 'armor', 'helmet', 'boot', 'accessory'],
+  'Stage':     ['stage', 'map', 'zone', 'dungeon', 'chapter', 'mission'],
+  'Enemy':     ['enemy', 'monster', 'mob', 'boss', 'npc'],
+  'Quest':     ['quest', 'mission', 'challenge', 'achievement'],
+  'Shop':      ['shop', 'store', 'purchase', 'sell', 'price', 'cost', 'reward'],
+  'User':      ['user', 'account', 'profile', 'social', 'friend', 'guild'],
+};
+
 // ── Claude Tool 정의 ─────────────────────────────────────────────────────────
 
 const TOOLS = [
@@ -1619,6 +1674,61 @@ async function streamClaude(
   return { content: contentArray, stop_reason: stopReason, usage };
 }
 
+// ── RAG 트레이스 유틸 ─────────────────────────────────────────────────────────
+
+import type { RagTrace, RagTraceStep } from '../../store/useRagTraceStore.ts';
+import { useRagTraceStore } from '../../store/useRagTraceStore.ts';
+
+const KIND_TO_TOOL: Record<string, string> = {
+  data_query: 'query_game_data', schema_card: 'show_table_schema',
+  git_history: 'query_git_history', revision_diff: 'show_revision_diff',
+  image_search: 'find_resource_image', character_profile: 'build_character_profile',
+  code_guide: 'read_guide', code_search: 'search_code', code_file: 'read_code_file',
+  artifact: 'create_artifact', artifact_patch: 'patch_artifact',
+  asset_search: 'search_assets', scene_yaml: 'read_scene_yaml',
+  prefab_preview: 'preview_prefab', fbx_animation: 'preview_fbx_animation',
+  jira_search: 'search_jira', jira_issue: 'get_jira_issue',
+  confluence_search: 'search_confluence', confluence_page: 'get_confluence_page',
+};
+
+function buildRagTrace(query: string, toolCalls: ToolCallResult[], tokenUsage?: TokenUsageSummary): RagTrace {
+  const steps: RagTraceStep[] = toolCalls.map(tc => {
+    const toolName = KIND_TO_TOOL[tc.kind] ?? tc.kind;
+    const tables: string[] = [];
+    const guides: string[] = [];
+
+    if (tc.kind === 'data_query') {
+      const sqlUpper = (tc as DataQueryResult).sql.toUpperCase();
+      const fromMatch = sqlUpper.match(/FROM\s+[`"]?(\w+)/gi);
+      fromMatch?.forEach(m => { const t = m.replace(/FROM\s+[`"]?/i, ''); if (t) tables.push(t); });
+    } else if (tc.kind === 'schema_card') {
+      tables.push((tc as SchemaCardResult).tableName);
+    } else if (tc.kind === 'character_profile') {
+      const cp = tc as CharacterProfileResult;
+      if (cp.charTableName) tables.push(cp.charTableName);
+      cp.connections?.forEach(c => tables.push(c.tableName));
+    } else if (tc.kind === 'code_guide') {
+      const label = (tc as CodeGuideResult).label;
+      if (label && label !== '가이드 목록') guides.push(label.replace(/^(DB |코드 )가이드: /, ''));
+    }
+
+    return {
+      toolName, tables, guides,
+      duration: ('duration' in tc ? (tc as any).duration : undefined),
+      error: !!('error' in tc && (tc as any).error),
+    };
+  });
+
+  return {
+    id: `trace-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    query,
+    timestamp: Date.now(),
+    steps,
+    totalInputTokens: tokenUsage?.total_input ?? 0,
+    totalOutputTokens: tokenUsage?.total_output ?? 0,
+  };
+}
+
 // ── 메인 함수 ────────────────────────────────────────────────────────────────
 
 /** 실시간 thinking step 정보 */
@@ -1771,6 +1881,7 @@ export async function sendChatMessage(
         total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
         system_prompt_estimate: systemPromptEstimate,
       };
+      useRagTraceStore.getState().pushTrace(buildRagTrace(userMessage, allToolCalls, tokenUsage));
       return { content: finalText, toolCalls: allToolCalls, tokenUsage };
     }
 
@@ -3103,6 +3214,7 @@ function showTab(id){
       total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
       system_prompt_estimate: systemPromptEstimate,
     };
+    useRagTraceStore.getState().pushTrace(buildRagTrace(userMessage, allToolCalls, tokenUsage));
     return {
       content: finalTruncatedText || '(응답이 잘렸습니다)',
       toolCalls: allToolCalls,
@@ -3118,6 +3230,7 @@ function showTab(id){
     total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
     system_prompt_estimate: systemPromptEstimate,
   };
+  useRagTraceStore.getState().pushTrace(buildRagTrace(userMessage, allToolCalls, tokenUsage));
   return {
     content: '너무 많은 데이터 조회가 필요합니다. 질문을 좀 더 구체적으로 해주세요.',
     toolCalls: allToolCalls,
