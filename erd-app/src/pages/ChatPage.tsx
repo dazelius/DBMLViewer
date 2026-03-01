@@ -5484,8 +5484,14 @@ function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; o
                 <div className="text-[14px] leading-relaxed" style={{ color: 'var(--text-primary)' }}>
                   {renderMarkdown(msg.content)}
                   <span
-                    className="inline-block ml-0.5 w-[2px] h-[14px] rounded-sm align-middle animate-pulse"
-                    style={{ background: 'var(--accent)', verticalAlign: 'middle' }}
+                    className="inline-block ml-0.5 rounded-[1px] align-middle"
+                    style={{
+                      width: '2.5px',
+                      height: '1.1em',
+                      background: '#818cf8',
+                      verticalAlign: 'text-bottom',
+                      animation: 'cursorBlink 1s steps(2, start) infinite',
+                    }}
                   />
                 </div>
               )}
@@ -5649,10 +5655,18 @@ export default function ChatPage() {
     } catch { return []; }
   })());
 
-  // 스크롤 자동 내리기
+  // 스크롤 자동 내리기 — 메시지 추가 + 스트리밍 중 콘텐츠 갱신 시
+  const lastMsg = messages[messages.length - 1];
+  const streamingContent = lastMsg?.isLoading ? lastMsg.content : '';
+  const streamScrollTick = streamingContent.length;
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+  useEffect(() => {
+    if (streamScrollTick > 0) {
+      bottomRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
+    }
+  }, [streamScrollTick]);
 
   // 대화 내역 localStorage 캐시 저장 (isLoading 메시지 제외)
   useEffect(() => {
@@ -6348,6 +6362,10 @@ export default function ChatPage() {
         @keyframes chatDot {
           0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
           40% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes cursorBlink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0; }
         }
       `}</style>
     </div>
