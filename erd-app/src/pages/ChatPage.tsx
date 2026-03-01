@@ -33,6 +33,7 @@ import {
   type DiffFile,
   type DiffHunk,
   type ThinkingStep,
+  type TokenUsageSummary,
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
 import type { ParsedSchema } from '../core/schema/types.ts';
@@ -757,6 +758,7 @@ interface Message {
   artifactProgress?: { html: string; title: string; charCount: number }; // 아티팩트 생성 진행
   isTruncated?: boolean; // max_tokens로 잘린 응답 (계속 생성 버튼 표시용)
   thinkingSteps?: ThinkingStepUI[]; // 실시간 thinking 진행
+  tokenUsage?: TokenUsageSummary; // 토큰 사용량
 }
 
 /** UI용 thinking step (chatEngine의 ThinkingStep + UI 상태) */
@@ -4826,6 +4828,143 @@ function DataQueryCard({ tc, index }: { tc: DataQueryResult; index: number }) {
 
 // ── 로딩 인디케이터 ──────────────────────────────────────────────────────────
 
+// ── 토큰 사용량 시각화 ──────────────────────────────────────────────────────
+
+function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
+  const systemPct = usage.total_input > 0 ? Math.round((usage.system_prompt_estimate / usage.total_input) * 100) : 0;
+  const historyEst = usage.total_input - usage.system_prompt_estimate;
+  const historyPct = usage.total_input > 0 ? Math.round((Math.max(0, historyEst) / usage.total_input) * 100) : 0;
+
+  // 비용 추정 (Claude Sonnet 기준: input $3/MTok, output $15/MTok)
+  const inputCost = (usage.total_input / 1_000_000) * 3;
+  const outputCost = (usage.total_output / 1_000_000) * 15;
+  const totalCost = inputCost + outputCost;
+
+  // 바 비율 계산 (시스템 프롬프트 vs 히스토리+메시지 vs 출력)
+  const total = usage.total_input + usage.total_output;
+  const sysPx = total > 0 ? (usage.system_prompt_estimate / total) * 100 : 0;
+  const histPx = total > 0 ? (Math.max(0, historyEst) / total) * 100 : 0;
+  const outPx = total > 0 ? (usage.total_output / total) * 100 : 0;
+
+  return (
+    <div
+      className="rounded-lg overflow-hidden mt-1 mb-1 transition-all"
+      style={{ border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}
+    >
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-white/[0.02]"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0" style={{ stroke: '#818cf8' }}>
+          <path d="M12 2v20M2 12h20M6 6l12 12M18 6L6 18" />
+        </svg>
+        <span className="text-[11px] font-mono flex-shrink-0" style={{ color: '#a5b4fc' }}>
+          {fmt(usage.total_tokens)} tokens
+        </span>
+
+        {/* 미니 바 */}
+        <div className="flex-1 h-1.5 rounded-full overflow-hidden flex" style={{ background: 'rgba(255,255,255,0.06)' }}>
+          <div style={{ width: `${sysPx}%`, background: '#f59e0b', minWidth: sysPx > 0 ? 2 : 0 }} />
+          <div style={{ width: `${histPx}%`, background: '#6366f1', minWidth: histPx > 0 ? 2 : 0 }} />
+          <div style={{ width: `${outPx}%`, background: '#22c55e', minWidth: outPx > 0 ? 2 : 0 }} />
+        </div>
+
+        <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>
+          ${totalCost.toFixed(4)}
+        </span>
+
+        <svg
+          width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+          className="flex-shrink-0 transition-transform"
+          style={{ color: 'var(--text-muted)', opacity: 0.5, transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-2.5 pt-0.5 space-y-2">
+          {/* 큰 바 + 범례 */}
+          <div className="flex items-center gap-3" style={{ height: 20 }}>
+            <div className="flex-1 h-3 rounded-full overflow-hidden flex" style={{ background: 'rgba(255,255,255,0.06)' }}>
+              <div
+                title={`시스템 프롬프트 ≈${fmt(usage.system_prompt_estimate)} (${systemPct}%)`}
+                style={{ width: `${sysPx}%`, background: '#f59e0b', minWidth: sysPx > 0 ? 4 : 0, transition: 'width 0.3s' }}
+              />
+              <div
+                title={`히스토리+메시지 ≈${fmt(Math.max(0, historyEst))} (${historyPct}%)`}
+                style={{ width: `${histPx}%`, background: '#6366f1', minWidth: histPx > 0 ? 4 : 0, transition: 'width 0.3s' }}
+              />
+              <div
+                title={`출력 ${fmt(usage.total_output)}`}
+                style={{ width: `${outPx}%`, background: '#22c55e', minWidth: outPx > 0 ? 4 : 0, transition: 'width 0.3s' }}
+              />
+            </div>
+          </div>
+
+          {/* 범례 */}
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            <span className="flex items-center gap-1.5 text-[10px]" style={{ color: '#f59e0b' }}>
+              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#f59e0b' }} />
+              시스템 프롬프트 ≈{fmt(usage.system_prompt_estimate)} ({systemPct}%)
+            </span>
+            <span className="flex items-center gap-1.5 text-[10px]" style={{ color: '#818cf8' }}>
+              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#6366f1' }} />
+              히스토리+메시지 ≈{fmt(Math.max(0, historyEst))} ({historyPct}%)
+            </span>
+            <span className="flex items-center gap-1.5 text-[10px]" style={{ color: '#4ade80' }}>
+              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#22c55e' }} />
+              출력 {fmt(usage.total_output)}
+            </span>
+          </div>
+
+          {/* 이터레이션 테이블 */}
+          {usage.iterations.length > 1 && (
+            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+              <div className="flex gap-2 font-semibold mb-0.5" style={{ color: 'var(--text-secondary)' }}>
+                <span className="w-6 text-center">#</span>
+                <span className="flex-1">Input</span>
+                <span className="flex-1">Output</span>
+                {usage.iterations.some(t => t.cache_read) && <span className="flex-1">Cache</span>}
+              </div>
+              {usage.iterations.map((t) => (
+                <div key={t.iteration} className="flex gap-2">
+                  <span className="w-6 text-center" style={{ color: '#818cf8' }}>{t.iteration}</span>
+                  <span className="flex-1">{fmt(t.input_tokens)}</span>
+                  <span className="flex-1">{fmt(t.output_tokens)}</span>
+                  {usage.iterations.some(it => it.cache_read) && (
+                    <span className="flex-1">{t.cache_read ? `${fmt(t.cache_read)} hit` : '-'}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 합계 */}
+          <div className="flex gap-4 pt-1" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 10 }}>
+            <span style={{ color: 'var(--text-muted)' }}>
+              입력 <span style={{ color: '#a5b4fc' }}>{fmt(usage.total_input)}</span>
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>
+              출력 <span style={{ color: '#4ade80' }}>{fmt(usage.total_output)}</span>
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>
+              합계 <span style={{ color: '#e2e8f0' }}>{fmt(usage.total_tokens)}</span>
+            </span>
+            <span className="ml-auto" style={{ color: '#f59e0b' }}>
+              ≈${totalCost.toFixed(4)}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Cursor-style 씽킹 패널 ──────────────────────────────────────────────────
 
 function ThinkingPanel({ steps, isActive }: { steps: ThinkingStepUI[]; isActive: boolean }) {
@@ -5129,6 +5268,9 @@ function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; o
               {msg.thinkingSteps && msg.thinkingSteps.length > 0 && (
                 <ThinkingPanel steps={msg.thinkingSteps} isActive={true} />
               )}
+              {msg.tokenUsage && msg.tokenUsage.total_tokens > 0 && (
+                <TokenUsageBar usage={msg.tokenUsage} />
+              )}
               <ThinkingIndicator liveToolCalls={msg.liveToolCalls} />
             </>
           ) : msg.isLoading && (msg.content || msg.artifactProgress || (msg.liveToolCalls && msg.liveToolCalls.length > 0) || (artifactStreaming && !artifactStreaming.isComplete)) ? (
@@ -5223,6 +5365,11 @@ function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; o
                     </button>
                   )}
                 </div>
+              )}
+
+              {/* 토큰 사용량 */}
+              {msg.tokenUsage && msg.tokenUsage.total_tokens > 0 && (
+                <TokenUsageBar usage={msg.tokenUsage} />
               )}
             </div>
           )}
@@ -5355,6 +5502,7 @@ export default function ChatPage() {
   }, [input]);
 
   const hasData = tableData.size > 0;
+  const canChat = true; // 데이터 없이도 Claude API만으로 채팅 가능 (디버그 모드)
 
   const sendMessage = useCallback(async (text: string, displayText?: string) => {
     if (!text.trim() || isLoading) return;
@@ -5385,7 +5533,7 @@ export default function ChatPage() {
     let _lastArtifactUpdate = 0;
 
     try {
-      const { content, toolCalls, rawMessages } = await sendChatMessage(
+      const { content, toolCalls, rawMessages, tokenUsage } = await sendChatMessage(
         text.trim(),
         historyRef.current,
         schema,
@@ -5448,6 +5596,14 @@ export default function ChatPage() {
             ),
           );
         },
+        (usage: TokenUsageSummary) => {
+          // 실시간 토큰 사용량 업데이트
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === loadingId ? { ...m, tokenUsage: usage } : m,
+            ),
+          );
+        },
       );
 
       // history 갱신 (max_tokens로 잘린 경우 rawMessages 포함 → 계속해줘 지원)
@@ -5462,7 +5618,7 @@ export default function ChatPage() {
       setMessages((prev) =>
         prev.map((m) =>
           m.id === loadingId
-            ? { ...m, content, toolCalls, isTruncated, isLoading: false, liveToolCalls: undefined, artifactProgress: undefined }
+            ? { ...m, content, toolCalls, isTruncated, tokenUsage, isLoading: false, liveToolCalls: undefined, artifactProgress: undefined }
             : m,
         ),
       );
@@ -5836,9 +5992,9 @@ export default function ChatPage() {
                   placeholder={
                     hasData
                       ? '게임 데이터에 대해 무엇이든 질문하세요... (Shift+Enter: 줄바꿈)'
-                      : '데이터를 먼저 Import 해주세요'
+                      : 'Claude와 대화하세요 (데이터 미로드 — SQL 도구 제한됨)'
                   }
-                  disabled={isLoading || !hasData}
+                  disabled={isLoading || !canChat}
                   rows={1}
                   className="flex-1 resize-none bg-transparent border-none outline-none leading-relaxed"
                   style={{
@@ -5850,14 +6006,14 @@ export default function ChatPage() {
                 />
                 <button
                   onClick={() => sendMessage(input)}
-                  disabled={isLoading || !input.trim() || !hasData}
+                  disabled={isLoading || !input.trim() || !canChat}
                   className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-all"
                   style={{
-                    background: isLoading || !input.trim() || !hasData
+                    background: isLoading || !input.trim() || !canChat
                       ? 'var(--bg-hover)'
                       : 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
-                    cursor: isLoading || !input.trim() || !hasData ? 'not-allowed' : 'pointer',
-                    boxShadow: (!isLoading && input.trim() && hasData) ? '0 4px 12px rgba(99,102,241,0.4)' : 'none',
+                    cursor: isLoading || !input.trim() || !canChat ? 'not-allowed' : 'pointer',
+                    boxShadow: (!isLoading && input.trim() && canChat) ? '0 4px 12px rgba(99,102,241,0.4)' : 'none',
                     transition: 'all .15s',
                   }}
                 >

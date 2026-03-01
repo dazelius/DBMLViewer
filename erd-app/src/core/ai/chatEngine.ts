@@ -1451,11 +1451,18 @@ function extractHtmlFromPartialJson(partialJson: string): { title: string; html:
   };
 }
 
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
 async function streamClaude(
   requestBody: object,
   onTextDelta: (delta: string) => void,
   onArtifactProgress?: (html: string, title: string, charCount: number) => void,
-): Promise<ClaudeResponse> {
+): Promise<ClaudeResponse & { usage?: TokenUsage }> {
   const response = await fetch('/api/claude', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1476,6 +1483,7 @@ async function streamClaude(
   let stopReason: ClaudeResponse['stop_reason'] = 'end_turn';
   let buf = '';
   let lastEventType = ''; // SSE event: 타입 추적
+  const usage: TokenUsage = { input_tokens: 0, output_tokens: 0 };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -1579,9 +1587,20 @@ async function streamClaude(
           }
           break;
         }
+        case 'message_start': {
+          const msg = ev.message as { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } } | undefined;
+          if (msg?.usage) {
+            usage.input_tokens = msg.usage.input_tokens ?? 0;
+            usage.cache_creation_input_tokens = msg.usage.cache_creation_input_tokens;
+            usage.cache_read_input_tokens = msg.usage.cache_read_input_tokens;
+          }
+          break;
+        }
         case 'message_delta': {
           const delta = ev.delta as { stop_reason?: string };
           if (delta.stop_reason) stopReason = delta.stop_reason as ClaudeResponse['stop_reason'];
+          const deltaUsage = ev.usage as { output_tokens?: number } | undefined;
+          if (deltaUsage?.output_tokens) usage.output_tokens = deltaUsage.output_tokens;
           break;
         }
       }
@@ -1597,7 +1616,7 @@ async function streamClaude(
       return clean as ContentBlock;
     });
 
-  return { content: contentArray, stop_reason: stopReason };
+  return { content: contentArray, stop_reason: stopReason, usage };
 }
 
 // ── 메인 함수 ────────────────────────────────────────────────────────────────
@@ -1613,6 +1632,14 @@ export interface ThinkingStep {
   timestamp: number;
 }
 
+export interface TokenUsageSummary {
+  iterations: Array<{ iteration: number; input_tokens: number; output_tokens: number; cache_creation?: number; cache_read?: number }>;
+  total_input: number;
+  total_output: number;
+  total_tokens: number;
+  system_prompt_estimate: number;
+}
+
 export async function sendChatMessage(
   userMessage: string,
   history: ChatTurn[],
@@ -1622,7 +1649,8 @@ export async function sendChatMessage(
   onTextDelta?: (delta: string, fullText: string) => void,
   onArtifactProgress?: (html: string, title: string, charCount: number) => void,
   onThinkingUpdate?: (step: ThinkingStep) => void,
-): Promise<{ content: string; toolCalls: ToolCallResult[]; rawMessages?: ClaudeMsg[] }> {
+  onTokenUsage?: (usage: TokenUsageSummary) => void,
+): Promise<{ content: string; toolCalls: ToolCallResult[]; rawMessages?: ClaudeMsg[]; tokenUsage?: TokenUsageSummary }> {
   // 컴포넌트가 아직 로딩 중일 때 schema가 null일 수 있으므로 스토어에서 fallback
   const effectiveSchema = schema ?? useSchemaStore.getState().schema;
   const systemPrompt = buildSystemPrompt(effectiveSchema, tableData);
@@ -1637,6 +1665,10 @@ export async function sendChatMessage(
   let accumulatedText = '';
   let totalText = ''; // max_tokens 자동 계속 시 누적 텍스트
   let continuationCount = 0; // 자동 계속 횟수
+
+  // 토큰 사용량 추적
+  const tokenIterations: TokenUsageSummary['iterations'] = [];
+  const systemPromptEstimate = Math.ceil(systemPrompt.length / 3.5); // 대략적 토큰 수 추정
 
   const requestBase = {
     model: 'claude-opus-4-5',
@@ -1681,7 +1713,27 @@ export async function sendChatMessage(
       }
     }
     if (!data) throw new Error('Claude API 연결 실패');
-    console.log(`[Chat] 이터레이션 ${i + 1} 완료: stop_reason=${data.stop_reason}, blocks=${data.content.length}, text="${accumulatedText.slice(0, 60)}"`);
+
+    // 토큰 사용량 기록
+    if (data.usage) {
+      tokenIterations.push({
+        iteration: i + 1,
+        input_tokens: data.usage.input_tokens,
+        output_tokens: data.usage.output_tokens,
+        cache_creation: data.usage.cache_creation_input_tokens,
+        cache_read: data.usage.cache_read_input_tokens,
+      });
+      const summary: TokenUsageSummary = {
+        iterations: [...tokenIterations],
+        total_input: tokenIterations.reduce((s, t) => s + t.input_tokens, 0),
+        total_output: tokenIterations.reduce((s, t) => s + t.output_tokens, 0),
+        total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
+        system_prompt_estimate: systemPromptEstimate,
+      };
+      onTokenUsage?.(summary);
+    }
+
+    console.log(`[Chat] 이터레이션 ${i + 1} 완료: stop_reason=${data.stop_reason}, blocks=${data.content.length}, text="${accumulatedText.slice(0, 60)}"${data.usage ? `, tokens: in=${data.usage.input_tokens} out=${data.usage.output_tokens}` : ''}`);
     onThinkingUpdate?.({ type: 'iteration_done', iteration: i + 1, maxIterations: MAX_ITERATIONS, detail: `stop_reason=${data.stop_reason}`, timestamp: Date.now() });
 
     // ── 최종 답변 ──
@@ -1712,7 +1764,14 @@ export async function sendChatMessage(
         continue;
       }
 
-      return { content: finalText, toolCalls: allToolCalls };
+      const tokenUsage: TokenUsageSummary = {
+        iterations: tokenIterations,
+        total_input: tokenIterations.reduce((s, t) => s + t.input_tokens, 0),
+        total_output: tokenIterations.reduce((s, t) => s + t.output_tokens, 0),
+        total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
+        system_prompt_estimate: systemPromptEstimate,
+      };
+      return { content: finalText, toolCalls: allToolCalls, tokenUsage };
     }
 
     // ── 도구 호출 처리 ──
@@ -3037,15 +3096,31 @@ function showTab(id){
     pushAssistantWithOrphanFix(messages);
     const finalTruncatedText = continuationCount > 0 ? totalText + truncatedText : truncatedText;
     console.log('[Chat] max_tokens: 최대 이터레이션 도달, rawMessages 저장');
+    const tokenUsage: TokenUsageSummary = {
+      iterations: tokenIterations,
+      total_input: tokenIterations.reduce((s, t) => s + t.input_tokens, 0),
+      total_output: tokenIterations.reduce((s, t) => s + t.output_tokens, 0),
+      total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
+      system_prompt_estimate: systemPromptEstimate,
+    };
     return {
       content: finalTruncatedText || '(응답이 잘렸습니다)',
       toolCalls: allToolCalls,
-      rawMessages: messages, // tool_use/tool_result 전체 컨텍스트 보존 (추가 계속 지원)
+      rawMessages: messages,
+      tokenUsage,
     };
   }
 
+  const tokenUsage: TokenUsageSummary = {
+    iterations: tokenIterations,
+    total_input: tokenIterations.reduce((s, t) => s + t.input_tokens, 0),
+    total_output: tokenIterations.reduce((s, t) => s + t.output_tokens, 0),
+    total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
+    system_prompt_estimate: systemPromptEstimate,
+  };
   return {
     content: '너무 많은 데이터 조회가 필요합니다. 질문을 좀 더 구체적으로 해주세요.',
     toolCalls: allToolCalls,
+    tokenUsage,
   };
 }

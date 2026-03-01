@@ -4599,12 +4599,55 @@ function createChatApiMiddleware(options: GitPluginOptions) {
               continue
             }
 
-            // max_tokens 등
+            // max_tokens → 자동 계속 (continuation)
+            if (data.stop_reason === 'max_tokens' && i < MAX_ITERATIONS - 1) {
+              messages.push({ role: 'assistant', content: data.content })
+
+              // orphan tool_use 처리: max_tokens로 잘리면서 tool_result 없는 tool_use가 남을 수 있음
+              const orphanToolUseIds = data.content
+                .filter((b: { type: string; id?: string }) => b.type === 'tool_use' && b.id)
+                .map((b: { id?: string }) => b.id!)
+              if (orphanToolUseIds.length > 0) {
+                messages.push({
+                  role: 'user',
+                  content: orphanToolUseIds.map((id: string) => ({
+                    type: 'tool_result',
+                    tool_use_id: id,
+                    content: '(생성 중단 — max_tokens)',
+                  })),
+                })
+              }
+
+              messages.push({
+                role: 'user',
+                content: '이어서 계속 작성해주세요. 바로 이전 텍스트 뒤부터 자연스럽게 이어서 작성하세요. 중복 없이 바로 이어주세요.',
+              })
+              res.write(`event: continuation\ndata: ${JSON.stringify({ iteration: i + 1, reason: 'max_tokens' })}\n\n`)
+              continue
+            }
             break
           }
 
-          const text = messages.filter(m => m.role === 'assistant').map(m => typeof m.content === 'string' ? m.content : '').join('\n')
-          res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: text, tool_calls: allToolCalls })}\n\n`)
+          // 루프 종료 (max_iterations 도달 또는 기타) — 마지막 텍스트 추출
+          const allTexts: string[] = []
+          for (const m of messages) {
+            if (m.role !== 'assistant') continue
+            if (typeof m.content === 'string') { allTexts.push(m.content); continue }
+            if (Array.isArray(m.content)) {
+              for (const b of m.content as Array<{ type: string; text?: string }>) {
+                if (b.type === 'text' && b.text) allTexts.push(b.text)
+              }
+            }
+          }
+          const finalText = allTexts.join('\n')
+
+          session.messages.push({ role: 'user', content: userMessage })
+          session.messages.push({ role: 'assistant', content: finalText })
+          session.messageCount += 2
+          session.updated = new Date().toISOString()
+          saveSession(session)
+
+          res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: finalText, tool_calls: allToolCalls })}\n\n`)
           res.end()
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
@@ -4655,17 +4698,59 @@ function createChatApiMiddleware(options: GitPluginOptions) {
             messages.push({ role: 'user', content: toolResults })
             continue
           }
+
+          // max_tokens → 자동 계속 (continuation)
+          if (data.stop_reason === 'max_tokens' && i < MAX_ITERATIONS - 1) {
+            messages.push({ role: 'assistant', content: data.content })
+
+            const orphanToolUseIds = (data.content as Array<{ type: string; id?: string }>)
+              .filter(b => b.type === 'tool_use' && b.id)
+              .map(b => b.id!)
+            if (orphanToolUseIds.length > 0) {
+              messages.push({
+                role: 'user',
+                content: orphanToolUseIds.map(id => ({
+                  type: 'tool_result',
+                  tool_use_id: id,
+                  content: '(생성 중단 — max_tokens)',
+                })),
+              })
+            }
+
+            messages.push({
+              role: 'user',
+              content: '이어서 계속 작성해주세요. 바로 이전 텍스트 뒤부터 자연스럽게 이어서 작성하세요. 중복 없이 바로 이어주세요.',
+            })
+            continue
+          }
           break
         }
-        // max iterations에 도달해도 마지막 텍스트 추출
-        const lastAssistant = messages.filter(m => m.role === 'assistant').pop()
-        let lastText = ''
-        if (lastAssistant && Array.isArray(lastAssistant.content)) {
-          lastText = (lastAssistant.content as Array<{type: string; text?: string}>).filter(b => b.type === 'text').map(b => b.text ?? '').join('\n')
-        } else if (typeof lastAssistant?.content === 'string') {
-          lastText = lastAssistant.content
+
+        // 루프 종료 — 전체 assistant 텍스트 합산
+        const allTexts: string[] = []
+        for (const m of messages) {
+          if (m.role !== 'assistant') continue
+          if (typeof m.content === 'string') { allTexts.push(m.content); continue }
+          if (Array.isArray(m.content)) {
+            for (const b of m.content as Array<{ type: string; text?: string }>) {
+              if (b.type === 'text' && b.text) allTexts.push(b.text)
+            }
+          }
         }
-        sendJson(res, 200, { session_id: session.id, content: lastText || '(응답 생성 완료 — 도구 호출 결과를 tool_calls에서 확인하세요)', tool_calls: allToolCalls })
+        const finalText = allTexts.join('\n')
+
+        session.messages.push({ role: 'user', content: userMessage })
+        session.messages.push({ role: 'assistant', content: finalText })
+        session.messageCount += 2
+        session.updated = new Date().toISOString()
+        saveSession(session)
+
+        sendJson(res, 200, {
+          session_id: session.id,
+          content: finalText || '(응답 생성 완료 — 도구 호출 결과를 tool_calls에서 확인하세요)',
+          tool_calls: allToolCalls,
+          model: 'claude-sonnet-4-20250514',
+        })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         sendJson(res, 500, { error: msg })
