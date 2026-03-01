@@ -4828,6 +4828,152 @@ function DataQueryCard({ tc, index }: { tc: DataQueryResult; index: number }) {
 
 // ── 로딩 인디케이터 ──────────────────────────────────────────────────────────
 
+// ── 가이드 파일 브라우저 (사이드바용) ────────────────────────────────────────
+
+interface GuideFile { name: string; sizeKB: number; category: 'db' | 'code' }
+
+function GuideBrowser() {
+  const [guides, setGuides] = useState<GuideFile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState(false);
+  const [previewName, setPreviewName] = useState<string | null>(null);
+  const [previewContent, setPreviewContent] = useState<string>('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/guides/list')
+      .then(r => r.json())
+      .then(d => { setGuides(d.guides ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const loadPreview = async (name: string) => {
+    if (previewName === name) { setPreviewName(null); return; }
+    setPreviewName(name);
+    setPreviewLoading(true);
+    try {
+      const r = await fetch(`/api/guides/read?name=${encodeURIComponent(name)}`);
+      const d = await r.json();
+      setPreviewContent(d.content ?? '(내용 없음)');
+    } catch { setPreviewContent('로딩 실패'); }
+    setPreviewLoading(false);
+  };
+
+  if (loading || guides.length === 0) return null;
+
+  const dbGuides = guides.filter(g => g.category === 'db');
+  const codeGuides = guides.filter(g => g.category === 'code');
+  const totalSizeKB = guides.reduce((s, g) => s + g.sizeKB, 0);
+  const totalTokensEst = Math.round(totalSizeKB * 1024 / 3.5);
+
+  return (
+    <div className="px-3 pt-3 pb-1" style={{ borderBottom: '1px solid var(--border-color)' }}>
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="w-full flex items-center gap-2 text-left mb-1 group"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0">
+          <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+          <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+        </svg>
+        <span className="text-[11px] font-semibold uppercase tracking-wider flex-1" style={{ color: 'var(--text-muted)' }}>
+          가이드 ({guides.length})
+        </span>
+        <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
+          {totalSizeKB.toFixed(0)}KB
+        </span>
+        <svg
+          width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+          className="flex-shrink-0 transition-transform"
+          style={{ color: 'var(--text-muted)', opacity: 0.5, transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="space-y-2 pb-2">
+          {/* 요약 바 */}
+          <div className="flex items-center gap-2 px-1" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+            <span>≈{(totalTokensEst / 1000).toFixed(1)}k tokens</span>
+            <div className="flex-1 h-1 rounded-full overflow-hidden flex" style={{ background: 'rgba(255,255,255,0.06)' }}>
+              <div style={{ width: `${guides.length > 0 ? (dbGuides.length / guides.length) * 100 : 0}%`, background: '#6366f1' }} />
+              <div style={{ width: `${guides.length > 0 ? (codeGuides.length / guides.length) * 100 : 0}%`, background: '#22c55e' }} />
+            </div>
+            <span style={{ color: '#818cf8' }}>DB {dbGuides.length}</span>
+            <span style={{ color: '#4ade80' }}>코드 {codeGuides.length}</span>
+          </div>
+
+          {/* DB 가이드 */}
+          {dbGuides.length > 0 && (
+            <div>
+              <div className="flex items-center gap-1.5 px-1 mb-1">
+                <span className="w-1.5 h-1.5 rounded-sm" style={{ background: '#6366f1' }} />
+                <span className="text-[10px] font-semibold" style={{ color: '#a5b4fc' }}>DB 가이드</span>
+              </div>
+              {dbGuides.map(g => (
+                <GuideFileRow key={g.name} guide={g} isOpen={previewName === g.name} onClick={() => loadPreview(g.name)} />
+              ))}
+            </div>
+          )}
+
+          {/* 코드 가이드 */}
+          {codeGuides.length > 0 && (
+            <div>
+              <div className="flex items-center gap-1.5 px-1 mb-1">
+                <span className="w-1.5 h-1.5 rounded-sm" style={{ background: '#22c55e' }} />
+                <span className="text-[10px] font-semibold" style={{ color: '#4ade80' }}>코드 가이드</span>
+              </div>
+              {codeGuides.map(g => (
+                <GuideFileRow key={g.name} guide={g} isOpen={previewName === g.name} onClick={() => loadPreview(g.name)} />
+              ))}
+            </div>
+          )}
+
+          {/* 미리보기 */}
+          {previewName && (
+            <div className="rounded-lg overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.2)' }}>
+              <div className="flex items-center justify-between px-2 py-1.5" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+                <span className="text-[10px] font-mono truncate" style={{ color: '#f59e0b' }}>{previewName}.md</span>
+                <button onClick={() => setPreviewName(null)} className="text-[10px] px-1.5 py-0.5 rounded hover:bg-white/5" style={{ color: 'var(--text-muted)' }}>✕</button>
+              </div>
+              <pre
+                className="px-2 py-2 overflow-auto text-[10px] leading-relaxed"
+                style={{ maxHeight: 200, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+              >
+                {previewLoading ? '로딩 중...' : previewContent.slice(0, 3000) + (previewContent.length > 3000 ? '\n\n... (미리보기 생략)' : '')}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GuideFileRow({ guide, isOpen, onClick }: { guide: GuideFile; isOpen: boolean; onClick: () => void }) {
+  const isOverview = guide.name.includes('OVERVIEW');
+  const isEnum = guide.name.includes('Enum');
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center gap-1.5 px-2 py-1 rounded text-left hover:bg-white/[0.03] transition-colors group"
+      style={{ background: isOpen ? 'rgba(245,158,11,0.08)' : 'transparent' }}
+    >
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0"
+        style={{ stroke: isOverview ? '#f59e0b' : isEnum ? '#c084fc' : guide.category === 'db' ? '#818cf8' : '#4ade80' }}>
+        <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+      </svg>
+      <span className="text-[10px] truncate flex-1" style={{ color: isOpen ? '#f59e0b' : 'var(--text-secondary)' }}>
+        {guide.name}
+      </span>
+      <span className="text-[9px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
+        {guide.sizeKB}KB
+      </span>
+    </button>
+  );
+}
+
 // ── 토큰 사용량 시각화 ──────────────────────────────────────────────────────
 
 function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
@@ -5780,6 +5926,9 @@ export default function ChatPage() {
               </div>
             )}
           </div>
+
+          {/* 가이드 파일 브라우저 */}
+          <GuideBrowser />
 
           {/* 생성된 문서 목록 */}
           {savedArtifacts.length > 0 && (
