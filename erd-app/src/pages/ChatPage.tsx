@@ -2144,52 +2144,9 @@ th,td{border:1px solid #334155;padding:6px;font-size:12px}th{background:#1e293b}
 function ArtifactStreamOverlay({ html, title, charCount }: { html: string; title: string; charCount: number }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // ── Progressive Reveal: 데이터가 한꺼번에 도착해도 부드럽게 보이도록 ──
-  // 실제 html이 burst로 도착하면 animatedChars를 점진적으로 html.length까지 증가시킴
-  const [animatedChars, setAnimatedChars] = useState(0);
-  const targetRef = useRef(0);
-  const rafRef = useRef(0);
-  const lastTimeRef = useRef(0);
-
-  useEffect(() => {
-    targetRef.current = html.length;
-
-    // 이미 RAF 루프가 돌고 있으면 중복 시작 안 함
-    if (rafRef.current) return;
-
-    const tick = (now: number) => {
-      if (!lastTimeRef.current) lastTimeRef.current = now;
-      lastTimeRef.current = now;
-
-      setAnimatedChars((prev) => {
-        const target = targetRef.current;
-        if (prev >= target) return prev;
-        // 일정한 타이핑 속도: ~3000자/초 (60fps 기준 ~50자/frame)
-        // 작은 문서는 빠르게, 큰 문서도 최대 5초 안에 완료
-        const charsPerFrame = Math.max(30, Math.ceil(target / (60 * 3))); // target/(60*3초)
-        return Math.min(prev + charsPerFrame, target);
-      });
-
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-
-    return () => {
-      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
-    };
-  }, [html]);
-
-  // 컴포넌트 unmount 시 클린업
-  useEffect(() => {
-    return () => {
-      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
-    };
-  }, []);
-
-  // 애니메이션된 HTML에서 라인 추출
-  const displayedHtml = html.slice(0, animatedChars);
-  const lines = displayedHtml.split('\n');
-  const totalLines = html.split('\n').length;
+  // 실시간 스트리밍: 데이터 도착 즉시 표시 (애니메이션 없음)
+  const lines = html.split('\n');
+  const totalLines = lines.length;
   const visibleLines = lines.slice(-24);
   const startLineNo = Math.max(1, lines.length - 23);
 
@@ -2197,7 +2154,7 @@ function ArtifactStreamOverlay({ html, title, charCount }: { html: string; title
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [animatedChars]);
+  }, [html]);
 
   return (
     <div

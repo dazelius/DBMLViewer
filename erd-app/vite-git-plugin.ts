@@ -492,7 +492,8 @@ function createGitMiddleware(options: GitPluginOptions) {
           res.socket?.setNoDelay(true)
           res.flushHeaders()
 
-          // 디버그: 청크 도착 타이밍 로그 (서버 콘솔에서 실시간 확인)
+          // 수동 스트리밍: pipe() 대신 on('data') + write()로 즉시 전송
+          // pipe()는 내부 highWaterMark 버퍼링이 발생할 수 있어 SSE 실시간성이 떨어짐
           let chunkCount = 0
           let totalBytes = 0
           const startTime = Date.now()
@@ -502,13 +503,18 @@ function createGitMiddleware(options: GitPluginOptions) {
             if (chunkCount <= 5 || chunkCount % 50 === 0) {
               console.log(`[SSE] chunk #${chunkCount}: +${chunk.length}B = ${totalBytes}B (+${Date.now() - startTime}ms)`)
             }
+            // 각 청크를 즉시 클라이언트에 전달 (버퍼링 없음)
+            res.write(chunk)
+            // Node.js 내부 버퍼 즉시 플러시
+            if (typeof (res as any).flush === 'function') (res as any).flush()
           })
           proxyRes.on('end', () => {
             console.log(`[SSE] 완료: ${chunkCount}개 청크, ${totalBytes}B, ${Date.now() - startTime}ms`)
+            res.end()
           })
-
-          // Node.js 네이티브 pipe: 버퍼링 없이 실시간 전달
-          proxyRes.pipe(res)
+          proxyRes.on('error', () => {
+            res.end()
+          })
         })
 
         proxyReq.on('error', (err) => {
