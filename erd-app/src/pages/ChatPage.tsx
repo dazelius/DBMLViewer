@@ -2640,17 +2640,26 @@ function ArtifactSidePanel({
     let lastVer = 0;
     let rafId = 0;
     let overlayHidden = false; // 오버레이 숨김 여부 추적
+    let lastIframeUpdate = 0; // iframe innerHTML 마지막 갱신 시각
+    let lastIframeHtmlLen = 0; // 마지막 갱신 시 HTML 길이
+    const IFRAME_UPDATE_MS = 100; // iframe은 100ms마다 갱신 (10fps — 레이아웃 비용 절감)
+
     const tick = () => {
       if (_artBuf.ver !== lastVer) {
         lastVer = _artBuf.ver;
 
-        // ── 1) iframe body 직접 갱신 (React 우회) ──
-        if (streamIframeReady && streamIframeRef.current) {
+        // ── 1) iframe body — 100ms 쓰로틀 갱신 (innerHTML은 비싸므로) ──
+        const now = performance.now();
+        const htmlGrew = _artBuf.html.length > lastIframeHtmlLen;
+        const enoughTime = now - lastIframeUpdate > IFRAME_UPDATE_MS;
+        if (streamIframeReady && streamIframeRef.current && htmlGrew && enoughTime) {
           const doc = streamIframeRef.current.contentDocument;
           if (doc?.body) {
             doc.body.innerHTML = _artBuf.html;
             const fbxScript = doc.getElementById('__fbx_viewer_init__');
             if (fbxScript && !fbxScript.textContent) fbxScript.textContent = FBX_VIEWER_SCRIPT;
+            lastIframeUpdate = now;
+            lastIframeHtmlLen = _artBuf.html.length;
           }
         }
 
