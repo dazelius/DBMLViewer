@@ -1813,13 +1813,13 @@ const KIND_TO_TOOL: Record<string, string> = {
   data_query: 'query_game_data', schema_card: 'show_table_schema',
   git_history: 'query_git_history', revision_diff: 'show_revision_diff',
   image_search: 'find_resource_image', character_profile: 'build_character_profile',
+  knowledge: 'read_knowledge',
   code_guide: 'read_guide', code_search: 'search_code', code_file: 'read_code_file',
   artifact: 'create_artifact', artifact_patch: 'patch_artifact',
   asset_search: 'search_assets', scene_yaml: 'read_scene_yaml',
   prefab_preview: 'preview_prefab', fbx_animation: 'preview_fbx_animation',
   jira_search: 'search_jira', jira_issue: 'get_jira_issue',
   confluence_search: 'search_confluence', confluence_page: 'get_confluence_page',
-  knowledge: 'save_knowledge',
 };
 
 function buildRagTrace(query: string, toolCalls: ToolCallResult[], tokenUsage?: TokenUsageSummary): RagTrace {
@@ -1941,6 +1941,33 @@ export async function sendChatMessage(
   let accumulatedText = '';
   let totalText = ''; // max_tokens 자동 계속 시 누적 텍스트
   let continuationCount = 0; // 자동 계속 횟수
+
+  // ── 널리지 로드를 ThinkingStep + ToolCallResult로 표시 ──
+  // 시스템 프롬프트에 포함된 널리지를 사용자에게 알림 (씽킹 패널 + RAG Graph 동기화)
+  if (knowledgeEntries.length > 0) {
+    const knNames = knowledgeEntries.map(e => e.name);
+    onThinkingUpdate?.({
+      type: 'tool_start', iteration: 0, maxIterations: MAX_ITERATIONS,
+      toolName: 'read_knowledge', toolLabel: '🧠 널리지 읽기',
+      detail: knNames.join(', '),
+      timestamp: Date.now(),
+    });
+    // 각 널리지를 ToolCallResult로 등록 → RAG Graph에 표시
+    for (const entry of knowledgeEntries) {
+      const knTc: KnowledgeResult = {
+        kind: 'knowledge', action: 'read', name: entry.name,
+        content: `(시스템 프롬프트에 포함됨, ${entry.sizeKB}KB)`, sizeKB: entry.sizeKB,
+      };
+      allToolCalls.push(knTc);
+      onToolCall?.(knTc, allToolCalls.length - 1);
+    }
+    onThinkingUpdate?.({
+      type: 'tool_done', iteration: 0, maxIterations: MAX_ITERATIONS,
+      toolName: 'read_knowledge', toolLabel: '🧠 널리지 읽기',
+      detail: `${knowledgeEntries.length}개 파일 로드: ${knNames.join(', ')}`,
+      timestamp: Date.now(),
+    });
+  }
 
   // 토큰 사용량 추적
   const tokenIterations: TokenUsageSummary['iterations'] = [];

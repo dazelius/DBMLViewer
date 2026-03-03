@@ -33,6 +33,7 @@ const KIND_TO_TOOL: Record<string, string> = {
   prefab_preview: 'preview_prefab', fbx_animation: 'preview_fbx_animation',
   jira_search: 'search_jira', jira_issue: 'get_jira_issue',
   confluence_search: 'search_confluence', confluence_page: 'get_confluence_page',
+  knowledge: 'read_knowledge',
 };
 
 interface TraceResult {
