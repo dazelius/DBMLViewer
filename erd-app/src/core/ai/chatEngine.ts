@@ -1041,6 +1041,26 @@ const TOOLS = [
 function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap, knowledgeEntries?: { name: string; sizeKB: number; content: string }[]): string {
   const lines: string[] = [];
 
+  // ── 널리지를 시스템 프롬프트 최상단에 배치 — AI가 가장 먼저 인지 ──
+  if (knowledgeEntries && knowledgeEntries.length > 0) {
+    lines.push('╔══════════════════════════════════════════════════════════════╗');
+    lines.push('║  ⭐ 최우선 규칙: 아래 널리지는 사용자가 직접 저장한 지시사항입니다  ║');
+    lines.push('║  모든 답변에서 반드시 참고하고, 어떤 널리지를 참고했는지 언급하세요   ║');
+    lines.push('╚══════════════════════════════════════════════════════════════╝');
+    lines.push('');
+    lines.push(`[사용자 저장 널리지: ${knowledgeEntries.length}개 파일]`);
+    for (const entry of knowledgeEntries) {
+      lines.push('');
+      lines.push(`━━━ 📌 ${entry.name} (${entry.sizeKB}KB) ━━━`);
+      lines.push(entry.content);
+      lines.push(`━━━ END: ${entry.name} ━━━`);
+    }
+    lines.push('');
+    lines.push('위 널리지에 사용자의 과거 지시사항, 스타일 가이드, 규칙 등이 있습니다.');
+    lines.push('"내가 뭐라고 했지?", "어떻게 하라고 했지?" 같은 질문에는 위 널리지를 먼저 확인하세요.');
+    lines.push('');
+  }
+
   lines.push('당신은 이 게임의 모든 데이터를 꿰뚫고 있는 전문 게임 데이터 어시스턴트입니다.');
   lines.push('');
   lines.push('[맥락 불분명 시 되질문 규칙 — 반드시 준수]');
@@ -1086,25 +1106,9 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap,
   lines.push('- 사용자가 "이거 기억해", "널리지로 저장해줘", "이 정보 저장" 등을 말하면 → save_knowledge 호출.');
   lines.push('- 저장 시 name은 영문 스네이크_케이스로 (예: skill_system, rag_chunk_01).');
   lines.push('- 저장 시 사용자 제공 원본 내용을 보존하되, # 제목과 구조화된 마크다운으로 정리.');
-  lines.push('- ⭐⭐⭐ 아래에 저장된 널리지의 전체 내용이 포함되어 있습니다. 답변 시 반드시 참고하세요!');
-  lines.push('- 널리지 내용은 사용자가 직접 저장한 중요 정보이므로, 모든 답변에서 관련 널리지를 활용해야 합니다.');
-  lines.push('- 널리지를 활용할 때는 어떤 널리지(파일명)를 참고했는지 자연스럽게 언급해주세요.');
+  lines.push('- ⭐ 이 시스템 프롬프트 최상단에 저장된 널리지 전문이 포함되어 있습니다. 답변 전 반드시 확인하세요!');
+  lines.push('- "내가 뭐라고 했지?", "어떻게 쓰라고 했지?" 등의 질문 → 최상단 널리지에서 답을 찾으세요.');
   lines.push('');
-  // 저장된 널리지 전체 내용 직접 주입 — AI가 tool call 없이도 항상 인지
-  if (knowledgeEntries && knowledgeEntries.length > 0) {
-    lines.push(`[현재 저장된 널리지: ${knowledgeEntries.length}개 파일] ──────────────────────`);
-    for (const entry of knowledgeEntries) {
-      lines.push('');
-      lines.push(`━━━ 📌 ${entry.name} (${entry.sizeKB}KB) ━━━`);
-      lines.push(entry.content);
-      lines.push(`━━━ END: ${entry.name} ━━━`);
-    }
-    lines.push('──────────────────────────────────────────────────');
-    lines.push('');
-  } else {
-    lines.push('[현재 저장된 널리지: 없음]');
-    lines.push('');
-  }
   lines.push('[FBX 3D 모델 뷰어 규칙 — 절대 준수]');
   lines.push('⚠️⚠️⚠️ 절대 금지: <div class="fbx-viewer">, data-embed, <div data-sql>, data-src 등 HTML 임베드 태그를 절대로 채팅 텍스트에 직접 출력하지 마세요!');
   lines.push('⚠️⚠️⚠️ 이런 태그들은 반드시 create_artifact 툴의 html 파라미터 안에만 넣어야 합니다. 채팅 응답에 HTML 태그를 출력하면 사용자에게 원시 코드가 그대로 보입니다!');
