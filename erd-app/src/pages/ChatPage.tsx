@@ -52,28 +52,103 @@ function compressHtmlForEdit(html: string): string {
     .trim();
 }
 
-// ── patch 적용: find/replace 순서대로 적용 ──────────────────────────────────
+// ── 정규식 이스케이프 ────────────────────────────────────────────────────────
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ── patch 적용: find/replace 순서대로 적용 (4단계 매칭) ──────────────────────
 function applyPatches(originalHtml: string, patches: { find: string; replace: string }[]): { html: string; applied: number; failed: string[] } {
   let html = originalHtml;
   let applied = 0;
   const failed: string[] = [];
   for (const patch of patches) {
     if (!patch.find) continue;
+    console.log(`[applyPatch] find(${patch.find.length}자): "${patch.find.slice(0, 80)}…"`);
+
+    // 1차: 정확히 포함
     if (html.includes(patch.find)) {
-      html = html.split(patch.find).join(patch.replace); // 모든 occurrences 교체
+      html = html.split(patch.find).join(patch.replace);
       applied++;
-    } else {
-      // 공백 정규화 후 재시도 (Claude가 개행/공백을 약간 다르게 반환할 수 있음)
-      const normalizedHtml = html.replace(/\s+/g, ' ');
-      const normalizedFind = patch.find.replace(/\s+/g, ' ');
-      if (normalizedHtml.includes(normalizedFind)) {
-        html = normalizedHtml.split(normalizedFind).join(patch.replace.replace(/\s+/g, ' '));
-        applied++;
-      } else {
-        failed.push(patch.find.slice(0, 60) + (patch.find.length > 60 ? '…' : ''));
+      console.log(`[applyPatch] ✅ 1단계 정확 매칭 성공`);
+      continue;
+    }
+
+    // 2차: 공백 정규화 후 regex로 원본에서 교체 (원본 포맷 보존)
+    const normHtml = html.replace(/\s+/g, ' ');
+    const normFind = patch.find.replace(/\s+/g, ' ');
+    if (normHtml.includes(normFind)) {
+      const escaped = escapeRegExp(patch.find);
+      const relaxed = escaped.replace(/\\s\+|(?:\\ )+|\s+/g, '\\s+');
+      try {
+        const re = new RegExp(relaxed, 'g');
+        const before = html;
+        html = html.replace(re, patch.replace);
+        if (html !== before) {
+          applied++;
+          console.log(`[applyPatch] ✅ 2단계 공백 정규화 매칭 성공`);
+          continue;
+        }
+      } catch { /* fall through */ }
+      // regex 실패 → 정규화된 버전에서 직접 교체
+      html = normHtml.split(normFind).join(patch.replace);
+      applied++;
+      console.log(`[applyPatch] ✅ 2단계 정규화 직접 교체 성공`);
+      continue;
+    }
+
+    // 3차: 핵심 텍스트 매칭 — HTML 태그 제거 후 텍스트 내용으로 위치 찾기
+    const findCore = patch.find.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    if (findCore.length >= 8) {
+      const htmlTextOnly = html.replace(/<[^>]+>/g, (m) => ' '.repeat(m.length));
+      const idx = htmlTextOnly.indexOf(findCore);
+      if (idx >= 0) {
+        const escaped = escapeRegExp(patch.find);
+        const relaxed = escaped.replace(/\\s\+|(?:\\ )+|\s+/g, '[\\s\\S]*?');
+        try {
+          const re = new RegExp(relaxed);
+          const before = html;
+          html = html.replace(re, patch.replace);
+          if (html !== before) {
+            applied++;
+            console.log(`[applyPatch] ✅ 3단계 핵심 텍스트 매칭 성공`);
+            continue;
+          }
+        } catch { /* fall through */ }
       }
     }
+
+    // 4차: 부분 문자열 매칭 — find의 앞뒤 20%를 잘라서 코어 부분만 매칭 시도
+    if (patch.find.length >= 20) {
+      const trimLen = Math.floor(patch.find.length * 0.2);
+      const core = patch.find.slice(trimLen, -trimLen || undefined);
+      if (core.length >= 10 && html.includes(core)) {
+        // 코어가 포함된 주변 컨텍스트를 찾아서 find 전체와 비슷한 영역을 교체
+        const coreIdx = html.indexOf(core);
+        // find 전체 길이만큼의 영역을 추출하여 교체
+        const start = Math.max(0, coreIdx - trimLen);
+        const end = Math.min(html.length, coreIdx + core.length + trimLen);
+        const region = html.slice(start, end);
+        // region 안에서 find와 유사한 부분을 replace로 교체
+        const escaped = escapeRegExp(core);
+        try {
+          const re = new RegExp(escaped);
+          const before = html;
+          // find 전체가 아닌 core를 중심으로 원본 find 영역을 대체
+          html = html.slice(0, start) + region.replace(re, patch.replace) + html.slice(end);
+          if (html !== before) {
+            applied++;
+            console.log(`[applyPatch] ✅ 4단계 부분 문자열 매칭 성공 (core: "${core.slice(0, 30)}…")`);
+            continue;
+          }
+        } catch { /* fall through */ }
+      }
+    }
+
+    console.warn(`[applyPatch] ❌ 매칭 실패: "${patch.find.slice(0, 60)}…" (원본 HTML ${html.length}자)`);
+    failed.push(patch.find.slice(0, 60) + (patch.find.length > 60 ? '…' : ''));
   }
+  console.log(`[applyPatch] 결과: ${applied}개 성공, ${failed.length}개 실패 (원본 ${originalHtml.length}자 → 결과 ${html.length}자)`);
   return { html, applied, failed };
 }
 
@@ -5845,27 +5920,14 @@ export default function ChatPage() {
           if (_artBuf.baseHtml && !html && rawJson && rawJson.includes('"find"')) {
             const completedPatches = extractCompletedPatches(rawJson);
             if (completedPatches.length > 0) {
-              let patched = _artBuf.baseHtml;
-              let appliedCount = 0;
-              for (const p of completedPatches) {
-                if (!p.find) continue;
-                if (patched.includes(p.find)) {
-                  patched = patched.split(p.find).join(p.replace);
-                  appliedCount++;
-                } else {
-                  // 공백 정규화 후 재시도
-                  const normHtml = patched.replace(/\s+/g, ' ');
-                  const normFind = p.find.replace(/\s+/g, ' ');
-                  if (normHtml.includes(normFind)) {
-                    patched = normHtml.split(normFind).join(p.replace.replace(/\s+/g, ' '));
-                    appliedCount++;
-                  }
-                }
-              }
+              // 개선된 applyPatches 사용 (4단계 fuzzy matching)
+              const { html: patched, applied } = applyPatches(_artBuf.baseHtml, completedPatches);
               _artBuf.html = patched;
-              _artBuf.title = `패치 적용 중 (${appliedCount}/${completedPatches.length}개)`;
+              _artBuf.title = `패치 적용 중 (${applied}/${completedPatches.length}개)`;
             }
-          } else {
+            // completedPatches가 없어도 _artBuf.html은 baseHtml 유지 (리셋하지 않음)
+          } else if (!_artBuf.baseHtml) {
+            // 패치 모드가 아닌 경우에만 html 업데이트
             _artBuf.html = html;
           }
           _artBuf.ver++;
@@ -5972,6 +6034,7 @@ export default function ChatPage() {
         ]);
       } else if (patchTc && patchTc.patches.length > 0) {
         // patch_artifact: 현재 열린 아티팩트에 패치 적용
+        console.log(`[Patch] 🔧 패치 적용 시작: ${patchTc.patches.length}개 패치, title="${patchTc.title ?? '(없음)'}"`);
         setArtifactPanel((prev) => {
           // 원본 HTML: finalTc.html → prev.html → _artBuf.baseHtml → _artBuf.html 순 fallback
           const originalHtml = prev?.finalTc?.html
@@ -5979,12 +6042,13 @@ export default function ChatPage() {
             || _artBuf.baseHtml
             || _artBuf.html
             || '';
+          console.log(`[Patch] 원본 HTML 소스: finalTc=${(prev?.finalTc?.html ?? '').length}자, prev.html=${(prev?.html ?? '').length}자, baseHtml=${_artBuf.baseHtml.length}자, artBuf=${_artBuf.html.length}자 → 사용: ${originalHtml.length}자`);
           if (!originalHtml) {
-            console.warn('[Patch] 패치할 원본 HTML이 없습니다. prev:', prev, '_artBuf:', { html: _artBuf.html.length, baseHtml: _artBuf.baseHtml.length });
-            return prev; // 원본 없으면 기존 패널 유지
+            console.warn('[Patch] ❌ 패치할 원본 HTML이 없습니다!');
+            return prev;
           }
           const { html: patchedHtml, applied, failed } = applyPatches(originalHtml, patchTc.patches);
-          console.log(`[Patch] 적용 ${applied}/${patchTc.patches.length}개, 원본 길이: ${originalHtml.length}, 결과 길이: ${patchedHtml.length}${failed.length ? `, 실패: ${failed.join(' | ')}` : ''}`);
+          console.log(`[Patch] ✅ 적용 ${applied}/${patchTc.patches.length}개, 원본: ${originalHtml.length}자 → 결과: ${patchedHtml.length}자${failed.length ? `, 실패: ${failed.join(' | ')}` : ''}`);
           const newTitle = patchTc.title ?? prev?.finalTc?.title ?? prev?.title ?? '문서';
           // finalTc가 없으면 새로 생성
           const baseTc: ArtifactResult = prev?.finalTc ?? { kind: 'artifact', title: newTitle, description: '', html: originalHtml, duration: 0 };
@@ -6437,19 +6501,29 @@ export default function ChatPage() {
                 );
               }}
               onEditRequest={(prompt) => {
-                if (!artifactPanel.finalTc) return;
-                const currentHtml = artifactPanel.finalTc.html ?? '';
-                const title = artifactPanel.finalTc.title ?? '문서';
+                // 원본 HTML: finalTc.html → panel.html → _artBuf.html 순 fallback
+                const currentHtml = artifactPanel?.finalTc?.html
+                  || artifactPanel?.html
+                  || _artBuf.html
+                  || '';
+                const title = artifactPanel?.finalTc?.title ?? artifactPanel?.title ?? '문서';
+                if (!currentHtml) {
+                  console.warn('[EditRequest] 수정할 HTML이 없습니다.');
+                  return;
+                }
+                console.log(`[EditRequest] 원본 HTML ${currentHtml.length}자, title="${title}"`);
                 // 스타일/스크립트 제거 → 입력 토큰 대폭 절약
                 const compressedHtml = compressHtmlForEdit(currentHtml);
-                // Claude에게 전달할 컨텍스트
+                // Claude에게 전달할 컨텍스트 — find는 원본 HTML 기준으로 작성하도록 강조
                 const fullMessage =
                   `[아티팩트 수정 요청]\n` +
                   `제목: ${title}\n\n` +
-                  `현재 아티팩트 HTML (스타일/스크립트 제외):\n\`\`\`html\n${compressedHtml}\n\`\`\`\n\n` +
+                  `현재 아티팩트 HTML (스타일/스크립트 제외, 원본은 ${currentHtml.length}자):\n\`\`\`html\n${compressedHtml}\n\`\`\`\n\n` +
                   `수정 요청: ${prompt}\n\n` +
-                  `⭐ 반드시 patch_artifact 툴을 사용하세요. ` +
-                  `변경이 필요한 부분의 find/replace 패치만 반환하면 됩니다. HTML 전체 재생성 금지.`;
+                  `⭐ 반드시 patch_artifact 툴을 사용하세요.\n` +
+                  `- find 텍스트는 위 HTML에서 **정확히** 복사하세요 (공백/줄바꿈 포함).\n` +
+                  `- 변경이 필요한 최소 부분만 find/replace 패치로 반환하세요.\n` +
+                  `- HTML 전체 재생성 금지. 스타일 속성은 그대로 유지하세요.`;
                 // 채팅에는 사용자가 입력한 텍스트만 표시
                 const displayText = `✏️ [${title}] ${prompt}`;
                 sendMessage(fullMessage, displayText);
