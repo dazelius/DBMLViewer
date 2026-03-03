@@ -3242,6 +3242,7 @@ function showTab(id){
     };
   }
 
+  // ── MAX_ITERATIONS 모두 소진 → rawMessages 포함하여 '계속하기' 지원 ──
   const tokenUsage: TokenUsageSummary = {
     iterations: tokenIterations,
     total_input: tokenIterations.reduce((s, t) => s + t.input_tokens, 0),
@@ -3250,6 +3251,24 @@ function showTab(id){
     system_prompt_estimate: systemPromptEstimate,
   };
   useRagTraceStore.getState().pushTrace(buildRagTrace(userMessage, allToolCalls, tokenUsage));
+
+  // 조회된 데이터가 있으면 rawMessages를 보존하여 계속하기 버튼 지원
+  const hasCollectedData = allToolCalls.length > 0;
+  const dataToolCount = allToolCalls.filter(
+    (tc) => tc.kind === 'data_query' || tc.kind === 'schema_card' || tc.kind === 'character_profile' ||
+            tc.kind === 'git_history' || tc.kind === 'jira_search' || tc.kind === 'confluence_page',
+  ).length;
+
+  if (hasCollectedData) {
+    console.log(`[Chat] MAX_ITERATIONS 소진: 수집된 도구 호출 ${allToolCalls.length}건 (데이터 조회 ${dataToolCount}건), rawMessages 보존`);
+    return {
+      content: `데이터 조회가 많아 응답이 중단되었습니다 (${allToolCalls.length}건 조회 완료). 아래 '이어서 생성하기' 버튼을 눌러 이미 조회된 데이터로 답변을 이어받을 수 있습니다.`,
+      toolCalls: allToolCalls,
+      rawMessages: messages,
+      tokenUsage,
+    };
+  }
+
   return {
     content: '너무 많은 데이터 조회가 필요합니다. 질문을 좀 더 구체적으로 해주세요.',
     toolCalls: allToolCalls,

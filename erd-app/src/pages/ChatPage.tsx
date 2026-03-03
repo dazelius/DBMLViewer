@@ -5485,21 +5485,29 @@ function MessageBubble({ msg, onContinue, artifactStreaming }: { msg: Message; o
               {msg.isTruncated && (
                 <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-color)' }}>
                   <div className="flex items-center gap-2 mb-2">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: '#f59e0b', flexShrink: 0 }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ color: '#f59e0b', flexShrink: 0 }}>
                       <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
                       <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
                     </svg>
-                    <span className="text-[11px]" style={{ color: '#f59e0b' }}>응답이 잘렸습니다 — 이전에 조회된 데이터를 재활용해 계속 생성할 수 있습니다.</span>
+                    <span className="text-[12px]" style={{ color: '#f59e0b' }}>
+                      {msg.toolCalls && msg.toolCalls.length > 0
+                        ? `데이터 ${msg.toolCalls.length}건 조회 완료 — 조회된 데이터를 활용해 답변을 이어서 생성할 수 있습니다.`
+                        : '응답이 잘렸습니다 — 이어서 생성할 수 있습니다.'}
+                    </span>
                   </div>
                   {onContinue && (
                     <button
                       onClick={onContinue}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium hover:opacity-80 transition-opacity"
-                      style={{ background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.4)', color: '#818cf8' }}
+                      className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-semibold transition-all hover:scale-[1.02] active:scale-[0.98]"
+                      style={{
+                        background: 'linear-gradient(135deg, rgba(99,102,241,0.2) 0%, rgba(79,70,229,0.2) 100%)',
+                        border: '1px solid rgba(99,102,241,0.5)',
+                        color: '#a5b4fc',
+                        boxShadow: '0 2px 8px rgba(99,102,241,0.15)',
+                      }}
                     >
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                        <polyline points="5 12 12 19 19 12"/>
-                        <polyline points="5 5 12 12 19 5"/>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="5 3 19 12 5 21 5 3"/>
                       </svg>
                       이어서 생성하기
                     </button>
@@ -6106,7 +6114,10 @@ export default function ChatPage() {
                 onContinue={
                   // 마지막 assistant 메시지가 잘린 경우에만 버튼 활성화
                   msg.isTruncated && !isLoading && idx === messages.length - 1
-                    ? () => sendMessage('계속해서 아티팩트를 완성해주세요. 이미 조회된 데이터를 재활용하세요.')
+                    ? () => sendMessage(
+                        '이전에 조회한 데이터를 기반으로 이어서 답변을 완성해주세요. 추가 데이터 조회 없이 기존에 수집된 데이터만으로 바로 답변해주세요. 필요하다면 create_artifact를 사용해 정리된 결과물을 만들어주세요.',
+                        '▶ 이어서 생성하기',
+                      )
                     : undefined
                 }
                 artifactStreaming={
