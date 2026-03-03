@@ -1048,6 +1048,97 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
+    // ── /api/knowledge/* : 사용자 지식(Knowledge) CRUD ─────────────────────────
+    const KNOWLEDGE_DIR = join(process.cwd(), 'knowledge')
+    function ensureKnowledgeDir() {
+      if (!existsSync(KNOWLEDGE_DIR)) mkdirSync(KNOWLEDGE_DIR, { recursive: true })
+    }
+
+    // GET /api/knowledge/list — 전체 널리지 목록
+    if (req.url?.startsWith('/api/knowledge/list') && req.method === 'GET') {
+      ensureKnowledgeDir()
+      const files = readdirSync(KNOWLEDGE_DIR)
+        .filter(f => f.endsWith('.md'))
+        .map(f => {
+          const stat = statSync(join(KNOWLEDGE_DIR, f))
+          return {
+            name: f.replace('.md', ''),
+            sizeKB: Math.round(stat.size / 1024 * 10) / 10,
+            updatedAt: stat.mtime.toISOString(),
+          }
+        })
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) // 최신순
+      sendJson(res, 200, { items: files, total: files.length })
+      return
+    }
+
+    // GET /api/knowledge/read?name=... — 특정 널리지 읽기
+    if (req.url?.startsWith('/api/knowledge/read') && req.method === 'GET') {
+      ensureKnowledgeDir()
+      const url = new URL(req.url, 'http://localhost')
+      const name = (url.searchParams.get('name') || '').replace(/[^a-zA-Z0-9_\-\uAC00-\uD7AF\u3131-\u3163 ]/g, '').trim()
+      if (!name) {
+        // 이름 없으면 목록 반환
+        const files = readdirSync(KNOWLEDGE_DIR).filter(f => f.endsWith('.md')).map(f => f.replace('.md', ''))
+        sendJson(res, 200, { items: files, total: files.length })
+        return
+      }
+      const filePath = join(KNOWLEDGE_DIR, `${name}.md`)
+      if (!existsSync(filePath)) {
+        const available = readdirSync(KNOWLEDGE_DIR).filter(f => f.endsWith('.md')).map(f => f.replace('.md', ''))
+        sendJson(res, 404, { error: `Knowledge '${name}' not found`, available })
+        return
+      }
+      let content = readFileSync(filePath, 'utf-8')
+      if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
+      const MAX = 200 * 1024
+      const truncated = content.length > MAX
+      if (truncated) content = content.slice(0, MAX) + '\n...(truncated)'
+      sendJson(res, 200, { name, content, sizeKB: Math.round(content.length / 1024 * 10) / 10, truncated })
+      return
+    }
+
+    // POST /api/knowledge/save — 널리지 저장 (생성/업데이트)
+    if (req.url?.startsWith('/api/knowledge/save') && req.method === 'POST') {
+      ensureKnowledgeDir()
+      try {
+        const body = await readBody(req)
+        const { name, content } = JSON.parse(body) as { name?: string; content?: string }
+        if (!name || !content) {
+          sendJson(res, 400, { error: '"name" and "content" are required' })
+          return
+        }
+        const safeName = name.replace(/[^a-zA-Z0-9_\-\uAC00-\uD7AF\u3131-\u3163 ]/g, '').trim()
+        if (!safeName) { sendJson(res, 400, { error: 'Invalid name' }); return }
+        const filePath = join(KNOWLEDGE_DIR, `${safeName}.md`)
+        const isNew = !existsSync(filePath)
+        writeFileSync(filePath, content, 'utf-8')
+        const stat = statSync(filePath)
+        sendJson(res, 200, {
+          name: safeName,
+          sizeKB: Math.round(stat.size / 1024 * 10) / 10,
+          created: isNew,
+          updatedAt: stat.mtime.toISOString(),
+        })
+      } catch (e) {
+        sendJson(res, 500, { error: `Save failed: ${String(e)}` })
+      }
+      return
+    }
+
+    // DELETE /api/knowledge/delete?name=... — 널리지 삭제
+    if (req.url?.startsWith('/api/knowledge/delete') && req.method === 'DELETE') {
+      ensureKnowledgeDir()
+      const url = new URL(req.url, 'http://localhost')
+      const name = (url.searchParams.get('name') || '').replace(/[^a-zA-Z0-9_\-\uAC00-\uD7AF\u3131-\u3163 ]/g, '').trim()
+      if (!name) { sendJson(res, 400, { error: '"name" query param required' }); return }
+      const filePath = join(KNOWLEDGE_DIR, `${name}.md`)
+      if (!existsSync(filePath)) { sendJson(res, 404, { error: `Knowledge '${name}' not found` }); return }
+      unlinkSync(filePath)
+      sendJson(res, 200, { deleted: true, name })
+      return
+    }
+
     // ── /api/assets/* : 에셋 엔드포인트 (try-catch로 서버 크래시 방지) ────────────
     if (req.url?.startsWith('/api/assets/')) {
       // 공통 헬퍼 - assets/ 폴더 없으면 unity_project 직접 사용

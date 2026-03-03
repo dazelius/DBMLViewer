@@ -34,6 +34,7 @@ import {
   type DiffHunk,
   type ThinkingStep,
   type TokenUsageSummary,
+  type KnowledgeResult,
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
 import type { ParsedSchema } from '../core/schema/types.ts';
@@ -4595,6 +4596,72 @@ function FbxAnimationCard({ tc }: { tc: FbxAnimationResult }) {
   );
 }
 
+function KnowledgeCard({ tc }: { tc: KnowledgeResult }) {
+  const [expanded, setExpanded] = useState(false);
+  const isError = !!tc.error;
+  const isSave = tc.action === 'save';
+  const isList = tc.action === 'list';
+
+  const icon = isSave ? '💾' : '📖';
+  const label = isSave
+    ? `널리지 저장: ${tc.name}${tc.created ? ' (신규)' : ' (업데이트)'}`
+    : isList
+    ? `널리지 목록 (${tc.items?.length ?? 0}개)`
+    : `널리지 읽기: ${tc.name}`;
+  const badge = isError ? '오류' : isSave ? `${tc.sizeKB ?? 0}KB` : isList ? `${tc.items?.length ?? 0}개` : `${tc.sizeKB ?? 0}KB`;
+
+  return (
+    <div className="rounded-xl overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(139,92,246,0.25)' }}>
+      <button onClick={() => setExpanded(!expanded)} className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left" style={{ background: 'transparent' }}>
+        <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 text-[13px]" style={{ background: 'rgba(139,92,246,0.12)' }}>
+          {icon}
+        </div>
+        <span className="text-[12px] font-medium flex-1 min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
+          {label}
+        </span>
+        <span className="text-[10px] px-2 py-0.5 rounded-full flex-shrink-0" style={{
+          background: isError ? 'rgba(239,68,68,0.15)' : 'rgba(139,92,246,0.15)',
+          color: isError ? '#f87171' : '#a78bfa',
+        }}>
+          {badge}
+        </span>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+          style={{ color: 'var(--text-muted)', transition: 'transform 0.2s', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', flexShrink: 0 }}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {expanded && (
+        <div className="px-4 pb-3 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+          {isError && <div className="text-red-400 mb-2">{tc.error}</div>}
+          {isList && tc.items && tc.items.length > 0 && (
+            <div className="space-y-1">
+              {tc.items.map((it) => (
+                <div key={it.name} className="flex items-center gap-2 py-1 px-2 rounded" style={{ background: 'rgba(139,92,246,0.06)' }}>
+                  <span className="text-[11px]">🧠</span>
+                  <span className="font-mono text-[11px] flex-1">{it.name}</span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{it.sizeKB}KB</span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{new Date(it.updatedAt).toLocaleDateString('ko-KR')}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {tc.content && (
+            <pre className="whitespace-pre-wrap text-[11px] mt-1 p-3 rounded-lg overflow-auto" style={{ background: 'rgba(0,0,0,0.2)', maxHeight: '300px', lineHeight: 1.5 }}>
+              {tc.content.length > 2000 ? tc.content.slice(0, 2000) + '\n...(더 있음)' : tc.content}
+            </pre>
+          )}
+          {isSave && !isError && (
+            <div className="flex items-center gap-1.5 mt-1" style={{ color: '#a78bfa' }}>
+              <span className="text-[11px]">✅</span>
+              <span className="text-[11px]">널리지가 성공적으로 저장되었습니다.</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'schema_card') return <TableSchemaCard tc={tc} />;
   if (tc.kind === 'git_history') return <GitHistoryCard tc={tc} />;
@@ -4613,6 +4680,7 @@ function ToolCallCard({ tc, index }: { tc: ToolCallResult; index: number }) {
   if (tc.kind === 'jira_issue') return <JiraIssueCard tc={tc} />;
   if (tc.kind === 'confluence_search') return <ConfluenceSearchCard tc={tc} />;
   if (tc.kind === 'confluence_page') return <ConfluencePageCard tc={tc} />;
+  if (tc.kind === 'knowledge') return <KnowledgeCard tc={tc} />;
   if (tc.kind === 'artifact_patch') return null;
   return <DataQueryCard tc={tc as DataQueryResult} index={index} />;
 }

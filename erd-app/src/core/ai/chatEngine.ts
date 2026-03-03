@@ -419,7 +419,18 @@ export interface FbxAnimationResult {
   error?: string;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult | JiraSearchResult | JiraIssueResult | ConfluenceSearchResult | ConfluencePageResult | SceneYamlResult | PrefabPreviewResult | FbxAnimationResult;
+export interface KnowledgeResult {
+  kind: 'knowledge';
+  action: 'save' | 'read' | 'list' | 'delete';
+  name: string;
+  content?: string;
+  items?: { name: string; sizeKB: number; updatedAt: string }[];
+  sizeKB?: number;
+  created?: boolean;
+  error?: string;
+}
+
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult | JiraSearchResult | JiraIssueResult | ConfluenceSearchResult | ConfluencePageResult | SceneYamlResult | PrefabPreviewResult | FbxAnimationResult | KnowledgeResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -462,6 +473,8 @@ export const TOOL_META: ToolMeta[] = [
   { name: 'get_jira_issue',         label: 'Jira 이슈',          emoji: '🎫', dataSources: ['jira'] },
   { name: 'search_confluence',      label: 'Confluence 검색',    emoji: '📚', dataSources: ['confluence'] },
   { name: 'get_confluence_page',    label: 'Confluence 페이지',   emoji: '📚', dataSources: ['confluence'] },
+  { name: 'save_knowledge',         label: '널리지 저장',         emoji: '🧠', dataSources: ['knowledge'] },
+  { name: 'read_knowledge',         label: '널리지 읽기',         emoji: '🧠', dataSources: ['knowledge'] },
 ];
 
 export const DATA_SOURCE_META: Array<{ name: string; label: string; emoji: string }> = [
@@ -474,6 +487,7 @@ export const DATA_SOURCE_META: Array<{ name: string; label: string; emoji: strin
   { name: 'unity',      label: 'Unity Assets',   emoji: '🎮' },
   { name: 'jira',       label: 'Jira',           emoji: '🎫' },
   { name: 'confluence',  label: 'Confluence',      emoji: '📚' },
+  { name: 'knowledge',  label: '널리지',           emoji: '🧠' },
 ];
 
 export const DOMAIN_KEYWORDS: Record<string, string[]> = {
@@ -979,6 +993,45 @@ const TOOLS = [
       required: ['pageId'],
     },
   },
+  {
+    name: 'save_knowledge',
+    description:
+      '사용자가 제공한 지식/청크/정보를 영구 저장합니다. ' +
+      '사용자가 "이거 기억해", "널리지로 저장", "이 정보 저장해줘" 등을 말하면 이 도구를 사용하세요. ' +
+      '저장된 지식은 .md 파일로 보관되며 나중에 read_knowledge로 검색/활용할 수 있습니다. ' +
+      'name은 영문 스네이크 케이스 권장 (예: skill_system, rag_architecture, combat_formula).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: '지식 파일 이름 (확장자 없이). 예: "skill_system", "rag_pipeline", "damage_formula"',
+        },
+        content: {
+          type: 'string',
+          description: '저장할 마크다운 내용. 사용자가 제공한 원본 내용을 보존하되, 제목(#)과 구조화된 형식으로 정리하세요.',
+        },
+      },
+      required: ['name', 'content'],
+    },
+  },
+  {
+    name: 'read_knowledge',
+    description:
+      '이전에 save_knowledge로 저장된 지식을 읽어옵니다. ' +
+      'name을 빈 문자열("")로 호출하면 저장된 전체 널리지 목록을 반환합니다. ' +
+      '사용자 질문에 관련된 저장된 지식이 있을 수 있으니, 필요시 목록을 먼저 확인하세요.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: '읽을 지식 파일 이름. 빈 문자열("")이면 전체 목록 반환.',
+        },
+      },
+      required: [],
+    },
+  },
 ];
 
 // ── 시스템 프롬프트 빌더 ─────────────────────────────────────────────────────
@@ -1007,6 +1060,14 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- search_code: C# 게임 클라이언트 소스코드 검색 (클래스/메서드/파일명/내용 전문검색). 코드 구현 방식, 로직, 버그 분석 시 사용.');
   lines.push('- read_code_file: 특정 .cs 파일 전체 내용 읽기. search_code로 경로 확인 후 호출.');
   lines.push('- search_assets: Unity 에셋 파일 검색 (FBX 3D 모델, PNG 텍스처, WAV 사운드 등). ext="fbx"로 3D 모델만 검색 가능.');
+  lines.push('- save_knowledge: 🧠 사용자가 제공한 지식/청크를 .md 파일로 영구 저장. "기억해", "저장해", "널리지로" 등의 요청 시 사용.');
+  lines.push('- read_knowledge: 🧠 저장된 널리지 읽기. 빈 name("")으로 목록 확인 가능.');
+  lines.push('');
+  lines.push('[널리지(Knowledge) 시스템 규칙]');
+  lines.push('- 사용자가 "이거 기억해", "널리지로 저장해줘", "이 정보 저장" 등을 말하면 → save_knowledge 호출.');
+  lines.push('- 저장 시 name은 영문 스네이크_케이스로 (예: skill_system, rag_chunk_01).');
+  lines.push('- 저장 시 사용자 제공 원본 내용을 보존하되, # 제목과 구조화된 마크다운으로 정리.');
+  lines.push('- 사용자가 특정 주제 질문 시 관련 널리지가 있을 수 있으니 read_knowledge("")로 목록 확인 권장.');
   lines.push('');
   lines.push('[FBX 3D 모델 뷰어 규칙 — 절대 준수]');
   lines.push('⚠️⚠️⚠️ 절대 금지: <div class="fbx-viewer">, data-embed, <div data-sql>, data-src 등 HTML 임베드 태그를 절대로 채팅 텍스트에 직접 출력하지 마세요!');
@@ -1708,6 +1769,7 @@ const KIND_TO_TOOL: Record<string, string> = {
   prefab_preview: 'preview_prefab', fbx_animation: 'preview_fbx_animation',
   jira_search: 'search_jira', jira_issue: 'get_jira_issue',
   confluence_search: 'search_confluence', confluence_page: 'get_confluence_page',
+  knowledge: 'save_knowledge',
 };
 
 function buildRagTrace(query: string, toolCalls: ToolCallResult[], tokenUsage?: TokenUsageSummary): RagTrace {
@@ -1935,6 +1997,8 @@ export async function sendChatMessage(
         preview_prefab: '🧩 프리펩 미리보기',
         preview_fbx_animation: '🎬 애니메이션 미리보기',
         get_character_profile: '👤 캐릭터 프로필 조회',
+        save_knowledge: '🧠 널리지 저장',
+        read_knowledge: '🧠 널리지 읽기',
       };
 
       await Promise.all(toolBlocks.map(async (tb) => {
@@ -1956,6 +2020,8 @@ export async function sendChatMessage(
           : tb.name === 'preview_prefab' ? String(inp.path ?? '')
           : tb.name === 'preview_fbx_animation' ? String(inp.model_path ?? '')
           : tb.name === 'get_character_profile' ? String(inp.character_id ?? '')
+          : tb.name === 'save_knowledge' ? String(inp.name ?? '')
+          : tb.name === 'read_knowledge' ? String(inp.name ?? '') || '(목록)'
           : undefined;
         onThinkingUpdate?.({ type: 'tool_start', iteration: i + 1, maxIterations: MAX_ITERATIONS, toolName: tb.name, toolLabel, detail: toolDetail, timestamp: Date.now() });
 
@@ -3131,6 +3197,72 @@ function showTab(id){
           } catch (e) {
             resultStr = `Confluence 페이지 조회 오류: ${String(e)}`;
             tc = { kind: 'confluence_page', pageId, error: String(e), duration: 0 } as ConfluencePageResult;
+          }
+        }
+
+        // ── save_knowledge ──
+        else if (tb.name === 'save_knowledge') {
+          const knName = String(inp.name ?? '').trim();
+          const knContent = String(inp.content ?? '');
+          const t0 = performance.now();
+          try {
+            if (!knName || !knContent) {
+              resultStr = '오류: name과 content가 모두 필요합니다.';
+              tc = { kind: 'knowledge', action: 'save', name: knName, error: resultStr };
+            } else {
+              const resp = await fetch('/api/knowledge/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: knName, content: knContent }),
+              });
+              const data2 = await resp.json() as { name?: string; sizeKB?: number; created?: boolean; error?: string };
+              if (!resp.ok || data2.error) {
+                resultStr = `널리지 저장 실패: ${data2.error ?? 'Unknown error'}`;
+                tc = { kind: 'knowledge', action: 'save', name: knName, error: resultStr };
+              } else {
+                resultStr = `✅ 널리지 "${data2.name}" ${data2.created ? '생성' : '업데이트'} 완료 (${data2.sizeKB}KB)`;
+                tc = { kind: 'knowledge', action: 'save', name: data2.name ?? knName, sizeKB: data2.sizeKB, created: data2.created };
+              }
+            }
+          } catch (e) {
+            resultStr = `널리지 저장 오류: ${String(e)}`;
+            tc = { kind: 'knowledge', action: 'save', name: knName, error: String(e) };
+          }
+        }
+
+        // ── read_knowledge ──
+        else if (tb.name === 'read_knowledge') {
+          const knName = String(inp.name ?? '').trim();
+          const t0 = performance.now();
+          try {
+            if (!knName) {
+              // 목록 반환
+              const resp = await fetch('/api/knowledge/list');
+              const data2 = await resp.json() as { items?: { name: string; sizeKB: number; updatedAt: string }[]; total?: number };
+              const items = data2.items ?? [];
+              if (items.length === 0) {
+                resultStr = '저장된 널리지가 없습니다. save_knowledge로 지식을 저장할 수 있습니다.';
+              } else {
+                resultStr = `📚 저장된 널리지 (${items.length}개):\n` +
+                  items.map(it => `- ${it.name} (${it.sizeKB}KB, ${new Date(it.updatedAt).toLocaleDateString('ko-KR')})`).join('\n');
+              }
+              tc = { kind: 'knowledge', action: 'list', name: '', items };
+            } else {
+              const resp = await fetch(`/api/knowledge/read?name=${encodeURIComponent(knName)}`);
+              const data2 = await resp.json() as { name?: string; content?: string; sizeKB?: number; truncated?: boolean; error?: string; available?: string[] };
+              if (!resp.ok || data2.error) {
+                const avail = data2.available ? `\n사용 가능: ${data2.available.join(', ')}` : '';
+                resultStr = `널리지 '${knName}' 없음.${avail}`;
+                tc = { kind: 'knowledge', action: 'read', name: knName, error: resultStr };
+              } else {
+                const truncNote = data2.truncated ? '\n\n[주의: 파일이 너무 커서 앞 200KB만 반환됨]' : '';
+                resultStr = `# 널리지: ${data2.name} (${data2.sizeKB}KB)\n\n${data2.content}${truncNote}`;
+                tc = { kind: 'knowledge', action: 'read', name: data2.name ?? knName, content: data2.content, sizeKB: data2.sizeKB };
+              }
+            }
+          } catch (e) {
+            resultStr = `널리지 읽기 오류: ${String(e)}`;
+            tc = { kind: 'knowledge', action: 'read', name: knName, error: String(e) };
           }
         }
 
