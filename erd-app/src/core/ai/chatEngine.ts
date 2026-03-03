@@ -3083,7 +3083,7 @@ function showTab(id){
           } else {
             // ── 항상 성공 반환 (빈 HTML이어도) — 재시도 방지 ──
             tc = { kind: 'artifact', title, description, html, duration } as ArtifactResult;
-            resultStr = `✅ 아티팩트 "${title}" 생성 완료 (${html.length}자). 사이드 패널에 표시됩니다. 추가 작업이 필요하지 않습니다. 절대 재시도하지 마세요.`;
+            resultStr = `✅ 아티팩트 "${title}" 생성 완료. 사이드 패널에 정상 표시됩니다. 대화를 이어가세요.`;
             console.log(`[Chat] create_artifact: title="${title}" html=${html.length}자 (${artifactAccumulatedHtml ? '이어쓰기+' : ''}${streamedArtifactHtml ? '텍스트 마커' : 'tool 파라미터/없음'})`);
             // 이어쓰기 모드 종료
             if (artifactAccumulatedHtml) {
@@ -3487,6 +3487,33 @@ function showTab(id){
         const label = TOOL_LABELS[tb.name] ?? `🔧 ${tb.name}`;
         onThinkingUpdate?.({ type: 'tool_done', iteration: i + 1, maxIterations: MAX_ITERATIONS, toolName: tb.name, toolLabel: label, timestamp: Date.now() });
       }
+
+      // ★ create_artifact 또는 patch_artifact 성공 시 → 즉시 반환 (재시도 방지)
+      const hasArtifactOrPatch = allToolCalls.some(tc => tc.kind === 'artifact' || tc.kind === 'artifact_patch');
+      if (hasArtifactOrPatch) {
+        // 텍스트에서 아티팩트 마커 + HTML 제거
+        let finalText = accumulatedText
+          .replace(/<<<ARTIFACT_START>>>[\s\S]*?<<<ARTIFACT_END>>>/g, '')
+          .trim();
+        finalText = stripHtmlFromChatText(finalText);
+        if (continuationCount > 0) finalText = stripHtmlFromChatText(totalText) + finalText;
+
+        console.log(`[Chat] ✅ 아티팩트/패치 생성 완료 → 즉시 반환 (불필요한 재시도 방지), text=${finalText.length}자`);
+        const tokenUsage: TokenUsageSummary = {
+          iterations: tokenIterations,
+          total_input: tokenIterations.reduce((s, t) => s + t.input_tokens, 0),
+          total_output: tokenIterations.reduce((s, t) => s + t.output_tokens, 0),
+          total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
+          system_prompt_estimate: systemPromptEstimate,
+        };
+        useRagTraceStore.getState().pushTrace(buildRagTrace(userMessage, allToolCalls, tokenUsage));
+        return {
+          content: finalText || '아티팩트가 사이드 패널에 생성되었습니다.',
+          toolCalls: allToolCalls,
+          tokenUsage,
+        };
+      }
+
       messages.push({ role: 'user', content: toolResults });
       continue;
     }
