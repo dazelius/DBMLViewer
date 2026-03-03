@@ -559,6 +559,137 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
+    // ── /api/claude-proxy : 널리지 자동 주입 Claude 프록시 ──────────────────
+    // 다른 도구에서 Claude API 대신 이 엔드포인트를 사용하면 저장된 널리지가 자동 주입됨
+    // 사용법: base URL을 http://<host>:5173/api/claude-proxy 로 변경
+    //   → POST /api/claude-proxy/v1/messages  (또는 /api/claude-proxy)
+    if ((req.url === '/api/claude-proxy' || req.url?.startsWith('/api/claude-proxy/')) && req.method === 'POST') {
+      const apiKey = options.claudeApiKey || process.env.CLAUDE_API_KEY || ''
+      if (!apiKey) {
+        sendJson(res, 400, { error: 'CLAUDE_API_KEY 환경변수가 설정되지 않았습니다.' })
+        return
+      }
+
+      const rawBody = await readBody(req)
+      let parsed: any
+      try { parsed = JSON.parse(rawBody || '{}') } catch { sendJson(res, 400, { error: 'Invalid JSON body' }); return }
+
+      // ── 널리지 자동 주입 ──
+      const knDir = join(process.cwd(), 'knowledge')
+      let knowledgeBlock = ''
+      try {
+        if (existsSync(knDir)) {
+          const files = readdirSync(knDir).filter(f => f.endsWith('.md'))
+          if (files.length > 0) {
+            const lines: string[] = [
+              '',
+              '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+              '[TableMaster 널리지 시스템 — 자동 주입]',
+              '아래는 팀이 등록한 공유 지식입니다. 질문에 관련되면 적극 참고하세요.',
+              '',
+            ]
+            let totalSize = 0
+            for (const f of files) {
+              const fPath = join(knDir, f)
+              const stat = statSync(fPath)
+              const sizeKB = Math.round(stat.size / 1024 * 10) / 10
+              if (totalSize + stat.size > 200 * 1024) {
+                lines.push(`⚠️ 용량 초과로 나머지 파일 생략 (${f} 등)`)
+                break
+              }
+              let content = readFileSync(fPath, 'utf-8')
+              if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
+              if (content.length > 50 * 1024) content = content.slice(0, 50 * 1024) + '\n...(truncated)'
+              const name = f.replace('.md', '')
+              lines.push(`━━━ 📌 ${name} (${sizeKB}KB) ━━━`)
+              lines.push(content)
+              lines.push(`━━━ END: ${name} ━━━`)
+              lines.push('')
+              totalSize += stat.size
+            }
+            lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+            knowledgeBlock = lines.join('\n')
+          }
+        }
+      } catch (e) {
+        console.warn('[claude-proxy] 널리지 로드 실패 (무시):', e)
+      }
+
+      // system 프롬프트에 널리지 추가
+      if (knowledgeBlock) {
+        if (typeof parsed.system === 'string') {
+          parsed.system = parsed.system + '\n' + knowledgeBlock
+        } else if (Array.isArray(parsed.system)) {
+          // system이 content block 배열인 경우
+          parsed.system.push({ type: 'text', text: knowledgeBlock })
+        } else {
+          parsed.system = knowledgeBlock
+        }
+        console.log(`[claude-proxy] 널리지 주입 완료 (${knowledgeBlock.length} chars)`)
+      }
+
+      const enrichedBody = JSON.stringify(parsed)
+      const isStream = !!parsed.stream
+
+      if (isStream) {
+        // ── SSE 스트리밍 프록시 (기존 /api/claude와 동일 로직) ──
+        const proxyReq = httpsRequest({
+          hostname: 'api.anthropic.com',
+          path: '/v1/messages',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'Content-Length': Buffer.byteLength(enrichedBody),
+          },
+        }, (proxyRes) => {
+          res.writeHead(proxyRes.statusCode ?? 200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-store, no-transform',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+            'X-Accel-Buffering': 'no',
+            'Transfer-Encoding': 'chunked',
+          })
+          if (res.socket) { res.socket.setNoDelay(true); res.socket.setTimeout(0) }
+          res.flushHeaders()
+          proxyRes.on('data', (chunk: Buffer) => {
+            if (res.socket) res.socket.cork()
+            res.write(chunk)
+            if (res.socket) process.nextTick(() => res.socket!.uncork())
+          })
+          proxyRes.on('end', () => res.end())
+          proxyRes.on('error', () => res.end())
+        })
+        proxyReq.on('error', (err) => {
+          if (!res.headersSent) sendJson(res, 502, { error: `Claude API 연결 실패: ${err.message}` })
+          else res.end()
+        })
+        proxyReq.write(enrichedBody)
+        proxyReq.end()
+      } else {
+        // ── 비스트리밍 프록시 ──
+        try {
+          const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+            },
+            body: enrichedBody,
+          })
+          const data = await claudeRes.text()
+          res.writeHead(claudeRes.status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+          res.end(data)
+        } catch (err: unknown) {
+          sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
+        }
+      }
+      return
+    }
+
     // ── /api/presence : SSE 접속자 추적 ────────────────────────────────────
     if (req.url === '/api/presence') {
       res.writeHead(200, {
