@@ -2637,7 +2637,6 @@ function ArtifactSidePanel({
   useEffect(() => {
     if (isComplete) return;
     let lastVer = 0;
-    let overlayHidden = false;
     let lastIframeHtmlLen = 0;
     let tickCount = 0;
     const startTime = performance.now();
@@ -2660,42 +2659,38 @@ function ArtifactSidePanel({
         }
       }
 
-      // ── 2) 오버레이 제어 (변경 없어도 항상 업데이트 — 대기 중 애니메이션) ──
+      // ── 2) 오버레이: 스트리밍 중 항상 코드 뷰 표시 (완료될 때까지 숨기지 않음) ──
       if (overlayRef.current) {
-        if (_artBuf.html.length >= 40 && !overlayHidden) {
-          overlayHidden = true;
-          overlayRef.current.style.opacity = '0';
-          overlayRef.current.style.pointerEvents = 'none';
-        } else if (!overlayHidden) {
-          if (_artBuf.charCount > 0) {
-            // 데이터 수신 중 → 코드 표시
-            if (spinnerRef.current) spinnerRef.current.style.display = 'none';
-            if (codePreRef.current) {
-              codePreRef.current.style.display = '';
-              const codeSource = _artBuf.html || _artBuf.rawJson || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`;
-              const lines = codeSource.split('\n');
-              const visible = lines.slice(-16);
-              const startNo = Math.max(1, lines.length - 15);
-              let h = '';
-              for (let i = 0; i < visible.length; i++) {
-                const ln = startNo + i;
-                const last = i === visible.length - 1;
-                const op = last ? 1 : 0.4 + (i / visible.length) * 0.6;
-                const esc = visible[i].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                h += `<div style="display:flex;opacity:${op}"><span style="user-select:none;flex-shrink:0;text-align:right;padding-right:12px;width:32px;color:#3d4856;font-size:10px">${ln}</span><span style="color:${last ? '#e2e8f0' : '#6b7685'};white-space:pre;overflow:hidden;text-overflow:ellipsis">${esc}</span>${last ? '<span style="display:inline-block;width:2px;height:13px;margin-left:2px;border-radius:2px;vertical-align:middle;background:#6366f1;animation:pulse 2s cubic-bezier(0.4,0,0.6,1) infinite"></span>' : ''}</div>`;
-              }
-              codePreRef.current.innerHTML = h;
+        if (_artBuf.charCount > 0 || _artBuf.html.length > 0) {
+          // 데이터 수신 중 → 코드 에디터 스타일 표시
+          if (spinnerRef.current) spinnerRef.current.style.display = 'none';
+          if (codePreRef.current) {
+            codePreRef.current.style.display = '';
+            const codeSource = _artBuf.html || _artBuf.rawJson || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`;
+            const lines = codeSource.split('\n');
+            const maxVisible = Math.min(40, Math.max(16, Math.floor((overlayRef.current.clientHeight - 60) / 18)));
+            const visible = lines.slice(-maxVisible);
+            const startNo = Math.max(1, lines.length - maxVisible + 1);
+            let h = '';
+            for (let i = 0; i < visible.length; i++) {
+              const ln = startNo + i;
+              const last = i === visible.length - 1;
+              const op = last ? 1 : 0.3 + (i / visible.length) * 0.7;
+              const esc = visible[i].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+              h += `<div style="display:flex;opacity:${op};line-height:18px"><span style="user-select:none;flex-shrink:0;text-align:right;padding-right:12px;width:38px;color:#3d4856;font-size:10px">${ln}</span><span style="color:${last ? '#e2e8f0' : '#6b7685'};white-space:pre;overflow:hidden;text-overflow:ellipsis">${esc}</span>${last ? '<span style="display:inline-block;width:2px;height:14px;margin-left:2px;border-radius:2px;vertical-align:middle;background:#6366f1;animation:blink 1s step-end infinite"></span>' : ''}</div>`;
             }
-          } else {
-            // 아직 데이터 없음 → thinking 상태 (경과 시간 표시)
-            if (spinnerRef.current) spinnerRef.current.style.display = '';
-            if (codePreRef.current) codePreRef.current.style.display = 'none';
+            codePreRef.current.innerHTML = h;
           }
-          if (overlayStatusRef.current) {
-            overlayStatusRef.current.textContent = _artBuf.charCount > 0
-              ? `HTML 코드 작성 중... ${_artBuf.charCount.toLocaleString()}자 (${elapsed}초)`
-              : `Claude가 HTML 문서를 구성하고 있습니다... (${elapsed}초)`;
-          }
+        } else {
+          // 아직 데이터 없음 → thinking 상태 (경과 시간 표시)
+          if (spinnerRef.current) spinnerRef.current.style.display = '';
+          if (codePreRef.current) codePreRef.current.style.display = 'none';
+        }
+        if (overlayStatusRef.current) {
+          const lc = _artBuf.html ? _artBuf.html.split('\n').length : 0;
+          overlayStatusRef.current.textContent = _artBuf.charCount > 0
+            ? `HTML 코드 작성 중... ${_artBuf.html.length.toLocaleString()}자 · ${lc}줄 (${elapsed}초)`
+            : `Claude가 HTML 문서를 구성하고 있습니다... (${elapsed}초)`;
         }
       }
 
@@ -3108,34 +3103,34 @@ function ArtifactSidePanel({
         ) : (
           /* ── 스트리밍 중: 코드 오버레이 + iframe + 타이핑바 (모두 ref 기반 직접 제어) ── */
           <>
-            {/* ★ 코드 스트리밍 오버레이 — RAF 루프에서 visibility 직접 제어 (React props 의존 0) */}
+            {/* ★ 코드 스트리밍 오버레이 — 전체 화면 코드 에디터 뷰, 스트리밍 완료까지 항상 표시 */}
             <div
               ref={overlayRef}
               className="absolute inset-0 z-10 flex flex-col"
-              style={{ background: '#0d1117', transition: 'opacity 0.3s ease-out' }}
+              style={{ background: '#0d1117' }}
             >
-              {/* 코드 영역 */}
-              <div className="flex-1 overflow-hidden flex flex-col justify-end px-3 py-2">
-                {/* 스피너 — 초기 표시, 데이터 수신 시 RAF가 숨김 */}
+              {/* 코드 영역 — 아래쪽 정렬: 코드가 아래에서 위로 차오르는 느낌 */}
+              <div className="flex-1 overflow-hidden flex flex-col justify-end px-4 py-3">
+                {/* 스피너 — 초기 대기 상태 */}
                 <div ref={spinnerRef} className="flex flex-col items-center justify-center flex-1 gap-3" style={{ color: 'var(--text-muted)' }}>
-                  <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <svg className="animate-spin w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
                   </svg>
                   <span className="text-[12px]">아티팩트 준비 중...</span>
                 </div>
-                {/* 코드 라인 — 초기 숨김, 데이터 수신 시 RAF가 innerHTML로 직접 갱신 */}
+                {/* 코드 라인 — 데이터 수신 시 setInterval이 innerHTML로 직접 갱신 */}
                 <pre
                   ref={codePreRef}
                   className="text-[11px] leading-[18px] overflow-hidden"
-                  style={{ display: 'none', fontFamily: 'var(--font-mono)', margin: 0, background: 'transparent', color: '#7c8b9a' }}
+                  style={{ display: 'none', fontFamily: "'Fira Code','Cascadia Code','JetBrains Mono',var(--font-mono),monospace", margin: 0, background: 'transparent', color: '#7c8b9a' }}
                 />
               </div>
               {/* 하단 상태 바 */}
-              <div className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5" style={{ borderTop: '1px solid rgba(99,102,241,0.2)', background: 'rgba(99,102,241,0.06)' }}>
-                <svg className="animate-spin w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ color: 'var(--accent)' }}>
+              <div className="flex-shrink-0 flex items-center gap-2 px-4 py-2" style={{ borderTop: '1px solid rgba(99,102,241,0.2)', background: 'rgba(99,102,241,0.06)' }}>
+                <svg className="animate-spin w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ color: 'var(--accent)' }}>
                   <path d="M21 12a9 9 0 1 1-6.219-8.56" />
                 </svg>
-                <span ref={overlayStatusRef} className="text-[10px] font-mono truncate" style={{ color: 'var(--text-muted)' }}>
+                <span ref={overlayStatusRef} className="text-[11px] font-mono truncate" style={{ color: 'var(--text-muted)' }}>
                   HTML 코드 생성 대기 중...
                 </span>
                 <div className="ml-auto flex gap-0.5">
@@ -3144,6 +3139,8 @@ function ArtifactSidePanel({
                   ))}
                 </div>
               </div>
+              {/* 커서 깜빡임 키프레임 */}
+              <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }`}</style>
             </div>
 
             {/* 스트리밍 iframe: srcdoc 한 번 로드 후 body 직접 갱신 */}
