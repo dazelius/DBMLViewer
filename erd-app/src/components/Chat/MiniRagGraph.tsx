@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useMemo, useCallback } from 'react';
 import * as THREE from 'three';
 import ForceGraph3D from '3d-force-graph';
 import SpriteText from 'three-spritetext';
@@ -258,37 +258,7 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
     return () => { window.removeEventListener('resize', onResize); };
   }, [graphData, getTex]);
 
-  // ── 실시간 하이라이트 + 카메라 추적 ──
-
-  const prevCallCount = useRef(0);
-  const flyQueueRef = useRef<string[]>([]);
-  const flyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const flyToNode = useCallback((nodeId: string) => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    const gd = graph.graphData();
-    const node = gd.nodes.find((n: any) => n.id === nodeId);
-    if (!node || node.x == null) return;
-
-    const dist = 60;
-    const r = 1 + dist / Math.hypot(node.x ?? 1, node.y ?? 1, node.z ?? 1);
-    graph.cameraPosition(
-      { x: node.x * r, y: node.y * r, z: node.z * r },
-      { x: node.x, y: node.y, z: node.z },
-      800,
-    );
-  }, []);
-
-  const processQueue = useCallback(() => {
-    const q = flyQueueRef.current;
-    if (q.length === 0) return;
-    const nodeId = q.shift()!;
-    flyToNode(nodeId);
-    if (q.length > 0) {
-      flyTimerRef.current = setTimeout(processQueue, 1000);
-    }
-  }, [flyToNode]);
+  // ── 실시간 하이라이트 (카메라 고정, 노드/링크 강조만) ──
 
   useEffect(() => {
     const objects = nodeObjRef.current;
@@ -299,13 +269,8 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
     const trace = calls.length > 0 ? extractTrace(calls, nodesRef.current) : null;
     const active = trace?.allIds ?? null;
 
-    const newCallCount = calls.length;
-    const isNewCall = newCallCount > prevCallCount.current;
-    const addedCalls = newCallCount - prevCallCount.current;
-    prevCallCount.current = newCallCount;
-
     if (active) {
-      // 노드 하이라이트
+      // 노드 하이라이트: 활성 → 원래 색상 + 불투명, 비활성 → 거의 투명
       objects.forEach((group, id) => {
         const isActive = active.has(id);
         const node = nodesRef.current.find(n => n.id === id);
@@ -313,15 +278,10 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
         group.traverse(child => {
           if (child instanceof THREE.Sprite && child.name === 'dot') {
             (child.material as THREE.SpriteMaterial).opacity = isActive ? 1 : 0.03;
-            if (isActive && isNewCall) {
-              const origScale = child.scale.x;
-              child.scale.setScalar(origScale * 3);
-              setTimeout(() => child.scale.setScalar(origScale), 400);
-            }
           }
           if (child instanceof SpriteText) {
             (child as any).color = isActive ? C[type as NT] ?? '#fff' : 'rgba(255,255,255,0.03)';
-            if (isActive) (child as any).fontWeight = 'bold';
+            (child as any).fontWeight = isActive ? 'bold' : 'normal';
           }
         });
       });
@@ -360,29 +320,8 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
           if (lt.includes('domain')) return '#c084fc';
           return '#22d3ee';
         });
-
-      // 새 호출 → 카메라가 경로를 따라 이동
-      if (isNewCall && trace) {
-        const newCalls = trace.perCall.slice(-addedCalls);
-        const flyTargets: string[] = [];
-
-        for (const call of newCalls) {
-          flyTargets.push(call.toolId);
-          const leaf = call.nodeIds.find(id =>
-            id.startsWith('table:') || id.startsWith('guide:')
-          );
-          if (leaf) flyTargets.push(leaf);
-        }
-
-        if (flyTimerRef.current) clearTimeout(flyTimerRef.current);
-        flyQueueRef.current = flyTargets;
-        processQueue();
-      }
     } else {
-      // 트레이스 해제 → 원래 상태
-      if (flyTimerRef.current) { clearTimeout(flyTimerRef.current); flyTimerRef.current = null; }
-      flyQueueRef.current = [];
-
+      // 트레이스 해제 → 원래 상태 복원
       objects.forEach((group, id) => {
         const node = nodesRef.current.find(n => n.id === id);
         const type = node?.type ?? 'table';
@@ -401,10 +340,8 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
         .linkColor(() => 'rgba(255,255,255,0.02)')
         .linkWidth(0.08)
         .linkDirectionalParticles(0);
-
-      graph.cameraPosition({ x: 0, y: 0, z: 180 }, { x: 0, y: 0, z: 0 }, 1200);
     }
-  }, [liveToolCalls, processQueue]);
+  }, [liveToolCalls]);
 
   const activeCount = useMemo(() => {
     if (!liveToolCalls?.length) return 0;
