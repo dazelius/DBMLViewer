@@ -2623,10 +2623,9 @@ function ArtifactSidePanel({
   }, []);
 
   // ── 모듈 레벨 공유 버퍼 (_artBuf) 에서 직접 읽어 iframe + 오버레이 + 헤더 DOM 갱신 ──
-  // React 렌더 사이클과 완전히 독립적 → 60fps 실시간 스트리밍
+  // setInterval(33ms) 사용 — RAF보다 안정적 (브라우저 deprioritize 방지)
   const streamTitleRef = useRef<HTMLSpanElement>(null);
   const streamCharsRef = useRef<HTMLSpanElement>(null);
-  // ★ 오버레이 / 타이핑바 ref — React props 대신 RAF 루프에서 직접 제어
   const overlayRef = useRef<HTMLDivElement>(null);
   const spinnerRef = useRef<HTMLDivElement>(null);
   const codePreRef = useRef<HTMLPreElement>(null);
@@ -2638,102 +2637,86 @@ function ArtifactSidePanel({
   useEffect(() => {
     if (isComplete) return;
     let lastVer = 0;
-    let rafId = 0;
-    let overlayHidden = false; // 오버레이 숨김 여부 추적
-    let lastIframeUpdate = 0; // iframe innerHTML 마지막 갱신 시각
-    let lastIframeHtmlLen = 0; // 마지막 갱신 시 HTML 길이
-    const IFRAME_UPDATE_MS = 100; // iframe은 100ms마다 갱신 (10fps — 레이아웃 비용 절감)
+    let overlayHidden = false;
+    let lastIframeHtmlLen = 0;
 
     const tick = () => {
-      if (_artBuf.ver !== lastVer) {
-        lastVer = _artBuf.ver;
+      if (_artBuf.ver === lastVer) return; // 변경 없으면 스킵
+      lastVer = _artBuf.ver;
 
-        // ── 1) iframe body — 100ms 쓰로틀 갱신 (innerHTML은 비싸므로) ──
-        const now = performance.now();
-        const htmlGrew = _artBuf.html.length > lastIframeHtmlLen;
-        const enoughTime = now - lastIframeUpdate > IFRAME_UPDATE_MS;
-        if (streamIframeReady && streamIframeRef.current && htmlGrew && enoughTime) {
-          const doc = streamIframeRef.current.contentDocument;
-          if (doc?.body) {
-            doc.body.innerHTML = _artBuf.html;
-            const fbxScript = doc.getElementById('__fbx_viewer_init__');
-            if (fbxScript && !fbxScript.textContent) fbxScript.textContent = FBX_VIEWER_SCRIPT;
-            lastIframeUpdate = now;
-            lastIframeHtmlLen = _artBuf.html.length;
-          }
-        }
-
-        // ── 2) 오버레이 제어 (React props 완전 우회) ──
-        if (overlayRef.current) {
-          if (_artBuf.html.length >= 80 && !overlayHidden) {
-            // HTML이 충분 → 오버레이 페이드아웃 후 제거
-            overlayHidden = true;
-            overlayRef.current.style.opacity = '0';
-            overlayRef.current.style.pointerEvents = 'none';
-          } else if (!overlayHidden) {
-            // 아직 HTML 부족 → 오버레이에 코드/스피너 표시
-            if (_artBuf.charCount > 0) {
-              // 데이터 수신 중 → 스피너 숨기고 코드 표시
-              if (spinnerRef.current) spinnerRef.current.style.display = 'none';
-              if (codePreRef.current) {
-                codePreRef.current.style.display = '';
-                // html이 있으면 HTML 코드 표시, 없으면 수신 중인 raw JSON 표시
-                const codeSource = _artBuf.html || _artBuf.rawJson || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`;
-                const lines = codeSource.split('\n');
-                const visible = lines.slice(-16);
-                const startNo = Math.max(1, lines.length - 15);
-                let h = '';
-                for (let i = 0; i < visible.length; i++) {
-                  const ln = startNo + i;
-                  const last = i === visible.length - 1;
-                  const op = last ? 1 : 0.4 + (i / visible.length) * 0.6;
-                  const esc = visible[i].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                  h += `<div style="display:flex;opacity:${op}"><span style="user-select:none;flex-shrink:0;text-align:right;padding-right:12px;width:32px;color:#3d4856;font-size:10px">${ln}</span><span style="color:${last ? '#e2e8f0' : '#6b7685'};white-space:pre;overflow:hidden;text-overflow:ellipsis">${esc}</span>${last ? '<span style="display:inline-block;width:2px;height:13px;margin-left:2px;border-radius:2px;vertical-align:middle;background:#6366f1;animation:pulse 2s cubic-bezier(0.4,0,0.6,1) infinite"></span>' : ''}</div>`;
-                }
-                codePreRef.current.innerHTML = h;
-              }
-            } else {
-              // 아직 데이터 없음 → 스피너 표시
-              if (spinnerRef.current) spinnerRef.current.style.display = '';
-              if (codePreRef.current) codePreRef.current.style.display = 'none';
-            }
-            // 상태바 텍스트 갱신
-            if (overlayStatusRef.current) {
-              overlayStatusRef.current.textContent = _artBuf.charCount > 0
-                ? `HTML 코드 작성 중... ${_artBuf.charCount.toLocaleString()}자`
-                : 'HTML 코드 생성 대기 중...';
-            }
-          }
-        }
-
-        // ── 3) 타이핑바 제어 (React props 완전 우회) ──
-        if (typingBarRef.current) {
-          if (_artBuf.html.length > 0) {
-            typingBarRef.current.style.display = '';
-            if (typingSnippetRef.current) {
-              typingSnippetRef.current.textContent = _artBuf.html.slice(-100).replace(/\s+/g, ' ');
-            }
-            if (typingCountRef.current) {
-              typingCountRef.current.textContent = `${_artBuf.charCount.toLocaleString()}자`;
-            }
-          } else {
-            typingBarRef.current.style.display = 'none';
-          }
-        }
-
-        // ── 4) 헤더 DOM 직접 갱신 (React state 우회) ──
-        if (streamTitleRef.current && _artBuf.title) {
-          streamTitleRef.current.textContent = _artBuf.title;
-        }
-        if (streamCharsRef.current) {
-          streamCharsRef.current.textContent = `${_artBuf.charCount.toLocaleString()} chars`;
+      // ── 1) iframe body 갱신 ──
+      const htmlGrew = _artBuf.html.length > lastIframeHtmlLen;
+      if (htmlGrew) {
+        // streamIframeRef 또는 ID로 fallback (마운트 순서 관계없이 확실히 찾기)
+        const iframe = streamIframeRef.current ?? document.getElementById('artifact-stream-iframe') as HTMLIFrameElement | null;
+        const doc = iframe?.contentDocument;
+        if (doc?.body) {
+          doc.body.innerHTML = _artBuf.html;
+          const fbxScript = doc.getElementById('__fbx_viewer_init__');
+          if (fbxScript && !fbxScript.textContent) fbxScript.textContent = FBX_VIEWER_SCRIPT;
+          lastIframeHtmlLen = _artBuf.html.length;
         }
       }
-      rafId = requestAnimationFrame(tick);
+
+      // ── 2) 오버레이 제어 ──
+      if (overlayRef.current) {
+        if (_artBuf.html.length >= 80 && !overlayHidden) {
+          overlayHidden = true;
+          overlayRef.current.style.opacity = '0';
+          overlayRef.current.style.pointerEvents = 'none';
+        } else if (!overlayHidden) {
+          if (_artBuf.charCount > 0) {
+            if (spinnerRef.current) spinnerRef.current.style.display = 'none';
+            if (codePreRef.current) {
+              codePreRef.current.style.display = '';
+              const codeSource = _artBuf.html || _artBuf.rawJson || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`;
+              const lines = codeSource.split('\n');
+              const visible = lines.slice(-16);
+              const startNo = Math.max(1, lines.length - 15);
+              let h = '';
+              for (let i = 0; i < visible.length; i++) {
+                const ln = startNo + i;
+                const last = i === visible.length - 1;
+                const op = last ? 1 : 0.4 + (i / visible.length) * 0.6;
+                const esc = visible[i].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                h += `<div style="display:flex;opacity:${op}"><span style="user-select:none;flex-shrink:0;text-align:right;padding-right:12px;width:32px;color:#3d4856;font-size:10px">${ln}</span><span style="color:${last ? '#e2e8f0' : '#6b7685'};white-space:pre;overflow:hidden;text-overflow:ellipsis">${esc}</span>${last ? '<span style="display:inline-block;width:2px;height:13px;margin-left:2px;border-radius:2px;vertical-align:middle;background:#6366f1;animation:pulse 2s cubic-bezier(0.4,0,0.6,1) infinite"></span>' : ''}</div>`;
+              }
+              codePreRef.current.innerHTML = h;
+            }
+          } else {
+            if (spinnerRef.current) spinnerRef.current.style.display = '';
+            if (codePreRef.current) codePreRef.current.style.display = 'none';
+          }
+          if (overlayStatusRef.current) {
+            overlayStatusRef.current.textContent = _artBuf.charCount > 0
+              ? `HTML 코드 작성 중... ${_artBuf.charCount.toLocaleString()}자`
+              : 'HTML 코드 생성 대기 중...';
+          }
+        }
+      }
+
+      // ── 3) 타이핑바 ──
+      if (typingBarRef.current) {
+        if (_artBuf.html.length > 0) {
+          typingBarRef.current.style.display = '';
+          if (typingSnippetRef.current) typingSnippetRef.current.textContent = _artBuf.html.slice(-100).replace(/\s+/g, ' ');
+          if (typingCountRef.current) typingCountRef.current.textContent = `${_artBuf.charCount.toLocaleString()}자`;
+        } else {
+          typingBarRef.current.style.display = 'none';
+        }
+      }
+
+      // ── 4) 헤더 ──
+      if (streamTitleRef.current && _artBuf.title) streamTitleRef.current.textContent = _artBuf.title;
+      if (streamCharsRef.current) streamCharsRef.current.textContent = `${_artBuf.charCount.toLocaleString()} chars`;
     };
-    rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
-  }, [isComplete, streamIframeReady]);
+
+    // ★ setInterval — RAF보다 안정적 (30fps). 브라우저가 RAF를 deprioritize해도 작동
+    const intervalId = setInterval(tick, 33);
+    // 첫 tick 즉시 실행
+    tick();
+    return () => clearInterval(intervalId);
+  }, [isComplete]);
 
   // finalTc 완료 시 blob URL 생성
   useEffect(() => {
@@ -3163,6 +3146,7 @@ function ArtifactSidePanel({
 
             {/* 스트리밍 iframe: srcdoc 한 번 로드 후 body 직접 갱신 */}
             <iframe
+              id="artifact-stream-iframe"
               ref={streamIframeRef}
               srcDoc={STREAMING_BASE_SRCDOC}
               onLoad={handleStreamIframeLoad}
@@ -6004,18 +5988,26 @@ export default function ChatPage() {
         },
         (html, title, charCount, rawJson) => {
           // ★ 핵심: 모듈 레벨 버퍼에 직접 쓰기 (React state 업데이트 0회)
-          // ArtifactSidePanel의 RAF 루프가 이 버퍼에서 직접 읽어 iframe body를 갱신
           _artBuf.html = html;
           _artBuf.title = title;
           _artBuf.charCount = charCount;
           _artBuf.rawJson = rawJson ?? '';
           _artBuf.ver++;
 
+          // ★ 즉시 DOM 업데이트 (setInterval 루프를 기다리지 않고 바로 반영)
+          if (html.length > 80) {
+            const iframe = document.getElementById('artifact-stream-iframe') as HTMLIFrameElement | null;
+            const doc = iframe?.contentDocument;
+            if (doc?.body && doc.body.innerHTML.length < html.length) {
+              doc.body.innerHTML = html;
+            }
+          }
+
           // 로깅 스로틀 (디버그용)
           const now = performance.now();
           if (_lastArtifactLog === 0 || now - _lastArtifactLog >= 500) {
             _lastArtifactLog = now;
-            console.log(`[ArtifactStream] ver=${_artBuf.ver}, charCount=${charCount}, htmlLen=${html.length}, title="${title}"`);
+            console.log(`[ArtStream] v=${_artBuf.ver} cc=${charCount} html=${html.length} t="${title}"`);
           }
 
           // 패널 열기만 React state로 1회 처리 (컴포넌트 마운트 트리거)

@@ -1797,31 +1797,18 @@ async function streamClaude(
 
   let _readCount = 0;
   const _streamStart = performance.now();
-  let _lastYield = performance.now(); // 주기적 yield 타이밍
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     _readCount++;
     const chunk = decoder.decode(value, { stream: true });
     buf += chunk;
-    // 디버그: 청크 도착 시점 (처음 3개 + 매 50번째)
     if (_readCount <= 3 || _readCount % 50 === 0) {
-      console.log(`[streamClaude] 📦 reader chunk #${_readCount}: +${chunk.length}B (+${(performance.now() - _streamStart).toFixed(0)}ms)`);
+      console.log(`[streamClaude] 📦 chunk #${_readCount}: +${chunk.length}B (+${(performance.now() - _streamStart).toFixed(0)}ms)`);
     }
 
-    // 80ms 마다 브라우저 페인트 사이클에 양보 → RAF 콜백이 실행될 수 있도록
-    // (증분 파서 도입으로 delta 처리가 O(1)이므로 양보 간격 확대)
-    const now = performance.now();
-    if (now - _lastYield > 80) {
-      _lastYield = now;
-      await new Promise<void>(r => {
-        if (typeof requestAnimationFrame === 'function') {
-          requestAnimationFrame(() => r());
-        } else {
-          setTimeout(r, 0);
-        }
-      });
-    }
+    // ★ 매 청크마다 무조건 브라우저에 양보 — DOM 페인트가 실행될 수 있도록
+    await new Promise<void>(r => setTimeout(r, 0));
 
     const lines = buf.split('\n');
     buf = lines.pop() ?? '';
@@ -1877,46 +1864,21 @@ async function streamClaude(
             const tb = b as ContentBlock & { _inputStr: string };
             tb._inputStr = (tb._inputStr || '') + (delta.partial_json ?? '');
 
-            // create_artifact: 쓰로틀링된 HTML 추출 (안정성 우선)
-            // - 매 3번째 delta마다 extractHtmlFromPartialJson 실행 (3x 부하 감소)
-            // - "html" 키 미발견 시 빠른 스킵 (불필요한 파싱 방지)
-            // - 항상 charCount + rawJson 전달 (UI 반응성 유지)
+            // create_artifact: 매 delta마다 HTML 추출 (쓰로틀 없음 — 단순하고 확실하게)
             if ((b as ToolUseBlock).name === 'create_artifact' && onArtifactProgress) {
-              const tb2 = tb as typeof tb & { _deltaN?: number; _cachedHtml?: string; _cachedTitle?: string; _htmlKeyFound?: boolean };
-              tb2._deltaN = (tb2._deltaN || 0) + 1;
-
-              // "html" 키가 JSON에 등장했는지 빠르게 체크 (indexOf는 O(n)이지만 한번 발견 후 스킵)
-              if (!tb2._htmlKeyFound && tb._inputStr.includes('"html"')) {
-                tb2._htmlKeyFound = true;
-                console.log(`[streamClaude] 📝 "html" key found at ${tb._inputStr.length}B`);
+              let html = '';
+              let title = '';
+              // "html" 키가 있을 때만 파싱 (빠른 사전 체크)
+              if (tb._inputStr.includes('"html"')) {
+                const parsed = extractHtmlFromPartialJson(tb._inputStr);
+                if (parsed) { html = parsed.html; title = parsed.title; }
               }
-
-              // 파싱 조건: 매 3delta, 처음 200B 이내, html키 발견 직후
-              const shouldParse = tb2._deltaN % 3 === 0
-                || tb._inputStr.length < 200
-                || (tb2._htmlKeyFound && !tb2._cachedHtml);
-
-              if (shouldParse) {
-                if (tb2._htmlKeyFound) {
-                  const parsed = extractHtmlFromPartialJson(tb._inputStr);
-                  if (parsed) {
-                    tb2._cachedHtml = parsed.html;
-                    tb2._cachedTitle = parsed.title;
-                  }
-                }
-                // title은 별도 추출 (html 키 발견 전에도)
-                if (!tb2._cachedTitle) {
-                  const titleMatch = tb._inputStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)/);
-                  if (titleMatch) tb2._cachedTitle = titleMatch[1].replace(/\\"/g, '"');
-                }
+              // title 별도 추출 (html 키 발견 전에도)
+              if (!title) {
+                const tm = tb._inputStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)/);
+                if (tm) title = tm[1].replace(/\\"/g, '"');
               }
-
-              onArtifactProgress(
-                tb2._cachedHtml ?? '',
-                tb2._cachedTitle ?? '',
-                tb._inputStr.length,
-                tb._inputStr,
-              );
+              onArtifactProgress(html, title, tb._inputStr.length, tb._inputStr);
             }
 
             // patch_artifact: JSON 스트리밍 진행 상태 전달
