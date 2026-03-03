@@ -1036,7 +1036,7 @@ const TOOLS = [
 
 // ── 시스템 프롬프트 빌더 ─────────────────────────────────────────────────────
 
-function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap, knowledgeItems?: { name: string; sizeKB: number }[]): string {
+function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap, knowledgeEntries?: { name: string; sizeKB: number; content: string }[]): string {
   const lines: string[] = [];
 
   lines.push('당신은 이 게임의 모든 데이터를 꿰뚫고 있는 전문 게임 데이터 어시스턴트입니다.');
@@ -1084,15 +1084,20 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap,
   lines.push('- 사용자가 "이거 기억해", "널리지로 저장해줘", "이 정보 저장" 등을 말하면 → save_knowledge 호출.');
   lines.push('- 저장 시 name은 영문 스네이크_케이스로 (예: skill_system, rag_chunk_01).');
   lines.push('- 저장 시 사용자 제공 원본 내용을 보존하되, # 제목과 구조화된 마크다운으로 정리.');
-  lines.push('- ⭐ 사용자 질문에 관련될 수 있는 널리지가 아래 목록에 있으면, 반드시 read_knowledge(name)으로 내용을 읽어 활용하세요!');
-  lines.push('- 관련 널리지가 있는데 읽지 않고 답변하면 불완전한 답변이 됩니다.');
+  lines.push('- ⭐⭐⭐ 아래에 저장된 널리지의 전체 내용이 포함되어 있습니다. 답변 시 반드시 참고하세요!');
+  lines.push('- 널리지 내용은 사용자가 직접 저장한 중요 정보이므로, 모든 답변에서 관련 널리지를 활용해야 합니다.');
+  lines.push('- 널리지를 활용할 때는 어떤 널리지(파일명)를 참고했는지 자연스럽게 언급해주세요.');
   lines.push('');
-  // 저장된 널리지 목록 자동 주입
-  if (knowledgeItems && knowledgeItems.length > 0) {
-    lines.push('[현재 저장된 널리지 목록] — 질문에 관련되면 read_knowledge로 읽어 활용!');
-    for (const item of knowledgeItems) {
-      lines.push(`  📌 ${item.name} (${item.sizeKB}KB)`);
+  // 저장된 널리지 전체 내용 직접 주입 — AI가 tool call 없이도 항상 인지
+  if (knowledgeEntries && knowledgeEntries.length > 0) {
+    lines.push(`[현재 저장된 널리지: ${knowledgeEntries.length}개 파일] ──────────────────────`);
+    for (const entry of knowledgeEntries) {
+      lines.push('');
+      lines.push(`━━━ 📌 ${entry.name} (${entry.sizeKB}KB) ━━━`);
+      lines.push(entry.content);
+      lines.push(`━━━ END: ${entry.name} ━━━`);
     }
+    lines.push('──────────────────────────────────────────────────');
     lines.push('');
   } else {
     lines.push('[현재 저장된 널리지: 없음]');
@@ -1888,17 +1893,41 @@ export async function sendChatMessage(
   // 컴포넌트가 아직 로딩 중일 때 schema가 null일 수 있으므로 스토어에서 fallback
   const effectiveSchema = schema ?? useSchemaStore.getState().schema;
 
-  // 저장된 널리지 목록 가져오기 (시스템 프롬프트에 포함하여 AI가 인지하도록)
-  let knowledgeItems: { name: string; sizeKB: number }[] = [];
+  // 저장된 널리지 목록 + 내용 전부 가져오기 (시스템 프롬프트에 직접 포함 → AI가 항상 인지)
+  let knowledgeEntries: { name: string; sizeKB: number; content: string }[] = [];
   try {
     const knResp = await fetch('/api/knowledge/list');
     if (knResp.ok) {
       const knData = await knResp.json() as { items?: { name: string; sizeKB: number }[] };
-      knowledgeItems = knData.items ?? [];
+      const items = knData.items ?? [];
+      // 각 널리지 파일 내용을 병렬로 읽기 (최대 50KB/파일, 총 150KB 제한)
+      const MAX_PER_FILE = 50 * 1024;
+      const MAX_TOTAL = 150 * 1024;
+      let totalLen = 0;
+      const reads = await Promise.allSettled(
+        items.map(async (item) => {
+          const r = await fetch(`/api/knowledge/read?name=${encodeURIComponent(item.name)}`);
+          if (!r.ok) return { ...item, content: '(읽기 실패)' };
+          const d = await r.json() as { content?: string };
+          let content = d.content ?? '';
+          if (content.length > MAX_PER_FILE) content = content.slice(0, MAX_PER_FILE) + '\n...(잘림)';
+          return { ...item, content };
+        })
+      );
+      for (const r of reads) {
+        if (r.status === 'fulfilled' && r.value.content) {
+          if (totalLen + r.value.content.length > MAX_TOTAL) {
+            knowledgeEntries.push({ ...r.value, content: r.value.content.slice(0, MAX_TOTAL - totalLen) + '\n...(총 용량 제한으로 잘림)' });
+            break;
+          }
+          totalLen += r.value.content.length;
+          knowledgeEntries.push(r.value);
+        }
+      }
     }
   } catch { /* 실패해도 무시 — 널리지 없이 진행 */ }
 
-  const systemPrompt = buildSystemPrompt(effectiveSchema, tableData, knowledgeItems);
+  const systemPrompt = buildSystemPrompt(effectiveSchema, tableData, knowledgeEntries);
 
   const messages: ClaudeMsg[] = [
     ...historyToMessages(history),
