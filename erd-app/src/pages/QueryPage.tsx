@@ -36,7 +36,7 @@ ${tableNames.slice(0, 50).join(', ')}${tableNames.length > 50 ? ` 외 ${tableNam
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-opus-4-5',
+      model: 'claude-opus-4-6',
       max_tokens: 512,
       system,
       messages: [{ role: 'user', content: nl }],

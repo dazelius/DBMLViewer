@@ -1978,7 +1978,7 @@ export async function sendChatMessage(
   const systemPromptEstimate = Math.ceil(systemPrompt.length / 3.5); // 대략적 토큰 수 추정
 
   const requestBase = {
-    model: 'claude-opus-4-5',
+    model: 'claude-opus-4-6',
     max_tokens: 8192,
     system: systemPrompt,
     tools: TOOLS,
