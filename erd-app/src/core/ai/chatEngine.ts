@@ -540,371 +540,179 @@ export const DOMAIN_KEYWORDS: Record<string, string[]> = {
 const TOOLS = [
   {
     name: 'query_game_data',
-    description:
-      '게임 데이터베이스에서 SQL SELECT 쿼리를 실행하여 실제 데이터를 조회합니다. 질문에 답하기 위해 필요한 데이터가 있을 때 사용하세요. 여러 번 호출해도 됩니다.',
+    description: 'SQL SELECT로 게임 데이터 조회. 테이블명 대소문자 무시. #컬럼은 백틱 필수(`#col`). 값은 문자열(WHERE id=\'1001\').',
     input_schema: {
       type: 'object',
       properties: {
-        sql: {
-          type: 'string',
-          description:
-            '실행할 SQL SELECT 쿼리. 테이블명은 대소문자 무시. ' +
-            '#으로 시작하는 컬럼명은 반드시 백틱으로 감싸세요 (예: `#char_memo`). ' +
-            '모든 값은 문자열입니다 (예: WHERE id = \'1001\'). LIKE 연산자 사용 가능.',
-        },
-        reason: {
-          type: 'string',
-          description: '이 쿼리를 실행하는 이유를 한 문장으로 설명하세요.',
-        },
+        sql: { type: 'string', description: 'SQL SELECT 쿼리' },
       },
       required: ['sql'],
     },
   },
   {
     name: 'show_table_schema',
-    description:
-      '테이블의 스키마 구조를 시각적으로 보여줍니다. 사용자에게 테이블 구조, 컬럼, 관계를 설명할 때 호출하세요. 채팅 화면에 ERD 카드 형태로 임베드됩니다.',
+    description: '테이블 스키마를 ERD 카드로 시각화. 테이블 구조/관계 설명 시 호출.',
     input_schema: {
       type: 'object',
       properties: {
-        table_name: {
-          type: 'string',
-          description: '스키마를 보여줄 테이블 이름 (정확한 이름 또는 대소문자 무시)',
-        },
-        reason: {
-          type: 'string',
-          description: '이 테이블 스키마를 보여주는 이유.',
-        },
+        table_name: { type: 'string', description: '테이블 이름' },
       },
       required: ['table_name'],
     },
   },
   {
     name: 'query_git_history',
-    description:
-      'Git 커밋 히스토리를 조회합니다. 어떤 파일/테이블이 언제 변경됐는지, 최근 변경 이력을 알고 싶을 때 사용하세요. ' +
-      '두 개의 저장소를 지원합니다: "data"(aegisdata, 기본값), "aegis"(aegis 코드 저장소).',
+    description: 'Git 커밋 히스토리 조회. repo="data"(게임데이터,기본) 또는 "aegis"(코드).',
     input_schema: {
       type: 'object',
       properties: {
-        count: {
-          type: 'number',
-          description: '가져올 커밋 수 (기본 30)',
-        },
-        filter_path: {
-          type: 'string',
-          description: '특정 파일/폴더 경로로 필터링 (예: "ExcelFiles/Character.xlsx")',
-        },
-        repo: {
-          type: 'string',
-          enum: ['data', 'aegis'],
-          description: '조회할 저장소: "data"=aegisdata(게임 데이터, 기본값), "aegis"=aegis(코드 저장소)',
-        },
-        reason: {
-          type: 'string',
-          description: '히스토리를 조회하는 이유.',
-        },
+        count: { type: 'number', description: '커밋 수 (기본 30)' },
+        filter_path: { type: 'string', description: '파일/폴더 경로 필터' },
+        repo: { type: 'string', enum: ['data', 'aegis'], description: '"data" 또는 "aegis"' },
       },
       required: [],
     },
   },
   {
     name: 'show_revision_diff',
-    description:
-      '특정 커밋의 변경 내용(DIFF)을 시각적으로 보여줍니다. 특정 리비전에서 무엇이 어떻게 바뀌었는지 상세히 확인할 때 사용하세요. query_git_history로 커밋 hash를 먼저 확인한 후 호출하세요.',
+    description: '커밋의 DIFF를 시각적으로 표시. query_git_history로 hash 확인 후 호출.',
     input_schema: {
       type: 'object',
       properties: {
-        commit_hash: {
-          type: 'string',
-          description: '확인할 커밋의 full hash 또는 short hash (예: "abc1234")',
-        },
-        file_path: {
-          type: 'string',
-          description: '특정 파일만 보려면 경로 지정 (예: "ExcelFiles/Character.xlsx"). 생략 시 전체 변경 파일.',
-        },
-        repo: {
-          type: 'string',
-          enum: ['data', 'aegis'],
-          description: '조회할 저장소: "data"=aegisdata(기본값), "aegis"=aegis 코드 저장소',
-        },
-        reason: {
-          type: 'string',
-          description: 'diff를 보는 이유.',
-        },
+        commit_hash: { type: 'string', description: '커밋 hash' },
+        file_path: { type: 'string', description: '특정 파일 경로 (생략 시 전체)' },
+        repo: { type: 'string', enum: ['data', 'aegis'], description: '"data" 또는 "aegis"' },
       },
       required: ['commit_hash'],
     },
   },
   {
     name: 'find_resource_image',
-    description:
-      '게임 리소스 이미지(PNG)를 이름으로 검색하여 채팅창에 임베드합니다. ' +
-      '아이콘, UI 이미지, 스프라이트 등을 찾을 때 사용하세요. ' +
-      '예: 캐릭터 아이콘, 스킬 아이콘, 버튼 이미지 등.',
+    description: '게임 리소스 이미지(PNG) 검색 → 채팅에 임베드.',
     input_schema: {
       type: 'object',
       properties: {
-        query: {
-          type: 'string',
-          description: '검색할 이미지 이름 또는 키워드 (예: "character_icon", "skill_btn", "vanguard")',
-        },
-        reason: {
-          type: 'string',
-          description: '이 이미지를 찾는 이유.',
-        },
+        query: { type: 'string', description: '이미지 이름/키워드' },
       },
       required: ['query'],
     },
   },
   {
     name: 'build_character_profile',
-    description:
-      '캐릭터 이름으로 해당 캐릭터의 모든 연관 데이터를 FK 관계를 따라 자동 수집합니다. ' +
-      '캐릭터 기획서, 프로파일, 카드, 개요, 사이트맵 생성 시 이 툴을 먼저 호출하세요. ' +
-      '이름 검색 실패 시 반환된 전체 목록에서 확인 후 character_id로 재호출하세요.',
+    description: '캐릭터의 모든 FK 연관 데이터 자동 수집. 기획서/프로파일 생성 전 먼저 호출. 이름 실패 시 ID로 재호출.',
     input_schema: {
       type: 'object',
       properties: {
-        character_name: {
-          type: 'string',
-          description: '조회할 캐릭터 이름 (한글 또는 영문, 부분 일치). 이름 검색 실패 시 반환된 목록에서 character_id를 찾아 재호출.',
-        },
-        character_id: {
-          type: 'string',
-          description: 'PK ID로 직접 검색 (이름 검색 실패 후 목록에서 확인한 ID). 예: "1001"',
-        },
+        character_name: { type: 'string', description: '캐릭터 이름 (부분 일치)' },
+        character_id: { type: 'string', description: 'PK ID로 직접 검색' },
       },
       required: [],
     },
   },
   {
     name: 'read_guide',
-    description:
-      '⭐ 모든 도메인 가이드를 읽는 통합 툴. 코드(C#) 가이드 + DB/게임 설계 가이드를 모두 포함합니다. ' +
-      '어떤 질문이든 관련 가이드를 먼저 읽고 답변하세요. ' +
-      '빈 name("")으로 호출하면 전체 목록 반환. ' +
-      '── DB/게임 가이드 ──  ' +
-      '_DB_OVERVIEW: 전체 DB 테이블·FK·Enum 개요. ' +
-      '_DB_Character: 캐릭터 테이블 구조. _DB_Skill: 스킬 테이블. _DB_Weapon: 무기 테이블. ' +
-      '_DB_Item: 아이템. _DB_Stage: 스테이지/맵. _DB_Enemy: 적/몬스터. _DB_Enums: 전체 Enum 값 목록. ' +
-      '── C# 코드 가이드 ──  ' +
-      '_OVERVIEW: 전체 폴더구조. _Skill: 스킬 시스템 코드. _Weapon: 무기 코드. _Character: 캐릭터 코드. ' +
-      '_Combat: 전투. _Network: 네트워크. _UI: UI. _Manager: 매니저.',
+    description: '⭐ DB/코드 가이드 읽기. 답변 전 관련 가이드 먼저 참고. ""=목록, _DB_OVERVIEW/_OVERVIEW=시작점.',
     input_schema: {
       type: 'object',
       properties: {
-        name: {
-          type: 'string',
-          description:
-            '읽을 가이드 이름. DB 가이드: "_DB_OVERVIEW", "_DB_Character", "_DB_Skill", "_DB_Weapon", "_DB_Item", "_DB_Stage", "_DB_Enemy", "_DB_Enums", "_DB_Misc". ' +
-            '코드 가이드: "_OVERVIEW", "_Skill", "_Weapon", "_Character", "_Combat", "_Network", "_UI", "_Manager", "_Data", "_AI", "_Effect", "_Item", "_Map", "_Animation", "_Audio", "_Camera". ' +
-            '빈 문자열("")이면 전체 목록 반환.',
-        },
+        name: { type: 'string', description: '가이드 이름 (""=목록, _DB_*=DB, _*=코드)' },
       },
       required: [],
     },
   },
-  {
-    name: 'read_code_guide',
-    description: '(deprecated: read_guide 사용 권장) C# 코드 가이드 읽기.',
-    input_schema: {
-      type: 'object',
-      properties: { name: { type: 'string', description: '가이드 이름' } },
-      required: [],
-    },
-  },
+  // read_code_guide removed (deprecated → read_guide로 통합됨)
   {
     name: 'search_assets',
-    description:
-      'Unity 프로젝트 에셋 파일을 검색합니다 (FBX 3D 모델, PNG 텍스처, WAV/MP3 사운드 등). ' +
-      '캐릭터 모델·스킬 이펙트·UI 이미지 등의 파일명·경로를 확인할 때 사용하세요. ' +
-      'FBX 파일 경로를 알면 웹에서 바로 3D 뷰어로 렌더링할 수 있습니다.',
+    description: 'Unity 에셋 검색 (FBX/PNG/WAV 등). ext로 확장자 필터 가능.',
     input_schema: {
       type: 'object',
       properties: {
-        query: {
-          type: 'string',
-          description: '검색 키워드 (파일명 일부). 예: "striker", "kaya", "skill_fire"',
-        },
-        ext: {
-          type: 'string',
-          description: '확장자 필터. 예: "fbx", "png", "wav". 비워두면 전체 검색.',
-        },
+        query: { type: 'string', description: '검색 키워드' },
+        ext: { type: 'string', description: '확장자 필터 (fbx/png/wav 등)' },
       },
       required: ['query'],
     },
   },
   {
     name: 'read_scene_yaml',
-    description:
-      'Unity .unity 씬 파일의 YAML 원문을 섹션별로 읽어옵니다. ' +
-      '씬의 구조(GameObject, Transform, PrefabInstance, MonoBehaviour, MeshFilter, Light 등)를 분석하거나, ' +
-      '특정 오브젝트의 상세 속성(위치, 회전, 스케일, 컴포넌트, ProBuilder 정점 등)을 확인할 때 사용하세요. ' +
-      'search_assets(ext="unity")로 씬 파일 경로를 먼저 확인한 후 호출합니다.',
+    description: 'Unity .unity 씬 YAML을 섹션별 읽기. search_assets(ext="unity")로 경로 확인 후 호출.',
     input_schema: {
       type: 'object',
       properties: {
-        path: {
-          type: 'string',
-          description: '씬 파일 경로 (search_assets 결과의 path). 예: "GameContents/Map/Mirama_01/Factory.unity"',
-        },
-        filter: {
-          type: 'string',
-          description:
-            'YAML 섹션 타입 필터. 예: "PrefabInstance", "GameObject", "MonoBehaviour", "Transform", "MeshFilter", "Light", "1001"(classId). ' +
-            '비워두면 모든 섹션을 조회합니다.',
-        },
-        search: {
-          type: 'string',
-          description: '섹션 내 텍스트 검색. 예: "m_Positions"(ProBuilder), "SafetyZone", "m_LocalPosition". 비워두면 필터 조건만 적용.',
-        },
-        offset: {
-          type: 'number',
-          description: '시작 섹션 인덱스 (페이지네이션). 기본 0.',
-        },
-        limit: {
-          type: 'number',
-          description: '반환할 최대 섹션 수. 기본 20, 최대 100.',
-        },
+        path: { type: 'string', description: '씬 파일 경로' },
+        filter: { type: 'string', description: '섹션 타입 필터 (PrefabInstance/GameObject 등)' },
+        search: { type: 'string', description: '텍스트 검색' },
+        offset: { type: 'number', description: '시작 인덱스 (기본 0)' },
+        limit: { type: 'number', description: '최대 섹션 수 (기본 20)' },
       },
       required: ['path'],
     },
   },
   {
     name: 'preview_prefab',
-    description:
-      'Unity .prefab 프리팹 파일을 3D 뷰어로 미리보기합니다. ' +
-      'FBX 모델, ProBuilder 메시, 박스 콜라이더 등을 포함한 프리팹의 전체 구조를 3D로 렌더링합니다. ' +
-      'search_assets(ext="prefab")로 프리팹 경로를 먼저 확인한 후 호출하세요. ' +
-      '결과는 ChatUI에서 3D 뷰어로 표시되며, 아티팩트에서는 <div data-embed="prefab" data-src="경로"></div>로 임베드할 수 있습니다.',
+    description: 'Unity .prefab 3D 미리보기. search_assets(ext="prefab")로 경로 확인 후 호출.',
     input_schema: {
       type: 'object',
       properties: {
-        path: {
-          type: 'string',
-          description: '프리팹 파일 경로 (search_assets 결과의 path). 예: "Architectural/Props/Door/Door_Wooden.prefab"',
-        },
-        label: {
-          type: 'string',
-          description: '뷰어에 표시할 이름 (생략 시 파일명 사용)',
-        },
+        path: { type: 'string', description: '프리팹 경로' },
+        label: { type: 'string', description: '표시 이름' },
       },
       required: ['path'],
     },
   },
   {
     name: 'preview_fbx_animation',
-    description:
-      'FBX 캐릭터 모델에 애니메이션 FBX를 적용하여 3D 뷰어에서 실시간 재생합니다. ' +
-      '캐릭터 모델(.fbx)과 애니메이션(.fbx)을 함께 로드하여 걷기/달리기/공격/사망 등의 애니메이션을 시뮬레이션할 수 있습니다. ' +
-      'search_assets(ext="fbx")로 모델 경로를 먼저 확인한 후, model_path에 모델 경로를 넣으면 자동으로 관련 애니메이션을 검색합니다. ' +
-      '결과는 ChatUI에서 3D 뷰어 + 애니메이션 재생 컨트롤러로 표시됩니다.',
+    description: 'FBX 모델+애니메이션 3D 재생. search_assets(ext="fbx")로 경로 확인 후 호출.',
     input_schema: {
       type: 'object',
       properties: {
-        model_path: {
-          type: 'string',
-          description: 'FBX 모델 파일 경로. 예: "DevAssets(not packed)/_3DModel/musket/base_rig.fbx"',
-        },
-        animation_paths: {
-          type: 'array',
-          items: { type: 'string' },
-          description: '재생할 애니메이션 FBX 파일 경로 배열 (선택). 비워두면 모델에 관련된 모든 애니메이션을 자동 검색합니다.',
-        },
-        categories: {
-          type: 'array',
-          items: { type: 'string' },
-          description: '필요한 애니메이션 카테고리만 필터링. 예: ["idle","combat","skill"]. 가능한 값: idle, walk, locomotion, jump, combat, skill, hit, dodge, reload, interaction, other. 비워두면 전체.',
-        },
-        label: {
-          type: 'string',
-          description: '뷰어에 표시할 이름 (생략 시 모델 파일명 사용)',
-        },
+        model_path: { type: 'string', description: 'FBX 모델 경로' },
+        animation_paths: { type: 'array', items: { type: 'string' }, description: '애니메이션 FBX 경로 배열 (생략=자동검색)' },
+        categories: { type: 'array', items: { type: 'string' }, description: '카테고리 필터 (idle/combat/skill 등)' },
+        label: { type: 'string', description: '표시 이름' },
       },
       required: ['model_path'],
     },
   },
   {
     name: 'search_code',
-    description:
-      '게임 클라이언트 C# 소스코드를 검색합니다. ' +
-      '특정 클래스·메서드·로직이 어떻게 구현되어 있는지, 어떤 파일에 있는지 찾을 때 사용하세요. ' +
-      'type="class"로 클래스명 검색, type="method"로 메서드 검색, type="content"로 파일 내용 전문 검색.',
+    description: 'C# 소스코드 검색. type: class/method/file/content.',
     input_schema: {
       type: 'object',
       properties: {
-        query: {
-          type: 'string',
-          description: '검색할 키워드 (클래스명, 메서드명, 변수명 등). 예: "CharacterSkill", "OnDamage", "StatusEffect"',
-        },
-        type: {
-          type: 'string',
-          enum: ['class', 'method', 'file', 'content', ''],
-          description: '검색 타입: class=클래스명, method=메서드명, file=파일명/경로, content=파일내용 전문검색. 비워두면 전체 검색.',
-        },
-        scope: {
-          type: 'string',
-          description: '검색 범위를 특정 폴더/파일로 한정 (예: "Combat", "Character/Skill"). 전체 검색 시 생략.',
-        },
-        reason: {
-          type: 'string',
-          description: '이 코드를 검색하는 이유.',
-        },
+        query: { type: 'string', description: '검색 키워드' },
+        type: { type: 'string', enum: ['class', 'method', 'file', 'content', ''], description: '검색 타입' },
+        scope: { type: 'string', description: '폴더 범위 제한' },
       },
       required: ['query'],
     },
   },
   {
     name: 'read_code_file',
-    description:
-      '특정 C# 소스 파일의 전체 내용을 읽습니다. ' +
-      'search_code로 파일 경로를 찾은 후, 상세 구현 내용이 필요할 때 호출하세요. ' +
-      '100KB 이상 파일은 앞부분만 반환됩니다.',
+    description: 'C# 파일 전체 내용 읽기. search_code로 경로 확인 후 호출.',
     input_schema: {
       type: 'object',
       properties: {
-        path: {
-          type: 'string',
-          description: 'search_code 결과에서 얻은 파일 상대 경로 (예: "Combat/DamageSystem.cs")',
-        },
-        reason: {
-          type: 'string',
-          description: '이 파일을 읽는 이유.',
-        },
+        path: { type: 'string', description: '파일 경로' },
       },
       required: ['path'],
     },
   },
   {
     name: 'patch_artifact',
-    description:
-      '⭐ [아티팩트 수정 요청] 메시지에 반드시 사용하세요. create_artifact 대신 이 툴을 사용하면 출력 토큰이 90% 절약됩니다. ' +
-      '수정할 부분의 원본 텍스트(find)와 새 텍스트(replace) 쌍의 배열을 반환합니다. ' +
-      '전체 HTML을 재생성하지 말고, 변경이 필요한 섹션만 패치하세요.',
+    description: '⭐ 아티팩트 수정 전용 (find/replace 패치). create_artifact 대신 사용 → 토큰 90% 절약.',
     input_schema: {
       type: 'object',
       properties: {
-        title: {
-          type: 'string',
-          description: '문서 제목 (변경할 경우에만 입력, 생략 가능)',
-        },
+        title: { type: 'string', description: '새 제목 (변경 시만)' },
         patches: {
           type: 'array',
-          description: '순서대로 적용할 find/replace 패치 목록',
+          description: 'find/replace 패치 목록',
           items: {
             type: 'object',
             properties: {
-              find: {
-                type: 'string',
-                description:
-                  '원본 HTML에서 찾을 정확한 텍스트. 충분히 고유한 문자열이어야 합니다 (10자 이상 권장). ' +
-                  '공백/줄바꿈을 그대로 포함하세요.',
-              },
-              replace: {
-                type: 'string',
-                description: '찾은 텍스트를 대체할 새 텍스트.',
-              },
+              find: { type: 'string', description: '원본 텍스트 (고유, 10자+)' },
+              replace: { type: 'string', description: '대체 텍스트' },
             },
             required: ['find', 'replace'],
           },
@@ -939,120 +747,69 @@ const TOOLS = [
   // ── Jira / Confluence 툴 ─────────────────────────────────────────────────
   {
     name: 'search_jira',
-    description:
-      'Jira 이슈를 JQL(Jira Query Language)로 검색합니다. ' +
-      '버그 조회, 작업 목록 확인, 특정 컴포넌트·스프린트·담당자의 이슈 조회에 사용하세요. ' +
-      '예: "project = GAME AND status != Done ORDER BY created DESC" ' +
-      '     "assignee = currentUser() AND sprint in openSprints()" ' +
-      '     "issuetype = Bug AND priority = High AND component = Combat"',
+    description: 'JQL로 Jira 이슈 검색. 프로젝트키: AEGIS.',
     input_schema: {
       type: 'object',
       properties: {
-        jql: {
-          type: 'string',
-          description:
-            'JQL 쿼리 문자열. 예: "project = GAME AND status = \"In Progress\"".' +
-            'project, status, assignee, issuetype, priority, component, sprint, label, text 등을 사용 가능.',
-        },
-        maxResults: {
-          type: 'number',
-          description: '최대 반환 건수 (기본 20, 최대 50)',
-        },
+        jql: { type: 'string', description: 'JQL 쿼리' },
+        maxResults: { type: 'number', description: '최대 건수 (기본 20, 최대 50)' },
       },
       required: ['jql'],
     },
   },
   {
     name: 'get_jira_issue',
-    description:
-      'Jira 이슈 키(예: GAME-1234)로 이슈 상세 정보를 조회합니다. ' +
-      '이슈 설명, 댓글, 첨부파일, 서브태스크, 담당자, 상태, 우선순위 등이 포함됩니다.',
+    description: 'Jira 이슈 상세 조회 (설명/댓글/서브태스크 등).',
     input_schema: {
       type: 'object',
       properties: {
-        issueKey: {
-          type: 'string',
-          description: 'Jira 이슈 키. 예: "GAME-1234", "PROJECT-567"',
-        },
+        issueKey: { type: 'string', description: '이슈 키 (예: AEGIS-1234)' },
       },
       required: ['issueKey'],
     },
   },
   {
     name: 'search_confluence',
-    description:
-      'Confluence 페이지를 CQL(Confluence Query Language)로 검색합니다. ' +
-      '기획 문서, 스펙 문서, 회의록 등을 찾을 때 사용하세요. ' +
-      '예: "text ~ \\"스킬 시스템\\" AND space = \\"GAME\\"" ' +
-      '     "title = \\"캐릭터 밸런스\\" AND lastModified > \\"2024-01-01\\""',
+    description: 'CQL로 Confluence 문서 검색 (기획서/스펙/회의록).',
     input_schema: {
       type: 'object',
       properties: {
-        cql: {
-          type: 'string',
-          description:
-            'CQL 쿼리 문자열. text, title, space, type(page/blogpost), lastModified 등 사용 가능. ' +
-            '예: "text ~ \\"전투 시스템\\" AND type = page"',
-        },
-        limit: {
-          type: 'number',
-          description: '최대 반환 건수 (기본 10, 최대 20)',
-        },
+        cql: { type: 'string', description: 'CQL 쿼리' },
+        limit: { type: 'number', description: '최대 건수 (기본 10)' },
       },
       required: ['cql'],
     },
   },
   {
     name: 'get_confluence_page',
-    description:
-      'Confluence 페이지 ID로 페이지 전체 내용을 조회합니다. ' +
-      'search_confluence로 페이지 ID를 먼저 확인한 후 호출하세요.',
+    description: 'Confluence 페이지 전체 내용 조회 (pageId).',
     input_schema: {
       type: 'object',
       properties: {
-        pageId: {
-          type: 'string',
-          description: 'Confluence 페이지 ID (숫자 문자열). search_confluence 결과의 id 필드에서 확인.',
-        },
+        pageId: { type: 'string', description: '페이지 ID' },
       },
       required: ['pageId'],
     },
   },
   {
     name: 'save_knowledge',
-    description:
-      '사용자가 제공한 지식/청크/정보를 영구 저장합니다. ' +
-      '사용자가 "이거 기억해", "널리지로 저장", "이 정보 저장해줘" 등을 말하면 이 도구를 사용하세요. ' +
-      '저장된 지식은 .md 파일로 보관되며 나중에 read_knowledge로 검색/활용할 수 있습니다. ' +
-      'name은 영문 스네이크 케이스 권장 (예: skill_system, rag_architecture, combat_formula).',
+    description: '사용자 지식을 .md 파일로 영구 저장. "기억해/저장해" 요청 시 사용.',
     input_schema: {
       type: 'object',
       properties: {
-        name: {
-          type: 'string',
-          description: '지식 파일 이름 (확장자 없이). 예: "skill_system", "rag_pipeline", "damage_formula"',
-        },
-        content: {
-          type: 'string',
-          description: '저장할 마크다운 내용. 사용자가 제공한 원본 내용을 보존하되, 제목(#)과 구조화된 형식으로 정리하세요.',
-        },
+        name: { type: 'string', description: '파일 이름 (영문 snake_case)' },
+        content: { type: 'string', description: '마크다운 내용' },
       },
       required: ['name', 'content'],
     },
   },
   {
     name: 'read_knowledge',
-    description:
-      '이전에 save_knowledge로 저장된 지식을 읽어옵니다. ' +
-      'name을 빈 문자열("")로 호출하면 저장된 전체 널리지 목록을 반환합니다. ' +
-      '사용자 질문에 관련된 저장된 지식이 있을 수 있으니, 필요시 목록을 먼저 확인하세요.',
+    description: '저장된 널리지 읽기. ""=목록 반환.',
     input_schema: {
       type: 'object',
       properties: {
-        name: {
-          type: 'string',
-          description: '읽을 지식 파일 이름. 빈 문자열("")이면 전체 목록 반환.',
-        },
+        name: { type: 'string', description: '파일 이름 (""=전체 목록)' },
       },
       required: [],
     },
@@ -1066,316 +823,66 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap,
 
   // ── 널리지를 시스템 프롬프트 최상단에 배치 — AI가 가장 먼저 인지 ──
   if (knowledgeEntries && knowledgeEntries.length > 0) {
-    lines.push('╔══════════════════════════════════════════════════════════════╗');
-    lines.push('║  ⭐ 최우선 규칙: 아래 널리지는 사용자가 직접 저장한 지시사항입니다  ║');
-    lines.push('║  모든 답변에서 반드시 참고하고, 어떤 널리지를 참고했는지 언급하세요   ║');
-    lines.push('╚══════════════════════════════════════════════════════════════╝');
-    lines.push('');
-    lines.push(`[사용자 저장 널리지: ${knowledgeEntries.length}개 파일]`);
+    lines.push(`## ⭐ 사용자 널리지 (${knowledgeEntries.length}개) — 모든 답변에서 반드시 참고`);
     for (const entry of knowledgeEntries) {
-      lines.push('');
-      lines.push(`━━━ 📌 ${entry.name} (${entry.sizeKB}KB) ━━━`);
+      lines.push(`### ${entry.name} (${entry.sizeKB}KB)`);
       lines.push(entry.content);
-      lines.push(`━━━ END: ${entry.name} ━━━`);
     }
-    lines.push('');
-    lines.push('위 널리지에 사용자의 과거 지시사항, 스타일 가이드, 규칙 등이 있습니다.');
-    lines.push('"내가 뭐라고 했지?", "어떻게 하라고 했지?" 같은 질문에는 위 널리지를 먼저 확인하세요.');
     lines.push('');
   }
 
-  lines.push('당신은 이 게임의 모든 데이터를 꿰뚫고 있는 전문 게임 데이터 어시스턴트입니다.');
+  lines.push('당신은 게임 데이터 전문 어시스턴트입니다. 한국어로 답변하세요.');
   lines.push('');
-  lines.push('[맥락 불분명 시 되질문 규칙 — 반드시 준수]');
-  lines.push('사용자의 질문이 모호하거나 여러 해석이 가능할 때는 임의로 추측하지 말고, **객관식 선택지**를 제시하며 되질문하세요.');
-  lines.push('- 테이블/컬럼/캐릭터/스킬 등의 이름이 여러 후보와 매칭될 때');
-  lines.push('- 질문의 의도가 "데이터 조회"인지 "코드 분석"인지 "기획서 확인"인지 불분명할 때');
-  lines.push('- 어떤 범위/기간/조건으로 조회할지 특정되지 않을 때');
-  lines.push('형식 예시:');
-  lines.push('> 어떤 내용을 원하시는지 좀 더 알려주세요:');
-  lines.push('> **A.** 캐릭터 "프리드웬"의 스킬 데이터 조회');
-  lines.push('> **B.** 캐릭터 "프리드웬"의 C# 스킬 로직 코드 분석');
-  lines.push('> **C.** 캐릭터 "프리드웬" 전체 기획서(프로파일) 생성');
-  lines.push('> **D.** 기타 (직접 설명해주세요)');
+  lines.push('## 핵심 규칙');
+  lines.push('- 모호한 질문 → **객관식(A/B/C/D) 되질문** (명확한 질문은 바로 답변)');
+  lines.push('- ⭐ 답변 전 반드시 read_guide로 관련 가이드 먼저 읽기 (DB: _DB_OVERVIEW, 코드: _OVERVIEW)');
+  lines.push('- 캐릭터 기획서/프로파일 → build_character_profile 먼저 호출');
+  lines.push('- "기억해/저장해/널리지" 요청 → save_knowledge (name=영문_snake_case)');
+  lines.push('- ⭐ 최상단 널리지를 모든 답변에서 반드시 참고하세요');
   lines.push('');
-  lines.push('- 선택지는 2~5개로 구성하고, 마지막에 항상 "기타" 옵션을 포함하세요.');
-  lines.push('- 사용자가 "A", "B" 등으로 간단히 답할 수 있도록 알파벳 라벨을 붙이세요.');
-  lines.push('- 명확한 질문에는 되질문 없이 바로 답변하세요. 되질문은 정말 모호할 때만 사용하세요.');
+  lines.push('## ⛔ HTML 출력 규칙');
+  lines.push('채팅 텍스트에 HTML 태그(div/table/style/img 등) 절대 금지!');
+  lines.push('모든 HTML/임베드 태그는 오직 아티팩트 안에만 (<<<ARTIFACT_START>>>...<<<ARTIFACT_END>>> 또는 patch_artifact)');
   lines.push('');
-  lines.push('사용자의 질문에 답하기 위해 아래 도구들을 적극 활용하세요:');
-  lines.push('- query_game_data: 실제 게임 데이터를 SQL로 조회');
-  lines.push('- show_table_schema: 테이블 구조/관계도를 ERD 카드로 시각화. 테이블 설명 시 반드시 호출. 관계도 요청 시 관련 테이블 여러 개 연속 호출 가능');
-  lines.push('- search_jira: Jira 이슈 JQL 검색 (버그/작업/스프린트 조회)');
-  lines.push('- get_jira_issue: Jira 이슈 상세 조회 (GAME-1234 등 이슈 키 직접 지정)');
-  lines.push('- search_confluence: Confluence 문서 CQL 검색 (기획서/스펙/회의록 등)');
-  lines.push('- get_confluence_page: Confluence 페이지 전체 내용 조회 (pageId 필요)');
-  lines.push('- build_character_profile: 캐릭터명 → FK 연결 모든 데이터 자동 수집. 이름 검색 실패 시 전체 목록 반환 → character_id로 재호출. 캐릭터 기획서/프로파일 요청 시 반드시 먼저 호출.');
-  lines.push('- query_git_history: 변경 이력 조회 (언제 무엇이 바뀌었는지). repo="data"(aegisdata 데이터 저장소, 기본값) 또는 repo="aegis"(aegis 코드 저장소) 선택 가능');
-  lines.push('- show_revision_diff: 특정 커밋의 상세 변경 내용(DIFF) 시각화 (리비전 차이 확인 시 사용). repo 파라미터로 저장소 지정 가능');
-  lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 및 채팅 임베드 (아이콘, UI 이미지 찾기 요청 시 사용)');
-  lines.push('- create_artifact: 수집된 데이터로 완성된 HTML 문서/보고서 생성 (전체화면 프리뷰, PDF 저장 가능)');
-  lines.push('- patch_artifact: ⭐ 기존 아티팩트 수정 시 사용 (find/replace 패치만 반환 → 토큰 90% 절약)');
-  lines.push('- read_guide: ⭐⭐⭐ 최우선 시작점! DB+코드 통합 가이드 MD 읽기. 어떤 질문이든 관련 가이드를 먼저 읽고 답변하세요.');
-  lines.push('  → DB/게임 질문: read_guide("_DB_OVERVIEW") → 도메인 가이드(_DB_Character, _DB_Skill 등)');
-  lines.push('  → 코드 질문:   read_guide("_OVERVIEW") → 도메인 가이드(_Skill, _Weapon, _Character 등)');
-  lines.push('  → 가이드 목록: read_guide("") 로 전체 확인');
-  lines.push('- search_code: C# 게임 클라이언트 소스코드 검색 (클래스/메서드/파일명/내용 전문검색). 코드 구현 방식, 로직, 버그 분석 시 사용.');
-  lines.push('- read_code_file: 특정 .cs 파일 전체 내용 읽기. search_code로 경로 확인 후 호출.');
-  lines.push('- search_assets: Unity 에셋 파일 검색 (FBX 3D 모델, PNG 텍스처, WAV 사운드 등). ext="fbx"로 3D 모델만 검색 가능.');
-  lines.push('- save_knowledge: 🧠 사용자가 제공한 지식/청크를 .md 파일로 영구 저장. "기억해", "저장해", "널리지로" 등의 요청 시 사용.');
-  lines.push('- read_knowledge: 🧠 저장된 널리지 읽기. 빈 name("")으로 목록 확인 가능.');
+  lines.push('## 아티팩트 임베드 태그 (아티팩트 HTML 내에서만 사용)');
+  lines.push('- FBX: <div class="fbx-viewer" data-src="/api/assets/file?path=경로.fbx" data-label="이름"></div>');
+  lines.push('- 오디오: <div class="audio-player" data-src="/api/assets/file?path=경로.wav" data-label="이름"></div>');
+  lines.push('- 씬: <div data-embed="scene" data-src="경로.unity" data-label="이름"></div>');
+  lines.push('- 프리팹: <div data-embed="prefab" data-src="경로.prefab" data-label="이름"></div>');
+  lines.push('- 애니메이션: <div data-embed="fbx-anim" data-model="모델경로" data-label="이름"></div>');
+  lines.push('- 스키마: <div data-embed="schema" data-table="테이블명"></div>');
+  lines.push('- 쿼리 결과: <div data-embed="query" data-sql="SELECT ..."></div> (⭐ 데이터는 직접 쓰지 말고 이 태그 사용!)');
+  lines.push('- 관계도: <div data-embed="relations" data-table="테이블명"></div>');
+  lines.push('- 관계 그래프: <div data-embed="graph" data-tables="T1,T2,T3"></div>');
+  lines.push('- Git Diff: <div data-embed="diff" data-commit="해시"></div>');
+  lines.push('- 이미지: /api/images/smart?name=파일명.png 또는 /api/images/file?path=Texture/경로.png');
+  lines.push('- 인라인 테이블 참조: [[TableName]] → 클릭 시 스키마 팝업');
+  lines.push('- data-sql 규칙: 큰따옴표(") 속성, SQL 내 "→&quot;, #컬럼→백틱+AS alias 필수');
   lines.push('');
-  lines.push('[널리지(Knowledge) 시스템 규칙 — 반드시 준수]');
-  lines.push('- 사용자가 "이거 기억해", "널리지로 저장해줘", "이 정보 저장" 등을 말하면 → save_knowledge 호출.');
-  lines.push('- 저장 시 name은 영문 스네이크_케이스로 (예: skill_system, rag_chunk_01).');
-  lines.push('- 저장 시 사용자 제공 원본 내용을 보존하되, # 제목과 구조화된 마크다운으로 정리.');
-  lines.push('- ⭐ 이 시스템 프롬프트 최상단에 저장된 널리지 전문이 포함되어 있습니다. 답변 전 반드시 확인하세요!');
-  lines.push('- "내가 뭐라고 했지?", "어떻게 쓰라고 했지?" 등의 질문 → 최상단 널리지에서 답을 찾으세요.');
+  lines.push('## Jira/Confluence');
+  lines.push('- 프로젝트 키: AEGIS. JQL에 날짜 필터 자동 추가 금지. ORDER BY updated DESC 기본 사용.');
+  lines.push('- 이슈번호 언급(AEGIS-1234) → get_jira_issue 바로 호출.');
   lines.push('');
-  lines.push('[FBX 3D 모델 뷰어 규칙 — 절대 준수]');
-  lines.push('⚠️⚠️⚠️ 절대 금지: <div class="fbx-viewer">, data-embed, <div data-sql>, data-src 등 HTML 임베드 태그를 절대로 채팅 텍스트에 직접 출력하지 마세요!');
-  lines.push('⚠️⚠️⚠️ 이런 태그들은 반드시 create_artifact 툴의 html 파라미터 안에만 넣어야 합니다. 채팅 응답에 HTML 태그를 출력하면 사용자에게 원시 코드가 그대로 보입니다!');
+  lines.push('## 아티팩트 생성 프로토콜');
+  lines.push('문서/보고서/시트/3D 요청 시:');
+  lines.push('1. <<<ARTIFACT_START>>> + HTML(body 내용만, 다크테마 bg:#0f1117 text:#e2e8f0 accent:#6366f1) + <<<ARTIFACT_END>>>');
+  lines.push('2. 바로 create_artifact(title="제목") 호출. 성공 시 절대 재시도 금지.');
+  lines.push('- CSS 간결하게, data-embed 태그 적극 활용, 6섹션 이상이면 핵심만, 잘리면 시스템이 이어쓰기 요청.');
+  lines.push('- "[아티팩트 수정 요청]" → patch_artifact만 사용 (create_artifact 절대 금지). find 15자+, embed 태그 보존.');
   lines.push('');
-  lines.push('- FBX/3D 모델을 보여달라는 요청 → 반드시 create_artifact 호출 (채팅 텍스트에 HTML 절대 금지)');
-  lines.push('- 아티팩트 HTML 안에서 FBX 표시 패턴 (아티팩트 html 파라미터 내부에만 사용):');
-  lines.push('  <div class="fbx-viewer" data-src="/api/assets/file?path=경로/파일.fbx" data-label="파일명"></div>');
-  lines.push('- 여러 모델 나란히:');
-  lines.push('  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">');
-  lines.push('    <div class="fbx-viewer" data-src="/api/assets/file?path=경로A.fbx" data-label="Mid Poly"></div>');
-  lines.push('    <div class="fbx-viewer" data-src="/api/assets/file?path=경로B.fbx" data-label="Low Poly"></div>');
-  lines.push('  </div>');
-  lines.push('- <a href> 링크 절대 사용 금지 (다운로드됨).');
-  lines.push('- PNG/이미지도 마찬가지: 아티팩트 html 안에만 <img src="/api/assets/file?path=경로.png">');
+  lines.push('## Mermaid 규칙');
+  lines.push('- \\n+4칸 들여쓰기 필수. 노드ID=영문만. 한글라벨=["..."] 표기. 특수문자(+%&<>"\'#{}) 절대 금지.');
+  lines.push('- ASCII 아트 대신 반드시 Mermaid 또는 data-embed="graph" 사용.');
   lines.push('');
-  lines.push('[WAV/오디오 임베드 규칙 — 절대 준수]');
-  lines.push('⚠️⚠️⚠️ 오디오 태그도 절대로 채팅 텍스트에 직접 출력하지 마세요! 반드시 create_artifact html 안에만!');
-  lines.push('- 오디오 파일(WAV/MP3/OGG 등)을 아티팩트에 넣는 방법:');
-  lines.push('  <div class="audio-player" data-src="/api/assets/file?path=경로/파일.wav" data-label="사운드명"></div>');
-  lines.push('  → 시스템이 자동으로 재생 컨트롤 UI로 변환합니다.');
-  lines.push('- 여러 사운드 목록:');
-  lines.push('  <div class="audio-player" data-src="/api/assets/file?path=Sound/skill_01.wav" data-label="스킬 발사음"></div>');
-  lines.push('  <div class="audio-player" data-src="/api/assets/file?path=Sound/hit_01.wav" data-label="피격음"></div>');
-  lines.push('- search_assets 툴로 ext="wav" 또는 ext="mp3"로 검색 후 경로를 확인하세요.');
+  lines.push('## 캐릭터 기획서');
+  lines.push('build_character_profile 결과의 [EMBED_SQL] 힌트를 data-embed="query" 태그에 사용.');
+  lines.push('기획서=카드 레이아웃, 시트뷰=탭 레이아웃(showTab JS 패턴 사용).');
   lines.push('');
-  lines.push('[Unity .unity 씬 파일 뷰어 규칙]');
-  lines.push('⚠️ 씬 embed 태그도 채팅 텍스트에 직접 출력 금지! 반드시 create_artifact html 안에만!');
-  lines.push('- Unity .unity 씬을 3D로 보여달라는 요청 → search_assets(ext="unity")로 씬 파일 검색 후 → create_artifact 호출');
-  lines.push('- 채팅에서: "에셋 검색 결과의 [씬 뷰] 버튼을 클릭하면 3D 씬 뷰어가 열립니다" 라고 안내');
-  lines.push('- 아티팩트 HTML 안에서 씬 표시 패턴 (아티팩트 html 파라미터 내부에만 사용):');
-  lines.push('  <div data-embed="scene" data-src="GameContents/Map/씬파일.unity" data-label="씬 이름"></div>');
-  lines.push('- 씬 파일 경로는 search_assets 결과의 path 값을 그대로 사용하세요.');
-  lines.push('- /api/assets/scene?path=경로&max=60 API로 씬 오브젝트(FBX+트랜스폼) 목록을 조회할 수 있습니다.');
-  lines.push('- ⚠️ 씬 로딩은 build_guid_index.ps1 실행 후에만 작동합니다 (GUID 인덱스 필요).');
+  lines.push('## 코드 분석');
+  lines.push('read_guide("_OVERVIEW") → 도메인 가이드 → search_code → read_code_file 순서.');
   lines.push('');
-  lines.push('[씬 YAML 상세 분석 — read_scene_yaml 도구]');
-  lines.push('- 씬의 내부 구조(오브젝트 구성, 컴포넌트 속성, 트랜스폼 값 등)를 분석할 때 사용');
-  lines.push('- 워크플로: search_assets(ext="unity") → read_scene_yaml(path=...) → 분석 결과 제공');
-  lines.push('- filter 파라미터로 특정 타입만 조회: "PrefabInstance", "GameObject", "Transform", "MonoBehaviour", "MeshFilter", "Light"');
-  lines.push('- search 파라미터로 텍스트 검색: "m_Positions"(ProBuilder), "SafetyZone", "m_LocalScale" 등');
-  lines.push('- 먼저 filter/search 없이 호출하면 씬 구성 요약(타입별 섹션 개수)을 볼 수 있음');
-  lines.push('- 섹션이 많으면 offset/limit로 페이지네이션 (기본 20개씩)');
-  lines.push('- Unity YAML 섹션 타입: !u!1=GameObject, !u!4=Transform, !u!33=MeshFilter, !u!114=MonoBehaviour, !u!1001=PrefabInstance 등');
-  lines.push('');
-  lines.push('[FBX 애니메이션 뷰어 — preview_fbx_animation 도구]');
-  lines.push('- 캐릭터 애니메이션을 보여달라는 요청 → search_assets(ext="fbx")로 모델 검색 → preview_fbx_animation(model_path=...) 호출');
-  lines.push('- 모델에 관련된 애니메이션을 자동 검색하여 3D 뷰어 + 애니메이션 플레이어로 표시');
-  lines.push('- 애니메이션 카테고리: idle, walk, locomotion, jump, combat, skill, hit, dodge, reload, interaction');
-  lines.push('- 주요 모델 경로: _3DModel/ 하위 (musket/, striker/, vanguard/, Agent/, Mechanic/ 등)');
-  lines.push('- 주요 애니메이션 경로: _Animation/ 하위 (musket/ 등)');
-  lines.push('- 아티팩트 HTML에서 애니메이션 임베드: <div data-embed="fbx-anim" data-model="모델경로" data-label="이름"></div>');
-  lines.push('  → 아티팩트에서 인라인 3D 뷰어 + 애니메이션 사이드패널이 직접 표시됨 (480px 높이)');
-  lines.push('');
-  lines.push('[Unity .prefab 프리팹 뷰어 — preview_prefab 도구]');
-  lines.push('⚠️ 프리팹 embed 태그도 채팅 텍스트에 직접 출력 금지! 반드시 create_artifact html 안에만!');
-  lines.push('- Unity .prefab 프리팹을 3D로 보여달라는 요청 → search_assets(ext="prefab")로 프리팹 검색 후 → preview_prefab(path=...) 호출');
-  lines.push('- preview_prefab 결과는 ChatUI에서 3D 뷰어로 자동 표시됨');
-  lines.push('- 아티팩트 HTML 안에서 프리팹 표시 패턴 (아티팩트 html 파라미터 내부에만 사용):');
-  lines.push('  <div data-embed="prefab" data-src="경로/프리팹.prefab" data-label="프리팹 이름"></div>');
-  lines.push('- .prefab 파일은 .unity 씬과 동일한 YAML 포맷 → 동일한 3D 뷰어로 표시');
-  lines.push('- 에셋 검색 결과에서 .prefab 파일은 [프리팹 뷰] 버튼으로 바로 미리보기 가능');
-  lines.push('');
-  lines.push('[Jira / Confluence 사용 규칙]');
-  lines.push('- 프로젝트 키: AEGIS (cloud.jira.krafton.com 기준)');
-  lines.push('- 버그, 이슈, 작업 조회 요청 → search_jira(jql) 호출');
-  lines.push('- 특정 이슈 번호 언급 (예: AEGIS-1234) → get_jira_issue("AEGIS-1234") 바로 호출');
-  lines.push('- 기획서/스펙 문서 요청 → search_confluence(cql) 호출');
-  lines.push('- 검색 결과에서 특정 페이지 내용이 필요하면 get_confluence_page(pageId) 호출');
-  lines.push('');
-  lines.push('[JQL 작성 규칙 — 반드시 준수]');
-  lines.push('- 기본 프로젝트 키는 AEGIS: "project = AEGIS ORDER BY updated DESC"');
-  lines.push('- ⚠️ 날짜 필터(updated >= -Nd, created >= -Nd)는 사용자가 명시적으로 "최근 N일" 등을 요청할 때만 사용');
-  lines.push('- ⚠️ 날짜 필터를 자동으로 추가하지 마세요 — 없어도 최신 이슈가 먼저 나옵니다(ORDER BY updated DESC)');
-  lines.push('- 일반 일감/이슈 조회: "project = AEGIS AND status != Done ORDER BY updated DESC"');
-  lines.push('- 버그 조회: "project = AEGIS AND issuetype = Bug AND status != Done ORDER BY updated DESC"');
-  lines.push('- 진행 중 작업: "project = AEGIS AND status = \\"In Progress\\" ORDER BY updated DESC"');
-  lines.push('- 특정 담당자: "project = AEGIS AND assignee = \\"이름\\" ORDER BY updated DESC"');
-  lines.push('- 스프린트: "project = AEGIS AND sprint in openSprints() ORDER BY updated DESC"');
-  lines.push('- 텍스트 검색: "project = AEGIS AND text ~ \\"검색어\\" ORDER BY updated DESC"');
-  lines.push('- maxResults는 기본 20, 많이 필요하면 50까지');
-  lines.push('- CQL 예시: "space = \\"AEGIS\\" AND text ~ \\"캐릭터 스킬\\" AND type = page ORDER BY lastModified DESC"');
-  lines.push('- Jira 이슈 표시는 아티팩트 create_artifact로 카드 형태로 보여주거나, 채팅에서 요약 텍스트로 제공');
-  lines.push('- Confluence 내용의 HTML 태그(p, table, ul 등)는 그대로 아티팩트에 삽입 가능');
-  lines.push('');
-  lines.push('[캐릭터 기획서/프로파일/데이터 시트뷰 — 반드시 준수]');;
-  lines.push('- "캐릭터 기획서", "[캐릭터명] 기획서", "프로파일", "캐릭터 카드", "개요" 요청 시: build_character_profile 먼저 → create_artifact 순서.');
-  lines.push('- "데이터 다 제공해줘", "모든 데이터 보여줘", "시트뷰", "종합해줘", "전체 데이터" 요청 시도 동일하게 build_character_profile 먼저 호출.');
-  lines.push('- build_character_profile 결과에 [EMBED_SQL] 힌트가 포함됨. 이 SQL을 data-embed="query" 태그에 그대로 사용하세요.');
-  lines.push('- create_artifact 아티팩트는 아래 두 가지 레이아웃 중 요청에 맞게 선택:');
-  lines.push('  (A) 기획서/개요 → 사이트맵/카드 레이아웃: 캐릭터 헤더 → 연결 테이블 카드 (데이터 수, 샘플 표시)');
-  lines.push('  (B) 시트뷰/전체데이터 → 탭 레이아웃: 탭마다 연결 테이블 data-embed query 표시');
-  lines.push('- ⭐ 탭 레이아웃 필수 JS 패턴:');
-  lines.push('  <script>function showTab(id){document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.tab===id));document.querySelectorAll(".tab-panel").forEach(p=>p.classList.toggle("active",p.dataset.panel===id));}</script>');
-  lines.push('  탭 버튼: <button class="tab active" data-tab="basic" onclick="showTab(\'basic\')">기본정보</button>');
-  lines.push('  패널: <div class="tab-panel active" data-panel="basic"><div data-embed="query" data-sql="[EMBED_SQL]"></div></div>');
-  lines.push('');
-  lines.push('[아티팩트 생성 프로토콜 — 반드시 이 순서로]');
-  lines.push('시각적 결과물 요청 시 (정리해줘, 문서로, 보고서, 뽑아줘, 시트, 3D 등) 아래 순서를 따르세요:');
-  lines.push('');
-  lines.push('1단계: 텍스트 응답으로 HTML 출력 (실시간 스트리밍됨):');
-  lines.push('  <<<ARTIFACT_START>>>');
-  lines.push('  <style>body{...}</style>');
-  lines.push('  <h1>제목</h1>');
-  lines.push('  ... HTML 내용 ...');
-  lines.push('  <<<ARTIFACT_END>>>');
-  lines.push('');
-  lines.push('2단계: 바로 이어서 create_artifact(title="제목") 호출 (HTML은 넣지 마세요!)');
-  lines.push('');
-  lines.push('⚠️ 주의사항:');
-  lines.push('- HTML은 <!DOCTYPE html> 없이 <body> 내용만 (500줄 이내)');
-  lines.push('- 다크 테마(bg:#0f1117, text:#e2e8f0, accent:#6366f1), 한국어');
-  lines.push('- data-embed, data-sql, class="fbx-viewer" 태그는 <<<ARTIFACT_START>>> 안에만!');
-  lines.push('- "생성하겠습니다" 같은 선언 없이 즉시 시작');
-  lines.push('- create_artifact 결과가 성공이면 절대 재시도하지 마세요');
-  lines.push('- 이미지: /api/images/file?path=Texture/폴더/파일명.png 또는 /api/images/smart?name=파일명.png');
-  lines.push('[가이드 우선 원칙 — 모든 질문에 적용]');
-  lines.push('⭐⭐⭐ 어떤 질문이든 답변 전에 반드시 관련 가이드를 먼저 read_guide로 읽으세요!');
-  lines.push('');
-  lines.push('질문 유형별 가이드 우선 순서:');
-  lines.push('- 캐릭터/스킬/무기/아이템 질문 → read_guide("_DB_OVERVIEW") → read_guide("_DB_Character"/"_DB_Skill"/"_DB_Weapon")');
-  lines.push('- Enum/코드값 질문 → read_guide("_DB_Enums")');
-  lines.push('- 게임 데이터 일반 → read_guide("_DB_OVERVIEW") 로 테이블 구조 파악 후 쿼리');
-  lines.push('- 코드 구현/로직 질문 → read_guide("_OVERVIEW") → read_guide("_Skill"/"_Weapon"/"_Character" 등)');
-  lines.push('- 모르는 시스템 → read_guide("") 로 목록 먼저 확인');
-  lines.push('');
-  lines.push('가이드를 읽으면: 테이블 구조, FK 관계, 중요 컬럼, 클래스/메서드 위치를 사전에 알 수 있어 불필요한 탐색을 줄입니다.');
-  lines.push('');
-  lines.push('[C# 코드 분석 규칙]');
-  lines.push('- ⭐ 코드 분석 시작 전: read_guide(name="_OVERVIEW") 로 전체 폴더 구조를 먼저 파악하세요.');
-  lines.push('- 특정 시스템 분석 시: read_guide(name="_Skill"), read_guide(name="_Weapon") 등 도메인 가이드를 먼저 읽으세요.');
-  lines.push('- 가이드에서 파일 경로·클래스명·메서드명을 확인한 뒤 search_code 또는 read_code_file로 구체적인 코드를 확인하세요.');
-  lines.push('- 코드 관련 질문 (구현 방식, 로직, 버그, 특정 시스템 동작): read_guide → search_code → 필요 시 read_code_file 순서로 호출.');
-  lines.push('- 클래스 검색: search_code(query="ClassName", type="class")');
-  lines.push('- 메서드 검색: search_code(query="MethodName", type="method")');
-  lines.push('- 내용 전문검색: search_code(query="keyword", type="content")');
-  lines.push('- 코드와 데이터 연계 분석: query_game_data + search_code 함께 사용 가능.');
-  lines.push('- 아직 동기화 안 된 경우: sync_cs_files.ps1 실행 안내 (C:\\TableMaster\\sync_cs_files.ps1).');
-  lines.push('');
-  lines.push('[이미지 경로 규칙]');
-  lines.push('- 이미지 경로가 정확히 알려진 경우: /api/images/file?path=Texture/Character/icon_hero_striker.png');
-  lines.push('- 이미지 경로가 불확실하거나 폴더를 모르는 경우: /api/images/smart?name=icon_hero_striker.png');
-  lines.push('  → /api/images/smart 는 파일명만 알면 서버가 전체 디렉토리에서 자동 검색 (경로 추측 불필요)');
-  lines.push('- find_resource_image 툴 결과의 relPath가 있으면 file?path= 사용, 없으면 smart?name= 사용 권장');
-  lines.push('- Texture 하위 폴더: Character, Skill, Class, Weapon, BG, Profile, Rank, Synergy, TacticalPassive, Tier, Ingame, Coin, Clan, Map');
-  lines.push('- 스타일: 다크 테마(배경 #0f1117, 텍스트 #e2e8f0, 포인트 #6366f1), 표/카드 레이아웃.');
-  lines.push('');
-  lines.push('[데이터 임베드 태그 — 컨텍스트 절약 및 실시간 데이터 표시]');
-  lines.push('아티팩트 HTML 안에 아래 태그를 쓰면 실제 데이터가 자동으로 삽입됩니다. 데이터를 직접 HTML에 쓰는 것보다 이 방법이 훨씬 좋습니다:');
-  lines.push('');
-  lines.push('1. 스키마 구조 임베드: <div data-embed="schema" data-table="테이블명"></div>');
-  lines.push('   예) <div data-embed="schema" data-table="Character"></div>');
-  lines.push('   → 컬럼 목록, PK/FK 속성, FK 관계 테이블 등이 자동 렌더링됨');
-  lines.push('');
-  lines.push('2. 쿼리 결과 임베드: <div data-embed="query" data-sql="SELECT 문"></div>');
-  lines.push('   예) <div data-embed="query" data-sql="SELECT id, name, type FROM Perk LIMIT 20"></div>');
-  lines.push('   예) <div data-embed="query" data-sql="SELECT * FROM PerkEffect WHERE perk_id=\'101\'"></div>');
-  lines.push('   → SQL 실행 결과가 데이터 테이블로 자동 렌더링됨. 데이터를 직접 HTML에 쓰지 말고 이 태그 사용 권장');
-  lines.push('   ⚠️ data-sql 작성 규칙:');
-  lines.push('      - 속성은 항상 큰따옴표(")로 감싸세요: data-sql="SQL"');
-  lines.push('      - SQL 내에 큰따옴표가 필요하면 &quot; 사용');
-  lines.push('      - #으로 시작하는 컬럼은 백틱으로 감싸되 별칭(AS)을 반드시 완성: `#effect_group` AS effect_group');
-  lines.push('      - SQL은 반드시 완전한 문장이어야 합니다 (AS 뒤 alias, FROM 뒤 테이블명 등 생략 금지)');
-  lines.push('');
-  lines.push('3. 관계도 임베드: <div data-embed="relations" data-table="테이블명"></div>');
-  lines.push('   예) <div data-embed="relations" data-table="Character"></div>');
-  lines.push('   → 해당 테이블의 FK 관계망이 자동 렌더링됨');
-  lines.push('');
-  lines.push('4. ⭐ 관계 그래프 임베드 (Mermaid 자동 생성): <div data-embed="graph" data-tables="T1,T2,T3"></div>');
-  lines.push('   예) <div data-embed="graph" data-tables="Character,Skill,SkillEffect"></div>');
-  lines.push('   또는 단일 테이블 + 직접 연결: <div data-embed="graph" data-table="Character"></div>');
-  lines.push('   → 지정 테이블 간 FK 관계를 Mermaid LR 다이어그램으로 자동 렌더링');
-  lines.push('   ⚠️ ASCII 아트(박스 그림)로 직접 그리지 말 것! 이 태그 사용으로 컨텍스트 대폭 절약');
-  lines.push('');
-  lines.push('5. Mermaid 커스텀 다이어그램: <div class="mermaid">graph LR\\n    A-->B\\n    B-->C</div>');
-  lines.push('   → Mermaid.js가 자동 렌더링. 플로우차트, 시퀀스, ER 다이어그램 등 가능');
-  lines.push('   ⚠️ ASCII 아트 대신 반드시 Mermaid 사용! 훨씬 보기 좋고 토큰도 절약됨');
-  lines.push('');
-  lines.push('   ███ Mermaid 작성 필수 규칙 (이 규칙을 어기면 100% 렌더링 실패) ███');
-  lines.push('   a) 반드시 \\n + 4칸 들여쓰기 사용. 한 줄로 쓰면 파싱 에러남');
-  lines.push('   b) 노드 ID: 영문/숫자/언더스코어만 (한글X, 공백X, 특수문자X)');
-  lines.push('   c) 한글 라벨이 필요하면 반드시 ["..."] 표기: A["한글 라벨"]');
-  lines.push('   d) 엣지(화살표) 라벨: 가급적 사용하지 않거나, 짧은 영문만. 한글 엣지 라벨은 |한글| 대신 생략하거나 노드 안에 포함');
-  lines.push('   e) 특수문자 절대 금지: +, %, &, <, >, ", \', #, {, } 등을 노드ID·라벨에 쓰지 말 것');
-  lines.push('   f) subgraph 제목도 영문만 사용하거나, 한글 시 따옴표로 감싸기: subgraph "전투 시스템"');
-  lines.push('   g) 모든 줄은 \\n으로 구분하고 4칸 들여쓰기. HTML minifier가 줄바꿈을 제거하므로 반드시 \\n 리터럴 사용');
-  lines.push('');
-  lines.push('   ✅ 안전한 예시:');
-  lines.push('   <div class="mermaid">graph TD\\n    Player["플레이어"]-->SkillSys["스킬 시스템"]\\n    SkillSys-->DmgCalc["데미지 계산"]\\n    DmgCalc-->Result["결과 적용"]</div>');
-  lines.push('');
-  lines.push('   ❌ 실패하는 예시 (절대 이렇게 쓰지 말 것):');
-  lines.push('   <div class="mermaid">graph TD\n    플레이어-->스킬시스템</div>  ← 한글 노드ID 에러');
-  lines.push('   <div class="mermaid">graph TD\n    A-->|스킬 사용 & 데미지|B</div>  ← &, 한글 엣지라벨 에러');
-  lines.push('');
-  lines.push('6. Git Diff 임베드: <div data-embed="diff" data-commit="커밋해시"></div>');
-  lines.push('   예) <div data-embed="diff" data-commit="a1b2c3d4"></div>');
-  lines.push('   예) 특정 파일만: <div data-embed="diff" data-commit="a1b2c3d4" data-file="Scripts/SkillSystem.cs"></div>');
-  lines.push('   → 해당 커밋의 변경 내용을 실시간으로 fetch해 색상 diff 뷰어로 렌더링 (query_git_history로 hash 확인 후 사용)');
-  lines.push('   ⚠️ diff 결과를 직접 텍스트로 붙여넣지 말고 이 태그 사용! (토큰 대폭 절약)');
-  lines.push('');
-  lines.push('7. 인라인 테이블 레퍼런스: [[테이블명]]');
-  lines.push('   예) 이 시스템은 [[Character]] 테이블과 [[Skill]] 테이블을 연결합니다.');
-  lines.push('   → 클릭 가능한 테이블명 칩으로 변환 → 클릭 시 테이블 스키마(컬럼/FK) 팝업 표시');
-  lines.push('   ⚠️ 텍스트에서 테이블 이름을 언급할 때 반드시 [[TableName]] 형식 사용! 가독성과 인터랙티비티 모두 향상');
-  lines.push('');
-  lines.push('⭐ 활용법: 기획서 작성 시 query_game_data 대신 data-embed="query" 태그를 HTML에 직접 쓰면:');
-  lines.push('   - Claude 응답 토큰 크게 절약');
-  lines.push('   - 항상 최신 실제 데이터 표시');
-  lines.push('   - HTML로 저장해도 서버에서 데이터를 렌더링하므로 완전한 문서 보존');
-  lines.push('   ⭐ 기획서에서 테이블 이름 언급 시 [[TableName]] 형식 사용 → 클릭 시 스키마 바로 확인 가능');
-  lines.push('');
-  lines.push('[중요] "관계도 보여줘", "ERD 보여줘" 요청에는 가장 핵심이 되는 테이블 1개만 show_table_schema를 호출하세요.');
-  lines.push('       ERD 카드 안에 연결 테이블이 모두 표시되므로 관련 테이블을 여러 번 반복 호출하지 마세요.');
-  lines.push('');
-  lines.push('## 아티팩트 수정 요청 처리 — [아티팩트 수정 요청] 메시지 전용');
-  lines.push('사용자 메시지가 "[아티팩트 수정 요청]"으로 시작하면:');
-  lines.push('1. ⭐ 반드시 patch_artifact 툴을 사용하세요. create_artifact 절대 사용 금지!');
-  lines.push('   - patch_artifact: 변경된 부분만 find/replace로 전달 → 출력 토큰 90% 절약, 10배 빠름');
-  lines.push('   - create_artifact: 전체 HTML 재생성 → 토큰 낭비, 느림, 사용 금지');
-  lines.push('2. 추가 데이터 조회 없이 즉시 patch_artifact를 호출하세요.');
-  lines.push('3. patches 작성 규칙:');
-  lines.push('   - find: 원본 HTML에서 수정할 부분의 정확한 텍스트 (최소 15자 이상, 고유한 문자열)');
-  lines.push('   - replace: 새 텍스트로 대체. 변경하지 않는 부분은 find/replace에 포함하지 마세요');
-  lines.push('   - embed 태그(data-embed="...")는 절대 삭제/교체하지 말고 그대로 보존');
-  lines.push('4. 수정 범위가 넓으면 여러 패치로 분할하되, 각 패치의 find는 반드시 원본과 완전히 일치해야 합니다.');
-  lines.push('');
-  lines.push('## ⛔ 채팅 텍스트에 HTML 출력 절대 금지 — 필수 규칙');
-  lines.push('채팅 응답(text_delta)에는 HTML 코드를 절대 포함하지 마세요. 모든 HTML은 오직 다음 방법으로만 전달:');
-  lines.push('  - 새 문서 생성: <<<ARTIFACT_START>>> ... <<<ARTIFACT_END>>> 마커 안에 HTML 출력 후 create_artifact 호출');
-  lines.push('  - 기존 문서 수정: patch_artifact 툴의 find/replace 파라미터로만 전달');
-  lines.push('채팅에서는 "아티팩트를 생성합니다", "섹션을 추가합니다" 등 간결한 설명만 작성하세요.');
-  lines.push('⛔ 금지 예시: 채팅에 <div>, <li>, <table>, <style>, <h1> 등 HTML 태그를 직접 쓰는 것');
-  lines.push('⛔ 금지 예시: 아티팩트 내용을 채팅에서 반복하거나 일부를 보여주는 것');
-  lines.push('✅ 올바른 예시: "VFX 기반 구조 분석 보고서를 작성합니다." 한 줄 + 즉시 <<<ARTIFACT_START>>> 시작');
-  lines.push('');
-  lines.push('## 📋 아티팩트 작성 가이드 — 중단 방지');
-  lines.push('아티팩트 HTML이 너무 길면 토큰 한도에 도달하여 중단됩니다. 중단을 최소화하려면:');
-  lines.push('1. ⭐ CSS는 간결하게: 인라인 스타일보다 <style> 블록으로 통합. 불필요한 속성 최소화.');
-  lines.push('2. ⭐ data-embed 태그를 적극 활용하세요. query_game_data 결과를 HTML에 직접 넣는 대신 <div data-embed="query" data-sql="..."></div> 태그 사용.');
-  lines.push('3. 섹션이 6개 이상이면 핵심 섹션에 집중하고, 나머지는 간략히 요약.');
-  lines.push('4. 테이블 데이터: data-embed="query" 사용 권장. 직접 <tr><td> 작성 금지 (토큰 낭비 + 중단 위험).');
-  lines.push('5. ⚠️ HTML이 잘리더라도 시스템이 자동으로 이어쓰기를 요청합니다. 이어쓰기 요청 시 중복 없이 바로 이어서 작성하세요.');
-  lines.push('');
-  lines.push('답변은 반드시 한국어로 작성하세요.');
-  lines.push('단순 나열이 아닌, 의미있는 해석과 함께 친절하게 설명하세요.');
+  lines.push('## SQL 주의');
+  lines.push('AS 별칭은 영문만 (한글 AS 절대 금지). ERD 요청=핵심 테이블 1개만 show_table_schema.');
   lines.push('');
 
   if (schema) {
@@ -1407,58 +914,45 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap,
     lines.push('');
 
     if (schema.refs.length > 0) {
-      lines.push('## 주요 관계');
-      for (const r of schema.refs.slice(0, 40)) {
+      // 관계를 테이블별로 그룹화하여 압축 표시
+      const refsByFrom = new Map<string, string[]>();
+      for (const r of schema.refs) {
         const from = nameById.get(r.fromTable) ?? r.fromTable;
         const to = nameById.get(r.toTable) ?? r.toTable;
-        lines.push(`${from}.${r.fromColumns[0]} → ${to}.${r.toColumns[0]}`);
+        if (!refsByFrom.has(from)) refsByFrom.set(from, []);
+        refsByFrom.get(from)!.push(`${r.fromColumns[0]}→${to}`);
       }
-      if (schema.refs.length > 40) lines.push(`... 외 ${schema.refs.length - 40}개`);
+      lines.push(`## FK 관계 (${schema.refs.length}개)`);
+      let refCount = 0;
+      for (const [from, refs] of refsByFrom) {
+        if (refCount >= 30) { lines.push(`... 외 ${refsByFrom.size - 30}개 테이블`); break; }
+        lines.push(`${from}: ${refs.join(', ')}`);
+        refCount++;
+      }
       lines.push('');
     }
 
     if (schema.enums.length > 0) {
-      lines.push(`## DBML Enum 정의 (총 ${schema.enums.length}개 — SELECT * FROM ENUMS WHERE enum_name='이름' 으로 조회)`);
-      // 최대 30개까지 표시, 각 enum 값도 최대 10개까지
-      for (const e of schema.enums.slice(0, 30)) {
-        const vals = e.values.slice(0, 10).map((v) => v.name).join(', ');
-        const more = e.values.length > 10 ? ` ... +${e.values.length - 10}개` : '';
-        lines.push(`${e.name}: ${vals}${more}`);
-      }
-      if (schema.enums.length > 30) lines.push(`... 외 ${schema.enums.length - 30}개 (ENUMS 가상 테이블로 조회)`);
+      // Enum 이름만 나열 (상세 값은 ENUMS 가상테이블로 조회)
+      const enumNames = schema.enums.slice(0, 50).map(e => e.name).join(', ');
+      const more = schema.enums.length > 50 ? ` ... +${schema.enums.length - 50}개` : '';
+      lines.push(`## Enum (${schema.enums.length}개, 상세: SELECT * FROM ENUMS WHERE enum_name='이름')`);
+      lines.push(enumNames + more);
       lines.push('');
     }
   }
 
-  lines.push('## 로드된 실제 데이터 테이블');
-  for (const [key, { rows }] of tableData) {
-    lines.push(`- ${key}: ${rows.length}행`);
-  }
+  // 테이블 목록을 한 줄로 압축 (테이블명:행수)
+  const tableList = Array.from(tableData).map(([key, { rows }]) => `${key}:${rows.length}`).join(', ');
+  if (tableList) lines.push(`## 데이터 테이블: ${tableList}`);
   lines.push('');
 
   lines.push('## SQL 규칙');
-  lines.push('- 테이블명: 대소문자 무시 (skill, Skill, SKILL 모두 동작)');
-  lines.push('- #접두사 컬럼: 반드시 백틱 → `#char_memo`');
-  lines.push("- 모든 값은 문자열 → WHERE id = '1001'");
-  lines.push('- 숫자 비교: CAST(level AS NUMBER) > 10');
-  lines.push('- 컬럼명은 소문자로 저장됨');
+  lines.push('테이블명 대소문자 무시. #컬럼→백틱(`#col`). 값=문자열(WHERE id=\'1001\'). 숫자비교=CAST(col AS NUMBER). AS별칭=영문만(한글 AS 절대금지).');
   lines.push('');
-  lines.push('## ⛔ SQL 별칭(AS) 절대 금지 규칙 — 반드시 준수');
-  lines.push('- **AS 뒤 별칭은 반드시 영문·숫자·언더스코어만 사용** (예: AS char_name, AS skill_id)');
-  lines.push('- **한글 별칭 절대 금지** → AS 대상, AS 이름, AS 스킬명, AS 효과타입 등 모두 파싱 오류 발생');
-  lines.push('- 잘못된 예: exec_target AS 대상  →  올바른 예: exec_target AS target');
-  lines.push('- 잘못된 예: effect_type AS 효과타입  →  올바른 예: effect_type');
-  lines.push('- 별칭이 필요 없으면 그냥 컬럼명 원본을 그대로 사용할 것');
-  lines.push('');
-  lines.push('## ⭐ DBML 스키마 전용 가상 테이블 — Enum 조회 시 반드시 사용');
+  lines.push('## Enum 조회 (가상테이블 ENUMS)');
   lines.push(VIRTUAL_TABLE_SCHEMA);
-  lines.push('');
-  lines.push('⚠️ Enum 값 조회 방법:');
-  lines.push('  - DBML에 정의된 Enum → SELECT * FROM ENUMS WHERE enum_name = \'EPerkType\'');
-  lines.push('  - 여러 Enum 한 번에  → SELECT * FROM ENUMS WHERE enum_name IN (\'EPerkType\', \'EPassiveEffectType\')');
-  lines.push('  - 전체 Enum 목록     → SELECT DISTINCT enum_name FROM ENUMS ORDER BY enum_name');
-  lines.push('  ⛔ 절대 금지: SELECT * FROM Enum ... (Enum은 alasql 예약어, 파싱 오류 발생)');
-  lines.push('  ⛔ 절대 금지: FROM __u_enum ... (game data 테이블이 없는 경우 오류)');
+  lines.push('SELECT * FROM ENUMS WHERE enum_name=\'이름\'. ⛔ FROM Enum (예약어), FROM __u_enum 절대 금지.');
   lines.push('');
   lines.push('## ⛔ alasql 예약어 테이블명 규칙 — 반드시 준수');
   lines.push('아래 테이블명은 alasql 예약어이므로 SQL에서 직접 사용 불가. 내부명(__u_xxx)으로 쿼리할 것:');
