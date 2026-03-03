@@ -2377,8 +2377,11 @@ export async function sendChatMessage(
       );
 
       if (hasArtifactIntent && !alreadyHasArtifact && userWantsArtifact && allToolCalls.length > 0) {
-        // Claude가 선언만 하고 멈춤 → 재촉
-        messages.push({ role: 'assistant', content: data.content });
+        // Claude가 선언만 하고 멈춤 → 재촉 (빈 text block 제거)
+        const cleanedForRetry = data.content
+          .map(b => b.type === 'text' ? { ...b, text: (b as TextBlock).text.replace(/<<<ARTIFACT_START>>>[\s\S]*?<<<ARTIFACT_END>>>/g, '').trim() } : b)
+          .filter(b => !(b.type === 'text' && !(b as TextBlock).text));
+        messages.push({ role: 'assistant', content: cleanedForRetry.length > 0 ? cleanedForRetry : [{ type: 'text' as const, text: '(계속)' }] });
         messages.push({
           role: 'user',
           content: '지금 바로 <<<ARTIFACT_START>>>로 시작하여 HTML을 텍스트로 출력한 후, <<<ARTIFACT_END>>>로 마무리하고 create_artifact(title=...) 를 호출하세요.',
@@ -2400,13 +2403,16 @@ export async function sendChatMessage(
     // ── 도구 호출 처리 ──
     if (data.stop_reason === 'tool_use') {
       const toolBlocks = data.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
-      // 텍스트 블록에서 마커 + HTML 제거 (히스토리에 저장 시 불필요)
-      const cleanedContent = data.content.map(b => {
-        if (b.type === 'text') {
-          return { ...b, text: (b as TextBlock).text.replace(/<<<ARTIFACT_START>>>[\s\S]*?<<<ARTIFACT_END>>>/g, '').trim() };
-        }
-        return b;
-      });
+      // 텍스트 블록에서 마커 + HTML 제거 (히스토리에 저장 시 불필요) + 빈 text block 제거 (API 오류 방지)
+      const cleanedContent = data.content
+        .map(b => {
+          if (b.type === 'text') {
+            const cleaned = (b as TextBlock).text.replace(/<<<ARTIFACT_START>>>[\s\S]*?<<<ARTIFACT_END>>>/g, '').trim();
+            return { ...b, text: cleaned };
+          }
+          return b;
+        })
+        .filter(b => !(b.type === 'text' && !(b as TextBlock).text));
       messages.push({ role: 'assistant', content: cleanedContent });
 
       const toolResults: { type: 'tool_result'; tool_use_id: string; content: string }[] = [];
