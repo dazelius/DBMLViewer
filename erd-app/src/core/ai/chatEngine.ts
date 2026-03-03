@@ -1941,9 +1941,13 @@ async function streamClaude(
   const contentArray = Object.entries(blocks)
     .sort(([a], [b]) => Number(a) - Number(b))
     .map(([, b]) => {
-      // _inputStr은 내부 누적용 임시 필드 → API 재전송 시 제거
-      const { _inputStr: _unused, ...clean } = b as ContentBlock & { _inputStr?: string };
-      void _unused;
+      // 내부 전용 필드 모두 제거 → Claude API 재전송 시 "Extra inputs" 오류 방지
+      const {
+        _inputStr: _u1, _artCtx: _u2,
+        _deltaN: _u3, _cachedHtml: _u4, _cachedTitle: _u5, _htmlKeyFound: _u6,
+        ...clean
+      } = b as ContentBlock & Record<string, unknown>;
+      void _u1; void _u2; void _u3; void _u4; void _u5; void _u6;
       return clean as ContentBlock;
     });
 
