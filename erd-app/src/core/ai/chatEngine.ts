@@ -2053,6 +2053,22 @@ async function streamClaude(
     await new Promise<void>(r => setTimeout(r, 0));
   }
 
+  // ★ 스트림 종료 시 END 마커 미수신 처리 (max_tokens 초과 또는 네트워크 문제)
+  // _artMarkerState가 'streaming'이면 END 마커가 안 왔지만 축적된 HTML은 유효함
+  // (processTextForArtifact 클로저에서 _artMarkerState를 변경하므로 타입 단언 필요)
+  if ((_artMarkerState as string) === 'streaming' && _artStreamedHtml.length > 0) {
+    // 보류 중인 텍스트도 HTML에 추가
+    if (_artPendingText) {
+      _artStreamedHtml += _artPendingText;
+      _artPendingText = '';
+    }
+    _artMarkerState = 'done';
+    console.log(`[ArtTextStream] ⚠️ 스트림 종료 but <<<ARTIFACT_END>>> 미수신 → HTML ${_artStreamedHtml.length}자 강제 확정`);
+    if (onArtifactProgress) {
+      onArtifactProgress(_artStreamedHtml, '', _artStreamedHtml.length, '');
+    }
+  }
+
   const contentArray = Object.entries(blocks)
     .sort(([a], [b]) => Number(a) - Number(b))
     .map(([, b]) => {
@@ -2376,7 +2392,24 @@ export async function sendChatMessage(
         messages.find(m => m.role === 'user')?.content as string ?? ''
       );
 
-      if (hasArtifactIntent && !alreadyHasArtifact && userWantsArtifact && allToolCalls.length > 0) {
+      // ★ 텍스트 마커로 HTML이 스트리밍됐지만 create_artifact를 호출하지 않고 end_turn된 경우 → 자동 아티팩트 생성
+      if (streamedArtifactHtml && streamedArtifactHtml.length >= 10 && !alreadyHasArtifact) {
+        console.log(`[Chat] ⚡ 자동 아티팩트 생성: HTML ${streamedArtifactHtml.length}자 (create_artifact 미호출)`);
+        const autoTitle = text.match(/^#+\s*(.+)/m)?.[1]
+          ?? text.match(/^(.{1,50})/)?.[1]?.replace(/\s+/g, ' ').trim()
+          ?? '문서';
+        const autoTc: ArtifactResult = {
+          kind: 'artifact',
+          title: autoTitle,
+          description: '',
+          html: streamedArtifactHtml,
+          duration: 0,
+        };
+        allToolCalls.push(autoTc);
+        onToolCall?.(autoTc, allToolCalls.length - 1);
+      }
+
+      if (hasArtifactIntent && !alreadyHasArtifact && !streamedArtifactHtml && userWantsArtifact && allToolCalls.length > 0) {
         // Claude가 선언만 하고 멈춤 → 재촉 (빈 text block 제거)
         const cleanedForRetry = data.content
           .map(b => b.type === 'text' ? { ...b, text: (b as TextBlock).text.replace(/<<<ARTIFACT_START>>>[\s\S]*?<<<ARTIFACT_END>>>/g, '').trim() } : b)
@@ -3750,6 +3783,15 @@ function showTab(id){
       .map((b) => b.text)
       .join('\n');
 
+    // ★ max_tokens로 잘렸지만 텍스트 마커로 HTML이 스트리밍된 경우 → 자동 아티팩트 생성
+    if (streamedArtifactHtml && streamedArtifactHtml.length >= 10 && !allToolCalls.some(tc => tc.kind === 'artifact')) {
+      console.log(`[Chat] ⚡ max_tokens 자동 아티팩트 생성: HTML ${streamedArtifactHtml.length}자`);
+      const autoTitle = truncatedText.match(/^#+\s*(.+)/m)?.[1] ?? '문서';
+      const autoTc: ArtifactResult = { kind: 'artifact', title: autoTitle, description: '', html: streamedArtifactHtml, duration: 0 };
+      allToolCalls.push(autoTc);
+      onToolCall?.(autoTc, allToolCalls.length - 1);
+    }
+
     const hasFetchedData = allToolCalls.some(
       (tc) => tc.kind === 'data_query' || tc.kind === 'schema_card' || tc.kind === 'character_profile',
     );
@@ -3785,9 +3827,8 @@ function showTab(id){
         messages.push({
           role: 'user',
           content:
-            '수집한 데이터를 바탕으로 즉시 create_artifact 툴을 호출하여 HTML 문서를 생성해주세요. ' +
-            '추가 데이터 조회 없이 현재 데이터만으로 바로 아티팩트를 만들어주세요. ' +
-            '긴 HTML보다는 핵심 내용을 간결하게 담아 토큰을 아껴주세요.',
+            '수집한 데이터를 바탕으로 <<<ARTIFACT_START>>>HTML<<<ARTIFACT_END>>> 형식으로 HTML을 먼저 출력한 후, create_artifact(title=...) 를 호출하세요. ' +
+            '추가 데이터 조회 없이 현재 데이터만으로 바로 만들어주세요. 핵심 내용을 간결하게 500줄 이내로.',
         });
       } else {
         // 일반 텍스트 잘림 → 누적 후 자동 계속
