@@ -103,6 +103,39 @@ function parseAdfField(field: unknown): string {
   return String(field);
 }
 
+/**
+ * 채팅 텍스트에서 HTML 태그/스타일/스크립트를 제거하여 깨끗한 텍스트만 반환.
+ * 코드 블록(`...`) 안의 HTML은 보존.
+ * 연속된 빈 줄은 하나로 압축.
+ */
+function stripHtmlFromChatText(text: string): string {
+  if (!text) return text;
+  // HTML 태그가 거의 없으면 빠른 경로
+  if (!/< *[a-zA-Z/!]/.test(text)) return text;
+
+  // 코드 블록을 보존하면서 처리
+  const parts = text.split(/(```[\s\S]*?```|`[^`]+`)/g);
+  const cleaned = parts.map((part, idx) => {
+    // 홀수 인덱스는 코드 블록/인라인 코드 → 보존
+    if (idx % 2 === 1) return part;
+    // <style>...</style>, <script>...</script> 통째로 제거
+    let t = part.replace(/<style[\s\S]*?<\/style>/gi, '');
+    t = t.replace(/<script[\s\S]*?<\/script>/gi, '');
+    // 자기종결 태그 (<br/>, <hr/>, <img .../>) 제거
+    t = t.replace(/<[a-zA-Z][^>]*\/>/g, '');
+    // 블록 태그를 줄바꿈으로 교체 (내용은 보존)
+    t = t.replace(/<\/?(?:div|p|li|ul|ol|tr|td|th|table|thead|tbody|section|nav|header|footer|article|aside|h[1-6]|blockquote|pre|hr|br|dd|dt|dl|figcaption|figure|main|details|summary)[^>]*>/gi, '\n');
+    // 나머지 인라인 태그 제거 (span, a, strong, em, code, b, i 등)
+    t = t.replace(/<\/?[a-zA-Z][^>]*>/g, '');
+    // HTML 엔티티 복원
+    t = t.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&rarr;/g, '→').replace(/&larr;/g, '←');
+    return t;
+  }).join('');
+
+  // 연속 빈 줄 정리
+  return cleaned.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 // ── 타입 정의 ────────────────────────────────────────────────────────────────
 
 export interface TableColumnInfo {
@@ -1324,6 +1357,15 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap,
   lines.push('   - embed 태그(data-embed="...")는 절대 삭제/교체하지 말고 그대로 보존');
   lines.push('4. 수정 범위가 넓으면 여러 패치로 분할하되, 각 패치의 find는 반드시 원본과 완전히 일치해야 합니다.');
   lines.push('');
+  lines.push('## ⛔ 채팅 텍스트에 HTML 출력 절대 금지 — 필수 규칙');
+  lines.push('채팅 응답(text_delta)에는 HTML 코드를 절대 포함하지 마세요. 모든 HTML은 오직 다음 방법으로만 전달:');
+  lines.push('  - 새 문서 생성: <<<ARTIFACT_START>>> ... <<<ARTIFACT_END>>> 마커 안에 HTML 출력 후 create_artifact 호출');
+  lines.push('  - 기존 문서 수정: patch_artifact 툴의 find/replace 파라미터로만 전달');
+  lines.push('채팅에서는 "아티팩트를 생성합니다", "섹션을 추가합니다" 등 간결한 설명만 작성하세요.');
+  lines.push('⛔ 금지 예시: 채팅에 <div>, <li>, <table>, <style>, <h1> 등 HTML 태그를 직접 쓰는 것');
+  lines.push('⛔ 금지 예시: 아티팩트 내용을 채팅에서 반복하거나 일부를 보여주는 것');
+  lines.push('✅ 올바른 예시: "VFX 기반 구조 분석 보고서를 작성합니다." 한 줄 + 즉시 <<<ARTIFACT_START>>> 시작');
+  lines.push('');
   lines.push('답변은 반드시 한국어로 작성하세요.');
   lines.push('단순 나열이 아닌, 의미있는 해석과 함께 친절하게 설명하세요.');
   lines.push('');
@@ -2368,8 +2410,10 @@ export async function sendChatMessage(
               firstDelta = false;
               onThinkingUpdate?.({ type: 'streaming', iteration: i + 1, maxIterations: MAX_ITERATIONS, detail: '응답 생성 중', timestamp: Date.now() });
             }
-            // 자동 계속 중이면 누적 텍스트 기준으로 콜백
-            onTextDelta?.(delta, continuationCount > 0 ? totalText + accumulatedText : accumulatedText);
+            // 채팅에 표시할 텍스트에서 HTML 태그 제거 (아티팩트 HTML이 채팅에 노출되지 않도록)
+            const cleanDelta = stripHtmlFromChatText(delta);
+            const fullClean = continuationCount > 0 ? totalText + stripHtmlFromChatText(accumulatedText) : stripHtmlFromChatText(accumulatedText);
+            if (cleanDelta) onTextDelta?.(cleanDelta, fullClean);
           },
           onArtifactProgress,
         );
@@ -2418,9 +2462,11 @@ export async function sendChatMessage(
         .join('\n');
       // 텍스트에서 아티팩트 마커 + HTML 제거 (사용자에게 보이지 않도록)
       text = text.replace(/<<<ARTIFACT_START>>>[\s\S]*?<<<ARTIFACT_END>>>/g, '').trim();
+      // 채팅에 남은 HTML 태그도 제거
+      text = stripHtmlFromChatText(text);
 
       // 자동 계속 중이었으면 이전 텍스트와 합치기
-      const finalText = continuationCount > 0 ? totalText + text : text;
+      const finalText = continuationCount > 0 ? stripHtmlFromChatText(totalText) + text : text;
 
       // 아티팩트 선언만 하고 툴을 호출하지 않은 경우 → 강제로 재요청
       const ARTIFACT_INTENT = /생성하겠습니다|만들겠습니다|작성하겠습니다|뽑겠습니다|정리하겠습니다/;
@@ -3886,7 +3932,7 @@ function showTab(id){
 
     // 마지막 이터레이션에서도 잘린 경우 → rawMessages 저장하여 '계속해줘' 지원
     pushAssistantWithOrphanFix(messages);
-    const finalTruncatedText = continuationCount > 0 ? totalText + truncatedText : truncatedText;
+    const finalTruncatedText = stripHtmlFromChatText(continuationCount > 0 ? totalText + truncatedText : truncatedText);
     console.log('[Chat] max_tokens: 최대 이터레이션 도달, rawMessages 저장');
     const tokenUsage: TokenUsageSummary = {
       iterations: tokenIterations,
