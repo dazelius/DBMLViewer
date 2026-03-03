@@ -1738,15 +1738,50 @@ async function streamClaude(
   onTextDelta: (delta: string) => void,
   onArtifactProgress?: (html: string, title: string, charCount: number, rawJson?: string) => void,
 ): Promise<ClaudeResponse & { usage?: TokenUsage }> {
-  const response = await fetch('/api/claude', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-TM-Knowledge': 'injected' },
-    body: JSON.stringify({ ...requestBody, stream: true }),
-  });
+  // ── 자동 재시도 (529 Overloaded / 네트워크 오류) ──
+  const MAX_RETRIES = 3;
+  const RETRY_DELAYS = [3000, 8000, 15000]; // 3초, 8초, 15초
+  let response!: Response;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      response = await fetch('/api/claude', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-TM-Knowledge': 'injected' },
+        body: JSON.stringify({ ...requestBody, stream: true }),
+      });
+
+      if (response.ok) break; // 성공
+
+      if (response.status === 529 || response.status === 503 || response.status === 502) {
+        if (attempt < MAX_RETRIES) {
+          const delay = RETRY_DELAYS[attempt];
+          console.warn(`[streamClaude] ⚠️ ${response.status} Overloaded — ${delay / 1000}초 후 재시도 (${attempt + 1}/${MAX_RETRIES})`);
+          onTextDelta(`\n⏳ 서버 과부하 (${response.status}) — ${delay / 1000}초 후 자동 재시도합니다... (${attempt + 1}/${MAX_RETRIES})\n`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+      }
+
+      // 재시도 불가능한 오류
+      const err = await response.text();
+      throw new Error(`Claude API 오류 (${response.status}): ${err}`);
+    } catch (e) {
+      // 네트워크 오류 (fetch 자체 실패)
+      if (e instanceof TypeError && attempt < MAX_RETRIES) {
+        const delay = RETRY_DELAYS[attempt];
+        console.warn(`[streamClaude] ⚠️ 네트워크 오류 — ${delay / 1000}초 후 재시도 (${attempt + 1}/${MAX_RETRIES})`);
+        onTextDelta(`\n⏳ 네트워크 오류 — ${delay / 1000}초 후 자동 재시도합니다... (${attempt + 1}/${MAX_RETRIES})\n`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw e;
+    }
+  }
 
   if (!response.ok) {
     const err = await response.text();
-    if (response.status === 529) throw new Error('Claude 서버가 일시적으로 과부하 상태입니다. 잠시 후 다시 시도해 주세요.');
+    if (response.status === 529) throw new Error('Claude 서버가 일시적으로 과부하 상태입니다. 3회 재시도 후에도 실패했습니다. 잠시 후 다시 시도해 주세요.');
     throw new Error(`Claude API 오류 (${response.status}): ${err}`);
   }
 
