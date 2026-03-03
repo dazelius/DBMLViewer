@@ -2307,7 +2307,7 @@ function colorizeHtmlLine(line: string): React.ReactNode {
  * 모듈 레벨 아티팩트 스트림 버퍼 — React를 완전히 우회하여 iframe에 직접 전달.
  * onArtifactProgress 콜백 → 여기에 write → ArtifactSidePanel RAF 루프 → 여기서 read → iframe body 직접 갱신
  */
-const _artBuf = { html: '', title: '', charCount: 0, ver: 0 };
+const _artBuf = { html: '', title: '', charCount: 0, ver: 0, rawJson: '' };
 
 /**
  * 스트리밍 iframe 기반 HTML srcdoc.
@@ -2668,7 +2668,9 @@ function ArtifactSidePanel({
               if (spinnerRef.current) spinnerRef.current.style.display = 'none';
               if (codePreRef.current) {
                 codePreRef.current.style.display = '';
-                const lines = (_artBuf.html || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`).split('\n');
+                // html이 있으면 HTML 코드 표시, 없으면 수신 중인 raw JSON 표시
+                const codeSource = _artBuf.html || _artBuf.rawJson || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`;
+                const lines = codeSource.split('\n');
                 const visible = lines.slice(-16);
                 const startNo = Math.max(1, lines.length - 15);
                 let h = '';
@@ -5963,7 +5965,7 @@ export default function ChatPage() {
     let _lastArtifactLog = 0;
     let _artifactPanelOpened = false;
     // 스트림 시작 시 버퍼 리셋
-    _artBuf.html = ''; _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0;
+    _artBuf.html = ''; _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0; _artBuf.rawJson = '';
 
     try {
       const { content, toolCalls, rawMessages, tokenUsage } = await sendChatMessage(
@@ -5991,12 +5993,13 @@ export default function ChatPage() {
             ),
           );
         },
-        (html, title, charCount) => {
+        (html, title, charCount, rawJson) => {
           // ★ 핵심: 모듈 레벨 버퍼에 직접 쓰기 (React state 업데이트 0회)
           // ArtifactSidePanel의 RAF 루프가 이 버퍼에서 직접 읽어 iframe body를 갱신
           _artBuf.html = html;
           _artBuf.title = title;
           _artBuf.charCount = charCount;
+          _artBuf.rawJson = rawJson ?? '';
           _artBuf.ver++;
 
           // 로깅 스로틀 (디버그용)

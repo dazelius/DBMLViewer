@@ -886,29 +886,31 @@ const TOOLS = [
       '수집된 데이터를 기반으로 완전한 HTML 문서(보고서, 캐릭터 시트, 밸런스 표, 릴리즈 노트 등)를 생성합니다. ' +
       '사용자가 "정리해줘", "문서로 만들어줘", "보고서", "뽑아줘", "시트 만들어줘" 등을 요청할 때 호출하세요. ' +
       '먼저 query_game_data, show_table_schema 등으로 필요한 데이터를 모두 수집한 후 이 툴을 마지막에 호출하세요. ' +
-      '⚠️ [아티팩트 수정 요청] 메시지에는 이 툴 대신 patch_artifact를 사용하세요.',
+      '⚠️ [아티팩트 수정 요청] 메시지에는 이 툴 대신 patch_artifact를 사용하세요. ' +
+      '⚠️ JSON 필드 순서 반드시 준수: html → title → description (html을 가장 먼저 생성해야 실시간 스트리밍이 됩니다).',
     input_schema: {
       type: 'object',
       properties: {
-        title: {
-          type: 'string',
-          description: '문서 제목 (예: "프리드웬 캐릭터 시트", "스킬 밸런스 보고서")',
-        },
-        description: {
-          type: 'string',
-          description: '생성된 문서에 대한 한 줄 설명',
-        },
         html: {
           type: 'string',
           description:
+            '⚠️ 이 필드를 가장 먼저 생성하세요! (실시간 스트리밍용) ' +
             '<body> 태그 안에 들어갈 HTML 내용만 작성하세요 (<!DOCTYPE html>, <html>, <head>, <body> 태그 불필요). ' +
             '필요한 CSS는 <style> 태그로 html 값 안에 포함 가능. ' +
             '이미지: 경로 알면 /api/images/file?path=Texture/폴더/파일명.png, 불확실하면 /api/images/smart?name=파일명.png (폴더 몰라도 자동 검색). ' +
             '다크 테마(--bg:#0f1117, --text:#e2e8f0, --accent:#6366f1), 한국어, 표/카드 레이아웃. ' +
             '가능한 간결하게 핵심 정보만 담아 500줄 이내로 작성하세요.',
         },
+        title: {
+          type: 'string',
+          description: '문서 제목 (예: "프리드웬 캐릭터 시트", "스킬 밸런스 보고서")',
+        },
+        description: {
+          type: 'string',
+          description: '생성된 문서에 대한 한 줄 설명 (선택사항)',
+        },
       },
-      required: ['title', 'description', 'html'],
+      required: ['html', 'title'],
     },
   },
   // ── Jira / Confluence 툴 ─────────────────────────────────────────────────
@@ -1617,7 +1619,7 @@ export interface TokenUsage {
 async function streamClaude(
   requestBody: object,
   onTextDelta: (delta: string) => void,
-  onArtifactProgress?: (html: string, title: string, charCount: number) => void,
+  onArtifactProgress?: (html: string, title: string, charCount: number, rawJson?: string) => void,
 ): Promise<ClaudeResponse & { usage?: TokenUsage }> {
   const response = await fetch('/api/claude', {
     method: 'POST',
@@ -1703,7 +1705,7 @@ async function streamClaude(
             // create_artifact / patch_artifact 블록 시작 즉시 패널 오픈
             if (((cb as ToolUseBlock).name === 'create_artifact' || (cb as ToolUseBlock).name === 'patch_artifact') && onArtifactProgress) {
               console.log(`[streamClaude] ⚡ ${(cb as ToolUseBlock).name} content_block_start (패널 오픈)`);
-              onArtifactProgress('', '', 0);
+              onArtifactProgress('', '', 0, '');
             }
           } else {
             blocks[idx] = { ...cb } as ContentBlock;
@@ -1733,7 +1735,7 @@ async function streamClaude(
               const titleMatch = tb._inputStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)/) ;
               const liveTitle = parsed?.title || (titleMatch ? titleMatch[1].replace(/\\"/g, '"') : '');
               // ⚠️ charCount는 항상 전체 JSON 길이 사용 → UI가 데이터 수신 중임을 실시간 표시
-              onArtifactProgress(parsed?.html ?? '', liveTitle, tb._inputStr.length);
+              onArtifactProgress(parsed?.html ?? '', liveTitle, tb._inputStr.length, tb._inputStr);
             }
 
             // patch_artifact: JSON 스트리밍 진행 상태 전달
@@ -1886,7 +1888,7 @@ export async function sendChatMessage(
   tableData: TableDataMap,
   onToolCall?: (tc: ToolCallResult, index: number) => void,
   onTextDelta?: (delta: string, fullText: string) => void,
-  onArtifactProgress?: (html: string, title: string, charCount: number) => void,
+  onArtifactProgress?: (html: string, title: string, charCount: number, rawJson?: string) => void,
   onThinkingUpdate?: (step: ThinkingStep) => void,
   onTokenUsage?: (usage: TokenUsageSummary) => void,
 ): Promise<{ content: string; toolCalls: ToolCallResult[]; rawMessages?: ClaudeMsg[]; tokenUsage?: TokenUsageSummary }> {
