@@ -4678,6 +4678,43 @@ function serverSafeInternalName(name: string): string {
 function buildServerSystemPrompt(): string {
   const lines: string[] = []
 
+  // ── 널리지 시스템 (최상단) ──
+  try {
+    const knDir = join(process.cwd(), 'knowledge')
+    if (existsSync(knDir)) {
+      const files = readdirSync(knDir).filter(f => f.endsWith('.md'))
+      if (files.length > 0) {
+        lines.push('[널리지(Knowledge) 시스템 규칙 — 반드시 준수]')
+        lines.push('- ⭐⭐⭐ 아래에 저장된 널리지의 전체 내용이 포함되어 있습니다. 답변 시 반드시 참고하세요!')
+        lines.push('- 널리지 내용은 사용자가 직접 저장한 중요 정보이므로, 모든 답변에서 관련 널리지를 활용해야 합니다.')
+        lines.push('- 널리지를 활용할 때는 어떤 널리지(파일명)를 참고했는지 자연스럽게 언급해주세요.')
+        lines.push('')
+        lines.push(`[현재 저장된 널리지: ${files.length}개 파일] ──────────────────────`)
+        let totalSize = 0
+        for (const f of files) {
+          const fPath = join(knDir, f)
+          const stat = statSync(fPath)
+          if (totalSize + stat.size > 150 * 1024) break
+          let content = readFileSync(fPath, 'utf-8')
+          if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
+          if (content.length > 50 * 1024) content = content.slice(0, 50 * 1024) + '\n...(잘림)'
+          const name = f.replace('.md', '')
+          const sizeKB = Math.round(stat.size / 1024 * 10) / 10
+          lines.push('')
+          lines.push(`━━━ 📌 ${name} (${sizeKB}KB) ━━━`)
+          lines.push(content)
+          lines.push(`━━━ END: ${name} ━━━`)
+          totalSize += stat.size
+        }
+        lines.push('──────────────────────────────────────────────────')
+        lines.push('')
+        console.log(`[ChatAPI] 서버 시스템 프롬프트에 널리지 ${files.length}개 포함`)
+      }
+    }
+  } catch (e) {
+    console.warn('[ChatAPI] 널리지 로드 실패 (무시):', e)
+  }
+
   // ── 역할 및 도구 설명 ──
   lines.push('당신은 이 게임의 모든 데이터를 꿰뚫고 있는 전문 게임 데이터 어시스턴트입니다.')
   lines.push('사용자의 질문에 답하기 위해 아래 도구들을 적극 활용하세요:')
@@ -4909,7 +4946,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
 
             const data = await serverStreamClaude(
               apiKey,
-              { model: 'claude-sonnet-4-20250514', max_tokens: 8192, system: systemPrompt, tools: API_TOOLS, messages },
+              { model: 'claude-opus-4-6', max_tokens: 8192, system: systemPrompt, tools: API_TOOLS, messages },
               res,
               () => {}, // tool_use 처리는 아래에서
             )
@@ -5005,7 +5042,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       try {
         for (let i = 0; i < MAX_ITERATIONS; i++) {
           const data = await serverCallClaude(apiKey, {
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-opus-4-6',
             max_tokens: 8192,
             system: systemPrompt,
             tools: API_TOOLS,
@@ -5024,7 +5061,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
               session_id: session.id,
               content: text,
               tool_calls: allToolCalls,
-              model: 'claude-sonnet-4-20250514',
+              model: 'claude-opus-4-6',
             })
             return
           }
@@ -5093,7 +5130,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
           session_id: session.id,
           content: finalText || '(응답 생성 완료 — 도구 호출 결과를 tool_calls에서 확인하세요)',
           tool_calls: allToolCalls,
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-opus-4-6',
         })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -5171,7 +5208,7 @@ td{padding:8px 12px;border:1px solid #334155;font-size:13px}
   "tool_calls": [
     { "tool": "query_game_data", "input": {"sql": "SELECT COUNT(*) FROM character"}, "result": {...} }
   ],
-  "model": "claude-sonnet-4-20250514"
+  "model": "claude-opus-4-6"
 }</code></pre>
   <h3>Response (SSE 스트리밍, stream=true)</h3>
 <pre><code>event: session
