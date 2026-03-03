@@ -4880,11 +4880,21 @@ function KnowledgeBrowser() {
     setPreviewLoading(false);
   };
 
+  // 삭제는 Shift+클릭 + "삭제확인" 타이핑 필수
   const handleDelete = async (name: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm(`"${name}" 널리지를 삭제하시겠습니까?`)) return;
+    if (!e.shiftKey) {
+      alert('널리지 삭제는 Shift+클릭으로만 가능합니다.');
+      return;
+    }
+    const typed = prompt(`⚠️ "${name}" 널리지를 정말 삭제하시겠습니까?\n\n삭제하려면 아래에 "삭제확인"을 정확히 입력하세요:`);
+    if (typed !== '삭제확인') {
+      if (typed !== null) alert('"삭제확인"이 일치하지 않아 취소되었습니다.');
+      return;
+    }
     try {
-      await fetch(`/api/knowledge/delete?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const resp = await fetch(`/api/knowledge/delete?name=${encodeURIComponent(name)}&confirm=삭제확인`, { method: 'DELETE' });
+      if (!resp.ok) { const d = await resp.json().catch(() => ({})); alert((d as { error?: string }).error || '삭제 실패'); return; }
       setItems(prev => prev.filter(it => it.name !== name));
       if (previewName === name) setPreviewName(null);
     } catch { /* ignore */ }
@@ -4945,13 +4955,13 @@ function KnowledgeBrowser() {
               <span className="text-[9px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
                 {it.sizeKB}KB
               </span>
-              {/* 삭제 버튼 */}
+              {/* 삭제: Shift+클릭 전용 (숨겨진 잠금 아이콘) */}
               <span
                 onClick={(e) => handleDelete(it.name, e)}
-                className="text-[10px] px-1 py-0.5 rounded opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-red-500/10 cursor-pointer transition-opacity"
-                style={{ color: '#f87171' }}
-                title="삭제"
-              >✕</span>
+                className="text-[9px] px-0.5 rounded opacity-0 group-hover:opacity-30 hover:!opacity-60 cursor-pointer transition-opacity select-none"
+                style={{ color: '#6b7280' }}
+                title="Shift+클릭으로 삭제"
+              >🔒</span>
             </button>
           ))}
 

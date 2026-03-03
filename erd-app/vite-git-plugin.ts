@@ -1366,15 +1366,22 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
-    // DELETE /api/knowledge/delete?name=... — 널리지 삭제
+    // DELETE /api/knowledge/delete?name=...&confirm=삭제확인 — 널리지 삭제 (보호됨)
     if (req.url?.startsWith('/api/knowledge/delete') && req.method === 'DELETE') {
       ensureKnowledgeDir()
       const url = new URL(req.url, 'http://localhost')
       const name = (url.searchParams.get('name') || '').replace(/[^a-zA-Z0-9_\-\uAC00-\uD7AF\u3131-\u3163 ]/g, '').trim()
+      const confirmToken = url.searchParams.get('confirm') || ''
       if (!name) { sendJson(res, 400, { error: '"name" query param required' }); return }
+      // ── 삭제 보호: "삭제확인" 토큰 필수 ──
+      if (confirmToken !== '삭제확인') {
+        sendJson(res, 403, { error: '널리지 삭제는 보호되어 있습니다. confirm=삭제확인 파라미터가 필요합니다.' })
+        return
+      }
       const filePath = join(KNOWLEDGE_DIR, `${name}.md`)
       if (!existsSync(filePath)) { sendJson(res, 404, { error: `Knowledge '${name}' not found` }); return }
       unlinkSync(filePath)
+      console.log(`[Knowledge] ⚠️ 삭제됨: ${name} (confirm 토큰 검증 완료)`)
       sendJson(res, 200, { deleted: true, name })
       // 백그라운드 git push — 삭제도 다른 인스턴스와 자동 공유
       knowledgeGitPush('delete', name)
