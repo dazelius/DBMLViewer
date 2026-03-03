@@ -2081,8 +2081,57 @@ export async function sendChatMessage(
 
   const systemPrompt = buildSystemPrompt(effectiveSchema, tableData, knowledgeEntries);
 
+  // ── 메시지 크기 기반 히스토리 트리밍 (200K 토큰 ≈ 600K chars 제한) ──
+  // 1자 ≈ 0.33 토큰 기준, 시스템 프롬프트 + 여유분 확보
+  const MAX_MSG_CHARS = 500_000; // ~166K 토큰 (시스템 프롬프트 + 출력 여유 위해)
+
+  function estimateMsgChars(msgs: ClaudeMsg[]): number {
+    let total = 0;
+    for (const m of msgs) {
+      if (typeof m.content === 'string') { total += m.content.length; continue; }
+      if (Array.isArray(m.content)) {
+        for (const b of m.content as Array<Record<string, unknown>>) {
+          if (b.type === 'text' && typeof b.text === 'string') total += (b.text as string).length;
+          else if (b.type === 'tool_use' && b.input) total += JSON.stringify(b.input).length;
+          else if (b.type === 'tool_result') {
+            if (typeof b.content === 'string') total += (b.content as string).length;
+            else if (Array.isArray(b.content)) total += JSON.stringify(b.content).length;
+          }
+          else total += 200; // 기타 블록
+        }
+      }
+    }
+    return total;
+  }
+
+  // 큰 tool_result 내용을 압축 (HTML 아티팩트 등)
+  function compressLargeResults(msgs: ClaudeMsg[]): ClaudeMsg[] {
+    return msgs.map(m => {
+      if (m.role !== 'user' || !Array.isArray(m.content)) return m;
+      const content = (m.content as Array<Record<string, unknown>>).map(b => {
+        if (b.type === 'tool_result' && typeof b.content === 'string' && (b.content as string).length > 8000) {
+          return { ...b, content: (b.content as string).slice(0, 2000) + '\n...(결과 압축됨, 원본 ' + (b.content as string).length + '자)' };
+        }
+        return b;
+      });
+      return { ...m, content } as ClaudeMsg;
+    });
+  }
+
+  let rawHistoryMsgs = historyToMessages(history);
+  // 큰 tool_result 먼저 압축
+  rawHistoryMsgs = compressLargeResults(rawHistoryMsgs);
+  // 그래도 초과하면 오래된 메시지부터 제거
+  while (rawHistoryMsgs.length > 2 && estimateMsgChars(rawHistoryMsgs) > MAX_MSG_CHARS) {
+    rawHistoryMsgs = rawHistoryMsgs.slice(2); // 앞에서 2개씩 제거 (user + assistant 쌍)
+  }
+
+  const sysChars = systemPrompt.length;
+  const msgChars = estimateMsgChars(rawHistoryMsgs);
+  console.log(`[Chat] 토큰 추정: system=${Math.round(sysChars/3)}t, history=${Math.round(msgChars/3)}t, 합계≈${Math.round((sysChars+msgChars)/3)}t (${rawHistoryMsgs.length}개 메시지)`);
+
   const messages: ClaudeMsg[] = [
-    ...historyToMessages(history),
+    ...rawHistoryMsgs,
     { role: 'user', content: userMessage },
   ];
 
