@@ -3454,7 +3454,7 @@ function serverStreamClaude(
   apiKey: string,
   body: object,
   res: ServerResponse,
-  onToolUse: (blocks: Array<{ type: string; id: string; name: string; input: Record<string, unknown> }>) => void,
+  _onToolUse: (blocks: Array<{ type: string; id: string; name: string; input: Record<string, unknown> }>) => void,
 ): Promise<{ content: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>; stop_reason: string }> {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({ ...body, stream: true })

@@ -186,7 +186,7 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
     builtRef.current = true;
     const el = containerRef.current;
 
-    const graph = ForceGraph3D()(el)
+    const graph = (ForceGraph3D as any)()(el)
       .graphData({ nodes: JSON.parse(JSON.stringify(graphData.nodes)), links: JSON.parse(JSON.stringify(graphData.links)) })
       .backgroundColor('rgba(0,0,0,0)')
       .showNavInfo(false)
@@ -320,8 +320,8 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
             }
           }
           if (child instanceof SpriteText) {
-            child.color = isActive ? C[type as NT] ?? '#fff' : 'rgba(255,255,255,0.03)';
-            if (isActive) child.fontWeight = 'bold';
+            (child as any).color = isActive ? C[type as NT] ?? '#fff' : 'rgba(255,255,255,0.03)';
+            if (isActive) (child as any).fontWeight = 'bold';
           }
         });
       });
@@ -391,8 +391,8 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
             (child.material as THREE.SpriteMaterial).opacity = 1;
           }
           if (child instanceof SpriteText) {
-            child.color = C[type] ?? '#aaa';
-            child.fontWeight = 'normal';
+            (child as any).color = C[type] ?? '#aaa';
+            (child as any).fontWeight = 'normal';
           }
         });
       });

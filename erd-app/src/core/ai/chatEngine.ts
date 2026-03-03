@@ -1398,6 +1398,12 @@ type ContentBlock = TextBlock | ToolUseBlock;
 interface ClaudeResponse {
   content: ContentBlock[];
   stop_reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence';
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
 }
 
 export type ClaudeMsg =

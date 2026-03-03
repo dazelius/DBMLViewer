@@ -159,8 +159,8 @@ export default function GraphPage() {
     const tableNames: string[] = [];
     if (schema && schema.tables.length > 0) {
       for (const t of schema.tables) {
-        const rows = tableData.get(t.name.toLowerCase())?.length ?? 0;
-        add({ id: `table:${t.name}`, name: t.name, label: t.name, type: 'table', group: t.groupName, val: Math.max(1.2, Math.log10(rows + 1) * 1.5) });
+        const rows = tableData.get(t.name.toLowerCase())?.rows?.length ?? 0;
+        add({ id: `table:${t.name}`, name: t.name, label: t.name, type: 'table', group: t.groupName ?? undefined, val: Math.max(1.2, Math.log10(rows + 1) * 1.5) });
         tableNames.push(t.name);
       }
       for (const r of schema.refs) {
@@ -253,7 +253,7 @@ export default function GraphPage() {
     el.innerHTML = '';
     nodeObjectsRef.current.clear();
 
-    const graph = ForceGraph3D()(el)
+    const graph = (ForceGraph3D as any)()(el)
       .graphData({ nodes: JSON.parse(JSON.stringify(fNodes)), links: JSON.parse(JSON.stringify(fLinks)) })
       .backgroundColor('#05060a')
       .showNavInfo(false)
@@ -363,7 +363,7 @@ export default function GraphPage() {
             (child.material as THREE.SpriteMaterial).opacity = isActive ? 1 : DIM_OPACITY;
           }
           if (child instanceof SpriteText) {
-            child.color = isActive ? ACTIVE_GLOW : 'rgba(255,255,255,0.05)';
+            (child as any).color = isActive ? ACTIVE_GLOW : 'rgba(255,255,255,0.05)';
           }
         });
       });
@@ -431,7 +431,7 @@ export default function GraphPage() {
             (child.material as THREE.SpriteMaterial).opacity = 1;
           }
           if (child instanceof SpriteText) {
-            child.color = C[type] ?? '#aaa';
+            (child as any).color = C[type] ?? '#aaa';
           }
         });
       });
