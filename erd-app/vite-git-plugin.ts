@@ -1050,13 +1050,58 @@ function createGitMiddleware(options: GitPluginOptions) {
 
     // ── /api/knowledge/* : 사용자 지식(Knowledge) CRUD ─────────────────────────
     const KNOWLEDGE_DIR = join(process.cwd(), 'knowledge')
+    const KNOWLEDGE_GIT_CWD = join(process.cwd(), '..') // git repo root (DBMLViewer/)
     function ensureKnowledgeDir() {
       if (!existsSync(KNOWLEDGE_DIR)) mkdirSync(KNOWLEDGE_DIR, { recursive: true })
+    }
+
+    // ── 널리지 git 동기화 헬퍼 ──
+    let _knGitPullTs = 0 // 마지막 git pull 시간 (ms)
+    const KN_PULL_INTERVAL = 30_000 // 30초마다 pull
+
+    /** 백그라운드 git pull (knowledge 폴더만, 응답 블록 안 함) */
+    function knowledgeGitPull() {
+      const now = Date.now()
+      if (now - _knGitPullTs < KN_PULL_INTERVAL) return // 쿨다운
+      _knGitPullTs = now
+      execFile('git', ['pull', '--no-rebase', '--no-edit'], { cwd: KNOWLEDGE_GIT_CWD, timeout: 15_000 }, (err) => {
+        if (err) console.warn('[Knowledge] git pull failed (non-blocking):', (err as any).stderr || err.message)
+        else console.log('[Knowledge] git pull 완료 — 최신 널리지 동기화됨')
+      })
+    }
+
+    /** 백그라운드 git add+commit+push (knowledge 변경 후 자동 공유) */
+    function knowledgeGitPush(action: string, fileName: string) {
+      const relPath = `erd-app/knowledge/${fileName}.md`
+      const msg = `knowledge: ${action} ${fileName}`
+      // 삭제의 경우 git add -A로 삭제 감지, 생성/수정은 git add <file>
+      const addArgs = action === 'delete'
+        ? ['add', '-A', 'erd-app/knowledge/']
+        : ['add', relPath]
+      // 순차 실행: add → commit → push (비동기, 응답 블록 안 함)
+      execFile('git', addArgs, { cwd: KNOWLEDGE_GIT_CWD, timeout: 10_000 }, (addErr) => {
+        if (addErr) { console.warn('[Knowledge] git add failed:', (addErr as any).stderr || addErr.message); return }
+        execFile('git', ['commit', '-m', msg], { cwd: KNOWLEDGE_GIT_CWD, timeout: 10_000 }, (commitErr) => {
+          if (commitErr) {
+            // "nothing to commit" 등은 무시
+            const stderr = (commitErr as any).stderr || commitErr.message || ''
+            if (!stderr.includes('nothing to commit') && !stderr.includes('no changes')) {
+              console.warn('[Knowledge] git commit failed:', stderr)
+            }
+            return
+          }
+          execFile('git', ['push'], { cwd: KNOWLEDGE_GIT_CWD, timeout: 30_000 }, (pushErr) => {
+            if (pushErr) console.warn('[Knowledge] git push failed:', (pushErr as any).stderr || pushErr.message)
+            else console.log(`[Knowledge] git push 완료 — "${fileName}" ${action} 공유됨`)
+          })
+        })
+      })
     }
 
     // GET /api/knowledge/list — 전체 널리지 목록
     if (req.url?.startsWith('/api/knowledge/list') && req.method === 'GET') {
       ensureKnowledgeDir()
+      knowledgeGitPull() // 최신 널리지 동기화 (비동기, 응답 블록 안 함)
       const files = readdirSync(KNOWLEDGE_DIR)
         .filter(f => f.endsWith('.md'))
         .map(f => {
@@ -1120,6 +1165,8 @@ function createGitMiddleware(options: GitPluginOptions) {
           created: isNew,
           updatedAt: stat.mtime.toISOString(),
         })
+        // 백그라운드 git push — 다른 인스턴스와 자동 공유
+        knowledgeGitPush(isNew ? 'create' : 'update', safeName)
       } catch (e) {
         sendJson(res, 500, { error: `Save failed: ${String(e)}` })
       }
@@ -1136,6 +1183,8 @@ function createGitMiddleware(options: GitPluginOptions) {
       if (!existsSync(filePath)) { sendJson(res, 404, { error: `Knowledge '${name}' not found` }); return }
       unlinkSync(filePath)
       sendJson(res, 200, { deleted: true, name })
+      // 백그라운드 git push — 삭제도 다른 인스턴스와 자동 공유
+      knowledgeGitPush('delete', name)
       return
     }
 
