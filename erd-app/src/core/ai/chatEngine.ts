@@ -1366,6 +1366,14 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap,
   lines.push('⛔ 금지 예시: 아티팩트 내용을 채팅에서 반복하거나 일부를 보여주는 것');
   lines.push('✅ 올바른 예시: "VFX 기반 구조 분석 보고서를 작성합니다." 한 줄 + 즉시 <<<ARTIFACT_START>>> 시작');
   lines.push('');
+  lines.push('## 📋 아티팩트 작성 가이드 — 중단 방지');
+  lines.push('아티팩트 HTML이 너무 길면 토큰 한도에 도달하여 중단됩니다. 중단을 최소화하려면:');
+  lines.push('1. ⭐ CSS는 간결하게: 인라인 스타일보다 <style> 블록으로 통합. 불필요한 속성 최소화.');
+  lines.push('2. ⭐ data-embed 태그를 적극 활용하세요. query_game_data 결과를 HTML에 직접 넣는 대신 <div data-embed="query" data-sql="..."></div> 태그 사용.');
+  lines.push('3. 섹션이 6개 이상이면 핵심 섹션에 집중하고, 나머지는 간략히 요약.');
+  lines.push('4. 테이블 데이터: data-embed="query" 사용 권장. 직접 <tr><td> 작성 금지 (토큰 낭비 + 중단 위험).');
+  lines.push('5. ⚠️ HTML이 잘리더라도 시스템이 자동으로 이어쓰기를 요청합니다. 이어쓰기 요청 시 중복 없이 바로 이어서 작성하세요.');
+  lines.push('');
   lines.push('답변은 반드시 한국어로 작성하세요.');
   lines.push('단순 나열이 아닌, 의미있는 해석과 함께 친절하게 설명하세요.');
   lines.push('');
@@ -1781,6 +1789,8 @@ async function streamClaude(
   requestBody: object,
   onTextDelta: (delta: string) => void,
   onArtifactProgress?: (html: string, title: string, charCount: number, rawJson?: string) => void,
+  /** true이면 이어쓰기 모드: <<<ARTIFACT_START>>> 없이도 텍스트를 바로 아티팩트 HTML로 캡처 */
+  artifactContinuationMode = false,
 ): Promise<ClaudeResponse & { usage?: TokenUsage; _streamedArtifactHtml?: string }> {
   // ── 자동 재시도 (529 Overloaded / 네트워크 오류) ──
   const MAX_RETRIES = 3;
@@ -1840,11 +1850,18 @@ async function streamClaude(
   const usage: TokenUsage = { input_tokens: 0, output_tokens: 0 };
 
   // ── 텍스트 마커 기반 아티팩트 스트리밍 상태 ──
-  let _artMarkerState: 'idle' | 'streaming' | 'done' = 'idle';
+  // 이어쓰기 모드: <<<ARTIFACT_START>>> 없이 바로 HTML 캡처 시작
+  let _artMarkerState: 'idle' | 'streaming' | 'done' = artifactContinuationMode ? 'streaming' : 'idle';
   let _artStreamedHtml = '';           // 마커 사이에 캡처된 HTML
   let _artPendingText = '';            // 마커 매칭을 위한 대기 버퍼
   const MARKER_START = '<<<ARTIFACT_START>>>';
   const MARKER_END = '<<<ARTIFACT_END>>>';
+
+  if (artifactContinuationMode) {
+    console.log('[streamClaude] 🔄 아티팩트 이어쓰기 모드: <<<ARTIFACT_START>>> 없이 바로 HTML 캡처');
+    // 이어쓰기 모드에서는 패널이 이미 열려있으므로 진행 상태만 알림
+    if (onArtifactProgress) onArtifactProgress('', '이어쓰기 중...', 0, '');
+  }
 
   /** 텍스트 delta를 처리: 마커를 감지하여 아티팩트 HTML 캡처 */
   const processTextForArtifact = (deltaText: string) => {
@@ -2331,6 +2348,8 @@ export async function sendChatMessage(
   let accumulatedText = '';
   let totalText = ''; // max_tokens 자동 계속 시 누적 텍스트
   let continuationCount = 0; // 자동 계속 횟수
+  let artifactAccumulatedHtml = ''; // 이터레이션 간 아티팩트 HTML 누적 (이어쓰기 지원)
+  let artifactContinuationCount = 0; // 아티팩트 이어쓰기 횟수
 
   // ── 널리지 로드를 ThinkingStep + ToolCallResult로 표시 ──
   // 시스템 프롬프트에 포함된 널리지를 사용자에게 알림 (씽킹 패널 + RAG Graph 동기화)
@@ -2363,9 +2382,9 @@ export async function sendChatMessage(
   const tokenIterations: TokenUsageSummary['iterations'] = [];
   const systemPromptEstimate = Math.ceil(systemPrompt.length / 3.5); // 대략적 토큰 수 추정
 
-  // ── 동적 max_tokens: 아티팩트 요청이면 8192, 일반 대화면 4096 ──
-  const ARTIFACT_KEYWORDS = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|캐릭터.*시트|릴리즈.*노트/;
-  const dynamicMaxTokens = ARTIFACT_KEYWORDS.test(userMessage) ? 8192 : 4096;
+  // ── 동적 max_tokens: 아티팩트 요청이면 16384, 일반 대화면 4096 ──
+  const ARTIFACT_KEYWORDS = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|캐릭터.*시트|릴리즈.*노트|분석|작성해줘/;
+  const dynamicMaxTokens = ARTIFACT_KEYWORDS.test(userMessage) ? 16384 : 4096;
 
   // ── Anthropic Prompt Caching: 시스템 프롬프트 + 도구 정의를 캐싱하여 TTFT 대폭 감소 ──
   // cache_control 마커를 추가하면 동일한 시스템 프롬프트가 서버에 캐싱됨 (5분 TTL)
@@ -2398,24 +2417,37 @@ export async function sendChatMessage(
     // 529 재시도 포함 스트리밍 호출
     let data: (ClaudeResponse & { _streamedArtifactHtml?: string }) | null = null;
     const safeMessages = sanitizeMessages(messages); // orphan tool_use 방어
+
+    // 아티팩트 이어쓰기 모드: onArtifactProgress를 감싸서 누적 HTML과 합침
+    const wrappedArtifactProgress: typeof onArtifactProgress = artifactAccumulatedHtml
+      ? (html, title, charCount, rawJson) => {
+          // 이전 이터레이션의 누적 HTML + 현재 스트리밍 HTML
+          const combined = artifactAccumulatedHtml + html;
+          onArtifactProgress?.(combined, title || `이어쓰기 중... (${artifactContinuationCount + 1}회)`, combined.length, rawJson);
+        }
+      : onArtifactProgress;
+
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt));
       try {
         let firstDelta = true;
+        // 이어쓰기 모드: 누적 HTML이 있으면 <<<ARTIFACT_START>>> 없이도 바로 캡처
+        const isArtContinuation = artifactAccumulatedHtml.length > 0;
         data = await streamClaude(
           { ...requestBase, messages: safeMessages },
           (delta) => {
             accumulatedText += delta;
             if (firstDelta) {
               firstDelta = false;
-              onThinkingUpdate?.({ type: 'streaming', iteration: i + 1, maxIterations: MAX_ITERATIONS, detail: '응답 생성 중', timestamp: Date.now() });
+              onThinkingUpdate?.({ type: 'streaming', iteration: i + 1, maxIterations: MAX_ITERATIONS, detail: isArtContinuation ? '아티팩트 이어쓰기 중' : '응답 생성 중', timestamp: Date.now() });
             }
             // 채팅에 표시할 텍스트에서 HTML 태그 제거 (아티팩트 HTML이 채팅에 노출되지 않도록)
             const cleanDelta = stripHtmlFromChatText(delta);
             const fullClean = continuationCount > 0 ? totalText + stripHtmlFromChatText(accumulatedText) : stripHtmlFromChatText(accumulatedText);
             if (cleanDelta) onTextDelta?.(cleanDelta, fullClean);
           },
-          onArtifactProgress,
+          wrappedArtifactProgress,
+          isArtContinuation, // 이어쓰기 모드 전달
         );
         break;
       } catch (err) {
@@ -2478,19 +2510,23 @@ export async function sendChatMessage(
 
       // ★ 텍스트 마커로 HTML이 스트리밍됐지만 create_artifact를 호출하지 않고 end_turn된 경우 → 자동 아티팩트 생성
       if (streamedArtifactHtml && streamedArtifactHtml.length >= 10 && !alreadyHasArtifact) {
-        console.log(`[Chat] ⚡ 자동 아티팩트 생성: HTML ${streamedArtifactHtml.length}자 (create_artifact 미호출)`);
+        // 누적 HTML이 있으면 합침
+        const finalArtHtml = artifactAccumulatedHtml ? (artifactAccumulatedHtml + streamedArtifactHtml) : streamedArtifactHtml;
+        console.log(`[Chat] ⚡ 자동 아티팩트 생성: HTML ${finalArtHtml.length}자 (create_artifact 미호출${artifactAccumulatedHtml ? `, 이어쓰기 ${artifactContinuationCount}회` : ''})`);
         const autoTitle = text.match(/^#+\s*(.+)/m)?.[1]
           ?? text.match(/^(.{1,50})/)?.[1]?.replace(/\s+/g, ' ').trim()
           ?? '문서';
         const autoTc: ArtifactResult = {
           kind: 'artifact',
           title: autoTitle,
-          description: '',
-          html: streamedArtifactHtml,
+          description: artifactAccumulatedHtml ? `(${artifactContinuationCount + 1}회 이어쓰기로 생성)` : '',
+          html: finalArtHtml,
           duration: 0,
         };
         allToolCalls.push(autoTc);
         onToolCall?.(autoTc, allToolCalls.length - 1);
+        artifactAccumulatedHtml = '';
+        artifactContinuationCount = 0;
       }
 
       if (hasArtifactIntent && !alreadyHasArtifact && !streamedArtifactHtml && userWantsArtifact && allToolCalls.length > 0) {
@@ -3446,8 +3482,9 @@ function showTab(id){
         else if (tb.name === 'create_artifact') {
           const title = String(inp.title ?? '문서');
           const description = String(inp.description ?? '');
-          // 우선순위: 텍스트 마커 캡처 HTML > 만약 tool 파라미터에 html이 있으면 폴백
-          const html = streamedArtifactHtml || String(inp.html ?? '');
+          // 우선순위: 누적 HTML + 텍스트 마커 캡처 HTML > tool 파라미터 html 폴백
+          const currentHtml = streamedArtifactHtml || String(inp.html ?? '');
+          const html = artifactAccumulatedHtml ? (artifactAccumulatedHtml + currentHtml) : currentHtml;
           const t0 = performance.now();
           const duration = performance.now() - t0;
 
@@ -3460,7 +3497,13 @@ function showTab(id){
             // ── 항상 성공 반환 (빈 HTML이어도) — 재시도 방지 ──
             tc = { kind: 'artifact', title, description, html, duration } as ArtifactResult;
             resultStr = `✅ 아티팩트 "${title}" 생성 완료 (${html.length}자). 사이드 패널에 표시됩니다. 추가 작업이 필요하지 않습니다. 절대 재시도하지 마세요.`;
-            console.log(`[Chat] create_artifact: title="${title}" html=${html.length}자 (${streamedArtifactHtml ? '텍스트 마커' : 'tool 파라미터/없음'})`);
+            console.log(`[Chat] create_artifact: title="${title}" html=${html.length}자 (${artifactAccumulatedHtml ? '이어쓰기+' : ''}${streamedArtifactHtml ? '텍스트 마커' : 'tool 파라미터/없음'})`);
+            // 이어쓰기 모드 종료
+            if (artifactAccumulatedHtml) {
+              console.log(`[Chat] 아티팩트 이어쓰기 완료: ${artifactContinuationCount}회, 최종 ${html.length}자`);
+              artifactAccumulatedHtml = '';
+              artifactContinuationCount = 0;
+            }
           }
         }
 
@@ -3867,15 +3910,6 @@ function showTab(id){
       .map((b) => b.text)
       .join('\n');
 
-    // ★ max_tokens로 잘렸지만 텍스트 마커로 HTML이 스트리밍된 경우 → 자동 아티팩트 생성
-    if (streamedArtifactHtml && streamedArtifactHtml.length >= 10 && !allToolCalls.some(tc => tc.kind === 'artifact')) {
-      console.log(`[Chat] ⚡ max_tokens 자동 아티팩트 생성: HTML ${streamedArtifactHtml.length}자`);
-      const autoTitle = truncatedText.match(/^#+\s*(.+)/m)?.[1] ?? '문서';
-      const autoTc: ArtifactResult = { kind: 'artifact', title: autoTitle, description: '', html: streamedArtifactHtml, duration: 0 };
-      allToolCalls.push(autoTc);
-      onToolCall?.(autoTc, allToolCalls.length - 1);
-    }
-
     const hasFetchedData = allToolCalls.some(
       (tc) => tc.kind === 'data_query' || tc.kind === 'schema_card' || tc.kind === 'character_profile',
     );
@@ -3901,12 +3935,54 @@ function showTab(id){
       }
     };
 
+    // ★ 아티팩트 HTML 이어쓰기 감지: 텍스트 마커로 스트리밍됐지만 <<<ARTIFACT_END>>>가 안 왔거나, 잘린 경우
+    const artHtmlTruncated = streamedArtifactHtml && streamedArtifactHtml.length >= 10;
+    // 잘린 HTML인지 판단: </html>, </body>, </div> 등으로 정상 종결되지 않았으면 미완성
+    const htmlLooksComplete = streamedArtifactHtml
+      ? /<\/(?:html|body)>\s*$/i.test(streamedArtifactHtml.trim())
+      : false;
+    const needsArtifactContinuation = artHtmlTruncated && !htmlLooksComplete && !hasArtifact;
+
     // 자동 계속 가능한 경우 (이터레이션 여유 있음)
     if (i < MAX_ITERATIONS - 1) {
       pushAssistantWithOrphanFix(messages);
 
+      // ★★★ 아티팩트 HTML 이어쓰기: 잘린 HTML을 누적하고 다음 이터레이션에서 계속 생성 ★★★
+      if (needsArtifactContinuation) {
+        artifactAccumulatedHtml += streamedArtifactHtml!;
+        artifactContinuationCount++;
+        const lastChunk = streamedArtifactHtml!.slice(-200); // 마지막 200자를 컨텍스트로
+        console.log(`[Chat] ⚡ 아티팩트 이어쓰기 ${artifactContinuationCount}회: 누적 ${artifactAccumulatedHtml.length}자, 마지막: "${lastChunk.slice(-60)}..."`);
+        onThinkingUpdate?.({ type: 'continuation', iteration: i + 1, maxIterations: MAX_ITERATIONS, detail: `아티팩트 이어쓰기 ${artifactContinuationCount}회 (${artifactAccumulatedHtml.length}자)`, timestamp: Date.now() });
+
+        // 사이드 패널에 현재까지 누적된 HTML 표시 (진행 중 상태)
+        if (onArtifactProgress) {
+          onArtifactProgress(artifactAccumulatedHtml, `생성 중... (${artifactContinuationCount}회 이어쓰기)`, artifactAccumulatedHtml.length, '');
+        }
+
+        messages.push({
+          role: 'user',
+          content:
+            'HTML이 잘렸습니다. 바로 이전 HTML의 마지막 부분:\n```\n' + lastChunk + '\n```\n' +
+            '위 코드 바로 뒤부터 이어서 작성하세요. ' +
+            '⚠️ 규칙: <<<ARTIFACT_START>>>를 다시 쓰지 말고, HTML 코드만 바로 출력한 후 <<<ARTIFACT_END>>>로 마무리하세요. ' +
+            '그 후 create_artifact(title=...) 를 호출하세요. 중복 코드 없이 바로 이어주세요.',
+        });
+        continue;
+      }
+
+      // ★ max_tokens로 잘렸지만 완성된 아티팩트 HTML이 있는 경우 → 자동 아티팩트 생성
+      if (artHtmlTruncated && htmlLooksComplete && !hasArtifact) {
+        const finalArtHtml = artifactAccumulatedHtml + streamedArtifactHtml!;
+        console.log(`[Chat] ⚡ max_tokens 자동 아티팩트 생성 (완성): HTML ${finalArtHtml.length}자`);
+        const autoTitle = truncatedText.match(/^#+\s*(.+)/m)?.[1] ?? '문서';
+        const autoTc: ArtifactResult = { kind: 'artifact', title: autoTitle, description: '', html: finalArtHtml, duration: 0 };
+        allToolCalls.push(autoTc);
+        onToolCall?.(autoTc, allToolCalls.length - 1);
+      }
+
       // 데이터 수집 완료 & 아티팩트 미생성 → create_artifact 재촉
-      if (hasFetchedData && !hasArtifact) {
+      if (hasFetchedData && !hasArtifact && !artHtmlTruncated) {
         console.log('[Chat] max_tokens 감지: 데이터 수집 완료, 아티팩트 자동 재시도');
         messages.push({
           role: 'user',
@@ -3914,7 +3990,7 @@ function showTab(id){
             '수집한 데이터를 바탕으로 <<<ARTIFACT_START>>>HTML<<<ARTIFACT_END>>> 형식으로 HTML을 먼저 출력한 후, create_artifact(title=...) 를 호출하세요. ' +
             '추가 데이터 조회 없이 현재 데이터만으로 바로 만들어주세요. 핵심 내용을 간결하게 500줄 이내로.',
         });
-      } else {
+      } else if (!artHtmlTruncated) {
         // 일반 텍스트 잘림 → 누적 후 자동 계속
         if (truncatedText) {
           totalText += truncatedText;
@@ -3928,6 +4004,16 @@ function showTab(id){
         });
       }
       continue;
+    }
+
+    // ★ 마지막 이터레이션: 잘린 아티팩트라도 누적된 HTML로 생성
+    if (artHtmlTruncated && !hasArtifact) {
+      const finalArtHtml = artifactAccumulatedHtml + streamedArtifactHtml!;
+      console.log(`[Chat] ⚡ 마지막 이터레이션 자동 아티팩트 생성: HTML ${finalArtHtml.length}자 (잘린 상태)`);
+      const autoTitle = truncatedText.match(/^#+\s*(.+)/m)?.[1] ?? '문서 (미완성)';
+      const autoTc: ArtifactResult = { kind: 'artifact', title: autoTitle, description: '(max_tokens로 잘린 문서)', html: finalArtHtml, duration: 0 };
+      allToolCalls.push(autoTc);
+      onToolCall?.(autoTc, allToolCalls.length - 1);
     }
 
     // 마지막 이터레이션에서도 잘린 경우 → rawMessages 저장하여 '계속해줘' 지원
