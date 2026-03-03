@@ -5850,14 +5850,19 @@ export default function ChatPage() {
 
       if (artifactTc) {
         const artifactId = `artifact-${Date.now()}`;
+        // _artBuf에 스트리밍 HTML이 있으면 그것을 우선 사용 (tool 결과보다 신뢰성 높음)
+        const finalHtml = (_artBuf.html && _artBuf.html.length > (artifactTc.html ?? '').length)
+          ? _artBuf.html
+          : (artifactTc.html ?? '');
+        const mergedTc = { ...artifactTc, html: finalHtml };
         setArtifactPanel((prev) =>
           prev
-            ? { ...prev, isComplete: true, finalTc: artifactTc, artifactId }
-            : { html: artifactTc.html ?? '', title: artifactTc.title ?? '', charCount: (artifactTc.html ?? '').length, isComplete: true, finalTc: artifactTc, artifactId },
+            ? { ...prev, html: finalHtml, charCount: finalHtml.length, isComplete: true, finalTc: mergedTc, artifactId }
+            : { html: finalHtml, title: mergedTc.title ?? '', charCount: finalHtml.length, isComplete: true, finalTc: mergedTc, artifactId },
         );
         // 사이드바 목록에도 저장
         setSavedArtifacts((prev) => [
-          { id: artifactId, title: artifactTc.title ?? '문서', tc: artifactTc, createdAt: new Date() },
+          { id: artifactId, title: mergedTc.title ?? '문서', tc: mergedTc, createdAt: new Date() },
           ...prev,
         ]);
       } else if (patchTc && patchTc.patches.length > 0) {

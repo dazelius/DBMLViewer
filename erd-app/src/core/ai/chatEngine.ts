@@ -883,14 +883,17 @@ const TOOLS = [
   {
     name: 'create_artifact',
     description:
-      '아티팩트(HTML 문서) 생성을 등록합니다. ' +
-      '⚠️ 반드시 이 도구를 호출하기 직전에 HTML을 텍스트로 먼저 출력해야 합니다! ' +
-      '텍스트 출력 형식: <<<ARTIFACT_START>>> 마커 후 HTML 코드, <<<ARTIFACT_END>>> 마커로 종료. ' +
-      '그 후 이 도구를 title과 description만으로 호출하세요. html 파라미터는 없습니다. ' +
+      '수집된 데이터를 기반으로 HTML 문서(보고서, 캐릭터 시트, 밸런스 표, 릴리즈 노트 등)를 생성합니다. ' +
+      '사용자가 "정리해줘", "문서로 만들어줘", "보고서", "뽑아줘", "시트 만들어줘" 등을 요청할 때 호출하세요. ' +
+      '먼저 query_game_data, show_table_schema 등으로 필요한 데이터를 모두 수집한 후 이 툴을 마지막에 호출하세요. ' +
       '⚠️ [아티팩트 수정 요청] 메시지에는 이 툴 대신 patch_artifact를 사용하세요.',
     input_schema: {
       type: 'object',
       properties: {
+        html: {
+          type: 'string',
+          description: 'HTML 문서 내용 (<!DOCTYPE html> 없이 <body> 내용만). <style>, <script> 포함 가능.',
+        },
         title: {
           type: 'string',
           description: '문서 제목 (예: "프리드웬 캐릭터 시트", "스킬 밸런스 보고서")',
@@ -900,7 +903,7 @@ const TOOLS = [
           description: '생성된 문서에 대한 한 줄 설명 (선택사항)',
         },
       },
-      required: ['title'],
+      required: ['html', 'title'],
     },
   },
   // ── Jira / Confluence 툴 ─────────────────────────────────────────────────
@@ -1195,40 +1198,16 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap,
   lines.push('  탭 버튼: <button class="tab active" data-tab="basic" onclick="showTab(\'basic\')">기본정보</button>');
   lines.push('  패널: <div class="tab-panel active" data-panel="basic"><div data-embed="query" data-sql="[EMBED_SQL]"></div></div>');
   lines.push('');
-  lines.push('[아티팩트 생성 규칙 — ⚠️⚠️⚠️ 반드시 준수 (실시간 스트리밍)]');
-  lines.push('아티팩트(HTML 문서)를 생성할 때는 **2단계 프로토콜**을 반드시 따르세요:');
-  lines.push('');
-  lines.push('**1단계: HTML을 텍스트로 직접 출력 (실시간 스트리밍)**');
-  lines.push('- 먼저 짧은 설명 텍스트를 출력하세요 (1~2문장).');
-  lines.push('- 그 다음 줄바꿈 후 <<<ARTIFACT_START>>> 마커를 출력하세요.');
-  lines.push('- 마커 다음부터 HTML 코드를 직접 텍스트로 출력하세요.');
-  lines.push('- HTML이 끝나면 <<<ARTIFACT_END>>> 마커를 출력하세요.');
-  lines.push('');
-  lines.push('**2단계: create_artifact 도구 호출 (메타데이터 등록)**');
-  lines.push('- <<<ARTIFACT_END>>> 출력 직후, create_artifact(title, description)를 호출하세요.');
-  lines.push('- html 파라미터는 없습니다. HTML은 이미 텍스트로 출력했습니다.');
-  lines.push('');
-  lines.push('⭐ 예시:');
-  lines.push('```');
-  lines.push('퐁 게임을 만들겠습니다.');
-  lines.push('');
-  lines.push('<<<ARTIFACT_START>>>');
-  lines.push('<style>body{margin:0;background:#0f1117;color:#e2e8f0}</style>');
-  lines.push('<h1>퐁 게임</h1>');
-  lines.push('<canvas id="game" width="800" height="600"></canvas>');
-  lines.push('<script>/* 게임 코드 */</script>');
-  lines.push('<<<ARTIFACT_END>>>');
-  lines.push('```');
-  lines.push('→ 그 후 create_artifact({title:"퐁 게임", description:"클래식 퐁 게임"}) 호출');
-  lines.push('');
-  lines.push('⚠️ 핵심 규칙:');
-  lines.push('- HTML은 반드시 텍스트로 출력! create_artifact에 html 파라미터 넣지 마세요.');
-  lines.push('- <<<ARTIFACT_START>>> 와 <<<ARTIFACT_END>>> 마커는 정확히 이 형식으로!');
-  lines.push('- HTML 내용: <!DOCTYPE html> 없이 <body> 내용만 (CSS는 <style>로, JS는 <script>로).');
-  lines.push('- 다크 테마(bg:#0f1117, text:#e2e8f0, accent:#6366f1), 한국어, 500줄 이내.');
+  lines.push('[아티팩트 생성 규칙 — 반드시 준수]');
+  lines.push('- "정리해줘", "문서로", "보고서", "시트 만들어줘", "뽑아줘", "3D 보여줘", "모델링 보여줘" 등 시각적 결과물 요청 시 create_artifact를 호출하세요.');
+  lines.push('- ⚠️⚠️ 절대 금지: data-embed, class="fbx-viewer", data-src, data-sql 등의 HTML 태그를 채팅 응답 텍스트에 직접 출력하지 마세요!');
+  lines.push('  → 이런 태그는 반드시 create_artifact의 html 파라미터 안에만 포함해야 합니다.');
+  lines.push('- 데이터 수집이 끝나면 "생성하겠습니다" 같은 텍스트를 출력하지 말고 즉시 create_artifact를 호출하세요.');
+  lines.push('- ⚠️ 절대로 "아티팩트를 만들겠습니다", "HTML을 생성하겠습니다" 등의 선언 후 멈추지 마세요. 선언 없이 즉시 툴을 호출하세요.');
+  lines.push('- 반드시 먼저 다른 툴로 데이터를 충분히 수집한 후 create_artifact를 마지막에 호출하세요.');
+  lines.push('- html 파라미터: <!DOCTYPE html> 없이 <body> 내용만 작성 (간결하게 500줄 이내).');
+  lines.push('- 다크 테마(bg:#0f1117, text:#e2e8f0, accent:#6366f1), 한국어.');
   lines.push('- 이미지: /api/images/file?path=Texture/폴더/파일명.png 또는 /api/images/smart?name=파일명.png.');
-  lines.push('- ⚠️⚠️ 절대 금지: data-embed, class="fbx-viewer", data-src, data-sql 등의 HTML 태그를 마커 밖에 출력하지 마세요!');
-  lines.push('- 반드시 먼저 다른 툴로 데이터를 충분히 수집한 후 아티팩트를 마지막에 출력하세요.');
   lines.push('[가이드 우선 원칙 — 모든 질문에 적용]');
   lines.push('⭐⭐⭐ 어떤 질문이든 답변 전에 반드시 관련 가이드를 먼저 read_guide로 읽으세요!');
   lines.push('');
@@ -1974,9 +1953,9 @@ async function streamClaude(
           const cb = ev.content_block as ContentBlock;
           if (cb.type === 'tool_use') {
             blocks[idx] = { ...cb, _inputStr: '' } as ContentBlock & { _inputStr: string };
-            // patch_artifact 블록 시작 즉시 패널 오픈 (create_artifact는 텍스트 마커에서 열림)
-            if ((cb as ToolUseBlock).name === 'patch_artifact' && onArtifactProgress) {
-              console.log(`[streamClaude] ⚡ patch_artifact content_block_start → 패널 오픈`);
+            // create_artifact 또는 patch_artifact 블록 시작 → 아티팩트 패널 오픈
+            if (((cb as ToolUseBlock).name === 'create_artifact' || (cb as ToolUseBlock).name === 'patch_artifact') && onArtifactProgress) {
+              console.log(`[streamClaude] ⚡ ${(cb as ToolUseBlock).name} content_block_start → 패널 오픈`);
               onArtifactProgress('', '', 0, '');
             }
           } else {
@@ -1998,12 +1977,22 @@ async function streamClaude(
             const tb = b as ContentBlock & { _inputStr: string };
             tb._inputStr = (tb._inputStr || '') + (delta.partial_json ?? '');
 
-            // create_artifact: 이제 HTML은 텍스트 마커에서 캡처됨 — 도구 JSON에는 title/description만 있음
-            if ((b as ToolUseBlock).name === 'create_artifact') {
-              // title 추출 (도구 JSON에서)
-              const tm = tb._inputStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)/);
-              if (tm && onArtifactProgress && _artStreamedHtml) {
-                onArtifactProgress(_artStreamedHtml, tm[1].replace(/\\"/g, '"'), _artStreamedHtml.length, '');
+            // create_artifact: html 파라미터에서 점진적 HTML 추출 → 사이드 패널 스트리밍
+            if ((b as ToolUseBlock).name === 'create_artifact' && onArtifactProgress) {
+              // 텍스트 마커 HTML이 이미 있으면 그것 사용 (우선순위 높음)
+              if (_artStreamedHtml) {
+                const tm = tb._inputStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)/);
+                if (tm) onArtifactProgress(_artStreamedHtml, tm[1].replace(/\\"/g, '"'), _artStreamedHtml.length, '');
+              } else {
+                // tool 파라미터에서 html 점진적 추출
+                const parsed = extractHtmlFromPartialJson(tb._inputStr);
+                if (parsed && parsed.html) {
+                  onArtifactProgress(parsed.html, parsed.title, parsed.html.length, tb._inputStr);
+                } else {
+                  const tm = tb._inputStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)/);
+                  const title = tm ? tm[1].replace(/\\"/g, '"') : '';
+                  onArtifactProgress('', title, tb._inputStr.length, tb._inputStr);
+                }
               }
             }
 
@@ -2026,10 +2015,12 @@ async function streamClaude(
             } catch {
               // JSON 파싱 실패 → 부분 복구
               if ((b as ToolUseBlock).name === 'create_artifact') {
+                const parsed = extractHtmlFromPartialJson(rawStr);
                 const titleMatch = rawStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/);
                 const descMatch = rawStr.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)"/);
                 (b as ToolUseBlock).input = {
-                  title: titleMatch?.[1] ?? '문서',
+                  html: parsed?.html ?? '',
+                  title: titleMatch?.[1] ?? parsed?.title ?? '문서',
                   description: descMatch?.[1] ?? '',
                 };
               } else {
@@ -2387,7 +2378,7 @@ export async function sendChatMessage(
         messages.push({ role: 'assistant', content: data.content });
         messages.push({
           role: 'user',
-          content: '지금 바로 <<<ARTIFACT_START>>> 마커로 HTML을 출력한 뒤 create_artifact를 호출해주세요. 텍스트 설명 없이 즉시 시작하세요.',
+          content: '지금 바로 create_artifact 툴을 호출하여 HTML 문서를 생성해주세요. 텍스트 설명 없이 즉시 툴을 호출하세요.',
         });
         continue;
       }
@@ -3325,22 +3316,23 @@ function showTab(id){
           }
         }
 
-        // ── create_artifact (하이브리드: HTML은 텍스트 마커에서 캡처, 도구는 메타데이터만) ──
+        // ── create_artifact ──
         else if (tb.name === 'create_artifact') {
           const title = String(inp.title ?? '문서');
           const description = String(inp.description ?? '');
-          // HTML은 텍스트 마커에서 캡처된 것을 사용 (도구 파라미터에 html이 없음)
+          // 우선순위: 텍스트 마커 캡처 HTML > tool 파라미터 HTML
           const html = streamedArtifactHtml || String(inp.html ?? '');
           const t0 = performance.now();
+          const duration = performance.now() - t0;
 
           if (!html || html.length < 10) {
-            tc = { kind: 'artifact', title, description, html: '', error: 'HTML 내용이 없습니다. (텍스트 마커에서 캡처 실패)', duration: 0 } as ArtifactResult;
-            resultStr = 'HTML 생성 실패: 텍스트 마커에서 HTML 캡처 실패. <<<ARTIFACT_START>>> 와 <<<ARTIFACT_END>>> 마커를 사용해 주세요.';
+            tc = { kind: 'artifact', title, description, html: '', error: 'HTML 내용이 비어 있습니다.', duration } as ArtifactResult;
+            resultStr = `아티팩트 "${title}" 생성 실패: HTML 내용이 없습니다. html 파라미터에 HTML을 넣어주세요.`;
           } else {
-            const duration = performance.now() - t0;
+            const source = streamedArtifactHtml ? '텍스트 스트리밍' : 'tool 파라미터';
             tc = { kind: 'artifact', title, description, html, duration } as ArtifactResult;
-            resultStr = `아티팩트 "${title}" 생성 완료 (${html.length}자). 사용자 화면에 전체화면 프리뷰와 PDF 저장 버튼이 표시됩니다.`;
-            console.log(`[Chat] create_artifact: title="${title}" html=${html.length}자 (텍스트 마커에서 캡처)`);
+            resultStr = `✅ 아티팩트 "${title}" 생성 완료 (${html.length}자, ${source}). 사이드 패널에 표시됩니다. 추가 작업이 필요하지 않습니다.`;
+            console.log(`[Chat] create_artifact: title="${title}" html=${html.length}자 (${source})`);
           }
         }
 
