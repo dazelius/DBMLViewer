@@ -1036,10 +1036,27 @@ const TOOLS = [
 
 // ── 시스템 프롬프트 빌더 ─────────────────────────────────────────────────────
 
-function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap): string {
+function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap, knowledgeItems?: { name: string; sizeKB: number }[]): string {
   const lines: string[] = [];
 
   lines.push('당신은 이 게임의 모든 데이터를 꿰뚫고 있는 전문 게임 데이터 어시스턴트입니다.');
+  lines.push('');
+  lines.push('[맥락 불분명 시 되질문 규칙 — 반드시 준수]');
+  lines.push('사용자의 질문이 모호하거나 여러 해석이 가능할 때는 임의로 추측하지 말고, **객관식 선택지**를 제시하며 되질문하세요.');
+  lines.push('- 테이블/컬럼/캐릭터/스킬 등의 이름이 여러 후보와 매칭될 때');
+  lines.push('- 질문의 의도가 "데이터 조회"인지 "코드 분석"인지 "기획서 확인"인지 불분명할 때');
+  lines.push('- 어떤 범위/기간/조건으로 조회할지 특정되지 않을 때');
+  lines.push('형식 예시:');
+  lines.push('> 어떤 내용을 원하시는지 좀 더 알려주세요:');
+  lines.push('> **A.** 캐릭터 "프리드웬"의 스킬 데이터 조회');
+  lines.push('> **B.** 캐릭터 "프리드웬"의 C# 스킬 로직 코드 분석');
+  lines.push('> **C.** 캐릭터 "프리드웬" 전체 기획서(프로파일) 생성');
+  lines.push('> **D.** 기타 (직접 설명해주세요)');
+  lines.push('');
+  lines.push('- 선택지는 2~5개로 구성하고, 마지막에 항상 "기타" 옵션을 포함하세요.');
+  lines.push('- 사용자가 "A", "B" 등으로 간단히 답할 수 있도록 알파벳 라벨을 붙이세요.');
+  lines.push('- 명확한 질문에는 되질문 없이 바로 답변하세요. 되질문은 정말 모호할 때만 사용하세요.');
+  lines.push('');
   lines.push('사용자의 질문에 답하기 위해 아래 도구들을 적극 활용하세요:');
   lines.push('- query_game_data: 실제 게임 데이터를 SQL로 조회');
   lines.push('- show_table_schema: 테이블 구조/관계도를 ERD 카드로 시각화. 테이블 설명 시 반드시 호출. 관계도 요청 시 관련 테이블 여러 개 연속 호출 가능');
@@ -1063,12 +1080,24 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap)
   lines.push('- save_knowledge: 🧠 사용자가 제공한 지식/청크를 .md 파일로 영구 저장. "기억해", "저장해", "널리지로" 등의 요청 시 사용.');
   lines.push('- read_knowledge: 🧠 저장된 널리지 읽기. 빈 name("")으로 목록 확인 가능.');
   lines.push('');
-  lines.push('[널리지(Knowledge) 시스템 규칙]');
+  lines.push('[널리지(Knowledge) 시스템 규칙 — 반드시 준수]');
   lines.push('- 사용자가 "이거 기억해", "널리지로 저장해줘", "이 정보 저장" 등을 말하면 → save_knowledge 호출.');
   lines.push('- 저장 시 name은 영문 스네이크_케이스로 (예: skill_system, rag_chunk_01).');
   lines.push('- 저장 시 사용자 제공 원본 내용을 보존하되, # 제목과 구조화된 마크다운으로 정리.');
-  lines.push('- 사용자가 특정 주제 질문 시 관련 널리지가 있을 수 있으니 read_knowledge("")로 목록 확인 권장.');
+  lines.push('- ⭐ 사용자 질문에 관련될 수 있는 널리지가 아래 목록에 있으면, 반드시 read_knowledge(name)으로 내용을 읽어 활용하세요!');
+  lines.push('- 관련 널리지가 있는데 읽지 않고 답변하면 불완전한 답변이 됩니다.');
   lines.push('');
+  // 저장된 널리지 목록 자동 주입
+  if (knowledgeItems && knowledgeItems.length > 0) {
+    lines.push('[현재 저장된 널리지 목록] — 질문에 관련되면 read_knowledge로 읽어 활용!');
+    for (const item of knowledgeItems) {
+      lines.push(`  📌 ${item.name} (${item.sizeKB}KB)`);
+    }
+    lines.push('');
+  } else {
+    lines.push('[현재 저장된 널리지: 없음]');
+    lines.push('');
+  }
   lines.push('[FBX 3D 모델 뷰어 규칙 — 절대 준수]');
   lines.push('⚠️⚠️⚠️ 절대 금지: <div class="fbx-viewer">, data-embed, <div data-sql>, data-src 등 HTML 임베드 태그를 절대로 채팅 텍스트에 직접 출력하지 마세요!');
   lines.push('⚠️⚠️⚠️ 이런 태그들은 반드시 create_artifact 툴의 html 파라미터 안에만 넣어야 합니다. 채팅 응답에 HTML 태그를 출력하면 사용자에게 원시 코드가 그대로 보입니다!');
@@ -1609,6 +1638,7 @@ async function streamClaude(
 
   let _readCount = 0;
   const _streamStart = performance.now();
+  let _lastYield = performance.now(); // 주기적 yield 타이밍
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -1618,6 +1648,19 @@ async function streamClaude(
     // 디버그: 청크 도착 시점 (처음 3개 + 매 50번째)
     if (_readCount <= 3 || _readCount % 50 === 0) {
       console.log(`[streamClaude] 📦 reader chunk #${_readCount}: +${chunk.length}B (+${(performance.now() - _streamStart).toFixed(0)}ms)`);
+    }
+
+    // 32ms 마다 브라우저 페인트 사이클에 양보 → RAF 콜백이 실행될 수 있도록
+    const now = performance.now();
+    if (now - _lastYield > 32) {
+      _lastYield = now;
+      await new Promise<void>(r => {
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => r());
+        } else {
+          setTimeout(r, 0);
+        }
+      });
     }
 
     const lines = buf.split('\n');
@@ -1844,7 +1887,18 @@ export async function sendChatMessage(
 ): Promise<{ content: string; toolCalls: ToolCallResult[]; rawMessages?: ClaudeMsg[]; tokenUsage?: TokenUsageSummary }> {
   // 컴포넌트가 아직 로딩 중일 때 schema가 null일 수 있으므로 스토어에서 fallback
   const effectiveSchema = schema ?? useSchemaStore.getState().schema;
-  const systemPrompt = buildSystemPrompt(effectiveSchema, tableData);
+
+  // 저장된 널리지 목록 가져오기 (시스템 프롬프트에 포함하여 AI가 인지하도록)
+  let knowledgeItems: { name: string; sizeKB: number }[] = [];
+  try {
+    const knResp = await fetch('/api/knowledge/list');
+    if (knResp.ok) {
+      const knData = await knResp.json() as { items?: { name: string; sizeKB: number }[] };
+      knowledgeItems = knData.items ?? [];
+    }
+  } catch { /* 실패해도 무시 — 널리지 없이 진행 */ }
+
+  const systemPrompt = buildSystemPrompt(effectiveSchema, tableData, knowledgeItems);
 
   const messages: ClaudeMsg[] = [
     ...historyToMessages(history),
@@ -3222,6 +3276,8 @@ function showTab(id){
               } else {
                 resultStr = `✅ 널리지 "${data2.name}" ${data2.created ? '생성' : '업데이트'} 완료 (${data2.sizeKB}KB)`;
                 tc = { kind: 'knowledge', action: 'save', name: data2.name ?? knName, sizeKB: data2.sizeKB, created: data2.created };
+                // 사이드바 KnowledgeBrowser 즉시 갱신 트리거
+                try { window.dispatchEvent(new CustomEvent('knowledge-updated')); } catch { /* 무시 */ }
               }
             }
           } catch (e) {

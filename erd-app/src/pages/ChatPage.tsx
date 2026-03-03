@@ -2304,6 +2304,12 @@ function colorizeHtmlLine(line: string): React.ReactNode {
 // ── 아티팩트 사이드 패널 (우측 절반 스트리밍 뷰) ────────────────────────────
 
 /**
+ * 모듈 레벨 아티팩트 스트림 버퍼 — React를 완전히 우회하여 iframe에 직접 전달.
+ * onArtifactProgress 콜백 → 여기에 write → ArtifactSidePanel RAF 루프 → 여기서 read → iframe body 직접 갱신
+ */
+const _artBuf = { html: '', title: '', charCount: 0, ver: 0 };
+
+/**
  * 스트리밍 iframe 기반 HTML srcdoc.
  * 한 번 로드된 후 parent 에서 contentDocument.body.innerHTML 을 직접 갱신한다.
  * - allow-same-origin: parent 에서 contentDocument 접근 허용
@@ -2558,6 +2564,7 @@ function ArtifactSidePanel({
   useEffect(() => {
     if (!isComplete) {
       overlayStartRef.current = 0;
+      setStreamIframeReady(false); // 새 아티팩트 시작 시 iframe 로드 대기
     }
   }, [isComplete]);
 
@@ -2615,20 +2622,107 @@ function ArtifactSidePanel({
     if (existing && !existing.textContent) existing.textContent = FBX_VIEWER_SCRIPT;
   }, []);
 
-  // html prop 이 바뀔 때마다 iframe body 직접 갱신 (React 가상DOM 우회)
-  useLayoutEffect(() => {
+  // ── 모듈 레벨 공유 버퍼 (_artBuf) 에서 직접 읽어 iframe + 오버레이 + 헤더 DOM 갱신 ──
+  // React 렌더 사이클과 완전히 독립적 → 60fps 실시간 스트리밍
+  const streamTitleRef = useRef<HTMLSpanElement>(null);
+  const streamCharsRef = useRef<HTMLSpanElement>(null);
+  // ★ 오버레이 / 타이핑바 ref — React props 대신 RAF 루프에서 직접 제어
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const spinnerRef = useRef<HTMLDivElement>(null);
+  const codePreRef = useRef<HTMLPreElement>(null);
+  const overlayStatusRef = useRef<HTMLSpanElement>(null);
+  const typingBarRef = useRef<HTMLDivElement>(null);
+  const typingSnippetRef = useRef<HTMLSpanElement>(null);
+  const typingCountRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
     if (isComplete) return;
-    pendingHtmlRef.current = html;
-    if (!streamIframeReady) return;
-    const doc = streamIframeRef.current?.contentDocument;
-    if (!doc?.body) return;
-    doc.body.innerHTML = html || '';
-    // FBX 뷰어 스크립트 inject (완성 직전 혹은 스트리밍 중에도 대비)
-    const existing = doc.getElementById('__fbx_viewer_init__');
-    if (existing && !existing.textContent) {
-      existing.textContent = FBX_VIEWER_SCRIPT;
-    }
-  });
+    let lastVer = 0;
+    let rafId = 0;
+    let overlayHidden = false; // 오버레이 숨김 여부 추적
+    const tick = () => {
+      if (_artBuf.ver !== lastVer) {
+        lastVer = _artBuf.ver;
+
+        // ── 1) iframe body 직접 갱신 (React 우회) ──
+        if (streamIframeReady && streamIframeRef.current) {
+          const doc = streamIframeRef.current.contentDocument;
+          if (doc?.body) {
+            doc.body.innerHTML = _artBuf.html;
+            const fbxScript = doc.getElementById('__fbx_viewer_init__');
+            if (fbxScript && !fbxScript.textContent) fbxScript.textContent = FBX_VIEWER_SCRIPT;
+          }
+        }
+
+        // ── 2) 오버레이 제어 (React props 완전 우회) ──
+        if (overlayRef.current) {
+          if (_artBuf.html.length >= 80 && !overlayHidden) {
+            // HTML이 충분 → 오버레이 페이드아웃 후 제거
+            overlayHidden = true;
+            overlayRef.current.style.opacity = '0';
+            overlayRef.current.style.pointerEvents = 'none';
+          } else if (!overlayHidden) {
+            // 아직 HTML 부족 → 오버레이에 코드/스피너 표시
+            if (_artBuf.charCount > 0) {
+              // 데이터 수신 중 → 스피너 숨기고 코드 표시
+              if (spinnerRef.current) spinnerRef.current.style.display = 'none';
+              if (codePreRef.current) {
+                codePreRef.current.style.display = '';
+                const lines = (_artBuf.html || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`).split('\n');
+                const visible = lines.slice(-16);
+                const startNo = Math.max(1, lines.length - 15);
+                let h = '';
+                for (let i = 0; i < visible.length; i++) {
+                  const ln = startNo + i;
+                  const last = i === visible.length - 1;
+                  const op = last ? 1 : 0.4 + (i / visible.length) * 0.6;
+                  const esc = visible[i].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                  h += `<div style="display:flex;opacity:${op}"><span style="user-select:none;flex-shrink:0;text-align:right;padding-right:12px;width:32px;color:#3d4856;font-size:10px">${ln}</span><span style="color:${last ? '#e2e8f0' : '#6b7685'};white-space:pre;overflow:hidden;text-overflow:ellipsis">${esc}</span>${last ? '<span style="display:inline-block;width:2px;height:13px;margin-left:2px;border-radius:2px;vertical-align:middle;background:#6366f1;animation:pulse 2s cubic-bezier(0.4,0,0.6,1) infinite"></span>' : ''}</div>`;
+                }
+                codePreRef.current.innerHTML = h;
+              }
+            } else {
+              // 아직 데이터 없음 → 스피너 표시
+              if (spinnerRef.current) spinnerRef.current.style.display = '';
+              if (codePreRef.current) codePreRef.current.style.display = 'none';
+            }
+            // 상태바 텍스트 갱신
+            if (overlayStatusRef.current) {
+              overlayStatusRef.current.textContent = _artBuf.charCount > 0
+                ? `HTML 코드 작성 중... ${_artBuf.charCount.toLocaleString()}자`
+                : 'HTML 코드 생성 대기 중...';
+            }
+          }
+        }
+
+        // ── 3) 타이핑바 제어 (React props 완전 우회) ──
+        if (typingBarRef.current) {
+          if (_artBuf.html.length > 0) {
+            typingBarRef.current.style.display = '';
+            if (typingSnippetRef.current) {
+              typingSnippetRef.current.textContent = _artBuf.html.slice(-100).replace(/\s+/g, ' ');
+            }
+            if (typingCountRef.current) {
+              typingCountRef.current.textContent = `${_artBuf.charCount.toLocaleString()}자`;
+            }
+          } else {
+            typingBarRef.current.style.display = 'none';
+          }
+        }
+
+        // ── 4) 헤더 DOM 직접 갱신 (React state 우회) ──
+        if (streamTitleRef.current && _artBuf.title) {
+          streamTitleRef.current.textContent = _artBuf.title;
+        }
+        if (streamCharsRef.current) {
+          streamCharsRef.current.textContent = `${_artBuf.charCount.toLocaleString()} chars`;
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [isComplete, streamIframeReady]);
 
   // finalTc 완료 시 blob URL 생성
   useEffect(() => {
@@ -2788,10 +2882,16 @@ function ArtifactSidePanel({
           </span>
         )}
 
-        {/* 타이틀 */}
-        <span className="font-semibold text-[12px] flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
+        {/* 타이틀 — 스트리밍 중에는 ref로 직접 업데이트 */}
+        <span ref={!isComplete ? streamTitleRef : undefined} className="font-semibold text-[12px] flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
           {title || '아티팩트'}
         </span>
+        {/* 스트리밍 중 실시간 charCount — React 우회로 직접 DOM 업데이트 */}
+        {!isComplete && (
+          <span ref={streamCharsRef} className="text-[10px] font-mono tabular-nums flex-shrink-0" style={{ color: 'var(--accent)', opacity: 0.7 }}>
+            {charCount > 0 ? `${charCount.toLocaleString()} chars` : ''}
+          </span>
+        )}
 
         {/* 완료 상태 액션 버튼 */}
         {isComplete && finalTc && (
@@ -3010,69 +3110,45 @@ function ArtifactSidePanel({
             )}
           </>
         ) : (
-          /* ── 스트리밍 중: 코드 스트리밍 오버레이 + iframe 병행 ───────────── */
+          /* ── 스트리밍 중: 코드 오버레이 + iframe + 타이핑바 (모두 ref 기반 직접 제어) ── */
           <>
-            {/* 코드 스트리밍 오버레이 (html이 충분해질 때까지 표시) */}
-            {(!html || html.length < 100) && (
-              <div
-                className="absolute inset-0 z-10 flex flex-col"
-                style={{ background: '#0d1117' }}
-              >
-                {/* 코드 영역 */}
-                <div className="flex-1 overflow-hidden flex flex-col justify-end px-3 py-2">
-                  {charCount > 0 ? (
-                    <pre
-                      className="text-[11px] leading-[18px] overflow-hidden"
-                      style={{ fontFamily: 'var(--font-mono)', margin: 0, background: 'transparent', color: '#7c8b9a' }}
-                    >
-                      {(() => {
-                        const sideLines = html.split('\n');
-                        const visibleSideLines = sideLines.slice(-16);
-                        const startNo = Math.max(1, sideLines.length - 15);
-                        return visibleSideLines.map((line, i) => {
-                          const lineNo = startNo + i;
-                          const isLast = i === visibleSideLines.length - 1;
-                          return (
-                            <div key={lineNo} className="flex" style={{ opacity: isLast ? 1 : 0.4 + (i / visibleSideLines.length) * 0.6 }}>
-                              <span className="select-none flex-shrink-0 text-right pr-3" style={{ width: 32, color: '#3d4856', fontSize: 10 }}>
-                                {lineNo}
-                              </span>
-                              <span style={{ color: isLast ? '#e2e8f0' : '#6b7685', whiteSpace: 'pre', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                {colorizeHtmlLine(line)}
-                              </span>
-                              {isLast && (
-                                <span className="inline-block w-[2px] h-[13px] ml-0.5 rounded-sm animate-pulse align-middle" style={{ background: 'var(--accent)' }} />
-                              )}
-                            </div>
-                          );
-                        });
-                      })()}
-                    </pre>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center flex-1 gap-3" style={{ color: 'var(--text-muted)' }}>
-                      <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                      </svg>
-                      <span className="text-[12px]">아티팩트 준비 중...</span>
-                    </div>
-                  )}
-                </div>
-                {/* 하단 상태 바 */}
-                <div className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5" style={{ borderTop: '1px solid rgba(99,102,241,0.2)', background: 'rgba(99,102,241,0.06)' }}>
-                  <svg className="animate-spin w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ color: 'var(--accent)' }}>
-                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+            {/* ★ 코드 스트리밍 오버레이 — RAF 루프에서 visibility 직접 제어 (React props 의존 0) */}
+            <div
+              ref={overlayRef}
+              className="absolute inset-0 z-10 flex flex-col"
+              style={{ background: '#0d1117', transition: 'opacity 0.3s ease-out' }}
+            >
+              {/* 코드 영역 */}
+              <div className="flex-1 overflow-hidden flex flex-col justify-end px-3 py-2">
+                {/* 스피너 — 초기 표시, 데이터 수신 시 RAF가 숨김 */}
+                <div ref={spinnerRef} className="flex flex-col items-center justify-center flex-1 gap-3" style={{ color: 'var(--text-muted)' }}>
+                  <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
                   </svg>
-                  <span className="text-[10px] font-mono truncate" style={{ color: 'var(--text-muted)' }}>
-                    {charCount > 0 ? `HTML 코드 작성 중... ${charCount.toLocaleString()}자` : 'HTML 코드 생성 대기 중...'}
-                  </span>
-                  <div className="ml-auto flex gap-0.5">
-                    {[0, 1, 2].map(j => (
-                      <span key={j} className="w-1 h-1 rounded-full" style={{ background: 'var(--accent)', animation: `chatDot 1.4s ease-in-out ${j * 0.16}s infinite` }} />
-                    ))}
-                  </div>
+                  <span className="text-[12px]">아티팩트 준비 중...</span>
+                </div>
+                {/* 코드 라인 — 초기 숨김, 데이터 수신 시 RAF가 innerHTML로 직접 갱신 */}
+                <pre
+                  ref={codePreRef}
+                  className="text-[11px] leading-[18px] overflow-hidden"
+                  style={{ display: 'none', fontFamily: 'var(--font-mono)', margin: 0, background: 'transparent', color: '#7c8b9a' }}
+                />
+              </div>
+              {/* 하단 상태 바 */}
+              <div className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5" style={{ borderTop: '1px solid rgba(99,102,241,0.2)', background: 'rgba(99,102,241,0.06)' }}>
+                <svg className="animate-spin w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ color: 'var(--accent)' }}>
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                </svg>
+                <span ref={overlayStatusRef} className="text-[10px] font-mono truncate" style={{ color: 'var(--text-muted)' }}>
+                  HTML 코드 생성 대기 중...
+                </span>
+                <div className="ml-auto flex gap-0.5">
+                  {[0, 1, 2].map(j => (
+                    <span key={j} className="w-1 h-1 rounded-full" style={{ background: 'var(--accent)', animation: `chatDot 1.4s ease-in-out ${j * 0.16}s infinite` }} />
+                  ))}
                 </div>
               </div>
-            )}
+            </div>
 
             {/* 스트리밍 iframe: srcdoc 한 번 로드 후 body 직접 갱신 */}
             <iframe
@@ -3085,24 +3161,18 @@ function ArtifactSidePanel({
               style={{ background: '#0f1117', display: 'block' }}
             />
 
-            {/* 하단 타이핑 바 */}
-            {html && (
-              <div
-                className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5"
-                style={{ background: 'rgba(15,17,23,0.95)', borderTop: '1px solid var(--border-color)' }}
-              >
-                <svg className="w-3 h-3 flex-shrink-0 animate-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--accent)' }}>
-                  <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
-                </svg>
-                <span className="text-[10px] font-mono truncate flex-1" style={{ color: 'var(--text-muted)' }}>
-                  {html.slice(-100).replace(/\s+/g, ' ')}
-                  <span className="inline-block w-[2px] h-[10px] ml-0.5 rounded-sm animate-pulse align-middle" style={{ background: 'var(--accent)' }} />
-                </span>
-                <span className="flex-shrink-0 text-[10px] font-mono" style={{ color: '#6366f1' }}>
-                  {charCount.toLocaleString()}자
-                </span>
-              </div>
-            )}
+            {/* ★ 하단 타이핑바 — 초기 숨김, RAF 루프에서 직접 제어 */}
+            <div
+              ref={typingBarRef}
+              className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5"
+              style={{ display: 'none', background: 'rgba(15,17,23,0.95)', borderTop: '1px solid var(--border-color)' }}
+            >
+              <svg className="w-3 h-3 flex-shrink-0 animate-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--accent)' }}>
+                <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+              </svg>
+              <span ref={typingSnippetRef} className="text-[10px] font-mono truncate flex-1" style={{ color: 'var(--text-muted)' }} />
+              <span ref={typingCountRef} className="flex-shrink-0 text-[10px] font-mono" style={{ color: '#6366f1' }} />
+            </div>
           </>
         )}
       </div>
@@ -5026,7 +5096,13 @@ function KnowledgeBrowser() {
       .catch(() => setLoading(false));
   };
 
-  useEffect(() => { fetchList(); }, []);
+  useEffect(() => {
+    fetchList();
+    // save_knowledge 성공 시 자동 갱신
+    const handler = () => fetchList();
+    window.addEventListener('knowledge-updated', handler);
+    return () => window.removeEventListener('knowledge-updated', handler);
+  }, []);
 
   const loadPreview = async (name: string) => {
     if (previewName === name) { setPreviewName(null); return; }
@@ -5050,7 +5126,7 @@ function KnowledgeBrowser() {
     } catch { /* ignore */ }
   };
 
-  if (loading || items.length === 0) return null;
+  if (loading) return null;
 
   const totalSizeKB = items.reduce((s, it) => s + it.sizeKB, 0);
 
@@ -5068,9 +5144,11 @@ function KnowledgeBrowser() {
         <span className="text-[11px] font-semibold uppercase tracking-wider flex-1" style={{ color: 'var(--text-muted)' }}>
           널리지 ({items.length})
         </span>
-        <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
-          {totalSizeKB.toFixed(0)}KB
-        </span>
+        {items.length > 0 && (
+          <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
+            {totalSizeKB.toFixed(0)}KB
+          </span>
+        )}
         <svg
           width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
           className="flex-shrink-0 transition-transform"
@@ -5082,6 +5160,11 @@ function KnowledgeBrowser() {
 
       {expanded && (
         <div className="space-y-1 pb-2">
+          {items.length === 0 && (
+            <div className="px-2 py-2 text-[10px]" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>
+              저장된 널리지가 없습니다. 대화 중 AI에게 지식을 저장하도록 요청하세요.
+            </div>
+          )}
           {items.map(it => (
             <button
               key={it.name}
@@ -5876,8 +5959,11 @@ export default function ChatPage() {
 
     const loadingId = loadingMsg.id;
 
-    // 아티팩트 스트리밍 로그 스로틀 타임스탬프
-    let _lastArtifactUpdate = 0;
+    // 아티팩트 스트리밍: 모듈 레벨 공유 버퍼 (_artBuf) 에 직접 쓰기 (React 완전 우회)
+    let _lastArtifactLog = 0;
+    let _artifactPanelOpened = false;
+    // 스트림 시작 시 버퍼 리셋
+    _artBuf.html = ''; _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0;
 
     try {
       const { content, toolCalls, rawMessages, tokenUsage } = await sendChatMessage(
@@ -5906,23 +5992,33 @@ export default function ChatPage() {
           );
         },
         (html, title, charCount) => {
-          // 아티팩트 실시간 생성 진행 → React 18 자동 배치에 의존 (스로틀 없음)
-          // 동일 microtask 내 여러 호출은 React가 자동으로 마지막 값만 렌더링
+          // ★ 핵심: 모듈 레벨 버퍼에 직접 쓰기 (React state 업데이트 0회)
+          // ArtifactSidePanel의 RAF 루프가 이 버퍼에서 직접 읽어 iframe body를 갱신
+          _artBuf.html = html;
+          _artBuf.title = title;
+          _artBuf.charCount = charCount;
+          _artBuf.ver++;
+
+          // 로깅 스로틀 (디버그용)
           const now = performance.now();
-          // 로깅만 스로틀 (상태 업데이트는 항상 수행)
-          if (_lastArtifactUpdate === 0 || now - _lastArtifactUpdate >= 200) {
-            _lastArtifactUpdate = now;
-            console.log(`[ArtifactStream] charCount=${charCount}, htmlLen=${html.length}, title="${title}"`);
+          if (_lastArtifactLog === 0 || now - _lastArtifactLog >= 500) {
+            _lastArtifactLog = now;
+            console.log(`[ArtifactStream] ver=${_artBuf.ver}, charCount=${charCount}, htmlLen=${html.length}, title="${title}"`);
           }
-          setArtifactPanel((prev) => {
-            if (!prev) {
-              return { html, title: title || '', charCount, isComplete: false };
-            }
-            if (!prev.isComplete) {
-              return { html, title: title || prev.title || '', charCount, isComplete: false };
-            }
-            return prev;
-          });
+
+          // 패널 열기만 React state로 1회 처리 (컴포넌트 마운트 트리거)
+          if (!_artifactPanelOpened) {
+            _artifactPanelOpened = true;
+            setArtifactPanel(prev => {
+              if (prev?.isComplete && prev?.finalTc) {
+                // ★ patch_artifact 모드: 기존 패널(finalTc 포함)을 유지!
+                // 빈 패널로 덮어쓰면 finalTc가 소실되어 패치 적용이 실패함
+                return prev;
+              }
+              // create_artifact 모드: 새 빈 패널 열기
+              return { html: '', title: title || '', charCount: 0, isComplete: false };
+            });
+          }
         },
         (step: ThinkingStep) => {
           // 실시간 thinking 업데이트
@@ -5970,6 +6066,15 @@ export default function ChatPage() {
         ),
       );
 
+      // 아티팩트 스트리밍 완료: 공유 버퍼의 최종 데이터를 React state에 반영 (create_artifact용)
+      // patch_artifact의 경우 isComplete=true를 유지하므로 이 블록은 건너뜀
+      if (_artifactPanelOpened && _artBuf.charCount > 0) {
+        setArtifactPanel((prev) => {
+          if (!prev || prev.isComplete) return prev; // patch 모드(isComplete=true 유지) → 건너뜀
+          return { ...prev, html: _artBuf.html, title: _artBuf.title || prev.title || '', charCount: _artBuf.charCount };
+        });
+      }
+
       // 아티팩트 패널: 완료 처리
       const artifactTc = toolCalls?.find((tc) => tc.kind === 'artifact') as ArtifactResult | undefined;
       const patchTc = toolCalls?.find((tc) => tc.kind === 'artifact_patch') as ArtifactPatchResult | undefined;
@@ -5989,10 +6094,13 @@ export default function ChatPage() {
       } else if (patchTc && patchTc.patches.length > 0) {
         // patch_artifact: 현재 열린 아티팩트에 패치 적용
         setArtifactPanel((prev) => {
-          if (!prev?.finalTc) return null; // patch_artifact 스트리밍 중 생긴 임시 패널 → 정리
+          if (!prev?.finalTc) {
+            console.warn('[Patch] finalTc가 없어서 패치를 적용할 수 없습니다. prev:', prev);
+            return prev; // null 반환 대신 기존 패널 유지
+          }
           const originalHtml = prev.finalTc.html ?? '';
           const { html: patchedHtml, applied, failed } = applyPatches(originalHtml, patchTc.patches);
-          console.log(`[Patch] 적용 ${applied}/${patchTc.patches.length}개${failed.length ? `, 실패: ${failed.join(' | ')}` : ''}`);
+          console.log(`[Patch] 적용 ${applied}/${patchTc.patches.length}개, 원본 길이: ${originalHtml.length}, 결과 길이: ${patchedHtml.length}${failed.length ? `, 실패: ${failed.join(' | ')}` : ''}`);
           const newTitle = patchTc.title ?? prev.finalTc.title ?? prev.title;
           const patchedTc: ArtifactResult = { ...prev.finalTc, html: patchedHtml, title: newTitle };
           // savedArtifacts도 업데이트

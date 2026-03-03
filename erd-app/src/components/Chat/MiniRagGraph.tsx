@@ -103,6 +103,8 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
   const nodesRef = useRef<N[]>([]);
   const nodeObjRef = useRef<Map<string, THREE.Group>>(new Map());
   const builtRef = useRef(false);
+  const prevActiveRef = useRef<Set<string> | null>(null);
+  const ringObjsRef = useRef<Map<string, THREE.Mesh>>(new Map());
 
   // 그래프 데이터 (한번만 빌드)
   const graphData = useMemo(() => {
@@ -180,6 +182,32 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
     return tex;
   }, []);
 
+  // 링 텍스처 (포커스 표시용)
+  const ringTexRef = useRef<THREE.CanvasTexture | null>(null);
+  const getRingTex = useCallback(() => {
+    if (ringTexRef.current) return ringTexRef.current;
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 128;
+    const ctx = c.getContext('2d')!;
+    ctx.clearRect(0, 0, 128, 128);
+    // 바깥 글로우 링
+    ctx.beginPath();
+    ctx.arc(64, 64, 50, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    // 내부 글로우
+    const g = ctx.createRadialGradient(64, 64, 40, 64, 64, 60);
+    g.addColorStop(0, 'rgba(255,255,255,0)');
+    g.addColorStop(0.7, 'rgba(255,255,255,0.05)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(c);
+    ringTexRef.current = tex;
+    return tex;
+  }, []);
+
   // 3D 렌더
   useEffect(() => {
     if (!containerRef.current || builtRef.current) return;
@@ -199,7 +227,7 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
         const isCore = type === 'system_prompt';
         const isMid = type === 'domain' || type === 'tool' || type === 'source';
         const isGuide = type === 'guide_db' || type === 'guide_code';
-        const dotSize = isCore ? 2.5 : isMid ? 1.2 : isGuide ? 0.8 : 0.5;
+        const dotSize = isCore ? 3 : isMid ? 1.5 : isGuide ? 1.0 : 0.6;
 
         const dotMat = new THREE.SpriteMaterial({
           map: getTex(C[type] ?? '#555'),
@@ -212,15 +240,18 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
         dot.name = 'dot';
         group.add(dot);
 
+        // 레이블 — 반투명 배경 + 더 큰 폰트 + 아웃라인 효과
         const lbl = new SpriteText(n.label || n.name);
-        lbl.color = C[type] ?? '#aaa';
+        lbl.color = '#ffffff';
         lbl.fontFace = "'Segoe UI', 'Apple SD Gothic Neo', system-ui, sans-serif";
-        lbl.textHeight = isCore ? 3.2 : isMid ? 2 : isGuide ? 1.5 : 1;
-        lbl.fontWeight = isCore || type === 'domain' ? 'bold' : 'normal';
-        lbl.backgroundColor = 'rgba(0,0,0,0)';
-        lbl.borderWidth = 0;
-        lbl.padding = [0, 0] as any;
-        lbl.position.y = dotSize * 0.5 + lbl.textHeight * 0.6;
+        lbl.textHeight = isCore ? 3.5 : isMid ? 2.2 : isGuide ? 1.6 : 1.1;
+        lbl.fontWeight = isCore || type === 'domain' ? '900' : '600';
+        lbl.backgroundColor = 'rgba(0,0,0,0.55)';
+        lbl.borderRadius = 3 as any;
+        lbl.borderWidth = 0.5;
+        lbl.borderColor = C[type] ?? '#555';
+        lbl.padding = [2, 4] as any;
+        lbl.position.y = dotSize * 0.6 + lbl.textHeight * 0.7;
         lbl.name = 'label';
         group.add(lbl);
 
@@ -228,9 +259,9 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
         return group;
       })
       .nodeThreeObjectExtend(false)
-      .linkColor(() => 'rgba(255,255,255,0.02)')
-      .linkWidth(0.08)
-      .linkOpacity(0.3)
+      .linkColor(() => 'rgba(255,255,255,0.04)')
+      .linkWidth(0.1)
+      .linkOpacity(0.35)
       .linkDirectionalParticles(0)
       .width(el.clientWidth)
       .height(el.clientHeight);
@@ -251,14 +282,31 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
 
     graphRef.current = graph;
 
+    // 링 펄스 애니메이션
+    const clock = new THREE.Clock();
+    let animId: number;
+    const animate = () => {
+      animId = requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+      ringObjsRef.current.forEach((ring) => {
+        const pulse = 1.0 + 0.3 * Math.sin(t * 3);
+        ring.scale.set(pulse, pulse, 1);
+        (ring.material as THREE.SpriteMaterial).opacity = 0.4 + 0.3 * Math.sin(t * 3 + 0.5);
+      });
+    };
+    animate();
+
     const onResize = () => {
       if (containerRef.current) graph.width(containerRef.current.clientWidth).height(containerRef.current.clientHeight);
     };
     window.addEventListener('resize', onResize);
-    return () => { window.removeEventListener('resize', onResize); };
-  }, [graphData, getTex]);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      cancelAnimationFrame(animId);
+    };
+  }, [graphData, getTex, getRingTex]);
 
-  // ── 실시간 하이라이트 (카메라 고정, 노드/링크 강조만) ──
+  // ── 실시간 하이라이트 (카메라 포커스 + 노드/링크 강조) ──
 
   useEffect(() => {
     const objects = nodeObjRef.current;
@@ -269,22 +317,110 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
     const trace = calls.length > 0 ? extractTrace(calls, nodesRef.current) : null;
     const active = trace?.allIds ?? null;
 
+    // 이전과 같은 활성 집합이면 스킵 (불필요한 업데이트 방지)
+    const prevActive = prevActiveRef.current;
+    const isSame = active && prevActive && active.size === prevActive.size && [...active].every(id => prevActive.has(id));
+    if (isSame) return;
+    prevActiveRef.current = active ? new Set(active) : null;
+
+    // 기존 링 제거
+    ringObjsRef.current.forEach((ring, id) => {
+      const group = objects.get(id);
+      if (group) group.remove(ring);
+    });
+    ringObjsRef.current.clear();
+
     if (active) {
-      // 노드 하이라이트: 활성 → 원래 색상 + 불투명, 비활성 → 거의 투명
+      // 활성 노드 좌표 수집 (카메라 포커스용)
+      const activePositions: THREE.Vector3[] = [];
+
       objects.forEach((group, id) => {
         const isActive = active.has(id);
         const node = nodesRef.current.find(n => n.id === id);
-        const type = node?.type ?? 'table';
+        const type = (node?.type ?? 'table') as NT;
+        const color = C[type] ?? '#aaa';
+
         group.traverse(child => {
           if (child instanceof THREE.Sprite && child.name === 'dot') {
-            (child.material as THREE.SpriteMaterial).opacity = isActive ? 1 : 0.03;
+            const mat = child.material as THREE.SpriteMaterial;
+            if (isActive) {
+              mat.opacity = 1;
+              // 활성 노드 1.5배 스케일업
+              const origScale = child.scale.x;
+              child.scale.set(origScale * 1.5, origScale * 1.5, 1);
+            } else {
+              mat.opacity = 0.08;
+              // 비활성은 원래 크기 유지 (이미 set된 상태)
+            }
           }
-          if (child instanceof SpriteText) {
-            (child as any).color = isActive ? C[type as NT] ?? '#fff' : 'rgba(255,255,255,0.03)';
-            (child as any).fontWeight = isActive ? 'bold' : 'normal';
+          if (child instanceof SpriteText && child.name === 'label') {
+            if (isActive) {
+              (child as any).color = '#ffffff';
+              (child as any).fontWeight = '900';
+              (child as any).backgroundColor = `${color}99`;
+              (child as any).borderColor = color;
+              (child as any).borderWidth = 1;
+            } else {
+              (child as any).color = 'rgba(255,255,255,0.06)';
+              (child as any).fontWeight = 'normal';
+              (child as any).backgroundColor = 'rgba(0,0,0,0)';
+              (child as any).borderWidth = 0;
+            }
           }
         });
+
+        if (isActive) {
+          // 포커스 링 추가
+          const ringMat = new THREE.SpriteMaterial({
+            map: getRingTex(),
+            color: new THREE.Color(color),
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+            opacity: 0.6,
+          });
+          const ring = new THREE.Sprite(ringMat) as any;
+          const isCore = type === 'system_prompt';
+          const isMid = type === 'domain' || type === 'tool' || type === 'source';
+          const ringSize = isCore ? 8 : isMid ? 5 : 3.5;
+          ring.scale.set(ringSize, ringSize, 1);
+          ring.name = 'ring';
+          group.add(ring);
+          ringObjsRef.current.set(id, ring);
+
+          // 위치 수집
+          if (group.position) {
+            activePositions.push(new THREE.Vector3(group.position.x, group.position.y, group.position.z));
+          }
+          // ForceGraph3D의 __data 에서 좌표 가져오기
+          const gd = graph.graphData();
+          const nodeData = gd.nodes?.find((nd: any) => nd.id === id);
+          if (nodeData && (nodeData.x !== undefined)) {
+            activePositions.push(new THREE.Vector3(nodeData.x, nodeData.y ?? 0, nodeData.z ?? 0));
+          }
+        }
       });
+
+      // ── 카메라를 활성 노드 중심으로 포커스 ──
+      if (activePositions.length > 0) {
+        const centroid = new THREE.Vector3();
+        activePositions.forEach(p => centroid.add(p));
+        centroid.divideScalar(activePositions.length);
+
+        // 활성 노드들의 바운딩 반경 계산
+        let maxDist = 0;
+        activePositions.forEach(p => {
+          const d = p.distanceTo(centroid);
+          if (d > maxDist) maxDist = d;
+        });
+        const camDist = Math.max(60, maxDist * 2.5 + 40);
+
+        graph.cameraPosition(
+          { x: centroid.x, y: centroid.y + camDist * 0.15, z: centroid.z + camDist },
+          centroid,
+          800, // 800ms 부드러운 전환
+        );
+      }
 
       // 링크 하이라이트
       graph
@@ -293,25 +429,25 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
           const t = typeof l.target === 'object' ? l.target.id : l.target;
           if (active.has(s) && active.has(t)) {
             const lt = l.type as string;
-            if (lt.startsWith('prompt')) return 'rgba(239,68,68,0.5)';
-            if (lt.startsWith('tool')) return 'rgba(244,114,182,0.5)';
-            if (lt.includes('source')) return 'rgba(34,211,238,0.4)';
-            if (lt.includes('domain')) return 'rgba(192,132,252,0.3)';
-            return 'rgba(255,255,255,0.3)';
+            if (lt.startsWith('prompt')) return 'rgba(239,68,68,0.6)';
+            if (lt.startsWith('tool')) return 'rgba(244,114,182,0.6)';
+            if (lt.includes('source')) return 'rgba(34,211,238,0.5)';
+            if (lt.includes('domain')) return 'rgba(192,132,252,0.4)';
+            return 'rgba(255,255,255,0.4)';
           }
           return 'rgba(255,255,255,0.01)';
         })
         .linkWidth((l: any) => {
           const s = typeof l.source === 'object' ? l.source.id : l.source;
           const t = typeof l.target === 'object' ? l.target.id : l.target;
-          return (active.has(s) && active.has(t)) ? 0.5 : 0.03;
+          return (active.has(s) && active.has(t)) ? 0.7 : 0.03;
         })
         .linkDirectionalParticles((l: any) => {
           const s = typeof l.source === 'object' ? l.source.id : l.source;
           const t = typeof l.target === 'object' ? l.target.id : l.target;
-          return (active.has(s) && active.has(t)) ? 3 : 0;
+          return (active.has(s) && active.has(t)) ? 4 : 0;
         })
-        .linkDirectionalParticleWidth(0.8)
+        .linkDirectionalParticleWidth(1.2)
         .linkDirectionalParticleSpeed(0.008)
         .linkDirectionalParticleColor((l: any) => {
           const lt = l.type as string;
@@ -321,27 +457,33 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
           return '#22d3ee';
         });
     } else {
-      // 트레이스 해제 → 원래 상태 복원
+      // ── 트레이스 해제 → 원래 상태 복원 ──
       objects.forEach((group, id) => {
         const node = nodesRef.current.find(n => n.id === id);
-        const type = node?.type ?? 'table';
+        const type = (node?.type ?? 'table') as NT;
         group.traverse(child => {
           if (child instanceof THREE.Sprite && child.name === 'dot') {
             (child.material as THREE.SpriteMaterial).opacity = 1;
           }
-          if (child instanceof SpriteText) {
-            (child as any).color = C[type] ?? '#aaa';
-            (child as any).fontWeight = 'normal';
+          if (child instanceof SpriteText && child.name === 'label') {
+            (child as any).color = '#ffffff';
+            (child as any).fontWeight = type === 'system_prompt' || type === 'domain' ? '900' : '600';
+            (child as any).backgroundColor = 'rgba(0,0,0,0.55)';
+            (child as any).borderColor = C[type] ?? '#555';
+            (child as any).borderWidth = 0.5;
           }
         });
       });
 
       graph
-        .linkColor(() => 'rgba(255,255,255,0.02)')
-        .linkWidth(0.08)
+        .linkColor(() => 'rgba(255,255,255,0.04)')
+        .linkWidth(0.1)
         .linkDirectionalParticles(0);
+
+      // 카메라 원래 위치로
+      graph.cameraPosition({ x: 0, y: 0, z: 180 }, { x: 0, y: 0, z: 0 }, 600);
     }
-  }, [liveToolCalls]);
+  }, [liveToolCalls, getRingTex]);
 
   const activeCount = useMemo(() => {
     if (!liveToolCalls?.length) return 0;
@@ -352,16 +494,41 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
     <div className="relative w-full h-full" style={{ background: '#05060a', overflow: 'hidden' }}>
       <div ref={containerRef} className="absolute inset-0" />
 
+      {/* 범례 */}
+      <div className="absolute top-3 left-3 z-10 pointer-events-none select-none">
+        <div className="flex flex-wrap gap-x-3 gap-y-1 px-2.5 py-1.5 rounded-lg" style={{
+          background: 'rgba(5,6,10,0.8)', backdropFilter: 'blur(8px)',
+          border: '1px solid rgba(255,255,255,0.06)',
+        }}>
+          {Object.entries(C).map(([type, color]) => {
+            const labels: Record<string, string> = {
+              system_prompt: 'Prompt', domain: '도메인', tool: '도구',
+              source: '소스', guide_db: 'DB가이드', guide_code: '코드가이드', table: '테이블',
+            };
+            return (
+              <div key={type} className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color, boxShadow: `0 0 4px ${color}` }} />
+                <span className="text-[9px]" style={{ color: color + 'cc' }}>{labels[type] ?? type}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       {/* 하단 정보 */}
       {activeCount > 0 && (
         <div className="absolute bottom-3 left-3 z-10 pointer-events-none select-none">
-          <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg" style={{
-            background: 'rgba(5,6,10,0.85)', backdropFilter: 'blur(8px)',
-            border: '1px solid rgba(244,114,182,0.15)',
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg" style={{
+            background: 'rgba(5,6,10,0.9)', backdropFilter: 'blur(8px)',
+            border: '1px solid rgba(244,114,182,0.25)',
+            boxShadow: '0 0 20px rgba(244,114,182,0.1)',
           }}>
-            <span className="w-1.5 h-1.5 rounded-full bg-pink-400 animate-pulse" />
-            <span className="text-[10px] font-mono" style={{ color: '#f472b6' }}>
-              {activeCount} nodes · {liveToolCalls?.length ?? 0} tool calls
+            <span className="w-2 h-2 rounded-full bg-pink-400 animate-pulse" style={{ boxShadow: '0 0 8px #f472b6' }} />
+            <span className="text-[11px] font-semibold" style={{ color: '#f472b6' }}>
+              {activeCount} nodes
+            </span>
+            <span className="text-[10px] font-mono" style={{ color: '#f472b6', opacity: 0.6 }}>
+              · {liveToolCalls?.length ?? 0} tool calls
             </span>
           </div>
         </div>
@@ -369,7 +536,7 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
 
       {/* 우하단: 조작법 */}
       <div className="absolute bottom-3 right-3 z-10 pointer-events-none select-none text-right" style={{
-        color: '#334155', fontSize: 8, textShadow: '0 1px 3px rgba(0,0,0,0.8)',
+        color: '#475569', fontSize: 9, textShadow: '0 1px 3px rgba(0,0,0,0.8)',
       }}>
         <p>드래그 · 회전 / 스크롤 · 줌</p>
       </div>
