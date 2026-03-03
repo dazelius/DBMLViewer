@@ -2162,28 +2162,21 @@ export interface TokenUsageSummary {
   system_prompt_estimate: number;
 }
 
-export async function sendChatMessage(
-  userMessage: string,
-  history: ChatTurn[],
-  schema: ParsedSchema | null,
-  tableData: TableDataMap,
-  onToolCall?: (tc: ToolCallResult, index: number) => void,
-  onTextDelta?: (delta: string, fullText: string) => void,
-  onArtifactProgress?: (html: string, title: string, charCount: number, rawJson?: string) => void,
-  onThinkingUpdate?: (step: ThinkingStep) => void,
-  onTokenUsage?: (usage: TokenUsageSummary) => void,
-): Promise<{ content: string; toolCalls: ToolCallResult[]; rawMessages?: ClaudeMsg[]; tokenUsage?: TokenUsageSummary }> {
-  // 컴포넌트가 아직 로딩 중일 때 schema가 null일 수 있으므로 스토어에서 fallback
-  const effectiveSchema = schema ?? useSchemaStore.getState().schema;
+// ── 널리지 인메모리 캐시 (30초 TTL) ────────────────────────────────────────
+// 매 메시지마다 API 2~N회 호출하던 것을 캐시에서 즉시 반환
+let _knowledgeCache: { entries: { name: string; sizeKB: number; content: string }[]; ts: number } | null = null;
+const KNOWLEDGE_CACHE_TTL = 30_000; // 30초
 
-  // 저장된 널리지 목록 + 내용 전부 가져오기 (시스템 프롬프트에 직접 포함 → AI가 항상 인지)
-  let knowledgeEntries: { name: string; sizeKB: number; content: string }[] = [];
+async function _getKnowledgeEntries(): Promise<{ name: string; sizeKB: number; content: string }[]> {
+  if (_knowledgeCache && Date.now() - _knowledgeCache.ts < KNOWLEDGE_CACHE_TTL) {
+    return _knowledgeCache.entries;
+  }
+  const entries: { name: string; sizeKB: number; content: string }[] = [];
   try {
     const knResp = await fetch('/api/knowledge/list');
     if (knResp.ok) {
       const knData = await knResp.json() as { items?: { name: string; sizeKB: number }[] };
       const items = knData.items ?? [];
-      // 각 널리지 파일 내용을 병렬로 읽기 (최대 50KB/파일, 총 150KB 제한)
       const MAX_PER_FILE = 50 * 1024;
       const MAX_TOTAL = 150 * 1024;
       let totalLen = 0;
@@ -2200,15 +2193,40 @@ export async function sendChatMessage(
       for (const r of reads) {
         if (r.status === 'fulfilled' && r.value.content) {
           if (totalLen + r.value.content.length > MAX_TOTAL) {
-            knowledgeEntries.push({ ...r.value, content: r.value.content.slice(0, MAX_TOTAL - totalLen) + '\n...(총 용량 제한으로 잘림)' });
+            entries.push({ ...r.value, content: r.value.content.slice(0, MAX_TOTAL - totalLen) + '\n...(총 용량 제한으로 잘림)' });
             break;
           }
           totalLen += r.value.content.length;
-          knowledgeEntries.push(r.value);
+          entries.push(r.value);
         }
       }
     }
-  } catch { /* 실패해도 무시 — 널리지 없이 진행 */ }
+  } catch { /* 실패해도 무시 */ }
+  _knowledgeCache = { entries, ts: Date.now() };
+  return entries;
+}
+
+// 널리지 변경 이벤트 시 캐시 무효화
+if (typeof window !== 'undefined') {
+  window.addEventListener('knowledge-updated', () => { _knowledgeCache = null; });
+}
+
+export async function sendChatMessage(
+  userMessage: string,
+  history: ChatTurn[],
+  schema: ParsedSchema | null,
+  tableData: TableDataMap,
+  onToolCall?: (tc: ToolCallResult, index: number) => void,
+  onTextDelta?: (delta: string, fullText: string) => void,
+  onArtifactProgress?: (html: string, title: string, charCount: number, rawJson?: string) => void,
+  onThinkingUpdate?: (step: ThinkingStep) => void,
+  onTokenUsage?: (usage: TokenUsageSummary) => void,
+): Promise<{ content: string; toolCalls: ToolCallResult[]; rawMessages?: ClaudeMsg[]; tokenUsage?: TokenUsageSummary }> {
+  // 컴포넌트가 아직 로딩 중일 때 schema가 null일 수 있으므로 스토어에서 fallback
+  const effectiveSchema = schema ?? useSchemaStore.getState().schema;
+
+  // 저장된 널리지 목록 + 내용 가져오기 (인메모리 캐싱으로 매번 API 호출 방지)
+  const knowledgeEntries = await _getKnowledgeEntries();
 
   const systemPrompt = buildSystemPrompt(effectiveSchema, tableData, knowledgeEntries);
 
@@ -2303,11 +2321,31 @@ export async function sendChatMessage(
   const tokenIterations: TokenUsageSummary['iterations'] = [];
   const systemPromptEstimate = Math.ceil(systemPrompt.length / 3.5); // 대략적 토큰 수 추정
 
+  // ── 동적 max_tokens: 아티팩트 요청이면 8192, 일반 대화면 4096 ──
+  const ARTIFACT_KEYWORDS = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|캐릭터.*시트|릴리즈.*노트/;
+  const dynamicMaxTokens = ARTIFACT_KEYWORDS.test(userMessage) ? 8192 : 4096;
+
+  // ── Anthropic Prompt Caching: 시스템 프롬프트 + 도구 정의를 캐싱하여 TTFT 대폭 감소 ──
+  // cache_control 마커를 추가하면 동일한 시스템 프롬프트가 서버에 캐싱됨 (5분 TTL)
+  // 첫 요청: cache_creation_input_tokens 발생 (25% 비용 증가)
+  // 후속 요청: cache_read_input_tokens 발생 (90% 비용 절감 + TTFT 80% 감소)
+  const cachedTools = TOOLS.map((tool, idx) =>
+    idx === TOOLS.length - 1
+      ? { ...tool, cache_control: { type: 'ephemeral' as const } }  // 마지막 도구에 캐시 브레이크포인트
+      : tool
+  );
+
   const requestBase = {
     model: 'claude-opus-4-6',
-    max_tokens: 8192,
-    system: systemPrompt,
-    tools: TOOLS,
+    max_tokens: dynamicMaxTokens,
+    system: [
+      {
+        type: 'text' as const,
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' as const },  // 시스템 프롬프트 캐싱
+      },
+    ],
+    tools: cachedTools,
   };
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
