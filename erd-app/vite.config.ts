@@ -32,21 +32,8 @@ export default defineConfig(({ mode }) => {
     server: {
       host: '0.0.0.0',
       port: 5173,
-      proxy: {
-        '/api/claude': {
-          target: 'https://api.anthropic.com',
-          changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api\/claude/, '/v1/messages'),
-          configure: (proxy) => {
-            proxy.on('proxyReq', (proxyReq) => {
-              proxyReq.removeHeader('origin')
-              proxyReq.removeHeader('referer')
-              proxyReq.setHeader('x-api-key', env.CLAUDE_API_KEY || '')
-              proxyReq.setHeader('anthropic-version', '2023-06-01')
-            })
-          },
-        },
-      },
+      // /api/claude 프록시는 vite-git-plugin 미들웨어에서 SSE 스트리밍 지원으로 직접 처리
+      // Vite 내장 http-proxy는 SSE 응답을 버퍼링하므로 사용하지 않음
     },
     preview: {
       host: '0.0.0.0',

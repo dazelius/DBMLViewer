@@ -481,32 +481,37 @@ function createGitMiddleware(options: GitPluginOptions) {
             'Content-Length': Buffer.byteLength(rawBody),
           },
         }, (proxyRes) => {
+          // SSE 스트리밍을 위한 헤더 — 모든 버퍼링/압축 방지
           res.writeHead(proxyRes.statusCode ?? 200, {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache, no-store',
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-store, no-transform',
             'Connection': 'keep-alive',
             'Access-Control-Allow-Origin': '*',
-            'X-Accel-Buffering': 'no',
+            'X-Accel-Buffering': 'no',        // nginx 프록시 버퍼링 방지
+            'Transfer-Encoding': 'chunked',   // 청크 전송 명시
           })
-          // Nagle 알고리즘 비활성화 → 각 청크 즉시 전송
-          res.socket?.setNoDelay(true)
+
+          // 소켓 레벨 최적화: Nagle 알고리즘 OFF + 타임아웃 없음
+          if (res.socket) {
+            res.socket.setNoDelay(true)
+            res.socket.setTimeout(0)
+          }
           res.flushHeaders()
 
-          // 수동 스트리밍: pipe() 대신 on('data') + write()로 즉시 전송
-          // pipe()는 내부 highWaterMark 버퍼링이 발생할 수 있어 SSE 실시간성이 떨어짐
+          // 수동 스트리밍: 각 청크 즉시 전송 (pipe() 사용 금지 — highWaterMark 버퍼링 방지)
           let chunkCount = 0
           let totalBytes = 0
           const startTime = Date.now()
           proxyRes.on('data', (chunk: Buffer) => {
             chunkCount++
             totalBytes += chunk.length
-            if (chunkCount <= 5 || chunkCount % 50 === 0) {
+            if (chunkCount <= 3 || chunkCount % 100 === 0) {
               console.log(`[SSE] chunk #${chunkCount}: +${chunk.length}B = ${totalBytes}B (+${Date.now() - startTime}ms)`)
             }
-            // 각 청크를 즉시 클라이언트에 전달 (버퍼링 없음)
+            // 즉시 전송 — cork/uncork로 단일 TCP 패킷 보장
+            if (res.socket) res.socket.cork()
             res.write(chunk)
-            // Node.js 내부 버퍼 즉시 플러시
-            if (typeof (res as any).flush === 'function') (res as any).flush()
+            if (res.socket) process.nextTick(() => res.socket!.uncork())
           })
           proxyRes.on('end', () => {
             console.log(`[SSE] 완료: ${chunkCount}개 청크, ${totalBytes}B, ${Date.now() - startTime}ms`)

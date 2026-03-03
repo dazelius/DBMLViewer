@@ -1546,10 +1546,18 @@ async function streamClaude(
   let lastEventType = ''; // SSE event: 타입 추적
   const usage: TokenUsage = { input_tokens: 0, output_tokens: 0 };
 
+  let _readCount = 0;
+  const _streamStart = performance.now();
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    buf += decoder.decode(value, { stream: true });
+    _readCount++;
+    const chunk = decoder.decode(value, { stream: true });
+    buf += chunk;
+    // 디버그: 청크 도착 시점 (처음 3개 + 매 50번째)
+    if (_readCount <= 3 || _readCount % 50 === 0) {
+      console.log(`[streamClaude] 📦 reader chunk #${_readCount}: +${chunk.length}B (+${(performance.now() - _streamStart).toFixed(0)}ms)`);
+    }
 
     const lines = buf.split('\n');
     buf = lines.pop() ?? '';
@@ -1585,6 +1593,7 @@ async function streamClaude(
             blocks[idx] = { ...cb, _inputStr: '' } as ContentBlock & { _inputStr: string };
             // create_artifact / patch_artifact 블록 시작 즉시 패널 오픈
             if (((cb as ToolUseBlock).name === 'create_artifact' || (cb as ToolUseBlock).name === 'patch_artifact') && onArtifactProgress) {
+              console.log(`[streamClaude] ⚡ ${(cb as ToolUseBlock).name} content_block_start (패널 오픈)`);
               onArtifactProgress('', '', 0);
             }
           } else {
@@ -1606,6 +1615,10 @@ async function streamClaude(
 
             // create_artifact: html 필드 유무 상관없이 title + html 추출해서 진행 전달
             if ((b as ToolUseBlock).name === 'create_artifact' && onArtifactProgress) {
+              // 디버그: 첫 delta, 매 20번째, html 시작 시점 로깅
+              if (tb._inputStr.length < 30 || tb._inputStr.length % 500 < 20) {
+                console.log(`[streamClaude] 📝 create_artifact delta: ${tb._inputStr.length}B, hasHtml=${tb._inputStr.includes('"html"')}`);
+              }
               const parsed = extractHtmlFromPartialJson(tb._inputStr);
               // html 없어도 title은 실시간으로 추출 (패널 타이틀 업데이트)
               const titleMatch = tb._inputStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)/) ;
