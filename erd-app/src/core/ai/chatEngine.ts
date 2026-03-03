@@ -1797,6 +1797,7 @@ async function streamClaude(
 
   let _readCount = 0;
   const _streamStart = performance.now();
+  let _lastYield = performance.now();
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -1807,8 +1808,12 @@ async function streamClaude(
       console.log(`[streamClaude] 📦 chunk #${_readCount}: +${chunk.length}B (+${(performance.now() - _streamStart).toFixed(0)}ms)`);
     }
 
-    // ★ 매 청크마다 무조건 브라우저에 양보 — DOM 페인트가 실행될 수 있도록
-    await new Promise<void>(r => setTimeout(r, 0));
+    // ★ 50ms 간격으로 브라우저에 양보 — 버스트 시 오버헤드 최소화하면서 setInterval tick 실행 보장
+    const now = performance.now();
+    if (now - _lastYield > 50) {
+      _lastYield = now;
+      await new Promise<void>(r => setTimeout(r, 0));
+    }
 
     const lines = buf.split('\n');
     buf = lines.pop() ?? '';
@@ -1836,6 +1841,11 @@ async function streamClaude(
       }
       lastEventType = '';
 
+      // ★ 디버그: 모든 SSE 이벤트 타입 로깅 (스트리밍 진단용)
+      if (ev.type !== 'content_block_delta' && ev.type !== 'ping') {
+        console.log(`[SSE] ${ev.type}`, ev.type === 'content_block_start' ? (ev.content_block as Record<string, unknown>)?.type + ':' + (ev.content_block as Record<string, unknown>)?.name : '');
+      }
+
       switch (ev.type) {
         case 'content_block_start': {
           const idx = ev.index as number;
@@ -1844,7 +1854,7 @@ async function streamClaude(
             blocks[idx] = { ...cb, _inputStr: '' } as ContentBlock & { _inputStr: string };
             // create_artifact / patch_artifact 블록 시작 즉시 패널 오픈
             if (((cb as ToolUseBlock).name === 'create_artifact' || (cb as ToolUseBlock).name === 'patch_artifact') && onArtifactProgress) {
-              console.log(`[streamClaude] ⚡ ${(cb as ToolUseBlock).name} content_block_start (패널 오픈)`);
+              console.log(`[streamClaude] ⚡ ${(cb as ToolUseBlock).name} content_block_start → 패널 오픈, onArtifactProgress=${!!onArtifactProgress}`);
               onArtifactProgress('', '', 0, '');
             }
           } else {
@@ -1856,13 +1866,22 @@ async function streamClaude(
           const idx = ev.index as number;
           const delta = ev.delta as { type: string; text?: string; partial_json?: string };
           const b = blocks[idx];
-          if (!b) break;
+          if (!b) { console.warn(`[SSE] delta idx=${idx} — block not found!`); break; }
+
           if (delta.type === 'text_delta' && b.type === 'text') {
             (b as TextBlock).text = ((b as TextBlock).text || '') + (delta.text ?? '');
             onTextDelta(delta.text ?? '');
           } else if (delta.type === 'input_json_delta' && b.type === 'tool_use') {
             const tb = b as ContentBlock & { _inputStr: string };
             tb._inputStr = (tb._inputStr || '') + (delta.partial_json ?? '');
+
+            // ★ 디버그: create_artifact delta 로깅 (처음 5개 + 매 20번째)
+            if ((b as ToolUseBlock).name === 'create_artifact') {
+              const lenNow = tb._inputStr.length;
+              if (lenNow < 200 || lenNow % 500 < 30) {
+                console.log(`[SSE] create_artifact delta: +${delta.partial_json?.length ?? 0}B → total ${lenNow}B`);
+              }
+            }
 
             // create_artifact: 매 delta마다 HTML 추출 (쓰로틀 없음 — 단순하고 확실하게)
             if ((b as ToolUseBlock).name === 'create_artifact' && onArtifactProgress) {

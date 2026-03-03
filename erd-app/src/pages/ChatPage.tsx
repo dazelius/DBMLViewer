@@ -2639,15 +2639,17 @@ function ArtifactSidePanel({
     let lastVer = 0;
     let overlayHidden = false;
     let lastIframeHtmlLen = 0;
+    let tickCount = 0;
+    const startTime = performance.now();
 
     const tick = () => {
-      if (_artBuf.ver === lastVer) return; // 변경 없으면 스킵
-      lastVer = _artBuf.ver;
+      tickCount++;
+      const elapsed = ((performance.now() - startTime) / 1000).toFixed(0);
+      const changed = _artBuf.ver !== lastVer;
+      if (changed) lastVer = _artBuf.ver;
 
-      // ── 1) iframe body 갱신 ──
-      const htmlGrew = _artBuf.html.length > lastIframeHtmlLen;
-      if (htmlGrew) {
-        // streamIframeRef 또는 ID로 fallback (마운트 순서 관계없이 확실히 찾기)
+      // ── 1) iframe body 갱신 (데이터 변경 시에만) ──
+      if (changed && _artBuf.html.length > lastIframeHtmlLen) {
         const iframe = streamIframeRef.current ?? document.getElementById('artifact-stream-iframe') as HTMLIFrameElement | null;
         const doc = iframe?.contentDocument;
         if (doc?.body) {
@@ -2658,14 +2660,15 @@ function ArtifactSidePanel({
         }
       }
 
-      // ── 2) 오버레이 제어 ──
+      // ── 2) 오버레이 제어 (변경 없어도 항상 업데이트 — 대기 중 애니메이션) ──
       if (overlayRef.current) {
-        if (_artBuf.html.length >= 80 && !overlayHidden) {
+        if (_artBuf.html.length >= 40 && !overlayHidden) {
           overlayHidden = true;
           overlayRef.current.style.opacity = '0';
           overlayRef.current.style.pointerEvents = 'none';
         } else if (!overlayHidden) {
           if (_artBuf.charCount > 0) {
+            // 데이터 수신 중 → 코드 표시
             if (spinnerRef.current) spinnerRef.current.style.display = 'none';
             if (codePreRef.current) {
               codePreRef.current.style.display = '';
@@ -2684,13 +2687,14 @@ function ArtifactSidePanel({
               codePreRef.current.innerHTML = h;
             }
           } else {
+            // 아직 데이터 없음 → thinking 상태 (경과 시간 표시)
             if (spinnerRef.current) spinnerRef.current.style.display = '';
             if (codePreRef.current) codePreRef.current.style.display = 'none';
           }
           if (overlayStatusRef.current) {
             overlayStatusRef.current.textContent = _artBuf.charCount > 0
-              ? `HTML 코드 작성 중... ${_artBuf.charCount.toLocaleString()}자`
-              : 'HTML 코드 생성 대기 중...';
+              ? `HTML 코드 작성 중... ${_artBuf.charCount.toLocaleString()}자 (${elapsed}초)`
+              : `Claude가 HTML 문서를 구성하고 있습니다... (${elapsed}초)`;
           }
         }
       }
@@ -2711,9 +2715,7 @@ function ArtifactSidePanel({
       if (streamCharsRef.current) streamCharsRef.current.textContent = `${_artBuf.charCount.toLocaleString()} chars`;
     };
 
-    // ★ setInterval — RAF보다 안정적 (30fps). 브라우저가 RAF를 deprioritize해도 작동
     const intervalId = setInterval(tick, 33);
-    // 첫 tick 즉시 실행
     tick();
     return () => clearInterval(intervalId);
   }, [isComplete]);
@@ -5994,14 +5996,7 @@ export default function ChatPage() {
           _artBuf.rawJson = rawJson ?? '';
           _artBuf.ver++;
 
-          // ★ 즉시 DOM 업데이트 (setInterval 루프를 기다리지 않고 바로 반영)
-          if (html.length > 80) {
-            const iframe = document.getElementById('artifact-stream-iframe') as HTMLIFrameElement | null;
-            const doc = iframe?.contentDocument;
-            if (doc?.body && doc.body.innerHTML.length < html.length) {
-              doc.body.innerHTML = html;
-            }
-          }
+          // DOM 업데이트는 setInterval(33ms) 틱에서만 수행 (버스트 시 수백 번 innerHTML 방지)
 
           // 로깅 스로틀 (디버그용)
           const now = performance.now();
