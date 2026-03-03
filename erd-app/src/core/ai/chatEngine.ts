@@ -1551,11 +1551,11 @@ async function streamClaude(
               }
             }
 
-            // patch_artifact: JSON 스트리밍 진행 상태 전달
+            // patch_artifact: JSON 스트리밍 진행 상태 + rawJson 전달 → 클라이언트에서 점진적 패치 적용
             if ((b as ToolUseBlock).name === 'patch_artifact' && onArtifactProgress) {
               const patchCount = (tb._inputStr.match(/"find"/g) || []).length;
               const charCount = tb._inputStr.length;
-              onArtifactProgress('', `패치 작성 중 (${patchCount}개)`, charCount);
+              onArtifactProgress('', `패치 수정 중 (${patchCount}개)`, charCount, tb._inputStr);
             }
           }
           break;

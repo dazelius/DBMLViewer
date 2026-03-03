@@ -77,6 +77,50 @@ function applyPatches(originalHtml: string, patches: { find: string; replace: st
   return { html, applied, failed };
 }
 
+// ── 부분 JSON에서 완성된 patch_artifact 패치 추출 (스트리밍 중 점진적 적용) ──
+function extractCompletedPatches(partialJson: string): { find: string; replace: string }[] {
+  const patches: { find: string; replace: string }[] = [];
+  // 완성된 {"find":"...","replace":"..."} 또는 {"replace":"...","find":"..."} 쌍 추출
+  // JSON 문자열 내 이스케이프 처리를 위해 정규식 대신 수동 파싱
+  try {
+    // patches 배열 시작 위치 찾기
+    const arrStart = partialJson.indexOf('[');
+    if (arrStart < 0) return patches;
+    const segment = partialJson.slice(arrStart);
+
+    // 각 객체를 찾기: { ... } 패턴
+    let depth = 0;
+    let objStart = -1;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = 0; i < segment.length; i++) {
+      const ch = segment[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\' && inString) { escaped = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === '{') {
+        if (depth === 0) objStart = i;
+        depth++;
+      } else if (ch === '}') {
+        depth--;
+        if (depth === 0 && objStart >= 0) {
+          const objStr = segment.slice(objStart, i + 1);
+          try {
+            const obj = JSON.parse(objStr);
+            if (typeof obj.find === 'string' && typeof obj.replace === 'string') {
+              patches.push({ find: obj.find, replace: obj.replace });
+            }
+          } catch { /* 불완전한 JSON — 건너뜀 */ }
+          objStart = -1;
+        }
+      }
+    }
+  } catch { /* 안전한 실패 */ }
+  return patches;
+}
+
 // ── UUID 폴백 (HTTP 환경에서 crypto.randomUUID 미지원 대응) ──────────────────
 function genId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -2307,7 +2351,7 @@ function colorizeHtmlLine(line: string): React.ReactNode {
  * 모듈 레벨 아티팩트 스트림 버퍼 — React를 완전히 우회하여 iframe에 직접 전달.
  * onArtifactProgress 콜백 → 여기에 write → ArtifactSidePanel RAF 루프 → 여기서 read → iframe body 직접 갱신
  */
-const _artBuf = { html: '', title: '', charCount: 0, ver: 0, rawJson: '' };
+const _artBuf = { html: '', title: '', charCount: 0, ver: 0, rawJson: '', baseHtml: '' };
 
 /**
  * 스트리밍 iframe 기반 HTML srcdoc.
@@ -2647,8 +2691,8 @@ function ArtifactSidePanel({
       const changed = _artBuf.ver !== lastVer;
       if (changed) lastVer = _artBuf.ver;
 
-      // ── 1) iframe body 갱신 (새 HTML이 있으면 항상 시도 — iframe 로드 전 lastVer 경쟁 방지) ──
-      if (_artBuf.html.length > lastIframeHtmlLen) {
+      // ── 1) iframe body 갱신 (ver 변경 또는 길이 증가 시 — 패치 모드에서는 길이가 줄 수도 있음) ──
+      if (_artBuf.html.length > lastIframeHtmlLen || (changed && _artBuf.html.length > 0 && _artBuf.html.length !== lastIframeHtmlLen)) {
         const iframe = streamIframeRef.current ?? document.getElementById('artifact-stream-iframe') as HTMLIFrameElement | null;
         const doc = iframe?.contentDocument;
         if (doc?.body) {
@@ -2666,7 +2710,8 @@ function ArtifactSidePanel({
           if (spinnerRef.current) spinnerRef.current.style.display = 'none';
           if (codePreRef.current) {
             codePreRef.current.style.display = '';
-            const codeSource = _artBuf.html || _artBuf.rawJson || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`;
+            // 패치 모드에서는 rawJson(패치 데이터)을 우선 표시, 아니면 HTML 코드
+            const codeSource = (_artBuf.baseHtml && _artBuf.rawJson) ? _artBuf.rawJson : (_artBuf.html || _artBuf.rawJson || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`);
             const lines = codeSource.split('\n');
             const maxVisible = Math.min(40, Math.max(16, Math.floor((overlayRef.current.clientHeight - 60) / 18)));
             const visible = lines.slice(-maxVisible);
@@ -2688,9 +2733,14 @@ function ArtifactSidePanel({
         }
         if (overlayStatusRef.current) {
           const lc = _artBuf.html ? _artBuf.html.split('\n').length : 0;
-          overlayStatusRef.current.textContent = _artBuf.charCount > 0
-            ? `HTML 코드 작성 중... ${_artBuf.html.length.toLocaleString()}자 · ${lc}줄 (${elapsed}초)`
-            : `Claude가 HTML 문서를 구성하고 있습니다... (${elapsed}초)`;
+          if (_artBuf.baseHtml && _artBuf.charCount > 0) {
+            // 패치 수정 모드
+            overlayStatusRef.current.textContent = `${_artBuf.title} · ${_artBuf.html.length.toLocaleString()}자 (${elapsed}초)`;
+          } else if (_artBuf.charCount > 0) {
+            overlayStatusRef.current.textContent = `HTML 코드 작성 중... ${_artBuf.html.length.toLocaleString()}자 · ${lc}줄 (${elapsed}초)`;
+          } else {
+            overlayStatusRef.current.textContent = `Claude가 HTML 문서를 구성하고 있습니다... (${elapsed}초)`;
+          }
         }
       }
 
@@ -5737,7 +5787,11 @@ export default function ChatPage() {
     let _lastArtifactLog = 0;
     let _artifactPanelOpened = false;
     // 스트림 시작 시 버퍼 리셋
-    _artBuf.html = ''; _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0; _artBuf.rawJson = '';
+    const existingHtml = artifactPanel?.finalTc?.html ?? '';
+    _artBuf.html = existingHtml; // 패치 모드면 기존 HTML부터 시작, 새 아티팩트면 비어있음
+    _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0; _artBuf.rawJson = '';
+    // patch_artifact 스트리밍용: 기존 아티팩트 HTML을 baseHtml에 보관
+    _artBuf.baseHtml = existingHtml;
 
     try {
       const { content, toolCalls, rawMessages, tokenUsage } = await sendChatMessage(
@@ -5767,10 +5821,37 @@ export default function ChatPage() {
         },
         (html, title, charCount, rawJson) => {
           // ★ 핵심: 모듈 레벨 버퍼에 직접 쓰기 (React state 업데이트 0회)
-          _artBuf.html = html;
           _artBuf.title = title;
           _artBuf.charCount = charCount;
           _artBuf.rawJson = rawJson ?? '';
+
+          // ── patch_artifact 점진적 적용: baseHtml이 있고, html이 비어있고, rawJson에 패치 데이터가 있으면 ──
+          if (_artBuf.baseHtml && !html && rawJson && rawJson.includes('"find"')) {
+            const completedPatches = extractCompletedPatches(rawJson);
+            if (completedPatches.length > 0) {
+              let patched = _artBuf.baseHtml;
+              let appliedCount = 0;
+              for (const p of completedPatches) {
+                if (!p.find) continue;
+                if (patched.includes(p.find)) {
+                  patched = patched.split(p.find).join(p.replace);
+                  appliedCount++;
+                } else {
+                  // 공백 정규화 후 재시도
+                  const normHtml = patched.replace(/\s+/g, ' ');
+                  const normFind = p.find.replace(/\s+/g, ' ');
+                  if (normHtml.includes(normFind)) {
+                    patched = normHtml.split(normFind).join(p.replace.replace(/\s+/g, ' '));
+                    appliedCount++;
+                  }
+                }
+              }
+              _artBuf.html = patched;
+              _artBuf.title = `패치 적용 중 (${appliedCount}/${completedPatches.length}개)`;
+            }
+          } else {
+            _artBuf.html = html;
+          }
           _artBuf.ver++;
 
           // DOM 업데이트는 setInterval(33ms) 틱에서만 수행 (버스트 시 수백 번 innerHTML 방지)
@@ -5779,17 +5860,18 @@ export default function ChatPage() {
           const now = performance.now();
           if (_lastArtifactLog === 0 || now - _lastArtifactLog >= 500) {
             _lastArtifactLog = now;
-            console.log(`[ArtStream] v=${_artBuf.ver} cc=${charCount} html=${html.length} t="${title}"`);
+            console.log(`[ArtStream] v=${_artBuf.ver} cc=${charCount} html=${_artBuf.html.length} t="${_artBuf.title}" patch=${!!_artBuf.baseHtml}`);
           }
 
           // 패널 열기만 React state로 1회 처리 (컴포넌트 마운트 트리거)
           if (!_artifactPanelOpened) {
             _artifactPanelOpened = true;
-            console.log(`[ArtPanel] 패널 오픈 트리거! html=${html.length} title="${title}" cc=${charCount}`);
+            console.log(`[ArtPanel] 패널 오픈 트리거! html=${_artBuf.html.length} title="${_artBuf.title}" cc=${charCount} patchMode=${!!_artBuf.baseHtml}`);
             setArtifactPanel(prev => {
-              if (prev?.isComplete && prev?.finalTc) {
-                // ★ patch_artifact 모드: 기존 패널(finalTc 포함)을 유지!
-                return prev;
+              if (prev?.isComplete && prev?.finalTc && _artBuf.baseHtml) {
+                // ★ patch_artifact 모드: isComplete=false로 전환 → 스트리밍 UI 활성화 (실시간 패치 반영)
+                // finalTc는 유지하여 패치 완료 후 복원 가능
+                return { ...prev, isComplete: false };
               }
               // create_artifact 모드: 새 빈 패널 열기
               return { html: '', title: title || '', charCount: 0, isComplete: false };
