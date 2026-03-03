@@ -5007,6 +5007,128 @@ function GuideBrowser() {
   );
 }
 
+// ── 널리지 브라우저 (사이드바용) ────────────────────────────────────────
+
+interface KnowledgeItem { name: string; sizeKB: number; updatedAt: string }
+
+function KnowledgeBrowser() {
+  const [items, setItems] = useState<KnowledgeItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState(false);
+  const [previewName, setPreviewName] = useState<string | null>(null);
+  const [previewContent, setPreviewContent] = useState<string>('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const fetchList = () => {
+    fetch('/api/knowledge/list')
+      .then(r => r.json())
+      .then(d => { setItems(d.items ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  };
+
+  useEffect(() => { fetchList(); }, []);
+
+  const loadPreview = async (name: string) => {
+    if (previewName === name) { setPreviewName(null); return; }
+    setPreviewName(name);
+    setPreviewLoading(true);
+    try {
+      const r = await fetch(`/api/knowledge/read?name=${encodeURIComponent(name)}`);
+      const d = await r.json();
+      setPreviewContent(d.content ?? '(내용 없음)');
+    } catch { setPreviewContent('로딩 실패'); }
+    setPreviewLoading(false);
+  };
+
+  const handleDelete = async (name: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm(`"${name}" 널리지를 삭제하시겠습니까?`)) return;
+    try {
+      await fetch(`/api/knowledge/delete?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
+      setItems(prev => prev.filter(it => it.name !== name));
+      if (previewName === name) setPreviewName(null);
+    } catch { /* ignore */ }
+  };
+
+  if (loading || items.length === 0) return null;
+
+  const totalSizeKB = items.reduce((s, it) => s + it.sizeKB, 0);
+
+  return (
+    <div className="px-3 pt-3 pb-1" style={{ borderBottom: '1px solid var(--border-color)' }}>
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="w-full flex items-center gap-2 text-left mb-1 group"
+      >
+        {/* 🧠 brain icon */}
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0">
+          <path d="M12 2a7 7 0 0 0-7 7c0 3 1.5 5 3 6.5V20a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-4.5c1.5-1.5 3-3.5 3-6.5a7 7 0 0 0-7-7z" />
+          <path d="M9 22v-1M15 22v-1M9 17h6" />
+        </svg>
+        <span className="text-[11px] font-semibold uppercase tracking-wider flex-1" style={{ color: 'var(--text-muted)' }}>
+          널리지 ({items.length})
+        </span>
+        <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
+          {totalSizeKB.toFixed(0)}KB
+        </span>
+        <svg
+          width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+          className="flex-shrink-0 transition-transform"
+          style={{ color: 'var(--text-muted)', opacity: 0.5, transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="space-y-1 pb-2">
+          {items.map(it => (
+            <button
+              key={it.name}
+              onClick={() => loadPreview(it.name)}
+              className="w-full flex items-center gap-1.5 px-2 py-1 rounded text-left hover:bg-white/[0.03] transition-colors group"
+              style={{ background: previewName === it.name ? 'rgba(167,139,250,0.08)' : 'transparent' }}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0">
+                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+              </svg>
+              <span className="text-[10px] truncate flex-1" style={{ color: previewName === it.name ? '#a78bfa' : 'var(--text-secondary)' }}>
+                {it.name}
+              </span>
+              <span className="text-[9px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
+                {it.sizeKB}KB
+              </span>
+              {/* 삭제 버튼 */}
+              <span
+                onClick={(e) => handleDelete(it.name, e)}
+                className="text-[10px] px-1 py-0.5 rounded opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-red-500/10 cursor-pointer transition-opacity"
+                style={{ color: '#f87171' }}
+                title="삭제"
+              >✕</span>
+            </button>
+          ))}
+
+          {/* 미리보기 */}
+          {previewName && (
+            <div className="rounded-lg overflow-hidden mt-1" style={{ border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.2)' }}>
+              <div className="flex items-center justify-between px-2 py-1.5" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+                <span className="text-[10px] font-mono truncate" style={{ color: '#a78bfa' }}>{previewName}.md</span>
+                <button onClick={() => setPreviewName(null)} className="text-[10px] px-1.5 py-0.5 rounded hover:bg-white/5" style={{ color: 'var(--text-muted)' }}>✕</button>
+              </div>
+              <pre
+                className="px-2 py-2 overflow-auto text-[10px] leading-relaxed"
+                style={{ maxHeight: 200, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+              >
+                {previewLoading ? '로딩 중...' : previewContent.slice(0, 3000) + (previewContent.length > 3000 ? '\n\n... (미리보기 생략)' : '')}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GuideFileRow({ guide, isOpen, onClick }: { guide: GuideFile; isOpen: boolean; onClick: () => void }) {
   const isOverview = guide.name.includes('OVERVIEW');
   const isEnum = guide.name.includes('Enum');
@@ -6008,6 +6130,9 @@ export default function ChatPage() {
 
           {/* 가이드 파일 브라우저 */}
           <GuideBrowser />
+
+          {/* 널리지 브라우저 */}
+          <KnowledgeBrowser />
 
           {/* 생성된 문서 목록 */}
           {savedArtifacts.length > 0 && (
