@@ -2710,8 +2710,19 @@ function ArtifactSidePanel({
           if (spinnerRef.current) spinnerRef.current.style.display = 'none';
           if (codePreRef.current) {
             codePreRef.current.style.display = '';
-            // 패치 모드에서는 rawJson(패치 데이터)을 우선 표시, 아니면 HTML 코드
-            const codeSource = (_artBuf.baseHtml && _artBuf.rawJson) ? _artBuf.rawJson : (_artBuf.html || _artBuf.rawJson || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`);
+            // 패치 모드: rawJson을 prettify해서 표시, 아니면 HTML 코드
+            let codeSource: string;
+            if (_artBuf.baseHtml && _artBuf.rawJson) {
+              // 패치 JSON prettify (줄바꿈 추가)
+              codeSource = _artBuf.rawJson
+                .replace(/\{"find"/g, '\n  {\n    "find"')
+                .replace(/,"replace"/g, ',\n    "replace"')
+                .replace(/\}\s*,/g, '\n  },')
+                .replace(/\}\s*\]/g, '\n  }\n]')
+                .replace(/^\{"patches":\s*\[/, '{\n  "patches": [');
+            } else {
+              codeSource = _artBuf.html || _artBuf.rawJson || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`;
+            }
             const lines = codeSource.split('\n');
             const maxVisible = Math.min(40, Math.max(16, Math.floor((overlayRef.current.clientHeight - 60) / 18)));
             const visible = lines.slice(-maxVisible);
@@ -5787,11 +5798,16 @@ export default function ChatPage() {
     let _lastArtifactLog = 0;
     let _artifactPanelOpened = false;
     // 스트림 시작 시 버퍼 리셋
-    const existingHtml = artifactPanel?.finalTc?.html ?? '';
+    // 패치 모드: finalTc.html → 패널 html → 이전 _artBuf.html 순으로 폴백
+    const existingHtml = artifactPanel?.finalTc?.html
+      || artifactPanel?.html
+      || (_artBuf.html && _artBuf.html.length > 100 ? _artBuf.html : '')
+      || '';
     _artBuf.html = existingHtml; // 패치 모드면 기존 HTML부터 시작, 새 아티팩트면 비어있음
     _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0; _artBuf.rawJson = '';
     // patch_artifact 스트리밍용: 기존 아티팩트 HTML을 baseHtml에 보관
     _artBuf.baseHtml = existingHtml;
+    if (existingHtml) console.log(`[ArtBuf] 기존 HTML ${existingHtml.length}자 → baseHtml 설정 (패치 모드 대비)`);
 
     try {
       const { content, toolCalls, rawMessages, tokenUsage } = await sendChatMessage(
@@ -5957,22 +5973,32 @@ export default function ChatPage() {
       } else if (patchTc && patchTc.patches.length > 0) {
         // patch_artifact: 현재 열린 아티팩트에 패치 적용
         setArtifactPanel((prev) => {
-          if (!prev?.finalTc) {
-            console.warn('[Patch] finalTc가 없어서 패치를 적용할 수 없습니다. prev:', prev);
-            return prev; // null 반환 대신 기존 패널 유지
+          // 원본 HTML: finalTc.html → prev.html → _artBuf.baseHtml → _artBuf.html 순 fallback
+          const originalHtml = prev?.finalTc?.html
+            || prev?.html
+            || _artBuf.baseHtml
+            || _artBuf.html
+            || '';
+          if (!originalHtml) {
+            console.warn('[Patch] 패치할 원본 HTML이 없습니다. prev:', prev, '_artBuf:', { html: _artBuf.html.length, baseHtml: _artBuf.baseHtml.length });
+            return prev; // 원본 없으면 기존 패널 유지
           }
-          const originalHtml = prev.finalTc.html ?? '';
           const { html: patchedHtml, applied, failed } = applyPatches(originalHtml, patchTc.patches);
           console.log(`[Patch] 적용 ${applied}/${patchTc.patches.length}개, 원본 길이: ${originalHtml.length}, 결과 길이: ${patchedHtml.length}${failed.length ? `, 실패: ${failed.join(' | ')}` : ''}`);
-          const newTitle = patchTc.title ?? prev.finalTc.title ?? prev.title;
-          const patchedTc: ArtifactResult = { ...prev.finalTc, html: patchedHtml, title: newTitle };
+          const newTitle = patchTc.title ?? prev?.finalTc?.title ?? prev?.title ?? '문서';
+          // finalTc가 없으면 새로 생성
+          const baseTc: ArtifactResult = prev?.finalTc ?? { kind: 'artifact', title: newTitle, description: '', html: originalHtml, duration: 0 };
+          const patchedTc: ArtifactResult = { ...baseTc, html: patchedHtml, title: newTitle };
           // savedArtifacts도 업데이트
-          if (prev.artifactId) {
+          if (prev?.artifactId) {
             setSavedArtifacts((arts) => arts.map((a) =>
               a.id === prev.artifactId ? { ...a, title: newTitle, tc: patchedTc } : a
             ));
           }
-          return { ...prev, html: patchedHtml, title: newTitle, charCount: patchedHtml.length, isComplete: true, finalTc: patchedTc };
+          // _artBuf도 갱신 (다음 패치 시 사용)
+          _artBuf.html = patchedHtml;
+          _artBuf.baseHtml = patchedHtml;
+          return { ...prev!, html: patchedHtml, title: newTitle, charCount: patchedHtml.length, isComplete: true, finalTc: patchedTc };
         });
       } else if (artifactPanel) {
         // 아티팩트가 없으면 패널 그대로 유지 (에러 케이스에서도 보이도록)

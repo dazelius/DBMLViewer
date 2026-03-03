@@ -3061,7 +3061,7 @@ function showTab(id){
 
             const duration = performance.now() - t0;
             tc = { kind: 'artifact_patch', title, patches, duration } as ArtifactPatchResult;
-            resultStr = `패치 ${patches.length}개 준비 완료. 클라이언트에서 원본 HTML에 적용됩니다.`;
+            resultStr = `✅ 패치 ${patches.length}개 적용 완료. 아티팩트가 사이드 패널에 업데이트되었습니다. 대화를 이어가세요.`;
           }
         }
 
