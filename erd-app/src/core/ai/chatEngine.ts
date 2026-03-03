@@ -883,23 +883,14 @@ const TOOLS = [
   {
     name: 'create_artifact',
     description:
-      '수집된 데이터를 기반으로 완전한 HTML 문서(보고서, 캐릭터 시트, 밸런스 표, 릴리즈 노트 등)를 생성합니다. ' +
-      '사용자가 "정리해줘", "문서로 만들어줘", "보고서", "뽑아줘", "시트 만들어줘" 등을 요청할 때 호출하세요. ' +
-      '먼저 query_game_data, show_table_schema 등으로 필요한 데이터를 모두 수집한 후 이 툴을 마지막에 호출하세요. ' +
-      '⚠️ [아티팩트 수정 요청] 메시지에는 이 툴 대신 patch_artifact를 사용하세요. ' +
-      '⚠️⚠️⚠️ CRITICAL: JSON 출력 시 html 필드를 반드시 가장 먼저 작성하세요! {"html":"...","title":"..."} 순서. ' +
-      'title이나 description을 html보다 먼저 쓰면 실시간 스트리밍이 깨집니다.',
+      '아티팩트(HTML 문서) 생성을 등록합니다. ' +
+      '⚠️ 반드시 이 도구를 호출하기 직전에 HTML을 텍스트로 먼저 출력해야 합니다! ' +
+      '텍스트 출력 형식: <<<ARTIFACT_START>>> 마커 후 HTML 코드, <<<ARTIFACT_END>>> 마커로 종료. ' +
+      '그 후 이 도구를 title과 description만으로 호출하세요. html 파라미터는 없습니다. ' +
+      '⚠️ [아티팩트 수정 요청] 메시지에는 이 툴 대신 patch_artifact를 사용하세요.',
     input_schema: {
       type: 'object',
       properties: {
-        html: {
-          type: 'string',
-          description:
-            '⚠️ MUST BE THE FIRST FIELD IN JSON OUTPUT! ' +
-            '<body> 안에 들어갈 HTML. CSS는 <style>로 포함. ' +
-            '이미지: /api/images/file?path=Texture/폴더/파일명.png 또는 /api/images/smart?name=파일명.png. ' +
-            '다크 테마(bg:#0f1117, text:#e2e8f0, accent:#6366f1), 한국어, 표/카드 레이아웃. 500줄 이내.',
-        },
         title: {
           type: 'string',
           description: '문서 제목 (예: "프리드웬 캐릭터 시트", "스킬 밸런스 보고서")',
@@ -909,7 +900,7 @@ const TOOLS = [
           description: '생성된 문서에 대한 한 줄 설명 (선택사항)',
         },
       },
-      required: ['html', 'title'],
+      required: ['title'],
     },
   },
   // ── Jira / Confluence 툴 ─────────────────────────────────────────────────
@@ -1204,14 +1195,40 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap,
   lines.push('  탭 버튼: <button class="tab active" data-tab="basic" onclick="showTab(\'basic\')">기본정보</button>');
   lines.push('  패널: <div class="tab-panel active" data-panel="basic"><div data-embed="query" data-sql="[EMBED_SQL]"></div></div>');
   lines.push('');
-  lines.push('[아티팩트 생성 규칙 — 반드시 준수]');
-  lines.push('- "정리해줘", "문서로", "보고서", "시트 만들어줘", "뽑아줘", "3D 보여줘", "모델링 보여줘" 등 시각적 결과물 요청 시 create_artifact를 호출하세요.');
-  lines.push('- ⚠️⚠️ 절대 금지: data-embed, class="fbx-viewer", data-src, data-sql 등의 HTML 태그를 채팅 응답 텍스트에 직접 출력하지 마세요!');
-  lines.push('  → 이런 태그는 반드시 create_artifact의 html 파라미터 안에만 포함해야 합니다.');
-  lines.push('- 데이터 수집이 끝나면 "생성하겠습니다" 같은 텍스트를 출력하지 말고 즉시 create_artifact를 호출하세요.');
-  lines.push('- ⚠️ 절대로 "아티팩트를 만들겠습니다", "HTML을 생성하겠습니다" 등의 선언 후 멈추지 마세요. 선언 없이 즉시 툴을 호출하세요.');
-  lines.push('- 반드시 먼저 다른 툴로 데이터를 충분히 수집한 후 create_artifact를 마지막에 호출하세요.');
-  lines.push('- html 파라미터: <!DOCTYPE html> 없이 <body> 내용만 작성 (간결하게 500줄 이내).');
+  lines.push('[아티팩트 생성 규칙 — ⚠️⚠️⚠️ 반드시 준수 (실시간 스트리밍)]');
+  lines.push('아티팩트(HTML 문서)를 생성할 때는 **2단계 프로토콜**을 반드시 따르세요:');
+  lines.push('');
+  lines.push('**1단계: HTML을 텍스트로 직접 출력 (실시간 스트리밍)**');
+  lines.push('- 먼저 짧은 설명 텍스트를 출력하세요 (1~2문장).');
+  lines.push('- 그 다음 줄바꿈 후 <<<ARTIFACT_START>>> 마커를 출력하세요.');
+  lines.push('- 마커 다음부터 HTML 코드를 직접 텍스트로 출력하세요.');
+  lines.push('- HTML이 끝나면 <<<ARTIFACT_END>>> 마커를 출력하세요.');
+  lines.push('');
+  lines.push('**2단계: create_artifact 도구 호출 (메타데이터 등록)**');
+  lines.push('- <<<ARTIFACT_END>>> 출력 직후, create_artifact(title, description)를 호출하세요.');
+  lines.push('- html 파라미터는 없습니다. HTML은 이미 텍스트로 출력했습니다.');
+  lines.push('');
+  lines.push('⭐ 예시:');
+  lines.push('```');
+  lines.push('퐁 게임을 만들겠습니다.');
+  lines.push('');
+  lines.push('<<<ARTIFACT_START>>>');
+  lines.push('<style>body{margin:0;background:#0f1117;color:#e2e8f0}</style>');
+  lines.push('<h1>퐁 게임</h1>');
+  lines.push('<canvas id="game" width="800" height="600"></canvas>');
+  lines.push('<script>/* 게임 코드 */</script>');
+  lines.push('<<<ARTIFACT_END>>>');
+  lines.push('```');
+  lines.push('→ 그 후 create_artifact({title:"퐁 게임", description:"클래식 퐁 게임"}) 호출');
+  lines.push('');
+  lines.push('⚠️ 핵심 규칙:');
+  lines.push('- HTML은 반드시 텍스트로 출력! create_artifact에 html 파라미터 넣지 마세요.');
+  lines.push('- <<<ARTIFACT_START>>> 와 <<<ARTIFACT_END>>> 마커는 정확히 이 형식으로!');
+  lines.push('- HTML 내용: <!DOCTYPE html> 없이 <body> 내용만 (CSS는 <style>로, JS는 <script>로).');
+  lines.push('- 다크 테마(bg:#0f1117, text:#e2e8f0, accent:#6366f1), 한국어, 500줄 이내.');
+  lines.push('- 이미지: /api/images/file?path=Texture/폴더/파일명.png 또는 /api/images/smart?name=파일명.png.');
+  lines.push('- ⚠️⚠️ 절대 금지: data-embed, class="fbx-viewer", data-src, data-sql 등의 HTML 태그를 마커 밖에 출력하지 마세요!');
+  lines.push('- 반드시 먼저 다른 툴로 데이터를 충분히 수집한 후 아티팩트를 마지막에 출력하세요.');
   lines.push('[가이드 우선 원칙 — 모든 질문에 적용]');
   lines.push('⭐⭐⭐ 어떤 질문이든 답변 전에 반드시 관련 가이드를 먼저 read_guide로 읽으세요!');
   lines.push('');
@@ -1737,7 +1754,7 @@ async function streamClaude(
   requestBody: object,
   onTextDelta: (delta: string) => void,
   onArtifactProgress?: (html: string, title: string, charCount: number, rawJson?: string) => void,
-): Promise<ClaudeResponse & { usage?: TokenUsage }> {
+): Promise<ClaudeResponse & { usage?: TokenUsage; _streamedArtifactHtml?: string }> {
   // ── 자동 재시도 (529 Overloaded / 네트워크 오류) ──
   const MAX_RETRIES = 3;
   const RETRY_DELAYS = [3000, 8000, 15000]; // 3초, 8초, 15초
@@ -1795,9 +1812,118 @@ async function streamClaude(
   let lastEventType = ''; // SSE event: 타입 추적
   const usage: TokenUsage = { input_tokens: 0, output_tokens: 0 };
 
+  // ── 텍스트 마커 기반 아티팩트 스트리밍 상태 ──
+  let _artMarkerState: 'idle' | 'streaming' | 'done' = 'idle';
+  let _artStreamedHtml = '';           // 마커 사이에 캡처된 HTML
+  let _artPendingText = '';            // 마커 매칭을 위한 대기 버퍼
+  const MARKER_START = '<<<ARTIFACT_START>>>';
+  const MARKER_END = '<<<ARTIFACT_END>>>';
+
+  /** 텍스트 delta를 처리: 마커를 감지하여 아티팩트 HTML 캡처 */
+  const processTextForArtifact = (deltaText: string) => {
+    if (_artMarkerState === 'done') {
+      // 이미 종료 — 일반 텍스트로 전달
+      onTextDelta(deltaText);
+      return;
+    }
+
+    _artPendingText += deltaText;
+
+    if (_artMarkerState === 'idle') {
+      // START 마커 검색
+      const startIdx = _artPendingText.indexOf(MARKER_START);
+      if (startIdx !== -1) {
+        // 마커 이전 텍스트는 일반 텍스트로 전달
+        const before = _artPendingText.substring(0, startIdx);
+        if (before) onTextDelta(before);
+        
+        _artMarkerState = 'streaming';
+        _artStreamedHtml = '';
+        _artPendingText = _artPendingText.substring(startIdx + MARKER_START.length);
+        
+        // 패널 열기
+        if (onArtifactProgress) {
+          console.log('[ArtTextStream] ⚡ <<<ARTIFACT_START>>> 감지 → 패널 오픈');
+          onArtifactProgress('', '', 0, '');
+        }
+        
+        // 마커 이후 잔여 텍스트 재귀 처리
+        if (_artPendingText) {
+          const remaining = _artPendingText;
+          _artPendingText = '';
+          processTextForArtifact(remaining);
+        }
+        return;
+      }
+      
+      // 마커가 부분적으로 매칭 가능한지 확인 (마커의 일부만 도착한 경우)
+      // <<<ARTIFACT_START>>> 의 최대 부분 접두사 길이
+      let possiblePartial = false;
+      for (let i = 1; i < MARKER_START.length; i++) {
+        if (_artPendingText.endsWith(MARKER_START.substring(0, i))) {
+          possiblePartial = true;
+          // 부분 매칭 가능 → 해당 부분 빼고 나머지만 전달
+          const safe = _artPendingText.substring(0, _artPendingText.length - i);
+          if (safe) onTextDelta(safe);
+          _artPendingText = _artPendingText.substring(_artPendingText.length - i);
+          return;
+        }
+      }
+      
+      if (!possiblePartial) {
+        // 마커 없음 — 전부 일반 텍스트
+        onTextDelta(_artPendingText);
+        _artPendingText = '';
+      }
+    } else if (_artMarkerState === 'streaming') {
+      // END 마커 검색
+      const endIdx = _artPendingText.indexOf(MARKER_END);
+      if (endIdx !== -1) {
+        // END 마커 이전까지가 HTML
+        const htmlChunk = _artPendingText.substring(0, endIdx);
+        _artStreamedHtml += htmlChunk;
+        
+        _artMarkerState = 'done';
+        console.log(`[ArtTextStream] <<<ARTIFACT_END>>> 감지 → HTML ${_artStreamedHtml.length}자 캡처 완료`);
+        
+        // 최종 HTML 전달
+        if (onArtifactProgress) {
+          onArtifactProgress(_artStreamedHtml, '', _artStreamedHtml.length, '');
+        }
+        
+        // END 마커 이후 텍스트는 일반 텍스트
+        const after = _artPendingText.substring(endIdx + MARKER_END.length);
+        _artPendingText = '';
+        if (after) onTextDelta(after);
+        return;
+      }
+      
+      // END 마커가 부분적으로 매칭 가능한지 확인
+      let partialEndLen = 0;
+      for (let i = Math.min(MARKER_END.length - 1, _artPendingText.length); i >= 1; i--) {
+        if (_artPendingText.endsWith(MARKER_END.substring(0, i))) {
+          partialEndLen = i;
+          break;
+        }
+      }
+      
+      // 안전하게 전달할 수 있는 부분까지 HTML에 추가
+      const safeLen = _artPendingText.length - partialEndLen;
+      if (safeLen > 0) {
+        const chunk = _artPendingText.substring(0, safeLen);
+        _artStreamedHtml += chunk;
+        
+        // 실시간 프로그레스 전달
+        if (onArtifactProgress) {
+          onArtifactProgress(_artStreamedHtml, '', _artStreamedHtml.length, '');
+        }
+      }
+      _artPendingText = _artPendingText.substring(safeLen);
+    }
+  };
+
   let _readCount = 0;
   const _streamStart = performance.now();
-  let _lastYield = performance.now();
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -1808,12 +1934,8 @@ async function streamClaude(
       console.log(`[streamClaude] 📦 chunk #${_readCount}: +${chunk.length}B (+${(performance.now() - _streamStart).toFixed(0)}ms)`);
     }
 
-    // ★ 50ms 간격으로 브라우저에 양보 — 버스트 시 오버헤드 최소화하면서 setInterval tick 실행 보장
-    const now = performance.now();
-    if (now - _lastYield > 50) {
-      _lastYield = now;
-      await new Promise<void>(r => setTimeout(r, 0));
-    }
+    // ★ 매 청크마다 브라우저에 양보 — 텍스트 스트리밍은 진짜 실시간이므로 즉시 DOM에 반영
+    await new Promise<void>(r => setTimeout(r, 0));
 
     const lines = buf.split('\n');
     buf = lines.pop() ?? '';
@@ -1852,9 +1974,9 @@ async function streamClaude(
           const cb = ev.content_block as ContentBlock;
           if (cb.type === 'tool_use') {
             blocks[idx] = { ...cb, _inputStr: '' } as ContentBlock & { _inputStr: string };
-            // create_artifact / patch_artifact 블록 시작 즉시 패널 오픈
-            if (((cb as ToolUseBlock).name === 'create_artifact' || (cb as ToolUseBlock).name === 'patch_artifact') && onArtifactProgress) {
-              console.log(`[streamClaude] ⚡ ${(cb as ToolUseBlock).name} content_block_start → 패널 오픈, onArtifactProgress=${!!onArtifactProgress}`);
+            // patch_artifact 블록 시작 즉시 패널 오픈 (create_artifact는 텍스트 마커에서 열림)
+            if ((cb as ToolUseBlock).name === 'patch_artifact' && onArtifactProgress) {
+              console.log(`[streamClaude] ⚡ patch_artifact content_block_start → 패널 오픈`);
               onArtifactProgress('', '', 0, '');
             }
           } else {
@@ -1870,34 +1992,19 @@ async function streamClaude(
 
           if (delta.type === 'text_delta' && b.type === 'text') {
             (b as TextBlock).text = ((b as TextBlock).text || '') + (delta.text ?? '');
-            onTextDelta(delta.text ?? '');
+            // 마커 파서를 통해 아티팩트 스트리밍 감지
+            processTextForArtifact(delta.text ?? '');
           } else if (delta.type === 'input_json_delta' && b.type === 'tool_use') {
             const tb = b as ContentBlock & { _inputStr: string };
             tb._inputStr = (tb._inputStr || '') + (delta.partial_json ?? '');
 
-            // ★ 디버그: create_artifact delta 로깅 (처음 5개 + 매 20번째)
+            // create_artifact: 이제 HTML은 텍스트 마커에서 캡처됨 — 도구 JSON에는 title/description만 있음
             if ((b as ToolUseBlock).name === 'create_artifact') {
-              const lenNow = tb._inputStr.length;
-              if (lenNow < 200 || lenNow % 500 < 30) {
-                console.log(`[SSE] create_artifact delta: +${delta.partial_json?.length ?? 0}B → total ${lenNow}B`);
+              // title 추출 (도구 JSON에서)
+              const tm = tb._inputStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)/);
+              if (tm && onArtifactProgress && _artStreamedHtml) {
+                onArtifactProgress(_artStreamedHtml, tm[1].replace(/\\"/g, '"'), _artStreamedHtml.length, '');
               }
-            }
-
-            // create_artifact: 매 delta마다 HTML 추출 (쓰로틀 없음 — 단순하고 확실하게)
-            if ((b as ToolUseBlock).name === 'create_artifact' && onArtifactProgress) {
-              let html = '';
-              let title = '';
-              // "html" 키가 있을 때만 파싱 (빠른 사전 체크)
-              if (tb._inputStr.includes('"html"')) {
-                const parsed = extractHtmlFromPartialJson(tb._inputStr);
-                if (parsed) { html = parsed.html; title = parsed.title; }
-              }
-              // title 별도 추출 (html 키 발견 전에도)
-              if (!title) {
-                const tm = tb._inputStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)/);
-                if (tm) title = tm[1].replace(/\\"/g, '"');
-              }
-              onArtifactProgress(html, title, tb._inputStr.length, tb._inputStr);
             }
 
             // patch_artifact: JSON 스트리밍 진행 상태 전달
@@ -1917,15 +2024,13 @@ async function streamClaude(
             try {
               (b as ToolUseBlock).input = JSON.parse(rawStr);
             } catch {
-              // JSON 파싱 실패 (max_tokens로 잘린 경우) → 부분 복구 시도
-              const partial = extractHtmlFromPartialJson(rawStr);
-              if (partial && (b as ToolUseBlock).name === 'create_artifact') {
+              // JSON 파싱 실패 → 부분 복구
+              if ((b as ToolUseBlock).name === 'create_artifact') {
                 const titleMatch = rawStr.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/);
                 const descMatch = rawStr.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)"/);
                 (b as ToolUseBlock).input = {
-                  title: titleMatch?.[1] ?? partial.title ?? '문서',
+                  title: titleMatch?.[1] ?? '문서',
                   description: descMatch?.[1] ?? '',
-                  html: partial.html + '\n<!-- (일부 잘림) -->',
                 };
               } else {
                 (b as ToolUseBlock).input = {};
@@ -1967,7 +2072,7 @@ async function streamClaude(
       return clean as ContentBlock;
     });
 
-  return { content: contentArray, stop_reason: stopReason, usage };
+  return { content: contentArray, stop_reason: stopReason, usage, _streamedArtifactHtml: _artStreamedHtml || undefined };
 }
 
 // ── RAG 트레이스 유틸 ─────────────────────────────────────────────────────────
@@ -2201,7 +2306,7 @@ export async function sendChatMessage(
     onThinkingUpdate?.({ type: 'iteration_start', iteration: i + 1, maxIterations: MAX_ITERATIONS, timestamp: Date.now() });
 
     // 529 재시도 포함 스트리밍 호출
-    let data: ClaudeResponse | null = null;
+    let data: (ClaudeResponse & { _streamedArtifactHtml?: string }) | null = null;
     const safeMessages = sanitizeMessages(messages); // orphan tool_use 방어
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt));
@@ -2231,6 +2336,9 @@ export async function sendChatMessage(
       }
     }
     if (!data) throw new Error('Claude API 연결 실패');
+    
+    // 텍스트 마커에서 캡처된 아티팩트 HTML
+    const streamedArtifactHtml = data._streamedArtifactHtml;
 
     // 토큰 사용량 기록
     if (data.usage) {
@@ -2256,10 +2364,12 @@ export async function sendChatMessage(
 
     // ── 최종 답변 ──
     if (data.stop_reason === 'end_turn' || data.stop_reason === 'stop_sequence') {
-      const text = data.content
+      let text = data.content
         .filter((b): b is TextBlock => b.type === 'text')
         .map((b) => b.text)
         .join('\n');
+      // 텍스트에서 아티팩트 마커 + HTML 제거 (사용자에게 보이지 않도록)
+      text = text.replace(/<<<ARTIFACT_START>>>[\s\S]*?<<<ARTIFACT_END>>>/g, '').trim();
 
       // 자동 계속 중이었으면 이전 텍스트와 합치기
       const finalText = continuationCount > 0 ? totalText + text : text;
@@ -2277,7 +2387,7 @@ export async function sendChatMessage(
         messages.push({ role: 'assistant', content: data.content });
         messages.push({
           role: 'user',
-          content: '지금 바로 create_artifact 툴을 호출하여 HTML 문서를 생성해주세요. 텍스트 설명 없이 즉시 툴을 호출하세요.',
+          content: '지금 바로 <<<ARTIFACT_START>>> 마커로 HTML을 출력한 뒤 create_artifact를 호출해주세요. 텍스트 설명 없이 즉시 시작하세요.',
         });
         continue;
       }
@@ -2296,7 +2406,14 @@ export async function sendChatMessage(
     // ── 도구 호출 처리 ──
     if (data.stop_reason === 'tool_use') {
       const toolBlocks = data.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
-      messages.push({ role: 'assistant', content: data.content });
+      // 텍스트 블록에서 마커 + HTML 제거 (히스토리에 저장 시 불필요)
+      const cleanedContent = data.content.map(b => {
+        if (b.type === 'text') {
+          return { ...b, text: (b as TextBlock).text.replace(/<<<ARTIFACT_START>>>[\s\S]*?<<<ARTIFACT_END>>>/g, '').trim() };
+        }
+        return b;
+      });
+      messages.push({ role: 'assistant', content: cleanedContent });
 
       const toolResults: { type: 'tool_result'; tool_use_id: string; content: string }[] = [];
 
@@ -3208,20 +3325,22 @@ function showTab(id){
           }
         }
 
-        // ── create_artifact ──
+        // ── create_artifact (하이브리드: HTML은 텍스트 마커에서 캡처, 도구는 메타데이터만) ──
         else if (tb.name === 'create_artifact') {
           const title = String(inp.title ?? '문서');
           const description = String(inp.description ?? '');
-          const html = String(inp.html ?? '');
+          // HTML은 텍스트 마커에서 캡처된 것을 사용 (도구 파라미터에 html이 없음)
+          const html = streamedArtifactHtml || String(inp.html ?? '');
           const t0 = performance.now();
 
-          if (!html || html.length < 50) {
-            tc = { kind: 'artifact', title, description, html: '', error: 'HTML 내용이 없습니다.', duration: 0 } as ArtifactResult;
-            resultStr = 'HTML 생성 실패: 내용이 비어있음';
+          if (!html || html.length < 10) {
+            tc = { kind: 'artifact', title, description, html: '', error: 'HTML 내용이 없습니다. (텍스트 마커에서 캡처 실패)', duration: 0 } as ArtifactResult;
+            resultStr = 'HTML 생성 실패: 텍스트 마커에서 HTML 캡처 실패. <<<ARTIFACT_START>>> 와 <<<ARTIFACT_END>>> 마커를 사용해 주세요.';
           } else {
             const duration = performance.now() - t0;
             tc = { kind: 'artifact', title, description, html, duration } as ArtifactResult;
             resultStr = `아티팩트 "${title}" 생성 완료 (${html.length}자). 사용자 화면에 전체화면 프리뷰와 PDF 저장 버튼이 표시됩니다.`;
+            console.log(`[Chat] create_artifact: title="${title}" html=${html.length}자 (텍스트 마커에서 캡처)`);
           }
         }
 

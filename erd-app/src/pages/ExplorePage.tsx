@@ -361,7 +361,7 @@ function MiniChatPanel({ doc, docHtml, onDocUpdated, onClose }: {
 
     const displayHistory: ChatTurn[] = [
       ...historyRef.current,
-      { id: crypto.randomUUID(), role: 'user', content: fullMessage, timestamp: new Date() },
+      { id: genId(), role: 'user', content: fullMessage, timestamp: new Date() },
     ];
 
     try {
@@ -434,8 +434,8 @@ function MiniChatPanel({ doc, docHtml, onDocUpdated, onClose }: {
 
       historyRef.current = [
         ...historyRef.current,
-        { id: crypto.randomUUID(), role: 'user', content: text, timestamp: new Date() },
-        { id: crypto.randomUUID(), role: 'assistant', content, timestamp: new Date() },
+        { id: genId(), role: 'user', content: text, timestamp: new Date() },
+        { id: genId(), role: 'assistant', content, timestamp: new Date() },
       ];
 
       setMessages(prev => prev.map(m =>
