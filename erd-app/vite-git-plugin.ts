@@ -461,8 +461,14 @@ function createGitMiddleware(options: GitPluginOptions) {
     // TableMaster 내부 + 외부 도구 모두 이 엔드포인트를 사용
     // 외부 도구는 API_BASE = "http://<host>:5173/api/v1" 설정 → /api/v1/messages 호출
     // TableMaster 내부는 X-TM-Knowledge: injected 헤더로 중복 주입 방지
-    if ((req.url === '/api/claude' || req.url === '/api/v1/messages') && req.method === 'POST') {
-      const apiKey = options.claudeApiKey || process.env.CLAUDE_API_KEY || ''
+    const isClaudeRoute = req.url === '/api/claude'
+      || req.url?.startsWith('/api/v1/messages')
+      || req.url?.startsWith('/api/v1/chat')  // 일부 SDK가 /chat/completions 등 사용
+      || req.url?.startsWith('/v1/messages')   // API_BASE가 host:port 만인 경우
+    if (isClaudeRoute && req.method === 'POST') {
+      console.log(`[Claude proxy] 요청 수신: ${req.method} ${req.url} (knowledge skip: ${req.headers['x-tm-knowledge'] === 'injected'})`)
+      // API 키: 서버 설정 → 환경변수 → 클라이언트가 보낸 키 순서로 사용
+      const apiKey = options.claudeApiKey || process.env.CLAUDE_API_KEY || (req.headers['x-api-key'] as string) || ''
       if (!apiKey) {
         sendJson(res, 400, { error: 'CLAUDE_API_KEY 환경변수가 설정되지 않았습니다.' })
         return
