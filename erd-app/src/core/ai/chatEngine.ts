@@ -1623,7 +1623,7 @@ async function streamClaude(
 ): Promise<ClaudeResponse & { usage?: TokenUsage }> {
   const response = await fetch('/api/claude', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-TM-Knowledge': 'injected' },
     body: JSON.stringify({ ...requestBody, stream: true }),
   });
 

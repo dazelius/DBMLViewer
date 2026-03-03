@@ -457,14 +457,70 @@ function createGitMiddleware(options: GitPluginOptions) {
   const { localDir } = options
   return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
 
-    // ── /api/claude : Anthropic API 프록시 (dev & preview 공용, 스트리밍 지원) ──
-    if (req.url === '/api/claude' && req.method === 'POST') {
+    // ── /api/claude & /api/v1/messages : Anthropic API 프록시 (널리지 자동 주입) ──
+    // TableMaster 내부 + 외부 도구 모두 이 엔드포인트를 사용
+    // 외부 도구는 API_BASE = "http://<host>:5173/api/v1" 설정 → /api/v1/messages 호출
+    // TableMaster 내부는 X-TM-Knowledge: injected 헤더로 중복 주입 방지
+    if ((req.url === '/api/claude' || req.url === '/api/v1/messages') && req.method === 'POST') {
       const apiKey = options.claudeApiKey || process.env.CLAUDE_API_KEY || ''
       if (!apiKey) {
         sendJson(res, 400, { error: 'CLAUDE_API_KEY 환경변수가 설정되지 않았습니다.' })
         return
       }
       const rawBody = await readBody(req)
+      const skipKnowledge = req.headers['x-tm-knowledge'] === 'injected'
+
+      // ── 널리지 자동 주입 (외부 도구용) ──
+      let finalBody = rawBody
+      if (!skipKnowledge) {
+        try {
+          const parsed = JSON.parse(rawBody || '{}')
+          const knDir = join(process.cwd(), 'knowledge')
+          if (existsSync(knDir)) {
+            const files = readdirSync(knDir).filter(f => f.endsWith('.md'))
+            if (files.length > 0) {
+              const knLines: string[] = [
+                '',
+                '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+                '[TableMaster 공유 널리지 — 자동 주입]',
+                '아래는 팀이 등록한 공유 지식입니다. 반드시 참고하여 답변하세요.',
+                '',
+              ]
+              let totalSize = 0
+              for (const f of files) {
+                const fPath = join(knDir, f)
+                const stat = statSync(fPath)
+                if (totalSize + stat.size > 200 * 1024) break
+                let content = readFileSync(fPath, 'utf-8')
+                if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
+                if (content.length > 50 * 1024) content = content.slice(0, 50 * 1024) + '\n...(truncated)'
+                const name = f.replace('.md', '')
+                const sizeKB = Math.round(stat.size / 1024 * 10) / 10
+                knLines.push(`━━━ 📌 ${name} (${sizeKB}KB) ━━━`)
+                knLines.push(content)
+                knLines.push(`━━━ END: ${name} ━━━`)
+                knLines.push('')
+                totalSize += stat.size
+              }
+              knLines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+              const knBlock = knLines.join('\n')
+
+              if (typeof parsed.system === 'string') {
+                parsed.system = parsed.system + '\n' + knBlock
+              } else if (Array.isArray(parsed.system)) {
+                parsed.system.push({ type: 'text', text: knBlock })
+              } else {
+                parsed.system = knBlock
+              }
+              console.log(`[Claude proxy] 널리지 자동 주입: ${files.length}개 파일, ${knBlock.length}자 (${req.url})`)
+              finalBody = JSON.stringify(parsed)
+            }
+          }
+        } catch (e) {
+          console.warn('[Claude proxy] 널리지 주입 실패 (원본으로 진행):', e)
+        }
+      }
+
       let isStream = false
       try { isStream = JSON.parse(rawBody || '{}').stream === true } catch {}
 
@@ -478,7 +534,7 @@ function createGitMiddleware(options: GitPluginOptions) {
             'Content-Type': 'application/json',
             'x-api-key': apiKey,
             'anthropic-version': '2023-06-01',
-            'Content-Length': Buffer.byteLength(rawBody),
+            'Content-Length': Buffer.byteLength(finalBody),
           },
         }, (proxyRes) => {
           // SSE 스트리밍을 위한 헤더 — 모든 버퍼링/압축 방지
@@ -531,7 +587,7 @@ function createGitMiddleware(options: GitPluginOptions) {
           }
         })
 
-        proxyReq.write(rawBody)
+        proxyReq.write(finalBody)
         proxyReq.end()
         } else {
         // ── 비스트리밍: fetch 사용 ──
@@ -543,7 +599,7 @@ function createGitMiddleware(options: GitPluginOptions) {
               'x-api-key': apiKey,
               'anthropic-version': '2023-06-01',
             },
-            body: rawBody,
+            body: finalBody,
           })
           const data = await claudeRes.text()
           res.writeHead(claudeRes.status, {
