@@ -2312,23 +2312,101 @@ export async function sendChatMessage(
     return total;
   }
 
-  // 큰 tool_result 내용을 압축 (HTML 아티팩트 등)
-  function compressLargeResults(msgs: ClaudeMsg[]): ClaudeMsg[] {
+  /**
+   * HTML에서 반복되는 <tr>/<td>/<th> 행을 지능적으로 압축:
+   * 첫 3행만 보존하고 나머지는 "(N행 추가...)" 요약으로 대체
+   */
+  function compressHtmlRows(html: string): string {
+    // <style> 블록 → 짧은 요약으로 대체
+    const styleCompressed = html.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '<style>/* (스타일 생략) */</style>');
+    // <tr> 행 압축: 3행만 보존
+    const trPattern = /(<(?:thead|tbody)[^>]*>)((?:\s*<tr[\s\S]*?<\/tr>)+)(\s*<\/(?:thead|tbody)>)/gi;
+    return styleCompressed.replace(trPattern, (_match, open: string, rows: string, close: string) => {
+      const trMatches = rows.match(/<tr[\s\S]*?<\/tr>/gi);
+      if (!trMatches || trMatches.length <= 3) return open + rows + close;
+      const kept = trMatches.slice(0, 3).join('\n');
+      return `${open}\n${kept}\n<!-- ...${trMatches.length - 3}행 추가 (토큰 절약으로 생략) -->\n${close}`;
+    });
+  }
+
+  /**
+   * JSON 데이터 결과 압축: rows를 최대 5행으로 제한
+   */
+  function compressJsonData(json: string): string {
+    try {
+      const parsed = JSON.parse(json);
+      if (parsed.rows && Array.isArray(parsed.rows) && parsed.rows.length > 5) {
+        const originalLen = parsed.rows.length;
+        parsed.rows = parsed.rows.slice(0, 5);
+        parsed._compressed = `원본 ${originalLen}행 중 5행만 포함`;
+        return JSON.stringify(parsed);
+      }
+    } catch { /* not JSON, return as-is */ }
+    return json;
+  }
+
+  /**
+   * 대화 히스토리 토큰 다이어트:
+   * 1. tool_result: HTML이면 <tr> 행 압축, JSON이면 rows 제한
+   * 2. tool_use input: create_artifact의 html을 요약으로 대체
+   * 3. assistant text: 이전 아티팩트 HTML 마커 잔해 정리
+   */
+  function compressHistory(msgs: ClaudeMsg[]): ClaudeMsg[] {
     return msgs.map(m => {
-      if (m.role !== 'user' || !Array.isArray(m.content)) return m;
-      const content = (m.content as Array<Record<string, unknown>>).map(b => {
-        if (b.type === 'tool_result' && typeof b.content === 'string' && (b.content as string).length > 8000) {
-          return { ...b, content: (b.content as string).slice(0, 2000) + '\n...(결과 압축됨, 원본 ' + (b.content as string).length + '자)' };
-        }
-        return b;
-      });
-      return { ...m, content } as ClaudeMsg;
+      // ── user 메시지: tool_result 압축 ──
+      if (m.role === 'user' && Array.isArray(m.content)) {
+        const content = (m.content as Array<Record<string, unknown>>).map(b => {
+          if (b.type !== 'tool_result' || typeof b.content !== 'string') return b;
+          const c = b.content as string;
+          if (c.length <= 3000) return b; // 3KB 이하는 그대로
+
+          // HTML 감지: <로 시작하거나 태그 포함
+          if (/<[a-zA-Z]/.test(c)) {
+            const compressed = compressHtmlRows(c);
+            if (compressed.length < c.length * 0.7) {
+              return { ...b, content: compressed.slice(0, 3000) + (compressed.length > 3000 ? `\n...(HTML 압축됨, 원본 ${c.length}자 → ${compressed.length}자)` : '') };
+            }
+          }
+
+          // JSON 감지: { 또는 [ 로 시작
+          if (c.startsWith('{') || c.startsWith('[')) {
+            const compressed = compressJsonData(c);
+            if (compressed.length <= 3000) return { ...b, content: compressed };
+            return { ...b, content: compressed.slice(0, 3000) + `\n...(JSON 압축됨, 원본 ${c.length}자)` };
+          }
+
+          // 기타 큰 텍스트: 단순 잘라내기
+          return { ...b, content: c.slice(0, 2000) + `\n...(결과 압축됨, 원본 ${c.length}자)` };
+        });
+        return { ...m, content } as ClaudeMsg;
+      }
+
+      // ── assistant 메시지: tool_use input의 큰 html 압축 ──
+      if (m.role === 'assistant' && Array.isArray(m.content)) {
+        const content = (m.content as ContentBlock[]).map(b => {
+          if (b.type !== 'tool_use') return b;
+          const tb = b as ToolUseBlock;
+          const inp = tb.input as Record<string, unknown>;
+          // create_artifact의 html 필드가 크면 요약으로 대체
+          if (tb.name === 'create_artifact' && typeof inp.html === 'string' && (inp.html as string).length > 500) {
+            return { ...tb, input: { ...inp, html: `(HTML ${(inp.html as string).length}자, 토큰 절약으로 생략됨)` } };
+          }
+          // query_game_data의 큰 input도 정리
+          if (typeof inp.sql === 'string' && (inp.sql as string).length > 1000) {
+            return { ...tb, input: { ...inp, sql: (inp.sql as string).slice(0, 500) + '...' } };
+          }
+          return b;
+        });
+        return { ...m, content } as ClaudeMsg;
+      }
+
+      return m;
     });
   }
 
   let rawHistoryMsgs = historyToMessages(history);
-  // 큰 tool_result 먼저 압축
-  rawHistoryMsgs = compressLargeResults(rawHistoryMsgs);
+  // 히스토리 지능적 압축 (HTML 행, JSON rows, tool_use input)
+  rawHistoryMsgs = compressHistory(rawHistoryMsgs);
   // 그래도 초과하면 오래된 메시지부터 제거
   while (rawHistoryMsgs.length > 2 && estimateMsgChars(rawHistoryMsgs) > MAX_MSG_CHARS) {
     rawHistoryMsgs = rawHistoryMsgs.slice(2); // 앞에서 2개씩 제거 (user + assistant 쌍)
@@ -2646,11 +2724,26 @@ export async function sendChatMessage(
           } else if (qr.rowCount === 0) {
             resultStr = '결과 없음 (0행)';
           } else {
+            // 행수 제한 (30행) + 셀 값 길이 제한 (200자) → 토큰 대폭 절약
+            const MAX_ROWS = 30;
+            const MAX_CELL_LEN = 200;
+            const trimmedRows = qr.rows.slice(0, MAX_ROWS).map(row => {
+              const trimmedRow: Record<string, unknown> = {};
+              for (const [k, v] of Object.entries(row)) {
+                if (typeof v === 'string' && v.length > MAX_CELL_LEN) {
+                  trimmedRow[k] = v.slice(0, MAX_CELL_LEN) + '...';
+                } else {
+                  trimmedRow[k] = v;
+                }
+              }
+              return trimmedRow;
+            });
             resultStr = JSON.stringify({
               rowCount: qr.rowCount,
-              returned: Math.min(qr.rowCount, 100),
+              returned: Math.min(qr.rowCount, MAX_ROWS),
               columns: qr.columns,
-              rows: qr.rows.slice(0, 100),
+              rows: trimmedRows,
+              ...(qr.rowCount > MAX_ROWS ? { note: `전체 ${qr.rowCount}행 중 ${MAX_ROWS}행만 포함. 나머지는 data-embed 태그 사용 권장.` } : {}),
             });
           }
         }
