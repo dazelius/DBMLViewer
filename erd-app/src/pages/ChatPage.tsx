@@ -990,7 +990,8 @@ function renderDiffEmbedHtml(commit: string, file?: string): string {
 (function(){
   var root=document.getElementById("${safeId}");
   if(!root)return;
-  fetch("/api/git/commit-diff?hash=${encodeURIComponent(commit)}${fileParam}")
+  var _base="";try{_base=parent.location.origin;}catch(e){try{_base=window.location.origin;}catch(e2){}}
+  fetch(_base+"/api/git/commit-diff?hash=${encodeURIComponent(commit)}${fileParam}")
     .then(function(r){return r.json();})
     .then(function(data){
       var files=data.files||[];
@@ -6815,7 +6816,8 @@ export default function ChatPage() {
                 return { ...prev, isComplete: false };
               }
               // create_artifact 모드: 새 빈 패널 열기
-              return { html: '', title: title || '', charCount: 0, isComplete: false };
+              // ★ 기존 finalTc를 보존 → 후속 patch_artifact에서 fallback으로 사용 가능
+              return { html: '', title: title || '', charCount: 0, isComplete: false, finalTc: prev?.finalTc, artifactId: prev?.artifactId };
             });
           }
         },
@@ -6916,13 +6918,14 @@ export default function ChatPage() {
           console.log(`[Patch] replace(${p.replace.length}자): "${p.replace.slice(0, 100)}${p.replace.length > 100 ? '…' : ''}"`);
         }
         setArtifactPanel((prev) => {
-          // 원본 HTML: finalTc.html → prev.html → _artBuf.baseHtml → _artBuf.html 순 fallback
+          // 원본 HTML: finalTc.html → prev.html → _artBuf.baseHtml → _artBuf.html → savedArtifacts 순 fallback
           const originalHtml = prev?.finalTc?.html
             || prev?.html
             || _artBuf.baseHtml
             || _artBuf.html
+            || (savedArtifacts.length > 0 ? savedArtifacts[0].tc.html : '')
             || '';
-          console.log(`[Patch] 원본 HTML: finalTc=${(prev?.finalTc?.html ?? '').length}자, prev=${(prev?.html ?? '').length}자, baseHtml=${_artBuf.baseHtml.length}자 → 사용: ${originalHtml.length}자`);
+          console.log(`[Patch] 원본 HTML: finalTc=${(prev?.finalTc?.html ?? '').length}자, prev=${(prev?.html ?? '').length}자, baseHtml=${_artBuf.baseHtml.length}자, savedArt=${savedArtifacts.length > 0 ? (savedArtifacts[0].tc.html ?? '').length : 0}자 → 사용: ${originalHtml.length}자`);
           if (!originalHtml) {
             console.warn('[Patch] ❌ 패치할 원본 HTML이 없습니다!');
             return prev;
