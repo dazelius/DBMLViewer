@@ -5495,40 +5495,130 @@ function serverSafeInternalName(name: string): string {
 }
 
 // ── 서버사이드 시스템 프롬프트 (웹 UI 수준으로 강화) ──
-function buildServerSystemPrompt(): string {
+// ── 스마트 널리지 선택 함수 ─────────────────────────────────────────────────
+// 사용자 쿼리 키워드와 파일명/내용을 매칭해 관련 파일만 반환
+function selectKnowledgeForQuery(userQuery: string, knDir: string): {
+  matched: { name: string; content: string; sizeKB: number; score: number }[];
+  index: { name: string; sizeKB: number; preview: string }[];
+} {
+  const matched: { name: string; content: string; sizeKB: number; score: number }[] = []
+  const index: { name: string; sizeKB: number; preview: string }[] = []
+
+  try {
+    if (!existsSync(knDir)) return { matched, index }
+    const files = readdirSync(knDir).filter(f => f.endsWith('.md'))
+    if (files.length === 0) return { matched, index }
+
+    // 쿼리에서 키워드 추출 (한글 2자+, 영문 2자+)
+    const queryLower = userQuery.toLowerCase()
+    const tokens = (queryLower.match(/[가-힣]{2,}|[a-z0-9_]{2,}/g) ?? [])
+      .filter(t => !['의', '이', '가', '을', '를', '은', '는', '이다', '하다', '있다', '없다', 'the', 'is', 'in', 'of', 'to'].includes(t))
+
+    for (const f of files) {
+      const fPath = join(knDir, f)
+      const stat = statSync(fPath)
+      const sizeKB = Math.round(stat.size / 1024 * 10) / 10
+      let content = readFileSync(fPath, 'utf-8')
+      if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
+      if (content.length > 50 * 1024) content = content.slice(0, 50 * 1024) + '\n...(잘림)'
+
+      const name = f.replace('.md', '')
+      const nameLower = name.toLowerCase()
+      const contentLower = content.toLowerCase()
+      const preview = content.slice(0, 80).replace(/\n/g, ' ').trim()
+
+      index.push({ name, sizeKB, preview })
+
+      // 점수 계산
+      let score = 0
+      for (const token of tokens) {
+        if (nameLower.includes(token)) score += 5      // 파일명 매칭 = 강한 신호
+        // 내용에서 매칭 빈도 (최대 10점)
+        let pos = 0, cnt = 0
+        while ((pos = contentLower.indexOf(token, pos)) !== -1 && cnt < 10) { cnt++; pos++ }
+        score += cnt
+      }
+
+      if (score > 0) {
+        matched.push({ name, content, sizeKB, score })
+      }
+    }
+
+    // 점수 내림차순 정렬
+    matched.sort((a, b) => b.score - a.score)
+  } catch (e) {
+    console.warn('[selectKnowledge] 오류 (무시):', e)
+  }
+
+  return { matched, index }
+}
+
+function buildServerSystemPrompt(userQuery?: string): string {
   const lines: string[] = []
 
-  // ── 널리지 시스템 (최상단) ──
+  // ── 스마트 널리지 주입 ──
   try {
     const knDir = join(process.cwd(), 'knowledge')
     if (existsSync(knDir)) {
       const files = readdirSync(knDir).filter(f => f.endsWith('.md'))
       if (files.length > 0) {
-        lines.push('[널리지(Knowledge) 시스템 규칙 — 반드시 준수]')
-        lines.push('- ⭐⭐⭐ 아래에 저장된 널리지의 전체 내용이 포함되어 있습니다. 답변 시 반드시 참고하세요!')
-        lines.push('- 널리지 내용은 사용자가 직접 저장한 중요 정보이므로, 모든 답변에서 관련 널리지를 활용해야 합니다.')
-        lines.push('- 널리지를 활용할 때는 어떤 널리지(파일명)를 참고했는지 자연스럽게 언급해주세요.')
-        lines.push('')
-        lines.push(`[현재 저장된 널리지: ${files.length}개 파일] ──────────────────────`)
-        let totalSize = 0
-        for (const f of files) {
-          const fPath = join(knDir, f)
-          const stat = statSync(fPath)
-          if (totalSize + stat.size > 150 * 1024) break
-          let content = readFileSync(fPath, 'utf-8')
-          if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
-          if (content.length > 50 * 1024) content = content.slice(0, 50 * 1024) + '\n...(잘림)'
-          const name = f.replace('.md', '')
-          const sizeKB = Math.round(stat.size / 1024 * 10) / 10
+        if (userQuery) {
+          // 쿼리 기반 스마트 선택
+          const { matched, index } = selectKnowledgeForQuery(userQuery, knDir)
+
+          // 항상: 목차(파일명 + 미리보기) 주입
+          lines.push('[📚 저장된 널리지 목록]')
+          for (const item of index) {
+            lines.push(`- ${item.name} (${item.sizeKB}KB): ${item.preview}`)
+          }
+          lines.push('위 널리지 중 관련된 내용은 아래에 자동 포함됩니다. 추가로 필요하면 read_knowledge 도구로 읽을 수 있습니다.')
           lines.push('')
-          lines.push(`━━━ 📌 ${name} (${sizeKB}KB) ━━━`)
-          lines.push(content)
-          lines.push(`━━━ END: ${name} ━━━`)
-          totalSize += stat.size
+
+          if (matched.length > 0) {
+            // 관련 파일 전체 내용 주입 (최대 150KB)
+            lines.push(`[⭐ 쿼리 관련 널리지 자동 주입 — ${matched.length}개 파일]`)
+            lines.push('아래 내용은 현재 질문과 관련성이 높다고 판단되어 자동 포함되었습니다. 반드시 참고하세요.')
+            lines.push('')
+            let totalSize = 0
+            for (const m of matched) {
+              if (totalSize > 150 * 1024) break
+              lines.push(`━━━ 📌 ${m.name} (${m.sizeKB}KB, 관련도 점수: ${m.score}) ━━━`)
+              lines.push(m.content)
+              lines.push(`━━━ END: ${m.name} ━━━`)
+              lines.push('')
+              totalSize += m.content.length
+            }
+            sLog('INFO', `[ChatAPI] 스마트 널리지 주입: ${matched.length}/${files.length}개 (쿼리: "${userQuery.slice(0, 30)}")`)
+          } else {
+            lines.push('[널리지 매칭 결과: 현재 질문과 직접 관련된 파일 없음 — 필요시 read_knowledge 도구 사용]')
+            sLog('INFO', `[ChatAPI] 널리지 매칭 없음 (쿼리: "${userQuery.slice(0, 30)}")`)
+          }
+          lines.push('')
+        } else {
+          // userQuery 없을 때: 전체 주입 (기존 방식 유지)
+          lines.push('[널리지(Knowledge) 시스템 규칙 — 반드시 준수]')
+          lines.push('- ⭐⭐⭐ 아래에 저장된 널리지의 전체 내용이 포함되어 있습니다. 답변 시 반드시 참고하세요!')
+          lines.push(`[현재 저장된 널리지: ${files.length}개 파일] ──────────────────────`)
+          let totalSize = 0
+          for (const f of files) {
+            const fPath = join(knDir, f)
+            const stat = statSync(fPath)
+            if (totalSize + stat.size > 150 * 1024) break
+            let content = readFileSync(fPath, 'utf-8')
+            if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
+            if (content.length > 50 * 1024) content = content.slice(0, 50 * 1024) + '\n...(잘림)'
+            const name = f.replace('.md', '')
+            const sizeKB = Math.round(stat.size / 1024 * 10) / 10
+            lines.push(`━━━ 📌 ${name} (${sizeKB}KB) ━━━`)
+            lines.push(content)
+            lines.push(`━━━ END: ${name} ━━━`)
+            lines.push('')
+            totalSize += stat.size
+          }
+          lines.push('──────────────────────────────────────────────────')
+          lines.push('')
+          console.log(`[ChatAPI] 서버 시스템 프롬프트에 널리지 ${files.length}개 포함`)
         }
-        lines.push('──────────────────────────────────────────────────')
-        lines.push('')
-        console.log(`[ChatAPI] 서버 시스템 프롬프트에 널리지 ${files.length}개 포함`)
       }
     }
   } catch (e) {
@@ -5749,7 +5839,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       const session = getOrCreateSession(body.session_id)
       const isStream = body.stream === true
       const MAX_ITERATIONS = 12
-      const systemPrompt = buildServerSystemPrompt()
+      const systemPrompt = buildServerSystemPrompt(userMessage) // ← 쿼리 전달로 스마트 주입
 
       // ── 동시 요청 중복 방지 ──
       if (_activeRequests.has(session.id)) {

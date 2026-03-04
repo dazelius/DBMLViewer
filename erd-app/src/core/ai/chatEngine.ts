@@ -920,17 +920,70 @@ const TOOLS = [
 
 // ── 시스템 프롬프트 빌더 ─────────────────────────────────────────────────────
 
-function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap, knowledgeEntries?: { name: string; sizeKB: number; content: string }[]): string {
+// 클라이언트 사이드 키워드 매칭 — 쿼리 관련 널리지만 필터링
+function _scoreKnowledgeForQuery(
+  entry: { name: string; content: string },
+  queryTokens: string[]
+): number {
+  if (queryTokens.length === 0) return 1; // 쿼리 없으면 모두 포함
+  const nameLower = entry.name.toLowerCase();
+  const contentLower = entry.content.toLowerCase();
+  let score = 0;
+  for (const token of queryTokens) {
+    if (nameLower.includes(token)) score += 5;
+    let pos = 0, cnt = 0;
+    while ((pos = contentLower.indexOf(token, pos)) !== -1 && cnt < 10) { cnt++; pos++; }
+    score += cnt;
+  }
+  return score;
+}
+
+function buildSystemPrompt(
+  schema: ParsedSchema | null,
+  tableData: TableDataMap,
+  knowledgeEntries?: { name: string; sizeKB: number; content: string }[],
+  userQuery?: string,
+): string {
   const lines: string[] = [];
 
-  // ── 널리지를 시스템 프롬프트 최상단에 배치 — AI가 가장 먼저 인지 ──
+  // ── 스마트 널리지 주입 (쿼리 키워드 매칭) ──
   if (knowledgeEntries && knowledgeEntries.length > 0) {
-    lines.push(`## ⭐ 사용자 널리지 (${knowledgeEntries.length}개) — 모든 답변에서 반드시 참고`);
-    for (const entry of knowledgeEntries) {
-      lines.push(`### ${entry.name} (${entry.sizeKB}KB)`);
-      lines.push(entry.content);
+    // 쿼리 토큰 추출
+    const queryTokens = userQuery
+      ? (userQuery.toLowerCase().match(/[가-힣]{2,}|[a-z0-9_]{2,}/g) ?? [])
+          .filter(t => !['의','이','가','을','를','은','는','이다','하다','있다','없다','the','is','in','of','to'].includes(t))
+      : [];
+
+    // 각 파일 점수 계산
+    const scored = knowledgeEntries.map(e => ({
+      ...e,
+      score: _scoreKnowledgeForQuery(e, queryTokens),
+    })).sort((a, b) => b.score - a.score);
+
+    const matched = queryTokens.length > 0 ? scored.filter(e => e.score > 0) : scored;
+
+    // 목차는 항상 표시
+    lines.push(`## 📚 저장된 널리지 목록 (${knowledgeEntries.length}개)`);
+    for (const e of knowledgeEntries) {
+      lines.push(`- ${e.name} (${e.sizeKB}KB)`);
     }
+    lines.push('관련 내용은 아래에 자동 포함됩니다. 추가로 필요하면 read_knowledge 도구 사용.');
     lines.push('');
+
+    if (matched.length > 0) {
+      lines.push(`## ⭐ 쿼리 관련 널리지 (${matched.length}개) — 반드시 참고`);
+      let totalLen = 0;
+      for (const entry of matched) {
+        if (totalLen > 150 * 1024) break;
+        lines.push(`### ${entry.name} (${entry.sizeKB}KB${queryTokens.length > 0 ? `, 관련도: ${entry.score}` : ''})`);
+        lines.push(entry.content);
+        totalLen += entry.content.length;
+      }
+      lines.push('');
+    } else if (queryTokens.length > 0) {
+      lines.push('*(현재 질문과 직접 관련된 널리지 없음 — 필요시 read_knowledge 도구 사용)*');
+      lines.push('');
+    }
   }
 
   lines.push('당신은 게임 데이터 전문 어시스턴트입니다. 한국어로 답변하세요.');
@@ -940,7 +993,7 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap,
   lines.push('- ⭐ 답변 전 반드시 read_guide로 관련 가이드 먼저 읽기 (DB: _DB_OVERVIEW, 코드: _OVERVIEW)');
   lines.push('- 캐릭터 기획서/프로파일 → build_character_profile 먼저 호출');
   lines.push('- "기억해/저장해/널리지" 요청 → save_knowledge (name=영문_snake_case)');
-  lines.push('- ⭐ 최상단 널리지를 모든 답변에서 반드시 참고하세요');
+  lines.push('- 널리지 목록에 있는 파일은 read_knowledge 도구로 언제든 읽을 수 있음');
   lines.push('');
   lines.push('## ⛔ HTML 출력 규칙');
   lines.push('채팅 텍스트에 HTML 태그(div/table/style/img 등) 절대 금지!');
@@ -1901,7 +1954,7 @@ export async function sendChatMessage(
   // 저장된 널리지 목록 + 내용 가져오기 (인메모리 캐싱으로 매번 API 호출 방지)
   const knowledgeEntries = await _getKnowledgeEntries();
 
-  const systemPrompt = buildSystemPrompt(effectiveSchema, tableData, knowledgeEntries);
+  const systemPrompt = buildSystemPrompt(effectiveSchema, tableData, knowledgeEntries, userMessage);
 
   // ── 메시지 크기 기반 히스토리 트리밍 (200K 토큰 ≈ 600K chars 제한) ──
   // 1자 ≈ 0.33 토큰 기준, 시스템 프롬프트 + 여유분 확보
