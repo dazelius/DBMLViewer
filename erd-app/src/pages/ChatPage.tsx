@@ -43,12 +43,11 @@ const MiniRagGraph = lazy(() => import('../components/Chat/MiniRagGraph.tsx'));
 
 // ── HTML 압축 (수정 요청 시 스타일/스크립트 제거 → 입력 토큰 절약) ─────────────
 function compressHtmlForEdit(html: string): string {
+  // ★ style/script 블록만 제거. 공백/줄바꿈은 원본 그대로 유지!
+  // (Claude가 find 텍스트를 원본과 동일하게 만들 수 있도록)
   return html
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '<!-- styles removed -->')
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '<!-- scripts removed -->')
-    .replace(/<!--(?!styles removed|scripts removed)[\s\S]*?-->/g, '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .trim();
 }
 
@@ -5927,17 +5926,24 @@ export default function ChatPage() {
     // 아티팩트 스트리밍: 모듈 레벨 공유 버퍼 (_artBuf) 에 직접 쓰기 (React 완전 우회)
     let _lastArtifactLog = 0;
     let _artifactPanelOpened = false;
+    // ★ 편집 요청인지 판별 (onEditRequest에서 보낸 메시지)
+    const isEditRequest = text.trim().startsWith('[아티팩트 수정 요청]');
     // 스트림 시작 시 버퍼 리셋
-    // 패치 모드: finalTc.html → 패널 html → 이전 _artBuf.html 순으로 폴백
-    const existingHtml = artifactPanel?.finalTc?.html
-      || artifactPanel?.html
-      || (_artBuf.html && _artBuf.html.length > 100 ? _artBuf.html : '')
-      || '';
-    _artBuf.html = existingHtml; // 패치 모드면 기존 HTML부터 시작, 새 아티팩트면 비어있음
-    _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0; _artBuf.rawJson = '';
-    // patch_artifact 스트리밍용: 기존 아티팩트 HTML을 baseHtml에 보관
-    _artBuf.baseHtml = existingHtml;
-    if (existingHtml) console.log(`[ArtBuf] 기존 HTML ${existingHtml.length}자 → baseHtml 설정 (패치 모드 대비)`);
+    if (isEditRequest) {
+      // 패치 모드: 기존 아티팩트 HTML을 baseHtml에 보관
+      const existingHtml = artifactPanel?.finalTc?.html
+        || artifactPanel?.html
+        || (_artBuf.html && _artBuf.html.length > 100 ? _artBuf.html : '')
+        || '';
+      _artBuf.html = existingHtml; // 기존 HTML부터 시작
+      _artBuf.baseHtml = existingHtml;
+      _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0; _artBuf.rawJson = '';
+      console.log(`[ArtBuf] 🔧 편집 모드: 기존 HTML ${existingHtml.length}자 → baseHtml 설정`);
+    } else {
+      // 일반 메시지: baseHtml 초기화 (패치 모드 해제)
+      _artBuf.html = ''; _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0; _artBuf.rawJson = '';
+      _artBuf.baseHtml = '';
+    }
 
     try {
       const { content, toolCalls, rawMessages, tokenUsage } = await sendChatMessage(
@@ -6077,6 +6083,7 @@ export default function ChatPage() {
           ? _artBuf.html
           : (artifactTc.html ?? '');
         const mergedTc = { ...artifactTc, html: finalHtml };
+        _artBuf.baseHtml = ''; // 패치 모드 해제
         setArtifactPanel((prev) =>
           prev
             ? { ...prev, html: finalHtml, charCount: finalHtml.length, isComplete: true, finalTc: mergedTc, artifactId }
@@ -6090,6 +6097,10 @@ export default function ChatPage() {
       } else if (patchTc && patchTc.patches.length > 0) {
         // patch_artifact: 현재 열린 아티팩트에 패치 적용
         console.log(`[Patch] 🔧 패치 적용 시작: ${patchTc.patches.length}개 패치, title="${patchTc.title ?? '(없음)'}"`);
+        for (const p of patchTc.patches) {
+          console.log(`[Patch] find(${p.find.length}자): "${p.find.slice(0, 100)}${p.find.length > 100 ? '…' : ''}"`);
+          console.log(`[Patch] replace(${p.replace.length}자): "${p.replace.slice(0, 100)}${p.replace.length > 100 ? '…' : ''}"`);
+        }
         setArtifactPanel((prev) => {
           // 원본 HTML: finalTc.html → prev.html → _artBuf.baseHtml → _artBuf.html 순 fallback
           const originalHtml = prev?.finalTc?.html
@@ -6097,26 +6108,52 @@ export default function ChatPage() {
             || _artBuf.baseHtml
             || _artBuf.html
             || '';
-          console.log(`[Patch] 원본 HTML 소스: finalTc=${(prev?.finalTc?.html ?? '').length}자, prev.html=${(prev?.html ?? '').length}자, baseHtml=${_artBuf.baseHtml.length}자, artBuf=${_artBuf.html.length}자 → 사용: ${originalHtml.length}자`);
+          console.log(`[Patch] 원본 HTML: finalTc=${(prev?.finalTc?.html ?? '').length}자, prev=${(prev?.html ?? '').length}자, baseHtml=${_artBuf.baseHtml.length}자 → 사용: ${originalHtml.length}자`);
           if (!originalHtml) {
             console.warn('[Patch] ❌ 패치할 원본 HTML이 없습니다!');
             return prev;
           }
-          const { html: patchedHtml, applied, failed } = applyPatches(originalHtml, patchTc.patches);
-          console.log(`[Patch] ✅ 적용 ${applied}/${patchTc.patches.length}개, 원본: ${originalHtml.length}자 → 결과: ${patchedHtml.length}자${failed.length ? `, 실패: ${failed.join(' | ')}` : ''}`);
+
+          // 1차: 원본 HTML에 직접 패치 적용
+          let { html: patchedHtml, applied, failed } = applyPatches(originalHtml, patchTc.patches);
+          console.log(`[Patch] 1차(원본): ${applied}/${patchTc.patches.length}개 성공${failed.length ? `, 실패: ${failed.join(' | ')}` : ''}`);
+
+          // 2차: 실패한 패치가 있으면, style/script 제거본에서 시도 후 결과 병합
+          if (failed.length > 0) {
+            const strippedHtml = compressHtmlForEdit(originalHtml);
+            const failedPatches = patchTc.patches.filter(p => failed.some(f => p.find.startsWith(f.replace('…', ''))));
+            if (failedPatches.length > 0 && strippedHtml !== originalHtml) {
+              console.log(`[Patch] 2차(압축본) 시도: ${failedPatches.length}개 패치, 압축본 ${strippedHtml.length}자`);
+              const { html: strippedPatched, applied: applied2, failed: failed2 } = applyPatches(strippedHtml, failedPatches);
+              if (applied2 > 0) {
+                // 압축본에서 성공한 패치 → 원본에서 style/script를 보존하면서 body 부분만 교체
+                // body 태그 없으면 전체 교체
+                const bodyMatch = patchedHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+                const strippedBodyMatch = strippedPatched.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+                if (bodyMatch && strippedBodyMatch) {
+                  patchedHtml = patchedHtml.replace(bodyMatch[1], strippedBodyMatch[1]);
+                } else {
+                  patchedHtml = strippedPatched;
+                }
+                applied += applied2;
+                failed = failed2;
+                console.log(`[Patch] 2차 성공: +${applied2}개 (총 ${applied}개)${failed2.length ? `, 최종 실패: ${failed2.join(' | ')}` : ''}`);
+              }
+            }
+          }
+
+          console.log(`[Patch] ✅ 최종: ${applied}/${patchTc.patches.length}개, ${originalHtml.length}자 → ${patchedHtml.length}자`);
           const newTitle = patchTc.title ?? prev?.finalTc?.title ?? prev?.title ?? '문서';
-          // finalTc가 없으면 새로 생성
           const baseTc: ArtifactResult = prev?.finalTc ?? { kind: 'artifact', title: newTitle, description: '', html: originalHtml, duration: 0 };
           const patchedTc: ArtifactResult = { ...baseTc, html: patchedHtml, title: newTitle };
-          // savedArtifacts도 업데이트
           if (prev?.artifactId) {
             setSavedArtifacts((arts) => arts.map((a) =>
               a.id === prev.artifactId ? { ...a, title: newTitle, tc: patchedTc } : a
             ));
           }
-          // _artBuf도 갱신 (다음 패치 시 사용)
+          // _artBuf 갱신 + baseHtml 초기화 (패치 모드 종료)
           _artBuf.html = patchedHtml;
-          _artBuf.baseHtml = patchedHtml;
+          _artBuf.baseHtml = '';
           return { ...prev!, html: patchedHtml, title: newTitle, charCount: patchedHtml.length, isComplete: true, finalTc: patchedTc };
         });
       } else if (artifactPanel) {
@@ -6573,12 +6610,15 @@ export default function ChatPage() {
                 const fullMessage =
                   `[아티팩트 수정 요청]\n` +
                   `제목: ${title}\n\n` +
-                  `현재 아티팩트 HTML (스타일/스크립트 제외, 원본은 ${currentHtml.length}자):\n\`\`\`html\n${compressedHtml}\n\`\`\`\n\n` +
+                  `현재 아티팩트 HTML:\n\`\`\`html\n${compressedHtml}\n\`\`\`\n\n` +
                   `수정 요청: ${prompt}\n\n` +
                   `⭐ 반드시 patch_artifact 툴을 사용하세요.\n` +
-                  `- find 텍스트는 위 HTML에서 **정확히** 복사하세요 (공백/줄바꿈 포함).\n` +
-                  `- 변경이 필요한 최소 부분만 find/replace 패치로 반환하세요.\n` +
-                  `- HTML 전체 재생성 금지. 스타일 속성은 그대로 유지하세요.`;
+                  `🔴 중요 규칙:\n` +
+                  `- find 텍스트는 위 HTML에서 글자 하나 틀리지 않게 **정확히 복사** (공백/줄바꿈/들여쓰기 100% 동일)\n` +
+                  `- find는 고유하게 식별 가능한 충분히 긴 문자열 (20자 이상)\n` +
+                  `- 변경 필요한 최소 부분만 find/replace\n` +
+                  `- style/script 태그는 수정하지 마세요 (제거됨)\n` +
+                  `- HTML 전체 재생성 금지`;
                 // 채팅에는 사용자가 입력한 텍스트만 표시
                 const displayText = `✏️ [${title}] ${prompt}`;
                 sendMessage(fullMessage, displayText);
