@@ -4127,8 +4127,12 @@ function serverCallClaude(
           else resolve(parsed)
         } catch { reject(new Error(`Claude API 응답 파싱 실패: ${data.slice(0, 200)}`)) }
       })
+      proxyRes.on('error', reject)  // ← 응답 스트림 에러도 reject로 전파
     })
     req.on('error', reject)
+    req.setTimeout(120_000, () => {
+      req.destroy(new Error('serverCallClaude timeout (120s)'))
+    })
     req.write(payload)
     req.end()
   })
@@ -4146,6 +4150,31 @@ function serverStreamClaude(
     const blocks: Record<number, { type: string; text?: string; id?: string; name?: string; _inputStr?: string; input?: Record<string, unknown> }> = {}
     let stopReason = 'end_turn'
     let buf = ''
+    let clientGone = false  // 클라이언트 연결 끊김 여부
+
+    // 클라이언트 소켓 종료 감지 — res.write() EPIPE 크래시 방지
+    const onClientClose = () => {
+      clientGone = true
+      sLog('WARN', '[serverStreamClaude] 클라이언트 연결 끊김 — 스트림 중단')
+      try { proxyReq.destroy() } catch { /* ignore */ }
+      reject(new Error('CLIENT_DISCONNECTED'))
+    }
+    res.socket?.once('close', onClientClose)
+    res.once('close', onClientClose)
+
+    /** 안전한 res.write 래퍼 — EPIPE/write-after-end 예외 방지 */
+    const safeWrite = (data: string): boolean => {
+      if (clientGone || res.writableEnded || res.destroyed) return false
+      try {
+        return res.write(data)
+      } catch (e) {
+        clientGone = true
+        sLog('WARN', `[serverStreamClaude] res.write 실패: ${e instanceof Error ? e.message : String(e)}`)
+        try { proxyReq.destroy() } catch { /* ignore */ }
+        reject(new Error('CLIENT_DISCONNECTED'))
+        return false
+      }
+    }
 
     const proxyReq = httpsRequest({
       hostname: 'api.anthropic.com',
@@ -4159,11 +4188,13 @@ function serverStreamClaude(
       },
     }, (proxyRes) => {
       proxyRes.on('data', (chunk: Buffer) => {
+        if (clientGone) return  // 연결 끊기면 처리 중단
         buf += chunk.toString()
         const lines = buf.split('\n')
         buf = lines.pop() ?? ''
 
         for (const line of lines) {
+          if (clientGone) break
           if (!line.startsWith('data: ')) continue
           const raw = line.slice(6).trim()
           if (!raw || raw === '[DONE]') continue
@@ -4184,8 +4215,8 @@ function serverStreamClaude(
               if (!b) break
               if (delta.type === 'text_delta') {
                 b.text = (b.text || '') + (delta.text ?? '')
-                // SSE: 텍스트 스트리밍
-                res.write(`event: text_delta\ndata: ${JSON.stringify({ delta: delta.text, full_text: b.text })}\n\n`)
+                // SSE: 텍스트 스트리밍 (안전한 write 사용)
+                safeWrite(`event: text_delta\ndata: ${JSON.stringify({ delta: delta.text, full_text: b.text })}\n\n`)
               } else if (delta.type === 'input_json_delta') {
                 b._inputStr = (b._inputStr || '') + (delta.partial_json ?? '')
               }
@@ -4208,6 +4239,9 @@ function serverStreamClaude(
         }
       })
       proxyRes.on('end', () => {
+        // 리스너 정리
+        res.socket?.removeListener('close', onClientClose)
+        res.removeListener('close', onClientClose)
         const contentArray = Object.entries(blocks)
           .sort(([a], [b]) => Number(a) - Number(b))
           .map(([, b]) => {
@@ -4215,11 +4249,19 @@ function serverStreamClaude(
             void _inputStr
             return clean
           })
-        resolve({ content: contentArray, stop_reason: stopReason })
+        if (!clientGone) resolve({ content: contentArray, stop_reason: stopReason })
       })
-      proxyRes.on('error', reject)
+      proxyRes.on('error', (err) => {
+        res.socket?.removeListener('close', onClientClose)
+        res.removeListener('close', onClientClose)
+        reject(err)
+      })
     })
-    proxyReq.on('error', reject)
+    proxyReq.on('error', (err) => {
+      res.socket?.removeListener('close', onClientClose)
+      res.removeListener('close', onClientClose)
+      if (!clientGone) reject(err)
+    })
     proxyReq.write(payload)
     proxyReq.end()
   })
@@ -5311,11 +5353,12 @@ function createChatApiMiddleware(options: GitPluginOptions) {
               const toolResults: Array<{ type: string; tool_use_id: string; content: string }> = []
 
               for (const tb of toolBlocks) {
-                res.write(`event: tool_start\ndata: ${JSON.stringify({ tool: tb.name, input: tb.input })}\n\n`)
+                if (res.writableEnded) break  // 클라이언트 끊기면 툴 실행 중단
+                try { res.write(`event: tool_start\ndata: ${JSON.stringify({ tool: tb.name, input: tb.input })}\n\n`) } catch { break }
                 const { result, data: toolData } = await serverExecuteToolAsync(tb.name!, tb.input ?? {}, options)
                 allToolCalls.push({ tool: tb.name!, input: tb.input, result: toolData ?? result, summary: result.slice(0, 300) })
                 toolResults.push({ type: 'tool_result', tool_use_id: tb.id!, content: result })
-                res.write(`event: tool_done\ndata: ${JSON.stringify({ tool: tb.name, summary: result.slice(0, 300) })}\n\n`)
+                if (!res.writableEnded) try { res.write(`event: tool_done\ndata: ${JSON.stringify({ tool: tb.name, summary: result.slice(0, 300) })}\n\n`) } catch { /* ignore */ }
               }
               messages.push({ role: 'user', content: toolResults })
               continue
@@ -5369,12 +5412,24 @@ function createChatApiMiddleware(options: GitPluginOptions) {
           session.updated = new Date().toISOString()
           saveSession(session)
 
-          res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: finalText, tool_calls: allToolCalls })}\n\n`)
-          res.end()
+          if (!res.writableEnded) {
+            res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: finalText, tool_calls: allToolCalls })}\n\n`)
+            res.end()
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
-          res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`)
-          res.end()
+          // 클라이언트가 먼저 끊은 경우는 정상 — 로그만 남기고 무시
+          if (msg === 'CLIENT_DISCONNECTED') {
+            sLog('INFO', `[chatApi/stream] 클라이언트가 응답 대기 중 연결을 끊음`)
+            return
+          }
+          sLog('ERROR', `[chatApi/stream] ${msg}`)
+          try {
+            if (!res.writableEnded) {
+              res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`)
+              res.end()
+            }
+          } catch { /* 이미 소켓 닫힘 */ }
         }
         return
       }
