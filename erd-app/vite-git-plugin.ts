@@ -5544,24 +5544,15 @@ function serverSafeInternalName(name: string): string {
 }
 
 // ── 서버사이드 시스템 프롬프트 (웹 UI 수준으로 강화) ──
-// ── 스마트 널리지 선택 함수 ─────────────────────────────────────────────────
-// 사용자 쿼리 키워드와 파일명/내용을 매칭해 관련 파일만 반환
-function selectKnowledgeForQuery(userQuery: string, knDir: string): {
-  matched: { name: string; content: string; sizeKB: number; score: number }[];
-  index: { name: string; sizeKB: number; preview: string }[];
-} {
-  const matched: { name: string; content: string; sizeKB: number; score: number }[] = []
+// ── 널리지 목차 생성 함수 ─────────────────────────────────────────────────
+// 저장된 널리지 파일의 이름 + 헤딩 기반 요약 목록 반환 (전문 미포함)
+function buildKnowledgeIndex(knDir: string): { name: string; sizeKB: number; preview: string }[] {
   const index: { name: string; sizeKB: number; preview: string }[] = []
 
   try {
-    if (!existsSync(knDir)) return { matched, index }
+    if (!existsSync(knDir)) return index
     const files = readdirSync(knDir).filter(f => f.endsWith('.md'))
-    if (files.length === 0) return { matched, index }
-
-    // 쿼리에서 키워드 추출 (한글 2자+, 영문 2자+)
-    const queryLower = userQuery.toLowerCase()
-    const tokens = (queryLower.match(/[가-힣]{2,}|[a-z0-9_]{2,}/g) ?? [])
-      .filter(t => !['의', '이', '가', '을', '를', '은', '는', '이다', '하다', '있다', '없다', 'the', 'is', 'in', 'of', 'to'].includes(t))
+    if (files.length === 0) return index
 
     for (const f of files) {
       const fPath = join(knDir, f)
@@ -5572,105 +5563,55 @@ function selectKnowledgeForQuery(userQuery: string, knDir: string): {
       if (content.length > 50 * 1024) content = content.slice(0, 50 * 1024) + '\n...(잘림)'
 
       const name = f.replace('.md', '')
-      const nameLower = name.toLowerCase()
-      const contentLower = content.toLowerCase()
-      const preview = content.slice(0, 80).replace(/\n/g, ' ').trim()
+
+      // 목차용 요약 생성: 첫 줄(제목) + 헤딩 추출
+      const headings: string[] = []
+      const contentLines = content.split('\n')
+      for (const line of contentLines) {
+        if (line.startsWith('#')) {
+          headings.push(line.replace(/^#+\s*/, '').trim())
+          if (headings.length >= 5) break
+        }
+      }
+      const firstLine = contentLines.find(l => l.trim() && !l.startsWith('#'))?.trim().slice(0, 80) ?? ''
+      const preview = headings.length > 0
+        ? headings.join(' > ')
+        : firstLine || content.slice(0, 80).replace(/\n/g, ' ').trim()
 
       index.push({ name, sizeKB, preview })
-
-      // 피드백 관련 파일은 널리지 주입에서 제외 (토큰 절약, 핵심 규칙만 별도 등록)
-      if (name.startsWith('_feedback') || name.startsWith('_improvement')) continue
-
-      // 점수 계산
-      let score = 0
-      for (const token of tokens) {
-        if (nameLower.includes(token)) score += 5      // 파일명 매칭 = 강한 신호
-        // 내용에서 매칭 빈도 (최대 10점)
-        let pos = 0, cnt = 0
-        while ((pos = contentLower.indexOf(token, pos)) !== -1 && cnt < 10) { cnt++; pos++ }
-        score += cnt
-      }
-
-      if (score > 0) {
-        matched.push({ name, content, sizeKB, score })
-      }
     }
-
-    // 점수 내림차순 정렬
-    matched.sort((a, b) => b.score - a.score)
   } catch (e) {
-    console.warn('[selectKnowledge] 오류 (무시):', e)
+    console.warn('[buildKnowledgeIndex] 오류 (무시):', e)
   }
 
-  return { matched, index }
+  return index
 }
 
-function buildServerSystemPrompt(userQuery?: string): string {
+function buildServerSystemPrompt(_userQuery?: string): string {
   const lines: string[] = []
 
-  // ── 스마트 널리지 주입 ──
+  // ── 널리지 목차 주입 (전문은 read_knowledge 도구로 필요 시 읽기) ──
   try {
     const knDir = join(process.cwd(), 'knowledge')
     if (existsSync(knDir)) {
-      const files = readdirSync(knDir).filter(f => f.endsWith('.md'))
-      if (files.length > 0) {
-        if (userQuery) {
-          // 쿼리 기반 스마트 선택
-          const { matched, index } = selectKnowledgeForQuery(userQuery, knDir)
-
-          // 항상: 목차(파일명 + 미리보기) 주입
-          lines.push('[📚 저장된 널리지 목록]')
-          for (const item of index) {
-            lines.push(`- ${item.name} (${item.sizeKB}KB): ${item.preview}`)
-          }
-          lines.push('위 널리지 중 관련된 내용은 아래에 자동 포함됩니다. 추가로 필요하면 read_knowledge 도구로 읽을 수 있습니다.')
-          lines.push('')
-
-          if (matched.length > 0) {
-            // 관련 파일 전체 내용 주입 (최대 150KB)
-            lines.push(`[⭐ 쿼리 관련 널리지 자동 주입 — ${matched.length}개 파일]`)
-            lines.push('아래 내용은 현재 질문과 관련성이 높다고 판단되어 자동 포함되었습니다. 반드시 참고하세요.')
-            lines.push('')
-            let totalSize = 0
-            for (const m of matched) {
-              if (totalSize > 150 * 1024) break
-              lines.push(`━━━ 📌 ${m.name} (${m.sizeKB}KB, 관련도 점수: ${m.score}) ━━━`)
-              lines.push(m.content)
-              lines.push(`━━━ END: ${m.name} ━━━`)
-              lines.push('')
-              totalSize += m.content.length
-            }
-            sLog('INFO', `[ChatAPI] 스마트 널리지 주입: ${matched.length}/${files.length}개 (쿼리: "${userQuery.slice(0, 30)}")`)
-          } else {
-            lines.push('[널리지 매칭 결과: 현재 질문과 직접 관련된 파일 없음 — 필요시 read_knowledge 도구 사용]')
-            sLog('INFO', `[ChatAPI] 널리지 매칭 없음 (쿼리: "${userQuery.slice(0, 30)}")`)
-          }
-          lines.push('')
-        } else {
-          // userQuery 없을 때: 전체 주입 (기존 방식 유지)
-          lines.push('[널리지(Knowledge) 시스템 규칙 — 반드시 준수]')
-          lines.push('- ⭐⭐⭐ 아래에 저장된 널리지의 전체 내용이 포함되어 있습니다. 답변 시 반드시 참고하세요!')
-          lines.push(`[현재 저장된 널리지: ${files.length}개 파일] ──────────────────────`)
-          let totalSize = 0
-          for (const f of files) {
-            const fPath = join(knDir, f)
-            const stat = statSync(fPath)
-            if (totalSize + stat.size > 150 * 1024) break
-            let content = readFileSync(fPath, 'utf-8')
-            if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
-            if (content.length > 50 * 1024) content = content.slice(0, 50 * 1024) + '\n...(잘림)'
-            const name = f.replace('.md', '')
-            const sizeKB = Math.round(stat.size / 1024 * 10) / 10
-            lines.push(`━━━ 📌 ${name} (${sizeKB}KB) ━━━`)
-            lines.push(content)
-            lines.push(`━━━ END: ${name} ━━━`)
-            lines.push('')
-            totalSize += stat.size
-          }
-          lines.push('──────────────────────────────────────────────────')
-          lines.push('')
-          console.log(`[ChatAPI] 서버 시스템 프롬프트에 널리지 ${files.length}개 포함`)
+      const index = buildKnowledgeIndex(knDir)
+      if (index.length > 0) {
+        lines.push('[📚 널리지 베이스 — 필요 시 read_knowledge 도구로 읽기]')
+        lines.push('⚠️ 아래 목록은 저장된 지식 파일의 요약입니다. **전문은 포함되어 있지 않습니다.**')
+        lines.push('질문에 관련된 널리지가 있으면 **반드시 read_knowledge 도구로 읽은 후** 답변하세요.')
+        lines.push('')
+        for (const item of index) {
+          lines.push(`  📌 ${item.name} (${item.sizeKB}KB) — ${item.preview}`)
         }
+        lines.push('')
+        lines.push('📋 널리지 활용 규칙:')
+        lines.push('1. 사용자가 특정 주제를 질문하면 → 관련 널리지 이름이 목록에 있는지 확인')
+        lines.push('2. 관련 널리지가 있으면 → read_knowledge(name) 으로 전문을 읽어온 후 답변')
+        lines.push('3. 지라/코드/데이터 스타일 규칙 관련 질문 → 해당 규칙 널리지를 반드시 먼저 읽기')
+        lines.push('4. 널리지 저장/삭제 요청 → save_knowledge / delete_knowledge 도구 사용')
+        lines.push('5. 모르겠으면 list_knowledge로 전체 목록 재확인 가능')
+        lines.push('')
+        sLog('INFO', `[ChatAPI] 널리지 목차 주입: ${index.length}개 파일 (전문 미포함)`)
       }
     }
   } catch (e) {

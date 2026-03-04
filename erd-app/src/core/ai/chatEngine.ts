@@ -922,71 +922,40 @@ const TOOLS = [
 // ── 시스템 프롬프트 빌더 ─────────────────────────────────────────────────────
 
 // 클라이언트 사이드 키워드 매칭 — 쿼리 관련 널리지만 필터링
-function _scoreKnowledgeForQuery(
-  entry: { name: string; content: string },
-  queryTokens: string[]
-): number {
-  // 피드백 관련 파일은 널리지 주입에서 제외 (토큰 절약, 핵심 규칙만 별도 등록)
-  if (entry.name.startsWith('_feedback') || entry.name.startsWith('_improvement')) return -1;
-  if (queryTokens.length === 0) return 1; // 쿼리 없으면 모두 포함
-  const nameLower = entry.name.toLowerCase();
-  const contentLower = entry.content.toLowerCase();
-  let score = 0;
-  for (const token of queryTokens) {
-    if (nameLower.includes(token)) score += 5;
-    let pos = 0, cnt = 0;
-    while ((pos = contentLower.indexOf(token, pos)) !== -1 && cnt < 10) { cnt++; pos++; }
-    score += cnt;
-  }
-  return score;
-}
-
 function buildSystemPrompt(
   schema: ParsedSchema | null,
   tableData: TableDataMap,
   knowledgeEntries?: { name: string; sizeKB: number; content: string }[],
-  userQuery?: string,
+  _userQuery?: string,
 ): string {
   const lines: string[] = [];
 
-  // ── 스마트 널리지 주입 (쿼리 키워드 매칭) ──
+  // ── 널리지 목차 주입 (전문은 read_knowledge 도구로 필요 시 읽기) ──
   if (knowledgeEntries && knowledgeEntries.length > 0) {
-    // 쿼리 토큰 추출
-    const queryTokens = userQuery
-      ? (userQuery.toLowerCase().match(/[가-힣]{2,}|[a-z0-9_]{2,}/g) ?? [])
-          .filter(t => !['의','이','가','을','를','은','는','이다','하다','있다','없다','the','is','in','of','to'].includes(t))
-      : [];
-
-    // 각 파일 점수 계산
-    const scored = knowledgeEntries.map(e => ({
-      ...e,
-      score: _scoreKnowledgeForQuery(e, queryTokens),
-    })).sort((a, b) => b.score - a.score);
-
-    const matched = queryTokens.length > 0 ? scored.filter(e => e.score > 0) : scored;
-
-    // 목차는 항상 표시
-    lines.push(`## 📚 저장된 널리지 목록 (${knowledgeEntries.length}개)`);
-    for (const e of knowledgeEntries) {
-      lines.push(`- ${e.name} (${e.sizeKB}KB)`);
-    }
-    lines.push('관련 내용은 아래에 자동 포함됩니다. 추가로 필요하면 read_knowledge 도구 사용.');
+    lines.push(`## 📚 널리지 베이스 — 필요 시 read_knowledge 도구로 읽기`);
+    lines.push('⚠️ 아래 목록은 저장된 지식 파일의 요약입니다. **전문은 포함되어 있지 않습니다.**');
+    lines.push('질문에 관련된 널리지가 있으면 **반드시 read_knowledge 도구로 읽은 후** 답변하세요.');
     lines.push('');
-
-    if (matched.length > 0) {
-      lines.push(`## ⭐ 쿼리 관련 널리지 (${matched.length}개) — 반드시 참고`);
-      let totalLen = 0;
-      for (const entry of matched) {
-        if (totalLen > 150 * 1024) break;
-        lines.push(`### ${entry.name} (${entry.sizeKB}KB${queryTokens.length > 0 ? `, 관련도: ${entry.score}` : ''})`);
-        lines.push(entry.content);
-        totalLen += entry.content.length;
+    for (const e of knowledgeEntries) {
+      // 헤딩 기반 요약 생성
+      const headings: string[] = [];
+      for (const line of e.content.split('\n')) {
+        if (line.startsWith('#')) {
+          headings.push(line.replace(/^#+\s*/, '').trim());
+          if (headings.length >= 5) break;
+        }
       }
-      lines.push('');
-    } else if (queryTokens.length > 0) {
-      lines.push('*(현재 질문과 직접 관련된 널리지 없음 — 필요시 read_knowledge 도구 사용)*');
-      lines.push('');
+      const firstLine = e.content.split('\n').find(l => l.trim() && !l.startsWith('#'))?.trim().slice(0, 80) ?? '';
+      const preview = headings.length > 0 ? headings.join(' > ') : firstLine || e.content.slice(0, 80).replace(/\n/g, ' ').trim();
+      lines.push(`  📌 ${e.name} (${e.sizeKB}KB) — ${preview}`);
     }
+    lines.push('');
+    lines.push('📋 널리지 활용 규칙:');
+    lines.push('1. 사용자가 특정 주제를 질문하면 → 관련 널리지 이름이 목록에 있는지 확인');
+    lines.push('2. 관련 널리지가 있으면 → read_knowledge(name) 으로 전문을 읽어온 후 답변');
+    lines.push('3. 지라/코드/데이터 스타일 규칙 관련 질문 → 해당 규칙 널리지를 반드시 먼저 읽기');
+    lines.push('4. 널리지 저장/삭제 요청 → save_knowledge / delete_knowledge 도구 사용');
+    lines.push('');
   }
 
   lines.push('당신은 게임 데이터 전문 어시스턴트입니다. 한국어로 답변하세요.');
