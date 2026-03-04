@@ -5743,6 +5743,8 @@ function buildServerSystemPrompt(userQuery?: string): string {
   lines.push('- "정리해줘", "문서로", "보고서", "시트 만들어줘" 등 시각적 결과물 요청 시 create_artifact 호출')
   lines.push('- 데이터 수집이 끝나면 즉시 create_artifact를 호출 (선언 없이)')
   lines.push('- html 파라미터: 완전한 HTML 콘텐츠. 다크 테마(배경 #0f1117, 텍스트 #e2e8f0, 포인트 #6366f1) 스타일 권장')
+  lines.push('- CSV 데이터 제공 시: <div data-embed="csv" data-filename="파일명.csv">헤더1,헤더2\\n값1,값2\\n...</div> 사용 → 다운로드+테이블+검색+정렬+복사 자동!')
+  lines.push('- 데이터를 표 형태로 제공해야할 때, DB 쿼리가 불가능하면 CSV embed를 사용하여 인터랙티브 테이블로 제공')
   lines.push('')
 
   // ── 응답 규칙 ──

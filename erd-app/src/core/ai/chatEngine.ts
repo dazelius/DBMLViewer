@@ -1010,6 +1010,7 @@ function buildSystemPrompt(
   lines.push('- 관계도: <div data-embed="relations" data-table="테이블명"></div>');
   lines.push('- 관계 그래프: <div data-embed="graph" data-tables="T1,T2,T3"></div>');
   lines.push('- Git Diff: <div data-embed="diff" data-commit="해시"></div>');
+  lines.push('- CSV 데이터: <div data-embed="csv" data-filename="파일명.csv">헤더1,헤더2\\n값1,값2\\n...</div> (⭐ 다운로드+테이블+검색+정렬+복사 자동 제공!)');
   lines.push('- 이미지: /api/images/smart?name=파일명.png 또는 /api/images/file?path=Texture/경로.png');
   lines.push('- 인라인 테이블 참조: [[TableName]] → 클릭 시 스키마 팝업');
   lines.push('- data-sql 규칙: 큰따옴표(") 속성, SQL 내 "→&quot;, #컬럼→백틱+AS alias 필수');

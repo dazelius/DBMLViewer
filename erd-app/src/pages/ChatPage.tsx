@@ -588,6 +588,143 @@ function renderQueryEmbedHtml(sql: string, tableData: TableDataMap, schema: Pars
   }
 }
 
+/** CSV embed → 인터랙티브 테이블 + 다운로드 + 복사 */
+function renderCsvEmbedHtml(csvText: string, filename: string): string {
+  try {
+    // HTML 엔티티 복원
+    const decoded = csvText
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&')
+      .replace(/&#39;/g, "'").replace(/&#34;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+
+    // CSV 파싱 (쉼표 구분, 큰따옴표 이스케이프 지원)
+    function parseCsvLine(line: string): string[] {
+      const cells: string[] = [];
+      let cur = '', inQuote = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (inQuote) {
+          if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+          else if (ch === '"') inQuote = false;
+          else cur += ch;
+        } else {
+          if (ch === '"') inQuote = true;
+          else if (ch === ',') { cells.push(cur.trim()); cur = ''; }
+          else cur += ch;
+        }
+      }
+      cells.push(cur.trim());
+      return cells;
+    }
+
+    const lines = decoded.trim().split(/\r?\n/).filter(l => l.trim());
+    if (lines.length === 0) return `<div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:8px 12px;color:#ef4444;font-size:12px">빈 CSV 데이터</div>`;
+
+    const headers = parseCsvLine(lines[0]);
+    const rows = lines.slice(1).map(l => parseCsvLine(l));
+    const totalRows = rows.length;
+    const totalCols = headers.length;
+
+    // 유니크 ID (같은 페이지에 여러 CSV 임베드 가능)
+    const uid = `csv_${Math.random().toString(36).slice(2, 8)}`;
+
+    // 테이블 헤더
+    const thStyle = `padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:#94a3b8;background:#0f1a2e;border-bottom:2px solid #334155;position:sticky;top:0;cursor:pointer;user-select:none;white-space:nowrap`;
+    const headerHtml = headers.map((h, i) =>
+      `<th style="${thStyle}" data-col="${i}" title="클릭하여 정렬">${h} <span style="opacity:.4;font-size:9px">⇅</span></th>`
+    ).join('');
+
+    // 테이블 행
+    const tdStyle = `padding:6px 12px;border-bottom:1px solid rgba(45,63,94,.4);color:#cbd5e1;font-size:12px;font-family:Consolas,'Courier New',monospace;user-select:text;cursor:text`;
+    const rowsHtml = rows.map((row, ri) => {
+      const bg = ri % 2 === 1 ? 'background:rgba(255,255,255,0.02);' : '';
+      const cells = headers.map((_, ci) => {
+        const v = row[ci] ?? '';
+        const isNum = /^-?\d+(\.\d+)?$/.test(v);
+        return `<td style="${tdStyle};${bg}${isNum ? 'text-align:right' : ''}">${v}</td>`;
+      }).join('');
+      return `<tr>${cells}</tr>`;
+    }).join('');
+
+    // CSV 원본 데이터를 data 속성으로 전달 (다운로드/복사용)
+    // Base64 인코딩으로 특수문자 안전하게 전달
+    const csvB64 = btoa(unescape(encodeURIComponent(decoded.trim())));
+
+    return `<div style="background:#0d1117;border:1px solid #2d3f5e;border-radius:10px;overflow:hidden;margin:12px 0" id="${uid}">
+<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#131d2e;border-bottom:1px solid #2d3f5e;flex-wrap:wrap">
+  <span style="font-size:14px">📄</span>
+  <span style="font-weight:700;color:#e2e8f0;font-size:13px">${filename || 'data.csv'}</span>
+  <span style="background:rgba(52,211,153,.12);color:#34d399;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">${totalRows}행 × ${totalCols}열</span>
+  <div style="margin-left:auto;display:flex;gap:6px">
+    <input type="text" placeholder="🔍 검색..." style="background:#1e293b;border:1px solid #334155;border-radius:4px;padding:3px 8px;color:#e2e8f0;font-size:11px;width:120px;outline:none" id="${uid}_search"/>
+    <button onclick="(function(){try{var d=atob('${csvB64}');var b=new Blob([d],{type:'text/csv;charset=utf-8'});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='${(filename || 'data.csv').replace(/'/g, "\\'")}';a.click();URL.revokeObjectURL(u)}catch(e){}})()" style="background:#1e4d3b;color:#34d399;border:1px solid #059669;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:4px;white-space:nowrap">⬇ 다운로드</button>
+    <button onclick="(function(){try{var d=atob('${csvB64}');navigator.clipboard.writeText(d).then(function(){var b=event.target;b.textContent='✅ 복사됨';setTimeout(function(){b.textContent='📋 전체 복사'},1500)})}catch(e){}})()" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:4px;white-space:nowrap">📋 전체 복사</button>
+  </div>
+</div>
+<div style="overflow:auto;max-height:500px" id="${uid}_scroll">
+  <table style="width:100%;border-collapse:collapse;margin:0" id="${uid}_table">
+    <thead><tr>${headerHtml}</tr></thead>
+    <tbody id="${uid}_body">${rowsHtml}</tbody>
+  </table>
+</div>
+<div style="padding:6px 14px;background:#0a0f1a;border-top:1px solid #1e293b;display:flex;align-items:center;gap:8px">
+  <span style="color:#475569;font-size:10px" id="${uid}_count">📋 ${totalRows}행 표시</span>
+  <span style="margin-left:auto;color:#334155;font-size:9px">드래그하여 셀 복사 가능</span>
+</div>
+<script>
+(function(){
+  var uid='${uid}';
+  var tbl=document.getElementById(uid+'_table');
+  var body=document.getElementById(uid+'_body');
+  var search=document.getElementById(uid+'_search');
+  var countEl=document.getElementById(uid+'_count');
+  if(!tbl||!body||!search)return;
+  var rows=Array.from(body.getElementsByTagName('tr'));
+  var total=${totalRows};
+  // 검색
+  var debounce;
+  search.addEventListener('input',function(){
+    clearTimeout(debounce);
+    debounce=setTimeout(function(){
+      var q=search.value.toLowerCase();
+      var shown=0;
+      rows.forEach(function(tr){
+        var txt=tr.textContent.toLowerCase();
+        var vis=!q||txt.indexOf(q)>=0;
+        tr.style.display=vis?'':'none';
+        if(vis)shown++;
+      });
+      countEl.textContent='📋 '+shown+'/'+total+'행 표시';
+    },200);
+  });
+  // 정렬
+  var sortCol=-1,sortAsc=true;
+  tbl.querySelector('thead').addEventListener('click',function(e){
+    var th=e.target.closest('th');
+    if(!th)return;
+    var ci=parseInt(th.getAttribute('data-col'));
+    if(isNaN(ci))return;
+    if(sortCol===ci)sortAsc=!sortAsc; else{sortCol=ci;sortAsc=true;}
+    // 정렬 아이콘 갱신
+    tbl.querySelectorAll('th span').forEach(function(s){s.style.opacity='.4';s.textContent='⇅';});
+    var sp=th.querySelector('span');
+    if(sp){sp.style.opacity='1';sp.textContent=sortAsc?'▲':'▼';}
+    rows.sort(function(a,b){
+      var ac=(a.children[ci]||{}).textContent||'';
+      var bc=(b.children[ci]||{}).textContent||'';
+      var an=parseFloat(ac),bn=parseFloat(bc);
+      if(!isNaN(an)&&!isNaN(bn))return sortAsc?an-bn:bn-an;
+      return sortAsc?ac.localeCompare(bc):bc.localeCompare(ac);
+    });
+    rows.forEach(function(tr){body.appendChild(tr);});
+  });
+})();
+<\/script>
+</div>`;
+  } catch (e) {
+    return `<div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:8px 12px;color:#ef4444;font-size:12px">CSV 처리 오류: ${String(e)}</div>`;
+  }
+}
+
 /** 관계도 embed → HTML (특정 테이블의 FK 관계망) */
 function renderRelationsEmbedHtml(tableName: string, schema: ParsedSchema | null): string {
   if (!schema) return `<div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:8px 12px;color:#ef4444;font-size:12px">스키마 없음</div>`;
@@ -1071,6 +1208,24 @@ function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableD
     (_, _a, commit, rest) => {
       const fileMatch = ((rest as string) + _a).match(/data-file=["']([^"']+)["']/i);
       return renderDiffEmbedHtml(commit, fileMatch ? fileMatch[1] : undefined);
+    },
+  );
+
+  // <div data-embed="csv" data-filename="file.csv">CSV 내용</div>
+  // CSV 데이터는 태그 내부 텍스트로 전달
+  html = html.replace(
+    /<div([^>]*?)data-embed=["']csv["']([^>]*?)(?:data-filename=["']([^"']*?)["'])?([^>]*?)>([\s\S]*?)<\/div>/gi,
+    (_, _a, _b, fname, _c, csvContent) => {
+      const filename = fname || 'data.csv';
+      return renderCsvEmbedHtml(csvContent, filename);
+    },
+  );
+  // 속성 순서 반대: data-filename 먼저
+  html = html.replace(
+    /<div([^>]*?)data-filename=["']([^"']*?)["']([^>]*?)data-embed=["']csv["']([^>]*?)>([\s\S]*?)<\/div>/gi,
+    (_, _a, fname, _b, _c, csvContent) => {
+      const filename = fname || 'data.csv';
+      return renderCsvEmbedHtml(csvContent, filename);
     },
   );
 
