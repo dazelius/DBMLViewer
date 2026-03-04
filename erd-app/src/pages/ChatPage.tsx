@@ -5946,7 +5946,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
       <div className="flex items-center gap-2.5">
         <CharacterPortrait
           expression={expression}
-          size={48}
+          size={60}
           animate={!!msg.isLoading}
         />
         <div className="flex flex-col gap-0.5">
@@ -6920,19 +6920,50 @@ export default function ChatPage() {
           {/* 입력 영역 */}
           <div
             className="flex-shrink-0 py-4"
-            style={{ borderTop: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}
+            style={{ borderTop: '1px solid var(--border-color)', background: 'var(--bg-primary)', position: 'relative' }}
           >
+            {/* ── 플로팅 포트레이트: 입력창 위 우측에 고정 ── */}
+            <div
+              style={{
+                position: 'absolute',
+                right: 32,
+                bottom: '100%',
+                marginBottom: 12,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 6,
+                zIndex: 10,
+                transition: 'opacity 0.3s ease, transform 0.3s ease',
+                opacity: 1,
+                transform: 'translateY(0)',
+              }}
+            >
+              {/* 표정 이름 뱃지 */}
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: isLoading ? '#a5b4fc' : 'var(--text-muted)',
+                  background: isLoading ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.05)',
+                  border: `1px solid ${isLoading ? 'rgba(99,102,241,0.35)' : 'rgba(255,255,255,0.08)'}`,
+                  borderRadius: 20,
+                  padding: '2px 10px',
+                  transition: 'all 0.3s ease',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {isLoading ? `${EXPRESSIONS[currentExpression].label}...` : EXPRESSIONS[currentExpression].label}
+              </div>
+              <CharacterPortrait
+                expression={currentExpression}
+                size={96}
+                animate={isLoading}
+              />
+            </div>
+
             <div className="w-full px-6">
-              {/* 캐릭터 포트레이트 + 입력 바 */}
-              <div className="flex items-end gap-3 mb-0">
-                {/* 입력창 왼쪽: 현재 AI 표정 포트레이트 */}
-                <div className="flex-shrink-0 flex flex-col items-center pb-1">
-                  <CharacterPortrait
-                    expression={currentExpression}
-                    size={52}
-                    animate={isLoading}
-                  />
-                </div>
+              {/* 입력 바 (포트레이트 제거 — 플로팅으로 이동) */}
               <div className="flex-1">
               <div
                 className="flex items-end gap-3 rounded-2xl px-5 py-3.5"
@@ -7009,7 +7040,6 @@ export default function ChatPage() {
                 Claude AI · Enter로 전송 · Shift+Enter로 줄바꿈
               </div>
               </div>{/* flex-1 닫기 */}
-              </div>{/* 포트레이트+입력 row 닫기 */}
             </div>
           </div>
         </div>
