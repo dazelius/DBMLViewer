@@ -6534,7 +6534,7 @@ function ThinkingIndicator({ liveToolCalls }: { liveToolCalls?: ToolCallResult[]
 }
 
 // ── 피드백 위젯 ──────────────────────────────────────────────────────────────
-function FeedbackWidget({ msg, onFeedback }: { msg: Message; onFeedback: (msgId: string, rating: 'good' | 'bad', comment?: string) => void }) {
+function FeedbackWidget({ msg, onFeedback }: { msg: Message; onFeedback: (msgId: string, rating: 'good' | 'bad', comment?: string) => Promise<void> | void }) {
   const [showComment, setShowComment] = useState(false);
   const [comment, setComment] = useState('');
   const [submitted, setSubmitted] = useState(!!msg.feedback);
@@ -6561,7 +6561,9 @@ function FeedbackWidget({ msg, onFeedback }: { msg: Message; onFeedback: (msgId:
     if (rating === 'good') {
       // 긍정 피드백은 바로 저장
       setSaving(true);
-      onFeedback(msg.id, rating);
+      try {
+        await onFeedback(msg.id, rating);
+      } catch { /* ignore */ }
       setSubmitted(true);
       setSaving(false);
     } else {
@@ -6570,9 +6572,11 @@ function FeedbackWidget({ msg, onFeedback }: { msg: Message; onFeedback: (msgId:
     }
   };
 
-  const handleSubmitComment = () => {
+  const handleSubmitComment = async () => {
     setSaving(true);
-    onFeedback(msg.id, 'bad', comment.trim() || undefined);
+    try {
+      await onFeedback(msg.id, 'bad', comment.trim() || undefined);
+    } catch { /* ignore */ }
     setSubmitted(true);
     setSaving(false);
   };
@@ -7440,56 +7444,77 @@ export default function ChatPage() {
       console.warn('[Feedback] 널리지 저장 실패:', e);
     }
 
-    // 4. 부정 피드백이 특정 패턴으로 반복되면 별도 개선 지침 널리지 생성
-    if (rating === 'bad') {
-      try {
-        await maybeCreateImprovementKnowledge(knowledgeName);
-      } catch { /* 무시 */ }
-    }
+    // 4. 피드백이 축적될 때마다 개선 지침 널리지 생성/갱신
+    try {
+      await generateImprovementGuide(knowledgeName);
+    } catch { /* 무시 */ }
   }, [messages]);
 
-  /** 부정 피드백이 누적되면 개선 지침 요약 널리지를 자동 생성/갱신 */
-  const maybeCreateImprovementKnowledge = useCallback(async (logName: string) => {
+  /** 피드백이 축적되면 개선 지침 요약 널리지를 자동 생성/갱신 (긍정+부정 모두 분석) */
+  const generateImprovementGuide = useCallback(async (logName: string) => {
     try {
       const resp = await fetch(`/api/knowledge/read?name=${encodeURIComponent(logName)}`);
       if (!resp.ok) return;
       const data = await resp.json() as { content?: string };
       const content = data.content ?? '';
 
-      // 부정 피드백 수 세기
+      // 전체 피드백 수 세기
+      const positiveCount = (content.match(/## ✅/g) ?? []).length;
       const negativeCount = (content.match(/## ❌/g) ?? []).length;
-      // 5개 이상 누적 시 개선 지침 갱신
-      if (negativeCount < 5) return;
+      const totalCount = positiveCount + negativeCount;
+      // 1개 이상부터 개선 가이드 생성 (매번 갱신)
+      if (totalCount < 1) return;
 
-      // 부정 피드백에서 패턴 추출
-      const negativeEntries = content.split(/\n(?=## ❌)/).filter(e => e.startsWith('## ❌'));
-      const patterns: string[] = [];
-      for (const entry of negativeEntries.slice(0, 20)) {
+      // 긍정 패턴 추출
+      const positiveEntries = content.split(/\n(?=## ✅)/).filter(e => e.startsWith('## ✅'));
+      const goodPatterns: string[] = [];
+      for (const entry of positiveEntries.slice(0, 15)) {
         const questionMatch = entry.match(/\*\*질문\*\*:\s*(.+)/);
-        const opinionMatch = entry.match(/\*\*사용자 의견\*\*:\s*(.+)/);
+        const toolMatch = entry.match(/\*\*사용 도구\*\*:\s*(.+)/);
         if (questionMatch) {
-          patterns.push(`질문: ${questionMatch[1].slice(0, 80)}${opinionMatch ? ` → 의견: ${opinionMatch[1].slice(0, 80)}` : ''}`);
+          goodPatterns.push(`✅ ${questionMatch[1].slice(0, 80)}${toolMatch ? ` [도구: ${toolMatch[1].slice(0, 40)}]` : ''}`);
         }
       }
 
-      if (patterns.length === 0) return;
+      // 부정 패턴 추출
+      const negativeEntries = content.split(/\n(?=## ❌)/).filter(e => e.startsWith('## ❌'));
+      const badPatterns: string[] = [];
+      for (const entry of negativeEntries.slice(0, 15)) {
+        const questionMatch = entry.match(/\*\*질문\*\*:\s*(.+)/);
+        const opinionMatch = entry.match(/\*\*사용자 의견\*\*:\s*(.+)/);
+        if (questionMatch) {
+          badPatterns.push(`❌ ${questionMatch[1].slice(0, 80)}${opinionMatch ? ` → "${opinionMatch[1].slice(0, 60)}"` : ''}`);
+        }
+      }
 
       const improvementContent = [
         `# 🔧 AI 답변 개선 지침 (자동 생성)`,
         ``,
-        `> 사용자 피드백 기반으로 자동 생성된 개선 지침입니다.`,
-        `> 부정 피드백 ${negativeCount}건 분석 결과입니다.`,
+        `> 사용자 피드백 ${totalCount}건 (👍 ${positiveCount}건, 👎 ${negativeCount}건) 분석 결과`,
+        `> 이 파일은 피드백이 들어올 때마다 자동 갱신됩니다.`,
         ``,
-        `## 주의해야 할 패턴`,
+        ...(goodPatterns.length > 0 ? [
+          `## ✅ 유지해야 할 좋은 패턴 (${positiveCount}건)`,
+          ``,
+          `아래 유형의 답변은 사용자가 만족했으므로 **같은 방식을 유지**하세요:`,
+          ``,
+          ...goodPatterns.map((p, i) => `${i + 1}. ${p}`),
+          ``,
+        ] : []),
+        ...(badPatterns.length > 0 ? [
+          `## ❌ 개선해야 할 패턴 (${negativeCount}건)`,
+          ``,
+          `아래 유형의 질문에서 사용자가 불만족했으므로 **다른 접근법**을 사용하세요:`,
+          ``,
+          ...badPatterns.map((p, i) => `${i + 1}. ${p}`),
+          ``,
+        ] : []),
+        `## 📋 개선 방향`,
         ``,
-        ...patterns.map((p, i) => `${i + 1}. ${p}`),
-        ``,
-        `## 개선 방향`,
-        ``,
-        `- 위 패턴의 질문에 대해 더 정확한 데이터 조회와 분석을 수행하세요.`,
-        `- 사용자 의견이 명시된 경우, 해당 의견을 반영하여 답변 방식을 개선하세요.`,
-        `- 불확실한 정보는 명확히 "확인 필요"로 표시하세요.`,
-        `- 쿼리 결과가 없거나 오류가 발생하면 대안을 제시하세요.`,
+        `- 긍정 패턴과 유사한 질문 → 동일한 도구와 답변 형식 사용`,
+        `- 부정 패턴과 유사한 질문 → 이전과 다른 접근법 시도 (다른 쿼리, 더 상세한 설명 등)`,
+        `- 사용자 의견이 명시된 경우 해당 의견을 최우선으로 반영`,
+        `- 불확실한 정보는 "확인 필요"로 표시하고, 쿼리 오류 시 대안 제시`,
         ``,
         `_마지막 갱신: ${new Date().toISOString().slice(0, 16).replace('T', ' ')}_`,
       ].join('\n');
@@ -7499,7 +7524,10 @@ export default function ChatPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: '_improvement_guide', content: improvementContent }),
       });
-    } catch { /* 무시 */ }
+      console.log(`[Feedback] ✅ _improvement_guide 갱신 완료: 긍정 ${positiveCount}건, 부정 ${negativeCount}건`);
+    } catch (e) {
+      console.warn('[Feedback] _improvement_guide 생성 실패:', e);
+    }
   }, []);
 
   const clearHistory = () => {
