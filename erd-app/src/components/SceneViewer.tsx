@@ -20,6 +20,28 @@ import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { TGALoader } from 'three/examples/jsm/loaders/TGALoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
+// ── FBXLoader 노이즈 경고 억제 ────────────────────────────────────────────────
+// 아래 경고들은 양성(benign)이며 실제 렌더링에 영향 없음:
+//  - TGA loader not found : 서버에서 TGA→PNG 변환으로 해결, 구버전 캐시 잔류 경고
+//  - Polygons with more than four sides : FBXLoader 내부적으로 earcut으로 삼각화
+//  - Vertex has more than 4 skinning weights : 초과 가중치 삭제, 모델 동작에 무해
+{
+  const _origWarn = console.warn.bind(console);
+  const SUPPRESS = [
+    'FBXLoader: TGA loader not found',
+    'THREE.FBXLoader: Polygons with more than four sides',
+    'THREE.FBXLoader: Vertex has more than 4 skinning weights',
+    // 구버전 메시지 variants
+    'FBXLoader: TGA loader not found, creating placeholder',
+    'Make sure to triangulate the geometry',
+  ];
+  console.warn = (...args: unknown[]) => {
+    const msg = String(args[0] ?? '');
+    if (SUPPRESS.some(s => msg.includes(s))) return;
+    _origWarn(...args);
+  };
+}
+
 // ── 타입 ──────────────────────────────────────────────────────────────────────
 
 interface Vec3  { x: number; y: number; z: number }

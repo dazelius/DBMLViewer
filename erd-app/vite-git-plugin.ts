@@ -6,6 +6,148 @@ import { promisify } from 'util'
 import { createRequire } from 'module'
 import type { IncomingMessage, ServerResponse } from 'http'
 import { request as httpsRequest } from 'https'
+import { deflateSync } from 'zlib'
+
+// ── TGA → PNG 서버사이드 변환 ──────────────────────────────────────────────────
+// FBXLoader의 기본 TextureLoader는 TGA를 디코딩 못하므로 서버에서 PNG로 변환하여 전달
+// 지원: Type 2 (uncompressed RGB/RGBA), Type 10 (RLE compressed), Type 3 (grayscale)
+
+function decodeTGA(buf: Buffer): { width: number; height: number; data: Buffer } | null {
+  try {
+    if (buf.length < 18) return null
+    const idLen     = buf[0]
+    const colorMapT = buf[1]
+    const imgType   = buf[2]
+    const width     = buf.readUInt16LE(12)
+    const height    = buf.readUInt16LE(14)
+    const depth     = buf[16]
+    const descriptor = buf[17]
+    const flipV     = !(descriptor & 0x20) // 0=bottom-to-top (default TGA), 1=top-to-bottom
+
+    if (width === 0 || height === 0) return null
+    if (![2, 3, 10, 11].includes(imgType)) return null // 지원 타입만
+
+    let offset = 18 + idLen
+    if (colorMapT === 1) {
+      const colorMapLen = buf.readUInt16LE(5)
+      const colorMapBPP = buf[7]
+      offset += colorMapLen * Math.ceil(colorMapBPP / 8)
+    }
+
+    const rgba   = Buffer.alloc(width * height * 4)
+    const bpp    = depth <= 8 ? 1 : depth <= 16 ? 2 : depth <= 24 ? 3 : 4
+    const isGray = imgType === 3 || imgType === 11
+    const isRLE  = imgType === 10 || imgType === 11
+
+    const writePixel = (dstIdx: number, srcOff: number) => {
+      if (isGray) {
+        const v = buf[srcOff]
+        rgba[dstIdx] = v; rgba[dstIdx+1] = v; rgba[dstIdx+2] = v; rgba[dstIdx+3] = 255
+      } else if (bpp === 3) {
+        rgba[dstIdx]   = buf[srcOff+2] // R (TGA is BGR)
+        rgba[dstIdx+1] = buf[srcOff+1] // G
+        rgba[dstIdx+2] = buf[srcOff]   // B
+        rgba[dstIdx+3] = 255
+      } else { // bpp === 4
+        rgba[dstIdx]   = buf[srcOff+2]
+        rgba[dstIdx+1] = buf[srcOff+1]
+        rgba[dstIdx+2] = buf[srcOff]
+        rgba[dstIdx+3] = buf[srcOff+3]
+      }
+    }
+
+    const pixelDst = (pixIdx: number) => {
+      const row = Math.floor(pixIdx / width)
+      const col = pixIdx % width
+      const y   = flipV ? row : (height - 1 - row)
+      return (y * width + col) * 4
+    }
+
+    if (!isRLE) {
+      for (let i = 0; i < width * height; i++) {
+        writePixel(pixelDst(i), offset + i * bpp)
+      }
+    } else {
+      let pixIdx = 0
+      while (pixIdx < width * height && offset < buf.length) {
+        const hdr = buf[offset++]
+        if (hdr < 128) {
+          const cnt = hdr + 1
+          for (let j = 0; j < cnt && pixIdx < width * height; j++, pixIdx++) {
+            writePixel(pixelDst(pixIdx), offset); offset += bpp
+          }
+        } else {
+          const cnt = hdr - 127
+          const pix = offset; offset += bpp
+          for (let j = 0; j < cnt && pixIdx < width * height; j++, pixIdx++) {
+            writePixel(pixelDst(pixIdx), pix)
+          }
+        }
+      }
+    }
+    return { width, height, data: rgba }
+  } catch { return null }
+}
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256)
+  for (let i = 0; i < 256; i++) {
+    let c = i
+    for (let j = 0; j < 8; j++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1
+    t[i] = c
+  }
+  return t
+})()
+
+function crc32(buf: Buffer, init = 0xFFFFFFFF): number {
+  let c = init
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8)
+  return (c ^ 0xFFFFFFFF) >>> 0
+}
+
+function encodePNG(width: number, height: number, rgba: Buffer): Buffer {
+  // PNG signature
+  const sig = Buffer.from([137,80,78,71,13,10,26,10])
+
+  // IHDR
+  const ihdrData = Buffer.alloc(13)
+  ihdrData.writeUInt32BE(width, 0); ihdrData.writeUInt32BE(height, 4)
+  ihdrData[8]=8; ihdrData[9]=6; ihdrData[10]=0; ihdrData[11]=0; ihdrData[12]=0
+  const ihdrChunk = Buffer.alloc(25)
+  ihdrChunk.writeUInt32BE(13, 0); ihdrChunk.write('IHDR', 4)
+  ihdrData.copy(ihdrChunk, 8)
+  const ihdrCrc = Buffer.alloc(4); ihdrCrc.writeUInt32BE(crc32(ihdrChunk.slice(4,21)), 0)
+  ihdrChunk.fill(ihdrCrc, 21)
+
+  // 필터(None) + 픽셀 데이터
+  const stride = width * 4
+  const raw    = Buffer.alloc(height * (stride + 1))
+  for (let y = 0; y < height; y++) {
+    raw[y * (stride + 1)] = 0 // filter=None
+    rgba.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride)
+  }
+  const compressed = deflateSync(raw, { level: 1 })
+
+  // IDAT
+  const idatLabel = Buffer.from('IDAT')
+  const idatChunk = Buffer.alloc(12 + compressed.length)
+  idatChunk.writeUInt32BE(compressed.length, 0)
+  idatLabel.copy(idatChunk, 4)
+  compressed.copy(idatChunk, 8)
+  idatChunk.writeUInt32BE(crc32(Buffer.concat([idatLabel, compressed])), 8 + compressed.length)
+
+  // IEND
+  const iend = Buffer.from([0,0,0,0,73,69,78,68,174,66,96,130])
+
+  return Buffer.concat([sig, ihdrChunk, idatChunk, iend])
+}
+
+/** TGA 파일 버퍼를 PNG Buffer로 변환. 실패 시 null 반환 */
+function tgaToPng(tgaBuf: Buffer): Buffer | null {
+  const decoded = decodeTGA(tgaBuf)
+  if (!decoded) return null
+  return encodePNG(decoded.width, decoded.height, decoded.data)
+}
 
 // ESM 환경에서 CJS 모듈 로딩용
 const _require = createRequire(import.meta.url)
@@ -1539,6 +1681,24 @@ function createGitMiddleware(options: GitPluginOptions) {
           }
 
           const fileExt  = filePath.split('.').pop()?.toLowerCase() ?? ''
+          // TGA → PNG 변환
+          if (fileExt === 'tga') {
+            try {
+              const tgaBuf = readFileSync(filePath)
+              const pngBuf = tgaToPng(tgaBuf)
+              if (pngBuf) {
+                res.writeHead(200, {
+                  'Content-Type': 'image/png',
+                  'Content-Length': pngBuf.length,
+                  'Access-Control-Allow-Origin': '*',
+                  'X-Original-Format': 'tga',
+                  'Cache-Control': 'public, max-age=86400',
+                })
+                res.end(pngBuf)
+                return
+              }
+            } catch { /* fall through */ }
+          }
           const mime     = mimeMap[fileExt] ?? 'application/octet-stream'
           const fileStat = statSync(filePath)
           res.writeHead(200, {
@@ -1571,7 +1731,27 @@ function createGitMiddleware(options: GitPluginOptions) {
             res.writeHead(404); res.end('File missing on disk: ' + found.path); return
           }
 
-          const mime2 = mimeMap[found.ext.toLowerCase()] ?? 'application/octet-stream'
+          const ext2 = found.ext.toLowerCase()
+          // TGA 파일은 브라우저/TextureLoader에서 디코딩 불가 → PNG로 변환하여 서빙
+          if (ext2 === 'tga') {
+            try {
+              const tgaBuf = readFileSync(filePath)
+              const pngBuf = tgaToPng(tgaBuf)
+              if (pngBuf) {
+                res.writeHead(200, {
+                  'Content-Type': 'image/png',
+                  'Content-Length': pngBuf.length,
+                  'Access-Control-Allow-Origin': '*',
+                  'X-Resolved-Path': found.path,
+                  'X-Original-Format': 'tga',
+                  'Cache-Control': 'public, max-age=86400',
+                })
+                res.end(pngBuf)
+                return
+              }
+            } catch { /* fall through to raw serve */ }
+          }
+          const mime2 = mimeMap[ext2] ?? 'application/octet-stream'
           const fileStat  = statSync(filePath)
           res.writeHead(200, {
             'Content-Type': mime2,
