@@ -6887,6 +6887,113 @@ function extractChecklistItems(text: string): { label: string; checked: boolean 
   return items.length >= 2 ? items : null;
 }
 
+// ── 객관식 선택지 추출 헬퍼 ──────────────────────────────────────────────
+// A) / B) / **A)** / 1) / 2) 등 연속 패턴 감지
+const MC_PATTERN = /^(?:\*\*)?([A-Za-z가-힣\d]+)\)(?:\*\*)?\s+(.+)/;
+
+function extractMultipleChoice(text: string): { key: string; label: string; fullLine: string }[] | null {
+  const lines = text.split('\n');
+  const items: { key: string; label: string; fullLine: string }[] = [];
+  for (const line of lines) {
+    const m = line.trim().match(MC_PATTERN);
+    if (m) {
+      items.push({ key: m[1], label: m[2], fullLine: line.trim() });
+    }
+  }
+  // 최소 2개 이상이고, key가 연속 알파벳/숫자인 경우만
+  if (items.length < 2) return null;
+  // 체크리스트와 혼동 방지: - [ ] 패턴이 있으면 null
+  if (lines.some(l => /^- \[[ x]\] /i.test(l))) return null;
+  return items;
+}
+
+// ── 객관식 버튼 컴포넌트 ──────────────────────────────────────────────────
+function MultipleChoiceButtons({ items, beforeText, afterText, onSelect, msgId }: {
+  items: { key: string; label: string; fullLine: string }[];
+  beforeText: string;
+  afterText: string;
+  onSelect: (text: string, displayText?: string) => void;
+  msgId: string;
+}) {
+  const [selected, setSelected] = React.useState<string | null>(null);
+
+  const handleSelect = (item: { key: string; label: string }) => {
+    if (selected) return;
+    setSelected(item.key);
+    // 선택지를 메시지로 전송
+    const cleanLabel = item.label.replace(/\*\*/g, '').replace(/\s*—\s*.+$/, '').trim();
+    onSelect(`${item.key}) ${item.label}`, `${item.key}) ${cleanLabel}`);
+  };
+
+  // 색상 팔레트 (A~F까지)
+  const COLORS = [
+    { bg: 'rgba(99,102,241,', border: '#818cf8', text: '#c7d2fe', accent: '#818cf8' },
+    { bg: 'rgba(139,92,246,', border: '#a78bfa', text: '#ddd6fe', accent: '#a78bfa' },
+    { bg: 'rgba(236,72,153,', border: '#f472b6', text: '#fce7f3', accent: '#f472b6' },
+    { bg: 'rgba(34,197,94,', border: '#4ade80', text: '#dcfce7', accent: '#4ade80' },
+    { bg: 'rgba(245,158,11,', border: '#fbbf24', text: '#fef3c7', accent: '#fbbf24' },
+    { bg: 'rgba(59,130,246,', border: '#60a5fa', text: '#dbeafe', accent: '#60a5fa' },
+  ];
+
+  return (
+    <div>
+      {beforeText && <div className="mb-3">{renderMarkdown(beforeText)}</div>}
+      <div className="my-3 space-y-2">
+        {items.map((item, idx) => {
+          const color = COLORS[idx % COLORS.length];
+          const isSelected = selected === item.key;
+          const isOther = selected !== null && !isSelected;
+
+          return (
+            <button
+              key={`${msgId}-mc-${item.key}`}
+              onClick={() => handleSelect(item)}
+              disabled={selected !== null}
+              className="w-full text-left rounded-xl px-4 py-3 transition-all active:scale-[0.98]"
+              style={{
+                background: isSelected
+                  ? `${color.bg}0.2)`
+                  : isOther
+                  ? 'rgba(255,255,255,0.02)'
+                  : `${color.bg}0.06)`,
+                border: `1.5px solid ${isSelected ? color.border : isOther ? 'rgba(255,255,255,0.06)' : `${color.bg}0.2)`}`,
+                cursor: selected ? 'default' : 'pointer',
+                opacity: isOther ? 0.4 : 1,
+                transform: isSelected ? 'scale(1.01)' : 'none',
+              }}
+            >
+              <div className="flex items-start gap-3">
+                {/* 선택지 키 뱃지 */}
+                <span
+                  className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[13px] font-bold"
+                  style={{
+                    background: isSelected ? `${color.bg}0.3)` : `${color.bg}0.12)`,
+                    color: isSelected ? color.text : color.accent,
+                    border: `1px solid ${isSelected ? color.border : `${color.bg}0.25)`}`,
+                  }}
+                >
+                  {isSelected ? '✓' : item.key}
+                </span>
+                {/* 선택지 텍스트 */}
+                <span
+                  className="text-[13px] leading-relaxed pt-0.5"
+                  style={{
+                    color: isSelected ? color.text : isOther ? 'var(--text-muted)' : 'var(--text-secondary)',
+                    fontWeight: isSelected ? 600 : 400,
+                  }}
+                >
+                  {inlineMarkdown(item.label)}
+                </span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {afterText && <div className="mt-3">{renderMarkdown(afterText)}</div>}
+    </div>
+  );
+}
+
 // ── 인터랙티브 체크리스트 컴포넌트 ──────────────────────────────────────────
 function InteractiveChecklist({ items, onSubmit, msgId }: {
   items: { label: string; checked: boolean }[];
@@ -7217,13 +7324,15 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onF
                 if (!iterText?.trim()) return null;
                 // 체크리스트 감지
                 const checkItems = extractChecklistItems(iterText);
+                // 객관식 선택지 감지
+                const mcItems = !checkItems ? extractMultipleChoice(iterText) : null;
+
                 // 체크리스트 앞뒤 텍스트 분리
                 let beforeChecklist = '';
                 let afterChecklist = '';
                 if (checkItems) {
                   const checklistStart = iterText.search(/^- \[[ x]\] /im);
                   beforeChecklist = iterText.slice(0, checklistStart).trim();
-                  // 체크리스트 마지막 줄 다음부터
                   const checkLines = iterText.split('\n');
                   let lastCheckIdx = -1;
                   for (let ci = checkLines.length - 1; ci >= 0; ci--) {
@@ -7231,6 +7340,23 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onF
                   }
                   afterChecklist = checkLines.slice(lastCheckIdx + 1).join('\n').trim();
                 }
+
+                // 객관식 앞뒤 텍스트 분리
+                let beforeMC = '';
+                let afterMC = '';
+                if (mcItems) {
+                  const allLines = iterText.split('\n');
+                  let firstMCIdx = -1, lastMCIdx = -1;
+                  for (let li = 0; li < allLines.length; li++) {
+                    if (MC_PATTERN.test(allLines[li].trim())) {
+                      if (firstMCIdx === -1) firstMCIdx = li;
+                      lastMCIdx = li;
+                    }
+                  }
+                  beforeMC = allLines.slice(0, firstMCIdx).join('\n').trim();
+                  afterMC = allLines.slice(lastMCIdx + 1).join('\n').trim();
+                }
+
                 return (
                   <div key={iterIdx} className="relative">
                     {iterIdx > 0 && (
@@ -7256,6 +7382,14 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onF
                           <InteractiveChecklist items={checkItems} onSubmit={onSendMessage} msgId={msg.id} />
                           {afterChecklist && renderMarkdown(afterChecklist)}
                         </>
+                      ) : mcItems && onSendMessage ? (
+                        <MultipleChoiceButtons
+                          items={mcItems}
+                          beforeText={beforeMC}
+                          afterText={afterMC}
+                          onSelect={onSendMessage}
+                          msgId={msg.id}
+                        />
                       ) : (
                         renderMarkdown(iterText)
                       )}
