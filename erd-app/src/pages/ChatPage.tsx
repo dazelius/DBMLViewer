@@ -1389,9 +1389,30 @@ function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableD
 
 interface MessageFeedback {
   rating: 'good' | 'bad';        // 👍 or 👎
+  tags?: string[];                // 객관식 태그들
   comment?: string;               // 선택적 코멘트
   savedAt?: string;               // 널리지 저장 시간
 }
+
+/** 긍정 피드백 객관식 옵션 */
+const GOOD_FEEDBACK_TAGS = [
+  { id: 'accurate', label: '정확한 답변', emoji: '🎯' },
+  { id: 'good_query', label: '쿼리가 좋았어요', emoji: '🔍' },
+  { id: 'clear', label: '설명이 명확해요', emoji: '💡' },
+  { id: 'good_tool', label: '도구 활용이 좋았어요', emoji: '🔧' },
+  { id: 'helpful_code', label: '코드 분석이 유용해요', emoji: '💻' },
+  { id: 'good_jira', label: 'Jira 작업 잘했어요', emoji: '🎫' },
+] as const;
+
+/** 부정 피드백 객관식 옵션 */
+const BAD_FEEDBACK_TAGS = [
+  { id: 'inaccurate', label: '부정확한 결과', emoji: '❌' },
+  { id: 'wrong_query', label: '쿼리가 틀렸어요', emoji: '🔍' },
+  { id: 'not_helpful', label: '도움이 안 됐어요', emoji: '😕' },
+  { id: 'too_verbose', label: '너무 장황해요', emoji: '📜' },
+  { id: 'wrong_answer', label: '요청과 다른 답변', emoji: '🔀' },
+  { id: 'missing_info', label: '정보가 부족해요', emoji: '📉' },
+] as const;
 
 interface Message {
   id: string;
@@ -6534,104 +6555,137 @@ function ThinkingIndicator({ liveToolCalls }: { liveToolCalls?: ToolCallResult[]
 }
 
 // ── 피드백 위젯 ──────────────────────────────────────────────────────────────
-function FeedbackWidget({ msg, onFeedback }: { msg: Message; onFeedback: (msgId: string, rating: 'good' | 'bad', comment?: string) => Promise<void> | void }) {
-  const [showComment, setShowComment] = useState(false);
+function FeedbackWidget({ msg, onFeedback }: { msg: Message; onFeedback: (msgId: string, rating: 'good' | 'bad', tags?: string[], comment?: string) => Promise<void> | void }) {
+  const [step, setStep] = useState<'initial' | 'tags' | 'done'>( msg.feedback ? 'done' : 'initial');
+  const [rating, setRating] = useState<'good' | 'bad' | null>(null);
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [comment, setComment] = useState('');
-  const [submitted, setSubmitted] = useState(!!msg.feedback);
   const [saving, setSaving] = useState(false);
 
-  if (msg.feedback && !showComment) {
-    // 이미 피드백 완료
+  // 이미 피드백 완료
+  if (step === 'done' || msg.feedback) {
+    const fb = msg.feedback;
+    if (!fb) return null;
     return (
-      <div className="flex items-center gap-2 mt-2 ml-1">
+      <div className="flex items-center gap-2 mt-2 ml-1 flex-wrap">
         <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          {msg.feedback.rating === 'good' ? '👍' : '👎'} 피드백 완료
-          {msg.feedback.comment && <span className="ml-1 italic">"{msg.feedback.comment.slice(0, 30)}{msg.feedback.comment.length > 30 ? '…' : ''}"</span>}
+          {fb.rating === 'good' ? '👍' : '👎'} 피드백 완료
         </span>
-        {msg.feedback.savedAt && (
+        {fb.tags?.map(tag => {
+          const tagInfo = [...GOOD_FEEDBACK_TAGS, ...BAD_FEEDBACK_TAGS].find(t => t.id === tag);
+          return tagInfo ? (
+            <span key={tag} className="text-[9px] px-1.5 py-0.5 rounded-full"
+              style={{ background: fb.rating === 'good' ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)', color: fb.rating === 'good' ? '#4ade80' : '#f87171' }}>
+              {tagInfo.emoji} {tagInfo.label}
+            </span>
+          ) : null;
+        })}
+        {fb.comment && <span className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>"{fb.comment.slice(0, 30)}{fb.comment.length > 30 ? '…' : ''}"</span>}
+        {fb.savedAt && (
           <span className="text-[9px] px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(34,197,94,0.1)', color: '#4ade80' }}>📚 학습됨</span>
         )}
       </div>
     );
   }
 
-  if (submitted) return null;
-
-  const handleRate = async (rating: 'good' | 'bad') => {
-    if (rating === 'good') {
-      // 긍정 피드백은 바로 저장
-      setSaving(true);
-      try {
-        await onFeedback(msg.id, rating);
-      } catch { /* ignore */ }
-      setSubmitted(true);
-      setSaving(false);
-    } else {
-      // 부정 피드백은 코멘트 입력 유도
-      setShowComment(true);
-    }
+  const toggleTag = (id: string) => {
+    setSelectedTags(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   };
 
-  const handleSubmitComment = async () => {
+  const handleSubmit = async () => {
+    if (!rating) return;
     setSaving(true);
     try {
-      await onFeedback(msg.id, 'bad', comment.trim() || undefined);
+      await onFeedback(msg.id, rating, selectedTags.size > 0 ? [...selectedTags] : undefined, comment.trim() || undefined);
     } catch { /* ignore */ }
-    setSubmitted(true);
+    setStep('done');
     setSaving(false);
   };
 
+  const isGood = rating === 'good';
+  const tagOptions = isGood ? GOOD_FEEDBACK_TAGS : BAD_FEEDBACK_TAGS;
+  const accentColor = isGood ? '#4ade80' : '#f87171';
+  const accentBg = isGood ? 'rgba(34,197,94,' : 'rgba(239,68,68,';
+
   return (
     <div className="mt-2 ml-1">
-      {!showComment ? (
+      {step === 'initial' && (
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] mr-1" style={{ color: 'var(--text-muted)' }}>이 답변이 도움이 되었나요?</span>
           <button
-            onClick={() => handleRate('good')}
-            disabled={saving}
+            onClick={() => { setRating('good'); setStep('tags'); }}
             className="px-2 py-1 rounded-lg text-[12px] transition-all hover:scale-110 active:scale-95"
             style={{ background: 'rgba(34,197,94,0.08)', color: '#4ade80', border: '1px solid rgba(34,197,94,0.2)', cursor: 'pointer' }}
             title="도움이 됐어요"
-          >
-            👍
-          </button>
+          >👍</button>
           <button
-            onClick={() => handleRate('bad')}
-            disabled={saving}
+            onClick={() => { setRating('bad'); setStep('tags'); }}
             className="px-2 py-1 rounded-lg text-[12px] transition-all hover:scale-110 active:scale-95"
             style={{ background: 'rgba(239,68,68,0.08)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}
             title="아쉬워요"
-          >
-            👎
-          </button>
+          >👎</button>
         </div>
-      ) : (
-        <div className="flex flex-col gap-2 rounded-xl p-3" style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.15)', maxWidth: 400 }}>
-          <span className="text-[11px] font-semibold" style={{ color: '#f87171' }}>어떤 점이 아쉬웠나요?</span>
+      )}
+
+      {step === 'tags' && (
+        <div className="flex flex-col gap-2 rounded-xl p-3 animate-in fade-in" style={{ background: `${accentBg}0.04)`, border: `1px solid ${accentBg}0.15)`, maxWidth: 420 }}>
+          <span className="text-[11px] font-semibold" style={{ color: accentColor }}>
+            {isGood ? '👍 어떤 점이 좋았나요?' : '👎 어떤 점이 아쉬웠나요?'} <span className="font-normal" style={{ color: 'var(--text-muted)' }}>(복수 선택 가능)</span>
+          </span>
+
+          {/* 객관식 태그 버튼들 */}
+          <div className="flex flex-wrap gap-1.5">
+            {tagOptions.map(tag => {
+              const selected = selectedTags.has(tag.id);
+              return (
+                <button
+                  key={tag.id}
+                  onClick={() => toggleTag(tag.id)}
+                  className="px-2.5 py-1 rounded-full text-[11px] transition-all active:scale-95"
+                  style={{
+                    background: selected ? `${accentBg}0.2)` : `${accentBg}0.06)`,
+                    color: selected ? accentColor : 'var(--text-secondary)',
+                    border: `1px solid ${selected ? `${accentBg}0.4)` : `${accentBg}0.12)`}`,
+                    fontWeight: selected ? 600 : 400,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {tag.emoji} {tag.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* 추가 코멘트 (선택사항) */}
           <textarea
             value={comment}
             onChange={(e) => setComment(e.target.value)}
-            placeholder="예: 정확하지 않은 데이터, 쿼리 오류, 원하는 답이 아님..."
-            rows={2}
-            className="w-full rounded-lg text-[12px] resize-none"
-            style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid rgba(239,68,68,0.2)', padding: '8px 10px', outline: 'none' }}
+            placeholder={isGood ? '추가로 좋았던 점이 있다면... (선택 사항)' : '구체적으로 어떤 점이 아쉬웠나요? (선택 사항)'}
+            rows={1}
+            className="w-full rounded-lg text-[11px] resize-none"
+            style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: `1px solid ${accentBg}0.15)`, padding: '6px 10px', outline: 'none' }}
           />
-          <div className="flex gap-2">
+
+          {/* 제출 / 취소 */}
+          <div className="flex gap-2 items-center">
             <button
-              onClick={handleSubmitComment}
+              onClick={handleSubmit}
               disabled={saving}
-              className="px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all"
-              style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)', cursor: 'pointer' }}
+              className="px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all active:scale-95"
+              style={{ background: `${accentBg}0.15)`, color: accentColor, border: `1px solid ${accentBg}0.3)`, cursor: saving ? 'wait' : 'pointer' }}
             >
-              {saving ? '저장 중...' : '📝 피드백 제출'}
+              {saving ? '💾 저장 중...' : '📝 피드백 제출'}
             </button>
             <button
-              onClick={() => { setShowComment(false); setComment(''); }}
+              onClick={() => { setStep('initial'); setRating(null); setSelectedTags(new Set()); setComment(''); }}
               className="px-3 py-1.5 rounded-lg text-[11px] transition-all"
               style={{ color: 'var(--text-muted)', cursor: 'pointer' }}
-            >
-              취소
-            </button>
+            >취소</button>
+            {selectedTags.size === 0 && <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>태그 없이도 제출 가능</span>}
           </div>
         </div>
       )}
@@ -6641,7 +6695,7 @@ function FeedbackWidget({ msg, onFeedback }: { msg: Message; onFeedback: (msgId:
 
 // ── 메시지 버블 ──────────────────────────────────────────────────────────────
 
-function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onFeedback }: { msg: Message; onContinue?: () => void; artifactStreaming?: { html: string; title: string; charCount: number; isComplete: boolean } | null; onOpenArtifact?: (tc: ArtifactResult) => void; onFeedback?: (msgId: string, rating: 'good' | 'bad', comment?: string) => void }) {
+function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onFeedback }: { msg: Message; onContinue?: () => void; artifactStreaming?: { html: string; title: string; charCount: number; isComplete: boolean } | null; onOpenArtifact?: (tc: ArtifactResult) => void; onFeedback?: (msgId: string, rating: 'good' | 'bad', tags?: string[], comment?: string) => void }) {
   const isUser = msg.role === 'user';
 
   /* ── 유저 메시지: 우측 정렬 그라데이션 버블 ─────────────────────────────── */
@@ -7380,7 +7434,7 @@ export default function ChatPage() {
   };
 
   // ── 피드백 핸들러: 만족도를 받아 널리지로 축적 ─────────────────────────
-  const handleFeedback = useCallback(async (msgId: string, rating: 'good' | 'bad', comment?: string) => {
+  const handleFeedback = useCallback(async (msgId: string, rating: 'good' | 'bad', tags?: string[], comment?: string) => {
     // 1. 해당 메시지와 직전 유저 메시지 찾기
     const msgIdx = messages.findIndex(m => m.id === msgId);
     if (msgIdx < 0) return;
@@ -7390,7 +7444,7 @@ export default function ChatPage() {
     const aiAnswer = (aiMsg.iterations?.filter(t => t.trim()).join('\n') || aiMsg.content || '').slice(0, 300);
 
     // 2. 메시지에 feedback 기록
-    const feedback: MessageFeedback = { rating, comment, savedAt: new Date().toISOString() };
+    const feedback: MessageFeedback = { rating, tags, comment, savedAt: new Date().toISOString() };
     setMessages(prev => prev.map(m => m.id === msgId ? { ...m, feedback } : m));
 
     // 3. 널리지로 저장 — 피드백 축적
@@ -7483,10 +7537,18 @@ export default function ChatPage() {
     if (codeFiles.length > 0) toolDetails.push(`💻 코드: ${codeFiles.join(', ')}`);
     if (otherTools.length > 0) toolDetails.push(`🔧 기타: ${otherTools.join(', ')}`);
 
+    // 선택된 태그를 사람이 읽을 수 있는 라벨로 변환
+    const allTagDefs = [...GOOD_FEEDBACK_TAGS, ...BAD_FEEDBACK_TAGS];
+    const tagLabels = (tags ?? []).map(id => {
+      const def = allTagDefs.find(t => t.id === id);
+      return def ? `${def.emoji} ${def.label}` : id;
+    });
+
     const newEntry = [
       `## ${emoji} [${dateStr} ${timeStr}] ${rating === 'good' ? '긍정' : '부정'} 피드백`,
       `- **질문**: ${userQuery}`,
       `- **AI 답변 요약**: ${aiAnswer.replace(/\n/g, ' ').slice(0, 200)}`,
+      tagLabels.length > 0 ? `- **사용자 평가**: ${tagLabels.join(', ')}` : '',
       ...toolDetails.map(d => `- **${d}**`),
       comment ? `- **사용자 의견**: ${comment}` : '',
       rating === 'bad' ? `- **개선 필요**: 이 패턴의 질문에 대해 더 정확하고 유용한 답변이 필요함` : `- **유지 패턴**: 이런 방식의 답변이 사용자에게 도움이 됨`,
@@ -7542,6 +7604,7 @@ export default function ChatPage() {
         const question = entry.match(/\*\*질문\*\*:\s*(.+)/)?.[1]?.slice(0, 100) ?? '';
         const answer = entry.match(/\*\*AI 답변 요약\*\*:\s*(.+)/)?.[1]?.slice(0, 80) ?? '';
         const opinion = entry.match(/\*\*사용자 의견\*\*:\s*(.+)/)?.[1]?.slice(0, 80) ?? '';
+        const userTags = entry.match(/\*\*사용자 평가\*\*:\s*(.+)/)?.[1]?.slice(0, 100) ?? '';
         // 상세 도구 정보 추출 (📚, 🔍, 🎫, 💻, 🔧)
         const tools: string[] = [];
         const knMatch = entry.match(/\*\*📚 널리지:\s*(.+?)\*\*/);
@@ -7552,8 +7615,12 @@ export default function ChatPage() {
         if (jiraMatch) tools.push(`Jira: ${jiraMatch[1].slice(0, 40)}`);
         const codeMatch = entry.match(/\*\*💻 코드:\s*(.+?)\*\*/);
         if (codeMatch) tools.push(`코드: ${codeMatch[1].slice(0, 40)}`);
-        return { question, answer, opinion, tools };
+        return { question, answer, opinion, userTags, tools };
       };
+
+      // 태그 빈도 통계 (긍정/부정 각각)
+      const goodTagCounts = new Map<string, number>();
+      const badTagCounts = new Map<string, number>();
 
       // 긍정 패턴 추출
       const positiveEntries = content.split(/\n(?=## ✅)/).filter(e => e.startsWith('## ✅'));
@@ -7562,8 +7629,16 @@ export default function ChatPage() {
         const d = extractEntryDetails(entry);
         if (d.question) {
           let line = `✅ ${d.question}`;
+          if (d.userTags) line += ` — 평가: ${d.userTags}`;
           if (d.tools.length > 0) line += ` [${d.tools.join(' | ')}]`;
           goodPatterns.push(line);
+        }
+        // 태그 통계
+        if (d.userTags) {
+          for (const raw of d.userTags.split(',')) {
+            const tag = raw.replace(/[🎯🔍💡🔧💻🎫❌😕📜🔀📉]/gu, '').trim();
+            if (tag) goodTagCounts.set(tag, (goodTagCounts.get(tag) ?? 0) + 1);
+          }
         }
       }
 
@@ -7574,11 +7649,23 @@ export default function ChatPage() {
         const d = extractEntryDetails(entry);
         if (d.question) {
           let line = `❌ ${d.question}`;
+          if (d.userTags) line += ` — 평가: ${d.userTags}`;
           if (d.opinion) line += ` → "${d.opinion}"`;
           if (d.tools.length > 0) line += ` [${d.tools.join(' | ')}]`;
           badPatterns.push(line);
         }
+        // 태그 통계
+        if (d.userTags) {
+          for (const raw of d.userTags.split(',')) {
+            const tag = raw.replace(/[🎯🔍💡🔧💻🎫❌😕📜🔀📉]/gu, '').trim();
+            if (tag) badTagCounts.set(tag, (badTagCounts.get(tag) ?? 0) + 1);
+          }
+        }
       }
+
+      // 태그 통계 문자열 생성
+      const sortedGoodTags = [...goodTagCounts.entries()].sort((a, b) => b[1] - a[1]);
+      const sortedBadTags = [...badTagCounts.entries()].sort((a, b) => b[1] - a[1]);
 
       const improvementContent = [
         `# 🔧 AI 답변 개선 지침 (자동 생성)`,
@@ -7586,6 +7673,21 @@ export default function ChatPage() {
         `> 사용자 피드백 ${totalCount}건 (👍 ${positiveCount}건, 👎 ${negativeCount}건) 분석 결과`,
         `> 이 파일은 피드백이 들어올 때마다 자동 갱신됩니다.`,
         ``,
+        // 태그 통계 요약
+        ...(sortedGoodTags.length > 0 || sortedBadTags.length > 0 ? [
+          `## 📊 사용자 평가 태그 통계`,
+          ``,
+          ...(sortedGoodTags.length > 0 ? [
+            `**👍 긍정 태그:**`,
+            ...sortedGoodTags.map(([tag, cnt]) => `- ${tag}: ${cnt}회`),
+            ``,
+          ] : []),
+          ...(sortedBadTags.length > 0 ? [
+            `**👎 부정 태그:**`,
+            ...sortedBadTags.map(([tag, cnt]) => `- ${tag}: ${cnt}회`),
+            ``,
+          ] : []),
+        ] : []),
         ...(goodPatterns.length > 0 ? [
           `## ✅ 유지해야 할 좋은 패턴 (${positiveCount}건)`,
           ``,
@@ -7604,6 +7706,16 @@ export default function ChatPage() {
         ] : []),
         `## 📋 개선 방향`,
         ``,
+        ...(sortedBadTags.length > 0 ? [
+          `사용자가 가장 많이 선택한 불만족 원인: **${sortedBadTags[0][0]}** (${sortedBadTags[0][1]}회)`,
+          `→ 이 부분을 최우선으로 개선하세요.`,
+          ``,
+        ] : []),
+        ...(sortedGoodTags.length > 0 ? [
+          `사용자가 가장 만족한 부분: **${sortedGoodTags[0][0]}** (${sortedGoodTags[0][1]}회)`,
+          `→ 이 방식을 다른 답변에도 적극 적용하세요.`,
+          ``,
+        ] : []),
         `- 긍정 패턴과 유사한 질문 → 동일한 도구와 답변 형식 사용`,
         `- 부정 패턴과 유사한 질문 → 이전과 다른 접근법 시도 (다른 쿼리, 더 상세한 설명 등)`,
         `- 사용자 의견이 명시된 경우 해당 의견을 최우선으로 반영`,
