@@ -2019,6 +2019,17 @@ function createGitMiddleware(options: GitPluginOptions) {
       }
     }
 
+    // ── /api/assets/prefab-viewer : 프리팹 3D 뷰어 페이지로 리다이렉트 ──
+    // /api/assets/prefab-preview?path=xxx → /TableMaster/viewer/prefab?path=xxx (HTML 뷰어)
+    if (req.url?.startsWith('/api/assets/prefab-preview') || req.url?.startsWith('/api/assets/prefab-viewer')) {
+      const url2 = new URL(req.url, 'http://localhost')
+      const prefabPath = url2.searchParams.get('path') || ''
+      const redirectUrl = `/TableMaster/viewer/prefab?path=${encodeURIComponent(prefabPath)}`
+      res.writeHead(302, { Location: redirectUrl })
+      res.end()
+      return
+    }
+
     // ── /api/assets/scene & /api/assets/prefab : Unity .unity/.prefab 파일 파싱 ──
     // .prefab 파일도 .unity 씬과 동일한 YAML 포맷을 사용하므로 파서 재사용
     // 주의: /api/assets/scene-yaml 보다 먼저 매칭되지 않도록 정확하게 체크
