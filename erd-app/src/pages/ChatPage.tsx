@@ -5716,7 +5716,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
               )}
               <ThinkingIndicator liveToolCalls={msg.liveToolCalls} />
             </>
-          ) : msg.isLoading && (msg.content || msg.artifactProgress || (msg.liveToolCalls && msg.liveToolCalls.length > 0) || (artifactStreaming && !artifactStreaming.isComplete)) ? (
+          ) : msg.isLoading && (msg.content || msg.iterations?.some(t => t.trim()) || msg.artifactProgress || (msg.liveToolCalls && msg.liveToolCalls.length > 0) || (artifactStreaming && !artifactStreaming.isComplete)) ? (
             // 스트리밍 중 — 텍스트 실시간 표시 + 커서 + 아티팩트 오버레이
             <div className="space-y-2">
               {/* Thinking 패널 (스트리밍 중) */}
