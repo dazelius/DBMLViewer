@@ -590,26 +590,56 @@ function renderQueryEmbedHtml(sql: string, tableData: TableDataMap, schema: Pars
 
 /** 관계도 embed → HTML (특정 테이블의 FK 관계망) */
 function renderRelationsEmbedHtml(tableName: string, schema: ParsedSchema | null): string {
-  if (!schema) return `<div class="embed-error">스키마 없음</div>`;
+  if (!schema) return `<div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:8px 12px;color:#ef4444;font-size:12px">스키마 없음</div>`;
   const table = schema.tables.find(t => t.name.toLowerCase() === tableName.toLowerCase());
-  if (!table) return `<div class="embed-error">테이블 '${tableName}'을 찾을 수 없습니다</div>`;
+  if (!table) return `<div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:8px 12px;color:#ef4444;font-size:12px">테이블 '${tableName}'을 찾을 수 없습니다</div>`;
   const nameById = new Map(schema.tables.map(t => [t.id, t.name]));
 
   const outRefs = schema.refs.filter(r => r.fromTable === table.id);
   const inRefs  = schema.refs.filter(r => r.toTable === table.id);
 
+  // 행 생성 (인라인 스타일)
+  const rowStyle = `border-bottom:1px solid rgba(45,63,94,.5)`;
+  const cellBase = `padding:8px 12px;font-size:12px;font-family:'Consolas','Courier New',monospace`;
   const outRows = outRefs.map(r => {
     const to = nameById.get(r.toTable) ?? r.toTable;
-    return `<tr><td style="color:#818cf8">→ ${to}</td><td style="color:#94a3b8">${r.fromColumns[0]}</td><td style="color:#64748b">${r.type}</td></tr>`;
+    const fkCol = r.fromColumns[0] ?? '';
+    const toCol = r.toColumns[0] ?? '';
+    return `<tr style="${rowStyle}">
+<td style="${cellBase};white-space:nowrap"><span style="display:inline-flex;align-items:center;gap:6px"><span style="color:#818cf8;font-size:14px">→</span><span style="color:#818cf8;font-weight:600">${to}</span></span></td>
+<td style="${cellBase};color:#94a3b8">${fkCol}${toCol && toCol !== fkCol ? ` → ${toCol}` : ''}</td>
+<td style="${cellBase};text-align:center"><span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;background:rgba(99,102,241,.15);color:#818cf8">${r.type}</span></td>
+</tr>`;
   }).join('');
   const inRows = inRefs.map(r => {
     const from = nameById.get(r.fromTable) ?? r.fromTable;
-    return `<tr><td style="color:#34d399">← ${from}</td><td style="color:#94a3b8">${r.fromColumns[0]}</td><td style="color:#64748b">${r.type}</td></tr>`;
+    const fkCol = r.fromColumns[0] ?? '';
+    const toCol = r.toColumns[0] ?? '';
+    return `<tr style="${rowStyle}">
+<td style="${cellBase};white-space:nowrap"><span style="display:inline-flex;align-items:center;gap:6px"><span style="color:#34d399;font-size:14px">←</span><span style="color:#34d399;font-weight:600">${from}</span></span></td>
+<td style="${cellBase};color:#94a3b8">${fkCol}${toCol && toCol !== fkCol ? ` → ${toCol}` : ''}</td>
+<td style="${cellBase};text-align:center"><span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;background:rgba(52,211,153,.12);color:#34d399">${r.type}</span></td>
+</tr>`;
   }).join('');
 
-  return `<div class="embed-card embed-relations">
-<div class="embed-header"><span class="embed-icon">🔗</span><span class="embed-title">${table.name} 관계도</span><span class="embed-meta">출력 ${outRefs.length}개 · 입력 ${inRefs.length}개</span></div>
-${outRows || inRows ? `<table class="embed-table"><thead><tr><th>연결 테이블</th><th>FK 컬럼</th><th>타입</th></tr></thead><tbody>${outRows}${inRows}</tbody></table>` : '<div class="embed-empty">관계 없음</div>'}
+  const thStyle = `padding:6px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #2d3f5e;background:#0f1a2e`;
+
+  const tableHtml = outRows || inRows
+    ? `<table style="width:100%;border-collapse:collapse;margin:0">
+<thead><tr><th style="${thStyle}">연결 테이블</th><th style="${thStyle}">FK 컬럼</th><th style="${thStyle};text-align:center">타입</th></tr></thead>
+<tbody>${outRows}${inRows}</tbody></table>`
+    : `<div style="padding:16px;text-align:center;color:#475569;font-size:12px">관계 없음</div>`;
+
+  return `<div style="background:#1a2035;border:1px solid #2d3f5e;border-radius:10px;overflow:hidden;margin:10px 0">
+<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:#131d2e;border-bottom:1px solid #2d3f5e">
+<span style="font-size:16px">🔗</span>
+<span style="font-weight:700;color:#e2e8f0;font-size:14px">${table.name} FK 관계</span>
+<div style="display:flex;gap:12px;margin-left:auto">
+<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#818cf8"><span style="font-size:13px">→</span> 출력 ${outRefs.length}개</span>
+<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#34d399"><span style="font-size:13px">←</span> 입력 ${inRefs.length}개</span>
+</div>
+</div>
+${tableHtml}
 </div>`;
 }
 
@@ -2748,6 +2778,7 @@ code{background:#1e293b;padding:1px 5px;border-radius:3px;font-size:12px;font-fa
 pre{background:#1e293b;border:1px solid #334155;border-radius:6px;padding:12px;overflow-x:auto;font-size:12px;line-height:1.6}
 blockquote{border-left:3px solid #6366f1;margin:8px 0;padding:10px 18px;background:rgba(99,102,241,.05);color:#94a3b8;border-radius:0 8px 8px 0}
 hr{border:none;border-top:1px solid #334155;margin:16px 0}
+${EMBED_CSS}
 </style>
 <script>
 // base href 를 parent origin 으로 설정
