@@ -1,12 +1,51 @@
 import type { Plugin } from 'vite'
 import { execSync, execFileSync, execFile } from 'child_process'
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync, appendFileSync } from 'fs'
 import { join, resolve, extname, sep } from 'path'
 import { promisify } from 'util'
 import { createRequire } from 'module'
 import type { IncomingMessage, ServerResponse } from 'http'
 import { request as httpsRequest } from 'https'
 import { deflateSync } from 'zlib'
+
+// ── 서버 로깅 ─────────────────────────────────────────────────────────────────
+const SERVER_LOG = join(process.cwd(), '..', 'server.log')
+
+function ts(): string {
+  return new Date().toISOString().replace('T', ' ').replace('Z', '')
+}
+
+function sLog(level: 'INFO' | 'WARN' | 'ERROR' | 'REQ', msg: string) {
+  const line = `[${ts()}] [${level}] ${msg}\n`
+  process.stdout.write(level === 'ERROR' ? `\x1b[31m${line}\x1b[0m` : line)
+  try { appendFileSync(SERVER_LOG, line) } catch { /* ignore */ }
+}
+
+function rotateLogs() {
+  try {
+    if (!existsSync(SERVER_LOG)) return
+    const stat = statSync(SERVER_LOG)
+    if (stat.size > 5 * 1024 * 1024) { // 5MB 초과 시 로테이션
+      const backup = SERVER_LOG.replace('.log', `_${Date.now()}.log`)
+      writeFileSync(backup, readFileSync(SERVER_LOG))
+      writeFileSync(SERVER_LOG, `[${ts()}] [INFO] === Log rotated ===\n`)
+    }
+  } catch { /* ignore */ }
+}
+
+rotateLogs()
+sLog('INFO', `=== Server starting (pid=${process.pid}) cwd=${process.cwd()} ===`)
+
+// ── 전역 에러 핸들러 (서버 다운 원인 캐치) ─────────────────────────────────────
+process.on('uncaughtException', (err: Error) => {
+  sLog('ERROR', `[UNCAUGHT EXCEPTION] ${err.message}\n${err.stack ?? ''}`)
+})
+process.on('unhandledRejection', (reason: unknown) => {
+  const msg = reason instanceof Error
+    ? `${reason.message}\n${reason.stack ?? ''}`
+    : String(reason)
+  sLog('ERROR', `[UNHANDLED REJECTION] ${msg}`)
+})
 
 // ── TGA → PNG 서버사이드 변환 ──────────────────────────────────────────────────
 // FBXLoader의 기본 TextureLoader는 TGA를 디코딩 못하므로 서버에서 PNG로 변환하여 전달
@@ -5645,16 +5684,49 @@ for line in resp.iter_lines():
 </body></html>`
 }
 
+/** async 미들웨어를 안전하게 래핑 — 미처리 예외를 로그 + 500 응답 */
+function safeMiddleware(
+  label: string,
+  mw: (req: IncomingMessage, res: ServerResponse, next: () => void) => Promise<void> | void
+) {
+  return (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    const t0     = Date.now()
+    const isApi  = !!(req.url?.startsWith('/api/') || req.url?.startsWith('/v1/'))
+    const method = req.method ?? '?'
+    const url    = req.url ?? '?'
+
+    if (isApi) sLog('REQ', `→ [${label}] ${method} ${url}`)
+
+    const result = mw(req, res, next)
+    if (result && typeof result.catch === 'function') {
+      result
+        .then(() => {
+          if (isApi) sLog('INFO', `← [${label}] ${method} ${url} ${Date.now() - t0}ms`)
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err)
+          sLog('ERROR', `[${label} CRASH] ${method} ${url} ${Date.now() - t0}ms\n${msg}`)
+          if (!res.headersSent) {
+            try {
+              res.writeHead(500, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+            } catch { /* already destroyed */ }
+          }
+        })
+    }
+  }
+}
+
 export default function gitPlugin(options: GitPluginOptions): Plugin {
   return {
     name: 'vite-git-plugin',
     configureServer(server) {
-      server.middlewares.use(createChatApiMiddleware(options))
-      server.middlewares.use(createGitMiddleware(options))
+      server.middlewares.use(safeMiddleware('chatApi', createChatApiMiddleware(options)))
+      server.middlewares.use(safeMiddleware('gitApi', createGitMiddleware(options)))
     },
     configurePreviewServer(server) {
-      server.middlewares.use(createChatApiMiddleware(options))
-      server.middlewares.use(createGitMiddleware(options))
+      server.middlewares.use(safeMiddleware('chatApi', createChatApiMiddleware(options)))
+      server.middlewares.use(safeMiddleware('gitApi', createGitMiddleware(options)))
     },
   }
 }
