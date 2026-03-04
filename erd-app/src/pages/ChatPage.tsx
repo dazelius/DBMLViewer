@@ -5705,7 +5705,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
           boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
         }}
       >
-          {msg.isLoading && !msg.content && !(artifactStreaming && !artifactStreaming.isComplete) ? (
+          {msg.isLoading && !msg.content && !msg.iterations?.some(t => t.trim()) && !(artifactStreaming && !artifactStreaming.isComplete) ? (
             <>
               {/* Thinking 패널 (로딩 + 아직 텍스트 없음) */}
               {msg.thinkingSteps && msg.thinkingSteps.length > 0 && (
