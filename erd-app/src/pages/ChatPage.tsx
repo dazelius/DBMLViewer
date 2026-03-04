@@ -6888,8 +6888,8 @@ function extractChecklistItems(text: string): { label: string; checked: boolean 
 }
 
 // ── 객관식 선택지 추출 헬퍼 ──────────────────────────────────────────────
-// A) / B) / **A)** / 1) / 2) 등 연속 패턴 감지
-const MC_PATTERN = /^(?:\*\*)?([A-Za-z가-힣\d]+)\)(?:\*\*)?\s+(.+)/;
+// A) / B) / A. / B. / **A)** / **A.** / 1) / 2) 등 연속 패턴 감지
+const MC_PATTERN = /^(?:\*\*)?([A-Za-z가-힣\d]+)[).](?:\*\*)?\s+(.+)/;
 
 function extractMultipleChoice(text: string): { key: string; label: string; fullLine: string }[] | null {
   const lines = text.split('\n');
