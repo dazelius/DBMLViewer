@@ -372,281 +372,8 @@ const MERMAID_INIT_SCRIPT = '<script type="module">'
   + '</' + 'script>';
 
 /** 인터랙티브 SVG ERD 렌더러 (artifact iframe 내에서 실행) */
-const ERD_RENDERER_SCRIPT = `<` + `script>
-(function(){
-var COL_H=22,HDR_H=34,PAD=16,MIN_W=210,MAX_COL=18,GAP_X=50,GAP_Y=40;
-var C={hc:'#312e81',hr:'#1a2035',ht:'#e2e8f0',cb:'#0f172a',ct:'#cbd5e1',
-  pk:'#818cf8',fk:'#fbbf24',nn:'#64748b',bd:'#334155',bc:'#6366f1',
-  ln:'#6366f1',bg:'#0d1117'};
-
-function initERD(){
-  document.querySelectorAll('.erd-container').forEach(function(el){
-    if(el._rendered)return; el._rendered=true;
-    try{
-      var data=JSON.parse(el.dataset.erd);
-      var canvas=el.querySelector('.erd-canvas');
-      if(canvas)renderERD(canvas,data);
-    }catch(e){el.innerHTML='<div style="color:#ef4444;padding:10px">ERD 오류: '+e.message+'</div>';}
-  });
-}
-
-function renderERD(container,data){
-  var tables=data.tables, refs=data.refs;
-  // 테이블 크기 계산
-  tables.forEach(function(t){
-    var maxL=t.name.length;
-    t.columns.forEach(function(c){maxL=Math.max(maxL,(c.name+c.type).length);});
-    t.w=Math.max(MIN_W,maxL*7+90);
-    t.h=HDR_H+t.columns.length*COL_H+(t.truncated?COL_H:0)+6;
-  });
-  // 그리드 레이아웃
-  var centers=tables.filter(function(t){return t.isCenter;});
-  var others=tables.filter(function(t){return !t.isCenter;});
-  var all=[].concat(centers,others);
-  var COLS=Math.min(4,Math.ceil(Math.sqrt(all.length)));
-  var rowH=[];
-  all.forEach(function(t,i){var r=Math.floor(i/COLS);rowH[r]=Math.max(rowH[r]||0,t.h);});
-  all.forEach(function(t,i){
-    var r=Math.floor(i/COLS),c=i%COLS;
-    var py=PAD; for(var k=0;k<r;k++)py+=rowH[k]+GAP_Y;
-    t.x=PAD+c*(MIN_W+GAP_X+60); t.y=py;
-  });
-  var svgW=0,svgH=0;
-  all.forEach(function(t){svgW=Math.max(svgW,t.x+t.w+PAD);svgH=Math.max(svgH,t.y+t.h+PAD);});
-
-  // SVG 생성
-  var ns='http://www.w3.org/2000/svg';
-  var svg=document.createElementNS(ns,'svg');
-  svg.setAttribute('width',svgW);svg.setAttribute('height',svgH);
-  svg.style.cssText='position:absolute;left:0;top:0;';
-  // defs: arrow marker
-  var defs=document.createElementNS(ns,'defs');
-  var marker=document.createElementNS(ns,'marker');
-  marker.setAttribute('id','arrowhead');marker.setAttribute('markerWidth','8');
-  marker.setAttribute('markerHeight','6');marker.setAttribute('refX','8');
-  marker.setAttribute('refY','3');marker.setAttribute('orient','auto');
-  var poly=document.createElementNS(ns,'polygon');
-  poly.setAttribute('points','0 0, 8 3, 0 6');poly.setAttribute('fill',C.ln);
-  marker.appendChild(poly);defs.appendChild(marker);
-  // diamond marker (many)
-  var dm=document.createElementNS(ns,'marker');
-  dm.setAttribute('id','diamond');dm.setAttribute('markerWidth','10');
-  dm.setAttribute('markerHeight','8');dm.setAttribute('refX','0');
-  dm.setAttribute('refY','4');dm.setAttribute('orient','auto');
-  var dp=document.createElementNS(ns,'polygon');
-  dp.setAttribute('points','0 4,5 0,10 4,5 8');dp.setAttribute('fill',C.fk);
-  dm.appendChild(dp);defs.appendChild(dm);
-  svg.appendChild(defs);
-
-  // 연결선
-  var tByName={};all.forEach(function(t){tByName[t.name]=t;});
-  refs.forEach(function(ref){
-    var ft=tByName[ref.from],tt=tByName[ref.to];
-    if(!ft||!tt)return;
-    var fci=0,tci=0;
-    ft.columns.forEach(function(c,i){if(c.name===ref.fromCol)fci=i;});
-    tt.columns.forEach(function(c,i){if(c.name===ref.toCol)tci=i;});
-    var fx,fy=ft.y+HDR_H+fci*COL_H+COL_H/2;
-    var tx,ty=tt.y+HDR_H+tci*COL_H+COL_H/2;
-    // 연결 방향 결정
-    if(ft.x+ft.w<tt.x){fx=ft.x+ft.w;tx=tt.x;}
-    else if(tt.x+tt.w<ft.x){fx=ft.x;tx=tt.x+tt.w;}
-    else{fx=ft.x+ft.w;tx=tt.x+tt.w;}
-    var mx=(fx+tx)/2;
-    var path=document.createElementNS(ns,'path');
-    path.setAttribute('d','M'+fx+','+fy+' C'+mx+','+fy+' '+mx+','+ty+' '+tx+','+ty);
-    path.setAttribute('stroke',C.ln);path.setAttribute('stroke-width','1.5');
-    path.setAttribute('fill','none');path.setAttribute('opacity','0.7');
-    path.setAttribute('marker-end','url(#arrowhead)');
-    path.setAttribute('marker-start','url(#diamond)');
-    svg.appendChild(path);
-    // FK 라벨
-    if(ref.fromCol){
-      var lbl=document.createElementNS(ns,'text');
-      lbl.setAttribute('x',(fx+tx)/2);lbl.setAttribute('y',(fy+ty)/2-6);
-      lbl.setAttribute('text-anchor','middle');lbl.setAttribute('fill','#64748b');
-      lbl.setAttribute('font-size','9');lbl.textContent=ref.fromCol;
-      svg.appendChild(lbl);
-    }
-  });
-
-  // 테이블 노드 그리기
-  all.forEach(function(t){
-    var g=document.createElementNS(ns,'g');
-    g.setAttribute('transform','translate('+t.x+','+t.y+')');
-    g.style.cursor='grab';
-    // 그림자
-    var shadow=document.createElementNS(ns,'rect');
-    shadow.setAttribute('x','3');shadow.setAttribute('y','3');
-    shadow.setAttribute('width',t.w);shadow.setAttribute('height',t.h);
-    shadow.setAttribute('rx','8');shadow.setAttribute('fill','rgba(0,0,0,0.4)');
-    shadow.setAttribute('filter','blur(4px)');g.appendChild(shadow);
-    // 배경
-    var bg=document.createElementNS(ns,'rect');
-    bg.setAttribute('width',t.w);bg.setAttribute('height',t.h);bg.setAttribute('rx','8');
-    bg.setAttribute('fill',C.cb);
-    bg.setAttribute('stroke',t.isCenter?C.bc:C.bd);
-    bg.setAttribute('stroke-width',t.isCenter?'2':'1');g.appendChild(bg);
-    // 헤더
-    var hdr=document.createElementNS(ns,'rect');
-    hdr.setAttribute('width',t.w);hdr.setAttribute('height',HDR_H);hdr.setAttribute('rx','8');
-    hdr.setAttribute('fill',t.isCenter?C.hc:C.hr);g.appendChild(hdr);
-    var hdr2=document.createElementNS(ns,'rect');
-    hdr2.setAttribute('y',HDR_H-8);hdr2.setAttribute('width',t.w);hdr2.setAttribute('height','8');
-    hdr2.setAttribute('fill',t.isCenter?C.hc:C.hr);g.appendChild(hdr2);
-    // 헤더 구분선
-    var hline=document.createElementNS(ns,'line');
-    hline.setAttribute('x1','0');hline.setAttribute('y1',HDR_H);
-    hline.setAttribute('x2',t.w);hline.setAttribute('y2',HDR_H);
-    hline.setAttribute('stroke',t.isCenter?C.bc:C.bd);g.appendChild(hline);
-    // 헤더 텍스트
-    var icon=document.createElementNS(ns,'text');
-    icon.setAttribute('x','12');icon.setAttribute('y',HDR_H/2+5);
-    icon.setAttribute('fill',t.isCenter?'#a5b4fc':'#94a3b8');
-    icon.setAttribute('font-size','12');icon.textContent='\\u{1F5C4}';g.appendChild(icon);
-    var htxt=document.createElementNS(ns,'text');
-    htxt.setAttribute('x','30');htxt.setAttribute('y',HDR_H/2+5);
-    htxt.setAttribute('fill',C.ht);htxt.setAttribute('font-size','13');
-    htxt.setAttribute('font-weight','700');htxt.textContent=t.name;g.appendChild(htxt);
-    // 컬럼 수 뱃지
-    var cntBadge=document.createElementNS(ns,'text');
-    cntBadge.setAttribute('x',t.w-12);cntBadge.setAttribute('y',HDR_H/2+5);
-    cntBadge.setAttribute('text-anchor','end');cntBadge.setAttribute('fill','#475569');
-    cntBadge.setAttribute('font-size','10');
-    cntBadge.textContent=t.columns.length+(t.truncated?'+'+t.truncated:'')+'cols';
-    g.appendChild(cntBadge);
-    // 컬럼
-    t.columns.forEach(function(col,ci){
-      var cy=HDR_H+ci*COL_H;
-      if(ci%2===1){
-        var rb=document.createElementNS(ns,'rect');
-        rb.setAttribute('y',cy);rb.setAttribute('width',t.w);rb.setAttribute('height',COL_H);
-        rb.setAttribute('fill','rgba(255,255,255,0.02)');g.appendChild(rb);
-      }
-      // 아이콘
-      var pre=col.pk?'\\u{1F511} ':col.fk?'\\u{21B3} ':'   ';
-      var cn=document.createElementNS(ns,'text');
-      cn.setAttribute('x','10');cn.setAttribute('y',cy+COL_H/2+4);
-      cn.setAttribute('fill',col.pk?C.pk:col.fk?C.fk:C.ct);
-      cn.setAttribute('font-size','11');cn.setAttribute('font-weight',col.pk||col.fk?'600':'400');
-      cn.setAttribute('font-family','Consolas,monospace');
-      cn.textContent=pre+col.name;g.appendChild(cn);
-      // 타입
-      var ct=document.createElementNS(ns,'text');
-      ct.setAttribute('x',t.w-10);ct.setAttribute('y',cy+COL_H/2+4);
-      ct.setAttribute('text-anchor','end');ct.setAttribute('fill','#475569');
-      ct.setAttribute('font-size','10');ct.setAttribute('font-family','Consolas,monospace');
-      ct.textContent=col.type;g.appendChild(ct);
-      // PK/FK/NN 뱃지
-      var badges=[];
-      if(col.pk)badges.push({t:'PK',c:'#818cf8',bg:'rgba(99,102,241,.2)'});
-      if(col.fk)badges.push({t:'FK',c:'#fbbf24',bg:'rgba(234,179,8,.15)'});
-      if(col.nn&&!col.pk)badges.push({t:'NN',c:'#64748b',bg:'rgba(100,116,139,.2)'});
-      var bx=t.w-10-(col.type.length*6+8);
-      badges.reverse().forEach(function(b){
-        var bw=22;bx-=bw+3;
-        var br=document.createElementNS(ns,'rect');
-        br.setAttribute('x',bx);br.setAttribute('y',cy+4);
-        br.setAttribute('width',bw);br.setAttribute('height','14');
-        br.setAttribute('rx','3');br.setAttribute('fill',b.bg);g.appendChild(br);
-        var bt=document.createElementNS(ns,'text');
-        bt.setAttribute('x',bx+bw/2);bt.setAttribute('y',cy+14);
-        bt.setAttribute('text-anchor','middle');bt.setAttribute('fill',b.c);
-        bt.setAttribute('font-size','8');bt.setAttribute('font-weight','700');
-        bt.textContent=b.t;g.appendChild(bt);
-      });
-    });
-    if(t.truncated){
-      var ty2=HDR_H+t.columns.length*COL_H;
-      var mt=document.createElementNS(ns,'text');
-      mt.setAttribute('x',t.w/2);mt.setAttribute('y',ty2+COL_H/2+4);
-      mt.setAttribute('text-anchor','middle');mt.setAttribute('fill','#475569');
-      mt.setAttribute('font-size','10');mt.textContent='... +'+t.truncated+' more columns';
-      g.appendChild(mt);
-    }
-    svg.appendChild(g);
-    // 드래그
-    var dragging=false,ox,oy;
-    g.addEventListener('mousedown',function(e){
-      e.preventDefault();dragging=true;ox=e.clientX-t.x;oy=e.clientY-t.y;
-      g.style.cursor='grabbing';
-      var onMove=function(ev){
-        if(!dragging)return;
-        var sc=parseFloat(svg.getAttribute('width'))/svg.viewBox.baseVal.width||1;
-        t.x=(ev.clientX-ox);t.y=(ev.clientY-oy);
-        g.setAttribute('transform','translate('+t.x+','+t.y+')');
-        redrawLines();
-      };
-      var onUp=function(){dragging=false;g.style.cursor='grab';
-        document.removeEventListener('mousemove',onMove);
-        document.removeEventListener('mouseup',onUp);};
-      document.addEventListener('mousemove',onMove);
-      document.addEventListener('mouseup',onUp);
-    });
-  });
-
-  // 연결선 재그리기 함수
-  function redrawLines(){
-    svg.querySelectorAll('path,text[data-ref]').forEach(function(p){p.remove();});
-    refs.forEach(function(ref){
-      var ft=tByName[ref.from],tt=tByName[ref.to];
-      if(!ft||!tt)return;
-      var fci=0,tci=0;
-      ft.columns.forEach(function(c,i){if(c.name===ref.fromCol)fci=i;});
-      tt.columns.forEach(function(c,i){if(c.name===ref.toCol)tci=i;});
-      var fx,fy=ft.y+HDR_H+fci*COL_H+COL_H/2;
-      var tx,ty2=tt.y+HDR_H+tci*COL_H+COL_H/2;
-      if(ft.x+ft.w<tt.x){fx=ft.x+ft.w;tx=tt.x;}
-      else if(tt.x+tt.w<ft.x){fx=ft.x;tx=tt.x+tt.w;}
-      else{fx=ft.x+ft.w;tx=tt.x+tt.w;}
-      var mx=(fx+tx)/2;
-      var path=document.createElementNS(ns,'path');
-      path.setAttribute('d','M'+fx+','+fy+' C'+mx+','+fy+' '+mx+','+ty2+' '+tx+','+ty2);
-      path.setAttribute('stroke',C.ln);path.setAttribute('stroke-width','1.5');
-      path.setAttribute('fill','none');path.setAttribute('opacity','0.7');
-      path.setAttribute('marker-end','url(#arrowhead)');
-      path.setAttribute('marker-start','url(#diamond)');
-      // 테이블 노드 앞(맨 앞이 아닌 뒤)에 삽입
-      svg.insertBefore(path,svg.querySelector('g'));
-    });
-  }
-
-  // pan & zoom
-  var vx=0,vy=0,scale=1;
-  function applyTransform(){
-    svg.style.transform='translate('+vx+'px,'+vy+'px) scale('+scale+')';
-    svg.style.transformOrigin='0 0';
-  }
-  container.addEventListener('wheel',function(e){
-    e.preventDefault();
-    var d=e.deltaY>0?0.9:1.1;
-    scale=Math.max(0.3,Math.min(3,scale*d));
-    applyTransform();
-  });
-  var panning=false,px,py;
-  container.addEventListener('mousedown',function(e){
-    if(e.target===container||e.target===svg){
-      panning=true;px=e.clientX-vx;py=e.clientY-vy;container.style.cursor='grabbing';
-    }
-  });
-  container.addEventListener('mousemove',function(e){
-    if(!panning)return;vx=e.clientX-px;vy=e.clientY-py;applyTransform();
-  });
-  container.addEventListener('mouseup',function(){panning=false;container.style.cursor='grab';});
-  container.addEventListener('mouseleave',function(){panning=false;container.style.cursor='grab';});
-
-  container.appendChild(svg);
-}
-
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',initERD);
-else setTimeout(initERD,50);
-new MutationObserver(function(muts){
-  for(var m of muts)for(var n of m.addedNodes){
-    if(n.nodeType===1&&(n.classList&&n.classList.contains('erd-container')||n.querySelector&&n.querySelector('.erd-container')))setTimeout(initERD,50);
-  }
-}).observe(document.body,{childList:true,subtree:true});
-})();
-<` + `/script>`;
+// ERD_RENDERER_SCRIPT는 더 이상 사용하지 않음 — renderGraphEmbedHtml이 인라인 SVG를 직접 생성
+const ERD_RENDERER_SCRIPT = '';
 
 /** 인터랙티브 테이블 스크립트 (정렬/검색) */
 const INTERACTIVE_TABLE_SCRIPT = `<` + `script>
@@ -912,24 +639,26 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
   const limitedIds = [...includedIds].slice(0, 25);
   const limitedSet = new Set(limitedIds);
 
-  // JSON 데이터 구축
-  const tables = limitedIds.map(id => {
+  // ── 테이블 데이터 구축 ──
+  const COL_H = 22, HDR_H = 34, PAD = 16, MIN_W = 210, GAP_X = 50, GAP_Y = 40;
+  const C = { hc: '#312e81', hr: '#1a2035', ht: '#e2e8f0', cb: '#0f172a', ct: '#cbd5e1',
+    pk: '#818cf8', fk: '#fbbf24', nn: '#64748b', bd: '#334155', bc: '#6366f1', ln: '#6366f1' };
+
+  interface ErdCol { name: string; type: string; pk: boolean; fk: boolean; nn: boolean; note: string }
+  interface ErdTable { name: string; isCenter: boolean; columns: ErdCol[]; truncated: number; w: number; h: number; x: number; y: number }
+
+  const tables: ErdTable[] = limitedIds.map(id => {
     const t = schema.tables.find(x => x.id === id);
     if (!t) return null;
-    return {
-      name: t.name,
-      isCenter: centerIds.has(id),
-      columns: t.columns.slice(0, 18).map(c => ({
-        name: c.name,
-        type: c.type,
-        pk: !!c.isPrimaryKey,
-        fk: !!c.isForeignKey,
-        nn: !!c.isNotNull,
-        note: c.note ?? '',
-      })),
-      truncated: t.columns.length > 18 ? t.columns.length - 18 : 0,
-    };
-  }).filter(Boolean);
+    const cols: ErdCol[] = t.columns.slice(0, 18).map(c => ({
+      name: c.name, type: c.type, pk: !!c.isPrimaryKey, fk: !!c.isForeignKey, nn: !!c.isNotNull, note: c.note ?? '',
+    }));
+    const maxL = Math.max(t.name.length, ...cols.map(c => (c.name + c.type).length));
+    const w = Math.max(MIN_W, maxL * 7 + 90);
+    const trunc = t.columns.length > 18 ? t.columns.length - 18 : 0;
+    const h = HDR_H + cols.length * COL_H + (trunc ? COL_H : 0) + 6;
+    return { name: t.name, isCenter: centerIds.has(id), columns: cols, truncated: trunc, w, h, x: 0, y: 0 };
+  }).filter((x): x is ErdTable => !!x);
 
   const refs: { from: string; fromCol: string; to: string; toCol: string; type: string }[] = [];
   const addedEdges = new Set<string>();
@@ -943,17 +672,138 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
     refs.push({ from: fromName, fromCol: ref.fromColumns[0] ?? '', to: toName, toCol: ref.toColumns[0] ?? '', type: ref.type ?? 'one-to-many' });
   }
 
-  const erdData = JSON.stringify({ tables, refs }).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
-  const truncated = includedIds.size > 25 ? ` (${includedIds.size - 25}개 생략)` : '';
+  // ── 그리드 레이아웃 ──
+  const centers = tables.filter(t => t.isCenter);
+  const others = tables.filter(t => !t.isCenter);
+  const all = [...centers, ...others];
+  const COLS = Math.min(4, Math.ceil(Math.sqrt(all.length)));
+  const rowH: number[] = [];
+  all.forEach((t, i) => { const r = Math.floor(i / COLS); rowH[r] = Math.max(rowH[r] || 0, t.h); });
+  all.forEach((t, i) => {
+    const r = Math.floor(i / COLS), c = i % COLS;
+    let py = PAD; for (let k = 0; k < r; k++) py += (rowH[k] || 0) + GAP_Y;
+    t.x = PAD + c * (MIN_W + GAP_X + 60);
+    t.y = py;
+  });
+  let svgW = 0, svgH = 0;
+  all.forEach(t => { svgW = Math.max(svgW, t.x + t.w + PAD); svgH = Math.max(svgH, t.y + t.h + PAD); });
 
-  return `<div class="erd-container" data-erd="${erdData.replace(/"/g, '&quot;')}" style="background:#0d1117;border:1px solid #2d3f5e;border-radius:10px;overflow:hidden;margin:12px 0">
+  // ── SVG 문자열 빌드 (서버사이드) ──
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const svgParts: string[] = [];
+  svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" style="position:absolute;left:0;top:0" class="erd-svg">`);
+  // defs: markers
+  svgParts.push(`<defs>`);
+  svgParts.push(`<marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="${C.ln}"/></marker>`);
+  svgParts.push(`<marker id="diamond" markerWidth="10" markerHeight="8" refX="0" refY="4" orient="auto"><polygon points="0 4,5 0,10 4,5 8" fill="${C.fk}"/></marker>`);
+  svgParts.push(`</defs>`);
+
+  // ── 연결선 ──
+  const tByName: Record<string, ErdTable> = {};
+  all.forEach(t => { tByName[t.name] = t; });
+  refs.forEach(ref => {
+    const ft = tByName[ref.from], tt = tByName[ref.to];
+    if (!ft || !tt) return;
+    let fci = 0, tci = 0;
+    ft.columns.forEach((c, i) => { if (c.name === ref.fromCol) fci = i; });
+    tt.columns.forEach((c, i) => { if (c.name === ref.toCol) tci = i; });
+    let fx: number, tx: number;
+    const fy = ft.y + HDR_H + fci * COL_H + COL_H / 2;
+    const ty = tt.y + HDR_H + tci * COL_H + COL_H / 2;
+    if (ft.x + ft.w < tt.x) { fx = ft.x + ft.w; tx = tt.x; }
+    else if (tt.x + tt.w < ft.x) { fx = ft.x; tx = tt.x + tt.w; }
+    else { fx = ft.x + ft.w; tx = tt.x + tt.w; }
+    const mx = (fx + tx) / 2;
+    svgParts.push(`<path d="M${fx},${fy} C${mx},${fy} ${mx},${ty} ${tx},${ty}" stroke="${C.ln}" stroke-width="1.5" fill="none" opacity="0.7" marker-end="url(#arrowhead)" marker-start="url(#diamond)"/>`);
+    if (ref.fromCol) {
+      svgParts.push(`<text x="${(fx + tx) / 2}" y="${(fy + ty) / 2 - 6}" text-anchor="middle" fill="#64748b" font-size="9">${esc(ref.fromCol)}</text>`);
+    }
+  });
+
+  // ── 테이블 노드 ──
+  all.forEach(t => {
+    svgParts.push(`<g transform="translate(${t.x},${t.y})" data-table="${esc(t.name)}" style="cursor:grab">`);
+    // 그림자 (SVG filter 대신 offset된 rect)
+    svgParts.push(`<rect x="3" y="3" width="${t.w}" height="${t.h}" rx="8" fill="rgba(0,0,0,0.3)"/>`);
+    // 배경
+    svgParts.push(`<rect width="${t.w}" height="${t.h}" rx="8" fill="${C.cb}" stroke="${t.isCenter ? C.bc : C.bd}" stroke-width="${t.isCenter ? 2 : 1}"/>`);
+    // 헤더
+    svgParts.push(`<rect width="${t.w}" height="${HDR_H}" rx="8" fill="${t.isCenter ? C.hc : C.hr}"/>`);
+    svgParts.push(`<rect y="${HDR_H - 8}" width="${t.w}" height="8" fill="${t.isCenter ? C.hc : C.hr}"/>`);
+    svgParts.push(`<line x1="0" y1="${HDR_H}" x2="${t.w}" y2="${HDR_H}" stroke="${t.isCenter ? C.bc : C.bd}"/>`);
+    // 헤더 아이콘 + 텍스트
+    svgParts.push(`<text x="12" y="${HDR_H / 2 + 5}" fill="${t.isCenter ? '#a5b4fc' : '#94a3b8'}" font-size="12">🗄</text>`);
+    svgParts.push(`<text x="30" y="${HDR_H / 2 + 5}" fill="${C.ht}" font-size="13" font-weight="700">${esc(t.name)}</text>`);
+    svgParts.push(`<text x="${t.w - 12}" y="${HDR_H / 2 + 5}" text-anchor="end" fill="#475569" font-size="10">${t.columns.length}${t.truncated ? '+' + t.truncated : ''} cols</text>`);
+    // 컬럼
+    t.columns.forEach((col, ci) => {
+      const cy = HDR_H + ci * COL_H;
+      if (ci % 2 === 1) {
+        svgParts.push(`<rect y="${cy}" width="${t.w}" height="${COL_H}" fill="rgba(255,255,255,0.02)"/>`);
+      }
+      const pre = col.pk ? '🔑 ' : col.fk ? '↳ ' : '   ';
+      svgParts.push(`<text x="10" y="${cy + COL_H / 2 + 4}" fill="${col.pk ? C.pk : col.fk ? C.fk : C.ct}" font-size="11" font-weight="${col.pk || col.fk ? '600' : '400'}" font-family="Consolas,monospace">${esc(pre + col.name)}</text>`);
+      svgParts.push(`<text x="${t.w - 10}" y="${cy + COL_H / 2 + 4}" text-anchor="end" fill="#475569" font-size="10" font-family="Consolas,monospace">${esc(col.type)}</text>`);
+      // 뱃지
+      const badges: { t: string; c: string; bg: string }[] = [];
+      if (col.pk) badges.push({ t: 'PK', c: '#818cf8', bg: 'rgba(99,102,241,.2)' });
+      if (col.fk) badges.push({ t: 'FK', c: '#fbbf24', bg: 'rgba(234,179,8,.15)' });
+      if (col.nn && !col.pk) badges.push({ t: 'NN', c: '#64748b', bg: 'rgba(100,116,139,.2)' });
+      let bx = t.w - 10 - (col.type.length * 6 + 8);
+      badges.reverse().forEach(b => {
+        const bw = 22; bx -= bw + 3;
+        svgParts.push(`<rect x="${bx}" y="${cy + 4}" width="${bw}" height="14" rx="3" fill="${b.bg}"/>`);
+        svgParts.push(`<text x="${bx + bw / 2}" y="${cy + 14}" text-anchor="middle" fill="${b.c}" font-size="8" font-weight="700">${b.t}</text>`);
+      });
+    });
+    if (t.truncated) {
+      const ty2 = HDR_H + t.columns.length * COL_H;
+      svgParts.push(`<text x="${t.w / 2}" y="${ty2 + COL_H / 2 + 4}" text-anchor="middle" fill="#475569" font-size="10">... +${t.truncated} more columns</text>`);
+    }
+    svgParts.push(`</g>`);
+  });
+  svgParts.push(`</svg>`);
+
+  const truncatedLabel = includedIds.size > 25 ? ` (${includedIds.size - 25}개 생략)` : '';
+
+  // ── pan/zoom 인라인 스크립트 ──
+  const canvasId = `erd_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const dragZoomScript = `<` + `script>(function(){
+var el=document.getElementById("${canvasId}");if(!el)return;
+var svg=el.querySelector(".erd-svg");if(!svg)return;
+var vx=0,vy=0,scale=1;
+function apply(){svg.style.transform="translate("+vx+"px,"+vy+"px) scale("+scale+")";svg.style.transformOrigin="0 0";}
+el.addEventListener("wheel",function(e){e.preventDefault();var d=e.deltaY>0?0.9:1.1;scale=Math.max(0.3,Math.min(3,scale*d));apply();});
+var panning=false,px=0,py=0;
+el.addEventListener("mousedown",function(e){if(e.target===el||e.target===svg||e.target.tagName==="svg"){panning=true;px=e.clientX-vx;py=e.clientY-vy;el.style.cursor="grabbing";}});
+el.addEventListener("mousemove",function(e){if(!panning)return;vx=e.clientX-px;vy=e.clientY-py;apply();});
+el.addEventListener("mouseup",function(){panning=false;el.style.cursor="grab";});
+el.addEventListener("mouseleave",function(){panning=false;el.style.cursor="grab";});
+// 노드 드래그
+var gs=svg.querySelectorAll("g[data-table]");
+gs.forEach(function(g){
+  var dragging=false,ox=0,oy=0;
+  var m=g.getAttribute("transform").match(/translate\\(([-\\d.]+),([-\\d.]+)\\)/);
+  var gx=m?parseFloat(m[1]):0,gy=m?parseFloat(m[2]):0;
+  g.addEventListener("mousedown",function(e){
+    e.stopPropagation();dragging=true;ox=e.clientX/scale-gx;oy=e.clientY/scale-gy;g.style.cursor="grabbing";
+    function onMove(ev){if(!dragging)return;gx=ev.clientX/scale-ox;gy=ev.clientY/scale-oy;g.setAttribute("transform","translate("+gx+","+gy+")");}
+    function onUp(){dragging=false;g.style.cursor="grab";document.removeEventListener("mousemove",onMove);document.removeEventListener("mouseup",onUp);}
+    document.addEventListener("mousemove",onMove);document.addEventListener("mouseup",onUp);
+  });
+});
+})();<` + `/script>`;
+
+  return `<div style="background:#0d1117;border:1px solid #2d3f5e;border-radius:10px;overflow:hidden;margin:12px 0">
 <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#131d2e;border-bottom:1px solid #2d3f5e">
 <span style="font-size:14px">🔀</span><span style="font-weight:700;color:#e2e8f0;font-size:13px">ERD 관계 그래프</span>
-<span style="color:#64748b;font-size:11px">${requested.join(', ')} 중심 · ${tables.length}개 테이블 · ${refs.length}개 연결${truncated}</span>
+<span style="color:#64748b;font-size:11px">${requested.join(', ')} 중심 · ${tables.length}개 테이블 · ${refs.length}개 연결${truncatedLabel}</span>
 <span style="margin-left:auto;color:#475569;font-size:10px">드래그: 이동 · 스크롤: 확대/축소</span>
 </div>
-<div class="erd-canvas" style="width:100%;height:500px;overflow:hidden;position:relative;cursor:grab"></div>
-</div>`;
+<div id="${canvasId}" style="width:100%;height:${Math.min(svgH + 20, 600)}px;overflow:hidden;position:relative;cursor:grab;background:#0d1117">
+${svgParts.join('\n')}
+</div>
+</div>${dragZoomScript}`;
 }
 
 /** 오디오 플레이어 embed → HTML */
@@ -5111,7 +4961,7 @@ function PrefabPreviewCard({ tc }: { tc: PrefabPreviewResult }) {
         <div className="px-3 py-3 text-[11px]" style={{ color: '#f87171' }}>{tc.error}</div>
       ) : (
         /* SceneViewer가 Hierarchy + 3D + Inspector를 내장 처리 */
-        <PrefabViewerLazy prefabPath={tc.prefabPath} height={480} />
+          <PrefabViewerLazy prefabPath={tc.prefabPath} height={480} />
       )}
 
       {/* 경로 표시 */}
@@ -6423,7 +6273,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
                     )}
                     <div
                       className="rounded-2xl px-5 py-4 text-[14px] leading-relaxed"
-                      style={{
+                    style={{
                         background: iterIdx < arr.length - 1 ? 'rgba(15,17,26,0.6)' : 'transparent',
                         border: iterIdx < arr.length - 1 ? '1px solid rgba(99,102,241,0.12)' : 'none',
                         color: 'var(--text-primary)',
@@ -6475,7 +6325,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
                       <div className="flex items-center gap-1.5 my-2 ml-1">
                         <div style={{ width: 1, height: 12, background: 'rgba(99,102,241,0.25)', marginLeft: 4 }} />
                         <span className="text-[10px] font-mono" style={{ color: '#4f5a74' }}>계속</span>
-                      </div>
+              </div>
                     )}
                     <div
                       className="text-[14px] leading-relaxed rounded-2xl"
@@ -7295,17 +7145,17 @@ export default function ChatPage() {
                       <div className="flex-1 h-px" style={{ background: 'linear-gradient(to left, transparent, rgba(99,102,241,0.2))' }} />
                     </div>
                   )}
-                  <MessageBubble
-                    msg={msg}
-                    onContinue={
-                      // 마지막 assistant 메시지가 잘린 경우에만 버튼 활성화
-                      msg.isTruncated && !isLoading && idx === messages.length - 1
-                        ? () => sendMessage(
-                            '이전에 조회한 데이터를 기반으로 이어서 답변을 완성해주세요. 추가 데이터 조회 없이 기존에 수집된 데이터만으로 바로 답변해주세요. 필요하다면 create_artifact를 사용해 정리된 결과물을 만들어주세요.',
-                            '▶ 이어서 생성하기',
-                          )
-                        : undefined
-                    }
+              <MessageBubble
+                msg={msg}
+                onContinue={
+                  // 마지막 assistant 메시지가 잘린 경우에만 버튼 활성화
+                  msg.isTruncated && !isLoading && idx === messages.length - 1
+                    ? () => sendMessage(
+                        '이전에 조회한 데이터를 기반으로 이어서 답변을 완성해주세요. 추가 데이터 조회 없이 기존에 수집된 데이터만으로 바로 답변해주세요. 필요하다면 create_artifact를 사용해 정리된 결과물을 만들어주세요.',
+                        '▶ 이어서 생성하기',
+                      )
+                    : undefined
+                }
                 artifactStreaming={
                   // 마지막 로딩 중인 메시지에만 아티팩트 스트리밍 전달
                   msg.isLoading && idx === messages.length - 1 ? artifactPanel : undefined
