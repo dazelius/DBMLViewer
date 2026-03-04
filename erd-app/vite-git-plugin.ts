@@ -6417,6 +6417,20 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
       server.middlewares.use(safeMiddleware('gitApi', createGitMiddleware(options)))
     },
     configurePreviewServer(server) {
+      // ── 캐시 헤더: HTML은 항상 최신, 해시된 에셋은 장기 캐시 ──
+      server.middlewares.use((req, res, next) => {
+        const url = req.url ?? ''
+        if (url.match(/\/assets\/.*\.[a-f0-9]{8}\./i) || url.match(/\/assets\/.*-[A-Za-z0-9_-]{6,}\.(js|css)$/)) {
+          // 해시가 포함된 에셋 → 1년 캐시 (파일 변경 시 해시가 바뀜)
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+        } else if (url.endsWith('.html') || url === '/' || !url.includes('.')) {
+          // HTML 및 SPA 라우트 → 항상 최신 빌드
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+          res.setHeader('Pragma', 'no-cache')
+          res.setHeader('Expires', '0')
+        }
+        next()
+      })
       server.middlewares.use(safeMiddleware('chatApi', createChatApiMiddleware(options)))
       server.middlewares.use(safeMiddleware('gitApi', createGitMiddleware(options)))
     },
