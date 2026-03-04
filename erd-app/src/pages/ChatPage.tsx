@@ -1387,6 +1387,12 @@ function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableD
 
 // ── 타입 ─────────────────────────────────────────────────────────────────────
 
+interface MessageFeedback {
+  rating: 'good' | 'bad';        // 👍 or 👎
+  comment?: string;               // 선택적 코멘트
+  savedAt?: string;               // 널리지 저장 시간
+}
+
 interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -1401,6 +1407,7 @@ interface Message {
   thinkingSteps?: ThinkingStepUI[]; // 실시간 thinking 진행
   tokenUsage?: TokenUsageSummary; // 토큰 사용량
   iterations?: string[]; // 이터레이션별 텍스트 (각 버블로 분리 렌더링)
+  feedback?: MessageFeedback;     // 사용자 피드백 (만족도)
 }
 
 /** UI용 thinking step (chatEngine의 ThinkingStep + UI 상태) */
@@ -5386,7 +5393,7 @@ function KnowledgeCard({ tc, compact }: { tc: KnowledgeResult; compact?: boolean
 
   // 컴팩트 모드 (그룹 내부): 한 줄 요약만
   if (compact && !expanded) {
-    return (
+  return (
       <button onClick={() => setExpanded(true)} className="w-full flex items-center gap-2 px-2 py-1 rounded text-left hover:bg-white/[0.03] transition-colors" style={{ background: 'transparent' }}>
         <span className="text-[11px] flex-shrink-0">{icon}</span>
         <span className="text-[11px] flex-1 min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
@@ -6526,9 +6533,111 @@ function ThinkingIndicator({ liveToolCalls }: { liveToolCalls?: ToolCallResult[]
   );
 }
 
+// ── 피드백 위젯 ──────────────────────────────────────────────────────────────
+function FeedbackWidget({ msg, onFeedback }: { msg: Message; onFeedback: (msgId: string, rating: 'good' | 'bad', comment?: string) => void }) {
+  const [showComment, setShowComment] = useState(false);
+  const [comment, setComment] = useState('');
+  const [submitted, setSubmitted] = useState(!!msg.feedback);
+  const [saving, setSaving] = useState(false);
+
+  if (msg.feedback && !showComment) {
+    // 이미 피드백 완료
+    return (
+      <div className="flex items-center gap-2 mt-2 ml-1">
+        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          {msg.feedback.rating === 'good' ? '👍' : '👎'} 피드백 완료
+          {msg.feedback.comment && <span className="ml-1 italic">"{msg.feedback.comment.slice(0, 30)}{msg.feedback.comment.length > 30 ? '…' : ''}"</span>}
+        </span>
+        {msg.feedback.savedAt && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(34,197,94,0.1)', color: '#4ade80' }}>📚 학습됨</span>
+        )}
+      </div>
+    );
+  }
+
+  if (submitted) return null;
+
+  const handleRate = async (rating: 'good' | 'bad') => {
+    if (rating === 'good') {
+      // 긍정 피드백은 바로 저장
+      setSaving(true);
+      onFeedback(msg.id, rating);
+      setSubmitted(true);
+      setSaving(false);
+    } else {
+      // 부정 피드백은 코멘트 입력 유도
+      setShowComment(true);
+    }
+  };
+
+  const handleSubmitComment = () => {
+    setSaving(true);
+    onFeedback(msg.id, 'bad', comment.trim() || undefined);
+    setSubmitted(true);
+    setSaving(false);
+  };
+
+  return (
+    <div className="mt-2 ml-1">
+      {!showComment ? (
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] mr-1" style={{ color: 'var(--text-muted)' }}>이 답변이 도움이 되었나요?</span>
+          <button
+            onClick={() => handleRate('good')}
+            disabled={saving}
+            className="px-2 py-1 rounded-lg text-[12px] transition-all hover:scale-110 active:scale-95"
+            style={{ background: 'rgba(34,197,94,0.08)', color: '#4ade80', border: '1px solid rgba(34,197,94,0.2)', cursor: 'pointer' }}
+            title="도움이 됐어요"
+          >
+            👍
+          </button>
+          <button
+            onClick={() => handleRate('bad')}
+            disabled={saving}
+            className="px-2 py-1 rounded-lg text-[12px] transition-all hover:scale-110 active:scale-95"
+            style={{ background: 'rgba(239,68,68,0.08)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}
+            title="아쉬워요"
+          >
+            👎
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2 rounded-xl p-3" style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.15)', maxWidth: 400 }}>
+          <span className="text-[11px] font-semibold" style={{ color: '#f87171' }}>어떤 점이 아쉬웠나요?</span>
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="예: 정확하지 않은 데이터, 쿼리 오류, 원하는 답이 아님..."
+            rows={2}
+            className="w-full rounded-lg text-[12px] resize-none"
+            style={{ background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid rgba(239,68,68,0.2)', padding: '8px 10px', outline: 'none' }}
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={handleSubmitComment}
+              disabled={saving}
+              className="px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-all"
+              style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)', cursor: 'pointer' }}
+            >
+              {saving ? '저장 중...' : '📝 피드백 제출'}
+            </button>
+            <button
+              onClick={() => { setShowComment(false); setComment(''); }}
+              className="px-3 py-1.5 rounded-lg text-[11px] transition-all"
+              style={{ color: 'var(--text-muted)', cursor: 'pointer' }}
+            >
+              취소
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 메시지 버블 ──────────────────────────────────────────────────────────────
 
-function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: { msg: Message; onContinue?: () => void; artifactStreaming?: { html: string; title: string; charCount: number; isComplete: boolean } | null; onOpenArtifact?: (tc: ArtifactResult) => void }) {
+function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onFeedback }: { msg: Message; onContinue?: () => void; artifactStreaming?: { html: string; title: string; charCount: number; isComplete: boolean } | null; onOpenArtifact?: (tc: ArtifactResult) => void; onFeedback?: (msgId: string, rating: 'good' | 'bad', comment?: string) => void }) {
   const isUser = msg.role === 'user';
 
   /* ── 유저 메시지: 우측 정렬 그라데이션 버블 ─────────────────────────────── */
@@ -6634,7 +6743,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
                 const knowledgeTCs = msg.liveToolCalls.filter(tc => tc.kind === 'knowledge') as KnowledgeResult[];
                 const otherTCs = msg.liveToolCalls.filter(tc => tc.kind !== 'knowledge');
                 return (
-                  <div className="mb-4 space-y-2.5">
+                <div className="mb-4 space-y-2.5">
                     {knowledgeTCs.length > 1
                       ? <KnowledgeGroup items={knowledgeTCs} />
                       : knowledgeTCs.length === 1
@@ -6642,7 +6751,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
                         : null
                     }
                     {otherTCs.map((tc, i) => <ToolCallCard key={i} tc={tc} index={i} onOpenArtifact={onOpenArtifact} />)}
-                  </div>
+                </div>
                 );
               })()}
               {/* 아티팩트 실시간 생성 → HTML 코드가 있으면 코드 오버레이, 없으면 진행 표시 */}
@@ -6708,7 +6817,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
                 const knowledgeTCs = msg.toolCalls.filter(tc => tc.kind === 'knowledge') as KnowledgeResult[];
                 const otherTCs = msg.toolCalls.filter(tc => tc.kind !== 'knowledge');
                 return (
-                  <div className="mb-4 space-y-2.5">
+                <div className="mb-4 space-y-2.5">
                     {knowledgeTCs.length > 1
                       ? <KnowledgeGroup items={knowledgeTCs} />
                       : knowledgeTCs.length === 1
@@ -6716,9 +6825,9 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
                         : null
                     }
                     {otherTCs.map((tc, i) => (
-                      <ToolCallCard key={i} tc={tc} index={i} onOpenArtifact={onOpenArtifact} />
-                    ))}
-                  </div>
+                    <ToolCallCard key={i} tc={tc} index={i} onOpenArtifact={onOpenArtifact} />
+                  ))}
+                </div>
                 );
               })()}
               {/* 오류 */}
@@ -6794,6 +6903,11 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
               {/* 토큰 사용량 */}
               {msg.tokenUsage && msg.tokenUsage.total_tokens > 0 && (
                 <TokenUsageBar usage={msg.tokenUsage} />
+              )}
+
+              {/* 피드백 위젯 — 완료된 AI 메시지에만 표시 */}
+              {!msg.isLoading && !msg.error && onFeedback && (
+                <FeedbackWidget msg={msg} onFeedback={onFeedback} />
               )}
             </div>
           )}
@@ -7261,6 +7375,133 @@ export default function ChatPage() {
     }
   };
 
+  // ── 피드백 핸들러: 만족도를 받아 널리지로 축적 ─────────────────────────
+  const handleFeedback = useCallback(async (msgId: string, rating: 'good' | 'bad', comment?: string) => {
+    // 1. 해당 메시지와 직전 유저 메시지 찾기
+    const msgIdx = messages.findIndex(m => m.id === msgId);
+    if (msgIdx < 0) return;
+    const aiMsg = messages[msgIdx];
+    const userMsg = messages.slice(0, msgIdx).reverse().find(m => m.role === 'user');
+    const userQuery = userMsg?.content?.slice(0, 200) ?? '(질문 없음)';
+    const aiAnswer = (aiMsg.iterations?.filter(t => t.trim()).join('\n') || aiMsg.content || '').slice(0, 300);
+
+    // 2. 메시지에 feedback 기록
+    const feedback: MessageFeedback = { rating, comment, savedAt: new Date().toISOString() };
+    setMessages(prev => prev.map(m => m.id === msgId ? { ...m, feedback } : m));
+
+    // 3. 널리지로 저장 — 피드백 축적
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+    const knowledgeName = `_feedback_log`;
+
+    // 기존 피드백 로그 읽기
+    let existingContent = '';
+    try {
+      const resp = await fetch(`/api/knowledge/read?name=${encodeURIComponent(knowledgeName)}`);
+      if (resp.ok) {
+        const data = await resp.json() as { content?: string };
+        existingContent = data.content ?? '';
+      }
+    } catch { /* 새 파일 생성 */ }
+
+    // 새 피드백 항목 생성
+    const emoji = rating === 'good' ? '✅' : '❌';
+    const toolNames = aiMsg.toolCalls?.map(tc => tc.kind).join(', ') ?? '';
+    const newEntry = [
+      `## ${emoji} [${dateStr} ${timeStr}] ${rating === 'good' ? '긍정' : '부정'} 피드백`,
+      `- **질문**: ${userQuery}`,
+      `- **AI 답변 요약**: ${aiAnswer.replace(/\n/g, ' ').slice(0, 200)}`,
+      toolNames ? `- **사용 도구**: ${toolNames}` : '',
+      comment ? `- **사용자 의견**: ${comment}` : '',
+      rating === 'bad' ? `- **개선 필요**: 이 패턴의 질문에 대해 더 정확하고 유용한 답변이 필요함` : `- **유지 패턴**: 이런 방식의 답변이 사용자에게 도움이 됨`,
+      '',
+    ].filter(Boolean).join('\n');
+
+    // 로그 맨 위에 최신 항목 추가 (최대 50개 유지)
+    const header = `# 📊 사용자 피드백 로그\n\n> 이 파일은 사용자의 답변 만족도 피드백을 기반으로 자동 축적됩니다.\n> AI는 이 피드백을 참고하여 답변 품질을 지속적으로 개선합니다.\n\n---\n\n`;
+    let body = existingContent;
+    // 헤더 제거 후 순수 항목만
+    if (body.includes('---\n\n')) {
+      body = body.split('---\n\n').slice(1).join('---\n\n');
+    }
+    // 기존 항목을 항목 단위로 분리
+    const existingEntries = body.split(/\n(?=## [✅❌])/).filter(e => e.trim());
+    // 새 항목 추가 + 최대 50개 유지
+    const allEntries = [newEntry, ...existingEntries].slice(0, 50);
+    const finalContent = header + allEntries.join('\n');
+
+    try {
+      await fetch('/api/knowledge/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: knowledgeName, content: finalContent }),
+      });
+    } catch (e) {
+      console.warn('[Feedback] 널리지 저장 실패:', e);
+    }
+
+    // 4. 부정 피드백이 특정 패턴으로 반복되면 별도 개선 지침 널리지 생성
+    if (rating === 'bad') {
+      try {
+        await maybeCreateImprovementKnowledge(knowledgeName);
+      } catch { /* 무시 */ }
+    }
+  }, [messages]);
+
+  /** 부정 피드백이 누적되면 개선 지침 요약 널리지를 자동 생성/갱신 */
+  const maybeCreateImprovementKnowledge = useCallback(async (logName: string) => {
+    try {
+      const resp = await fetch(`/api/knowledge/read?name=${encodeURIComponent(logName)}`);
+      if (!resp.ok) return;
+      const data = await resp.json() as { content?: string };
+      const content = data.content ?? '';
+
+      // 부정 피드백 수 세기
+      const negativeCount = (content.match(/## ❌/g) ?? []).length;
+      // 5개 이상 누적 시 개선 지침 갱신
+      if (negativeCount < 5) return;
+
+      // 부정 피드백에서 패턴 추출
+      const negativeEntries = content.split(/\n(?=## ❌)/).filter(e => e.startsWith('## ❌'));
+      const patterns: string[] = [];
+      for (const entry of negativeEntries.slice(0, 20)) {
+        const questionMatch = entry.match(/\*\*질문\*\*:\s*(.+)/);
+        const opinionMatch = entry.match(/\*\*사용자 의견\*\*:\s*(.+)/);
+        if (questionMatch) {
+          patterns.push(`질문: ${questionMatch[1].slice(0, 80)}${opinionMatch ? ` → 의견: ${opinionMatch[1].slice(0, 80)}` : ''}`);
+        }
+      }
+
+      if (patterns.length === 0) return;
+
+      const improvementContent = [
+        `# 🔧 AI 답변 개선 지침 (자동 생성)`,
+        ``,
+        `> 사용자 피드백 기반으로 자동 생성된 개선 지침입니다.`,
+        `> 부정 피드백 ${negativeCount}건 분석 결과입니다.`,
+        ``,
+        `## 주의해야 할 패턴`,
+        ``,
+        ...patterns.map((p, i) => `${i + 1}. ${p}`),
+        ``,
+        `## 개선 방향`,
+        ``,
+        `- 위 패턴의 질문에 대해 더 정확한 데이터 조회와 분석을 수행하세요.`,
+        `- 사용자 의견이 명시된 경우, 해당 의견을 반영하여 답변 방식을 개선하세요.`,
+        `- 불확실한 정보는 명확히 "확인 필요"로 표시하세요.`,
+        `- 쿼리 결과가 없거나 오류가 발생하면 대안을 제시하세요.`,
+        ``,
+        `_마지막 갱신: ${new Date().toISOString().slice(0, 16).replace('T', ' ')}_`,
+      ].join('\n');
+
+      await fetch('/api/knowledge/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: '_improvement_guide', content: improvementContent }),
+      });
+    } catch { /* 무시 */ }
+  }, []);
+
   const clearHistory = () => {
     setMessages([]);
     historyRef.current = [];
@@ -7584,6 +7825,7 @@ export default function ChatPage() {
                     artifactId,
                   });
                 }}
+                onFeedback={handleFeedback}
               />
                 </React.Fragment>
               );

@@ -5578,6 +5578,12 @@ function selectKnowledgeForQuery(userQuery: string, knDir: string): {
 
       index.push({ name, sizeKB, preview })
 
+      // 피드백 개선 지침은 항상 높은 점수로 주입 (재귀적 자기개선)
+      if (name === '_improvement_guide') {
+        matched.push({ name, content, sizeKB, score: 100 })
+        continue
+      }
+
       // 점수 계산
       let score = 0
       for (const token of tokens) {
@@ -5802,6 +5808,15 @@ function buildServerSystemPrompt(userQuery?: string): string {
   lines.push('- 단순 나열이 아닌, 의미있는 해석과 함께 친절하게 설명')
   lines.push('- 데이터를 보여줄 때는 테이블 형식(마크다운)으로 정리')
   lines.push('- 쿼리 결과가 많으면 주요 패턴이나 인사이트를 요약')
+  lines.push('')
+
+  // ── 피드백 기반 자기개선 규칙 ──
+  lines.push('[🔄 피드백 기반 자기개선 — 최우선 준수]')
+  lines.push('- 널리지에 "_improvement_guide" 파일이 있으면 반드시 내용을 참고하여 답변 품질을 개선하세요.')
+  lines.push('- 이 파일은 사용자의 부정 피드백(👎)이 누적될 때 자동으로 생성/갱신됩니다.')
+  lines.push('- "주의해야 할 패턴"에 해당하는 질문을 받으면, 이전과 다른/개선된 방식으로 답변하세요.')
+  lines.push('- 사용자가 같은 유형의 질문을 반복하면 → 이전 피드백을 떠올리며 더 나은 답변을 제공하세요.')
+  lines.push('- 긍정 피드백(👍)이 기록된 답변 패턴은 유지하고 강화하세요.')
   lines.push('')
 
   // ── 스키마 정보 ──

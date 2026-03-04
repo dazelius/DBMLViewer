@@ -926,6 +926,8 @@ function _scoreKnowledgeForQuery(
   entry: { name: string; content: string },
   queryTokens: string[]
 ): number {
+  // 피드백 개선 지침은 항상 높은 점수로 주입 (재귀적 자기개선)
+  if (entry.name === '_improvement_guide') return 100;
   if (queryTokens.length === 0) return 1; // 쿼리 없으면 모두 포함
   const nameLower = entry.name.toLowerCase();
   const contentLower = entry.content.toLowerCase();
@@ -1117,6 +1119,14 @@ function buildSystemPrompt(
   // 테이블 목록을 한 줄로 압축 (테이블명:행수)
   const tableList = Array.from(tableData).map(([key, { rows }]) => `${key}:${rows.length}`).join(', ');
   if (tableList) lines.push(`## 데이터 테이블: ${tableList}`);
+  lines.push('');
+
+  // ── 피드백 기반 자기개선 규칙 ──
+  lines.push('## 🔄 피드백 기반 자기개선 — 최우선 준수');
+  lines.push('- 널리지에 "_improvement_guide" 파일이 있으면 반드시 내용을 참고하여 답변 품질을 개선하세요.');
+  lines.push('- 이 파일은 사용자의 부정 피드백(👎)이 누적될 때 자동으로 생성/갱신됩니다.');
+  lines.push('- "주의해야 할 패턴"에 해당하는 질문을 받으면, 이전과 다른/개선된 방식으로 답변하세요.');
+  lines.push('- 긍정 피드백(👍)이 기록된 답변 패턴은 유지하고 강화하세요.');
   lines.push('');
 
   lines.push('## SQL 규칙');
