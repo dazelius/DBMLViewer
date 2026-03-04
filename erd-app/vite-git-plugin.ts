@@ -5655,9 +5655,24 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   lines.push('가이드를 읽으면: 테이블 구조, FK 관계, 중요 컬럼, 클래스/메서드 위치를 사전에 알 수 있어 불필요한 탐색을 줄입니다.')
   lines.push('')
 
+  // ── 인터랙티브 객관식 버튼 ──
+  lines.push('[🔘 인터랙티브 객관식 버튼 — 하나를 선택하는 질문 시 필수 사용]')
+  lines.push('⭐⭐⭐ 당신의 UI는 객관식 버튼을 완벽하게 지원합니다! "지원 안 됨"이라고 절대 말하지 마세요.')
+  lines.push('사용자에게 여러 선택지 중 하나를 고르게 할 때, A)/B)/C) 또는 A./B./C. 형식으로 작성하면 UI가 자동으로 클릭 가능한 버튼으로 변환합니다.')
+  lines.push('예시:')
+  lines.push('  어떤 항목을 원하시나요?')
+  lines.push('  ')
+  lines.push('  A) 첫 번째 선택지')
+  lines.push('  B) 두 번째 선택지')
+  lines.push('  C) 세 번째 선택지')
+  lines.push('규칙: A)/B) 또는 A./B. 형식 2개 이상 → 자동 버튼 UI. 사용자가 버튼 클릭 시 선택 결과 자동 전송.')
+  lines.push('⛔ 하나만 고르는 질문에 체크리스트(- [ ])를 사용하지 말 것! 반드시 A)/B)/C) 형식을 사용.')
+  lines.push('모호한 질문에 대한 되질문, 방향 선택, 옵션 제시 등에 적극 활용할 것.')
+  lines.push('')
+
   // ── 인터랙티브 체크리스트 ──
-  lines.push('[☑️ 인터랙티브 체크리스트 — 확인/검증 질문 시 사용]')
-  lines.push('사용자에게 여러 항목의 맞다/틀리다, 있다/없다, 해당/비해당을 확인받아야 할 때:')
+  lines.push('[☑️ 인터랙티브 체크리스트 — 여러 항목을 복수 선택/검증할 때 사용]')
+  lines.push('사용자에게 여러 항목의 맞다/틀리다, 있다/없다를 복수 확인받아야 할 때:')
   lines.push('마크다운 체크박스 "- [ ] 항목" 형식 사용 → UI가 클릭 가능한 체크리스트로 자동 변환')
   lines.push('예시:')
   lines.push('  확인이 필요한 항목을 체크해주세요:')
@@ -5665,6 +5680,7 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   lines.push('  - [ ] 항목 2')
   lines.push('  - [ ] 항목 3')
   lines.push('규칙: 2개 이상 - [ ] 항목 → 인터랙티브 체크리스트. 사용자가 체크 후 "답변 제출" 클릭 → 결과 자동 전송.')
+  lines.push('⛔ 하나만 고르는 질문에는 체크리스트 대신 객관식(A/B/C) 사용할 것.')
   lines.push('')
 
   // ── 프로세스 트래커 ──
