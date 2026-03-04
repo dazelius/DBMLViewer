@@ -6010,11 +6010,11 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
         />
         <div className="flex flex-col gap-0.5">
           <span className="text-[13px] font-semibold" style={{ color: 'var(--accent)' }}>DataMaster</span>
-          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            {msg.isLoading
-              ? (msg.liveToolCalls && msg.liveToolCalls.length > 0 ? `${exprLabel}...` : '생각중...')
-              : exprLabel}
-          </span>
+          {msg.isLoading && (
+            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              {msg.liveToolCalls && msg.liveToolCalls.length > 0 ? '분석중...' : '생각중...'}
+            </span>
+          )}
         </div>
       </div>
 
@@ -7008,22 +7008,6 @@ export default function ChatPage() {
                 transform: 'translateY(0)',
               }}
             >
-              {/* 표정 이름 뱃지 — floatingExpr와 동기화 */}
-              <div
-                style={{
-                  fontSize: 11,
-                  fontWeight: 600,
-                  color: isLoading ? '#a5b4fc' : 'var(--text-muted)',
-                  background: isLoading ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.05)',
-                  border: `1px solid ${isLoading ? 'rgba(99,102,241,0.35)' : 'rgba(255,255,255,0.08)'}`,
-                  borderRadius: 20,
-                  padding: '2px 10px',
-                  transition: 'all 0.3s ease',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {isLoading ? `${EXPRESSIONS[floatingExpr].label}...` : EXPRESSIONS[floatingExpr].label}
-              </div>
               {/* cycleSequence 없이 floatingExpr가 이미 사이클링된 표정 */}
               <CharacterPortrait
                 expression={floatingExpr}
