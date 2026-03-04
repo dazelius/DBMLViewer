@@ -880,6 +880,7 @@ interface Message {
   isTruncated?: boolean; // max_tokens로 잘린 응답 (계속 생성 버튼 표시용)
   thinkingSteps?: ThinkingStepUI[]; // 실시간 thinking 진행
   tokenUsage?: TokenUsageSummary; // 토큰 사용량
+  iterations?: string[]; // 이터레이션별 텍스트 (각 버블로 분리 렌더링)
 }
 
 /** UI용 thinking step (chatEngine의 ThinkingStep + UI 상태) */
@@ -5745,21 +5746,39 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
                   </div>
                 )
               )}
-              {msg.content && (
-                <div className="text-[14px] leading-relaxed" style={{ color: 'var(--text-primary)' }}>
-                  {renderMarkdown(msg.content)}
-                  <span
-                    className="inline-block ml-0.5 rounded-[1px] align-middle"
-                    style={{
-                      width: '2.5px',
-                      height: '1.1em',
-                      background: '#818cf8',
-                      verticalAlign: 'text-bottom',
-                      animation: 'cursorBlink 1s steps(2, start) infinite',
-                    }}
-                  />
-                </div>
-              )}
+              {/* 스트리밍 중 텍스트 — 이터레이션별 분리 버블 */}
+              {(msg.iterations ? msg.iterations : (msg.content ? [msg.content] : [])).map((iterText, iterIdx, arr) => (
+                iterText.trim() ? (
+                  <div key={iterIdx} className="relative">
+                    {/* 이터레이션 연결선 (2번째~) */}
+                    {iterIdx > 0 && (
+                      <div className="flex items-center gap-2 mb-2 ml-1">
+                        <div className="w-px self-stretch" style={{ background: 'rgba(99,102,241,0.25)', minHeight: 8 }} />
+                        <span className="text-[10px] font-mono" style={{ color: '#4f5a74' }}>계속</span>
+                      </div>
+                    )}
+                    <div
+                      className="rounded-2xl px-5 py-4 text-[14px] leading-relaxed"
+                      style={{
+                        background: iterIdx < arr.length - 1 ? 'rgba(15,17,26,0.6)' : 'transparent',
+                        border: iterIdx < arr.length - 1 ? '1px solid rgba(99,102,241,0.12)' : 'none',
+                        color: 'var(--text-primary)',
+                        paddingLeft: iterIdx < arr.length - 1 ? undefined : 0,
+                        paddingRight: iterIdx < arr.length - 1 ? undefined : 0,
+                      }}
+                    >
+                      {renderMarkdown(iterText)}
+                      {/* 커서: 마지막 이터레이션에만 */}
+                      {iterIdx === arr.length - 1 && (
+                        <span
+                          className="inline-block ml-0.5 rounded-[1px] align-middle"
+                          style={{ width: '2.5px', height: '1.1em', background: '#818cf8', verticalAlign: 'text-bottom', animation: 'cursorBlink 1s steps(2, start) infinite' }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                ) : null
+              ))}
             </div>
           ) : (
             <div className="space-y-3">
@@ -5784,10 +5803,32 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
                   {msg.error}
                 </div>
               )}
-              {/* 본문 */}
-              <div className="text-[14px] leading-relaxed" style={{ color: 'var(--text-primary)' }}>
-              {renderMarkdown(msg.content)}
-              </div>
+              {/* 본문 — 이터레이션별 분리 버블 */}
+              {(msg.iterations ?? [msg.content]).map((iterText, iterIdx, arr) => (
+                iterText?.trim() ? (
+                  <div key={iterIdx} className="relative">
+                    {iterIdx > 0 && (
+                      <div className="flex items-center gap-1.5 my-2 ml-1">
+                        <div style={{ width: 1, height: 12, background: 'rgba(99,102,241,0.25)', marginLeft: 4 }} />
+                        <span className="text-[10px] font-mono" style={{ color: '#4f5a74' }}>계속</span>
+                      </div>
+                    )}
+                    <div
+                      className="text-[14px] leading-relaxed rounded-2xl"
+                      style={{
+                        color: 'var(--text-primary)',
+                        ...(arr.length > 1 && iterIdx < arr.length - 1 ? {
+                          background: 'rgba(15,17,26,0.5)',
+                          border: '1px solid rgba(99,102,241,0.1)',
+                          padding: '14px 20px',
+                        } : {}),
+                      }}
+                    >
+                      {renderMarkdown(iterText)}
+                    </div>
+                  </div>
+                ) : null
+              ))}
 
               {/* 잘린 응답 → 계속 생성 버튼 */}
               {msg.isTruncated && (
@@ -6021,8 +6062,9 @@ export default function ChatPage() {
       _artBuf.baseHtml = '';
     }
 
-    // 이터레이션 간 텍스트 누적 버퍼 (tool_use 이터레이션마다 fullText가 리셋되는 문제 방지)
-    let _accumulatedChatText = '';
+    // 이터레이션별 텍스트 버퍼 — 각 이터레이션마다 별도 버블로 렌더링
+    const _iterTexts: string[] = [''];
+    let _currentIter = 0;
 
     try {
       const { content, toolCalls, rawMessages, tokenUsage } = await sendChatMessage(
@@ -6041,12 +6083,12 @@ export default function ChatPage() {
           );
         },
         (delta, _fullText) => {
-          // 실시간 텍스트 스트리밍 업데이트 — delta 누적 (이터레이션 간 덮어씌우기 방지)
-          _accumulatedChatText += delta;
+          // 실시간 텍스트 스트리밍 — 현재 이터레이션 슬롯에 누적
+          _iterTexts[_currentIter] += delta;
           setMessages((prev) =>
             prev.map((m) =>
               m.id === loadingId
-                ? { ...m, content: _accumulatedChatText, isLoading: true }
+                ? { ...m, iterations: [..._iterTexts], isLoading: true }
                 : m,
             ),
           );
@@ -6098,6 +6140,11 @@ export default function ChatPage() {
           }
         },
         (step: ThinkingStep) => {
+          // 새 이터레이션 시작 (2번째~) → 텍스트 슬롯 추가
+          if (step.type === 'iteration_start' && step.iteration > 1) {
+            _currentIter++;
+            _iterTexts.push('');
+          }
           // 실시간 thinking 업데이트
           setMessages((prev) =>
             prev.map((m) =>
@@ -6140,7 +6187,12 @@ export default function ChatPage() {
       setMessages((prev) =>
         prev.map((m) =>
           m.id === loadingId
-            ? { ...m, content, toolCalls, isTruncated, tokenUsage, isLoading: false, liveToolCalls: undefined, artifactProgress: undefined }
+            ? { ...m, content, toolCalls, isTruncated, tokenUsage, isLoading: false, liveToolCalls: undefined, artifactProgress: undefined,
+                // 이터레이션 텍스트 확정 — 비어있는 마지막 슬롯 제거
+                iterations: _iterTexts.filter(t => t.trim()).length > 1
+                  ? _iterTexts.filter(t => t.trim())
+                  : undefined,
+              }
             : m,
         ),
       );
