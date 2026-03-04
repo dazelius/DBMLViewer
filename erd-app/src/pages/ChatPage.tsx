@@ -4514,7 +4514,7 @@ function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
           {tc.comments && tc.comments.length > 0 && (
             <div>
               <button onClick={() => setShowComments(!showComments)} className="text-[11px] px-2 py-1 rounded" style={{ background: 'rgba(96,165,250,0.1)', color: '#60a5fa', border: '1px solid rgba(96,165,250,0.3)', cursor: 'pointer' }}>
-                {showComments ? '▲' : '▼'} 댓글 {tc.comments.length}개
+                {showComments ? '▲' : '▼'} 댓글 {tc.totalComments != null ? `${tc.totalComments}개 중 최근 ${tc.comments.length}개` : `${tc.comments.length}개`}
               </button>
               {showComments && (
                 <div className="mt-2 space-y-1.5">
@@ -4522,7 +4522,12 @@ function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
                     const body = cleanAdfText(c.body);
                     return (
                       <div key={i} className="rounded-lg text-[11px]" style={{ background: 'var(--bg-primary)', padding: '10px 14px' }}>
-                        <div className="font-semibold mb-0.5" style={{ color: '#60a5fa' }}>{c.author} <span style={{ color: 'var(--text-muted)', fontWeight: 'normal' }}>{c.created?.slice(0,10)}</span></div>
+                        <div className="font-semibold mb-0.5" style={{ color: '#60a5fa' }}>
+                          {c.author}
+                          <span style={{ color: 'var(--text-muted)', fontWeight: 'normal', marginLeft: 6 }}>
+                            {c.created?.slice(0, 16).replace('T', ' ')}
+                          </span>
+                        </div>
                         <div style={{ color: 'var(--text-secondary)' }}>{renderMarkdown(body)}</div>
                       </div>
                     );
@@ -4530,6 +4535,9 @@ function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
                 </div>
               )}
             </div>
+          )}
+          {(!tc.comments || tc.comments.length === 0) && !tc.error && (
+            <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>💬 댓글 없음</div>
           )}
         </div>
       )}

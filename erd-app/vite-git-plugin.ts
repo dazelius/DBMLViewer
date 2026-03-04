@@ -3087,6 +3087,21 @@ function createGitMiddleware(options: GitPluginOptions) {
             const errMsg = (data?.errorMessages as string[])?.[0] ?? `Jira issue ${issueKey} not found`
             sendJson(res, apiResp.status, { error: errMsg, raw: data })
           } else {
+            // 최신 댓글 별도 조회 (내장 comment 필드는 첫 페이지만 반환 → 최신이 누락될 수 있음)
+            const commentMeta = ((data.fields as Record<string, unknown>)?.comment ?? {}) as Record<string, unknown>
+            const totalComments = Number(commentMeta.total ?? 0)
+            if (totalComments > 0) {
+              try {
+                const commentUrl = `${baseUrl}/rest/api/3/issue/${issueKey}/comment?orderBy=-created&maxResults=10`
+                const cResp = await fetch(commentUrl, { headers: { Authorization: authHeader, Accept: 'application/json' } })
+                if (cResp.ok) {
+                  const cData = await cResp.json() as Record<string, unknown>
+                  // 최신 댓글로 교체
+                  ;(commentMeta as Record<string, unknown>).comments = cData.comments
+                  ;(commentMeta as Record<string, unknown>)._recentFetched = true
+                }
+              } catch { /* fallback: 기존 내장 댓글 사용 */ }
+            }
             sendJson(res, 200, data)
           }
           return
@@ -5294,8 +5309,18 @@ async function serverExecuteToolAsync(
       const issueKey = String(input.issueKey ?? '')
       if (!issueKey) return { result: 'issueKey가 필요합니다.' }
       if (!jiraToken || !jiraBase) return { result: 'Jira 연결 정보가 설정되지 않았습니다.' }
+      // ADF → 플레인텍스트 추출 헬퍼
+      const adfToText = (node: unknown): string => {
+        if (!node || typeof node !== 'object') return ''
+        const n = node as Record<string, unknown>
+        if (n.type === 'text') return String(n.text ?? '')
+        if (n.type === 'hardBreak') return '\n'
+        if (n.type === 'mention') return `@${n.text ?? ''}`
+        if (Array.isArray(n.content)) return (n.content as unknown[]).map(adfToText).join('')
+        return ''
+      }
       try {
-        const apiUrl = `${jiraBase}/rest/api/3/issue/${issueKey}?expand=renderedFields&fields=summary,status,assignee,priority,issuetype,created,updated,description,comment,reporter`
+        const apiUrl = `${jiraBase}/rest/api/3/issue/${issueKey}?expand=renderedFields&fields=summary,status,assignee,priority,issuetype,created,updated,description,comment,reporter,labels,components,subtasks,parent`
         const resp = await fetch(apiUrl, { headers: { Authorization: authHeader, Accept: 'application/json' } })
         const data = await resp.json() as Record<string, unknown>
         if (!resp.ok) return { result: `Jira 이슈 조회 실패: ${(data?.errorMessages as string[])?.[0] ?? resp.status}` }
@@ -5303,52 +5328,65 @@ async function serverExecuteToolAsync(
         const selfUrl = String(data.self ?? '')
         const base0 = selfUrl.split('/rest/')[0]
         const url = base0 ? `${base0}/browse/${issueKey}` : ''
-        // ADF 파싱 (간단 텍스트 추출)
-        const descContent = f.description as Record<string, unknown> | undefined
+
+        // 설명 파싱
         let descText = ''
-        if (descContent && typeof descContent === 'object') {
-          const extractText = (node: unknown): string => {
-            if (!node || typeof node !== 'object') return ''
-            const n = node as Record<string, unknown>
-            if (n.type === 'text') return String(n.text ?? '')
-            if (Array.isArray(n.content)) return (n.content as unknown[]).map(extractText).join('')
-            return ''
-          }
-          descText = extractText(descContent).replace(/\n{3,}/g, '\n\n').trim()
+        if (f.description && typeof f.description === 'object') {
+          descText = adfToText(f.description).replace(/\n{3,}/g, '\n\n').trim()
         } else if (typeof f.description === 'string') {
           descText = f.description
         }
-        const comments = ((f.comment as Record<string,unknown>)?.comments ?? []) as Array<Record<string,unknown>>
-        const commentLines = comments.slice(-5).map(c => {
-          const author = String((c.author as Record<string,unknown>)?.displayName ?? '')
-          let body = ''
-          if (c.body && typeof c.body === 'object') {
-            const extractText = (node: unknown): string => {
-              if (!node || typeof node !== 'object') return ''
-              const n = node as Record<string, unknown>
-              if (n.type === 'text') return String(n.text ?? '')
-              if (Array.isArray(n.content)) return (n.content as unknown[]).map(extractText).join('')
-              return ''
+
+        // ── 최신 댓글 가져오기 (별도 API: 최신순 정렬) ──
+        // fields.comment은 기본 페이지네이션(첫 20개)만 반환 → 댓글이 많으면 최신이 누락됨
+        // 별도 comment API로 최신 10개를 역순으로 가져옴
+        const commentMeta = (f.comment ?? {}) as Record<string, unknown>
+        const totalComments = Number(commentMeta.total ?? 0)
+        let recentComments: Array<Record<string, unknown>> = []
+
+        if (totalComments > 0) {
+          try {
+            const commentUrl = `${jiraBase}/rest/api/3/issue/${issueKey}/comment?orderBy=-created&maxResults=10`
+            const cResp = await fetch(commentUrl, { headers: { Authorization: authHeader, Accept: 'application/json' } })
+            if (cResp.ok) {
+              const cData = await cResp.json() as Record<string, unknown>
+              recentComments = ((cData.comments ?? []) as Array<Record<string, unknown>>)
             }
-            body = extractText(c.body).slice(0, 200)
+          } catch { /* fallback to embedded comments */ }
+          // 별도 API 실패 시 내장 댓글 사용
+          if (recentComments.length === 0) {
+            recentComments = ((commentMeta.comments ?? []) as Array<Record<string, unknown>>).slice(-10)
           }
-          return `  [${author}]: ${body}`
+        }
+
+        const commentLines = recentComments.map(c => {
+          const author = String((c.author as Record<string, unknown>)?.displayName ?? '(알 수 없음)')
+          const created = String(c.created ?? '').slice(0, 16).replace('T', ' ')
+          const body = (c.body && typeof c.body === 'object')
+            ? adfToText(c.body).slice(0, 500)
+            : String(c.body ?? '').slice(0, 500)
+          return `  [${created}] ${author}: ${body}`
         })
+
         const resultText = [
           `이슈: [${issueKey}](${url}) - ${f.summary ?? ''}`,
           `URL: ${url}`,
-          `상태: ${(f.status as Record<string,unknown>)?.name ?? ''}`,
-          `유형: ${(f.issuetype as Record<string,unknown>)?.name ?? ''}`,
-          `우선순위: ${(f.priority as Record<string,unknown>)?.name ?? ''}`,
-          `담당자: ${(f.assignee as Record<string,unknown>)?.displayName ?? '미배정'}`,
-          `보고자: ${(f.reporter as Record<string,unknown>)?.displayName ?? ''}`,
+          `상태: ${(f.status as Record<string, unknown>)?.name ?? ''}`,
+          `유형: ${(f.issuetype as Record<string, unknown>)?.name ?? ''}`,
+          `우선순위: ${(f.priority as Record<string, unknown>)?.name ?? ''}`,
+          `담당자: ${(f.assignee as Record<string, unknown>)?.displayName ?? '미배정'}`,
+          `보고자: ${(f.reporter as Record<string, unknown>)?.displayName ?? ''}`,
+          `레이블: ${((f.labels as string[]) ?? []).join(', ') || '-'}`,
+          `컴포넌트: ${((f.components as Array<Record<string, unknown>>) ?? []).map(c => c.name).join(', ') || '-'}`,
           `생성: ${f.created ?? ''}  수정: ${f.updated ?? ''}`,
-          descText ? `설명:\n${descText.slice(0, 500)}` : '',
-          comments.length > 0 ? `\n최근 댓글 (${comments.length}개):\n${commentLines.join('\n')}` : '',
+          descText ? `\n설명:\n${descText.slice(0, 800)}` : '',
+          totalComments > 0
+            ? `\n댓글 (전체 ${totalComments}개 중 최근 ${recentComments.length}개):\n${commentLines.join('\n')}`
+            : '\n댓글: 없음',
         ].filter(Boolean).join('\n')
         return {
           result: resultText,
-          data: { issueKey, url, summary: String(f.summary ?? ''), status: String((f.status as Record<string,unknown>)?.name ?? ''), description: descText.slice(0, 1000) }
+          data: { issueKey, url, summary: String(f.summary ?? ''), status: String((f.status as Record<string, unknown>)?.name ?? ''), description: descText.slice(0, 1000) }
         }
       } catch (e) { return { result: `Jira 이슈 조회 오류: ${e instanceof Error ? e.message : String(e)}` } }
     }

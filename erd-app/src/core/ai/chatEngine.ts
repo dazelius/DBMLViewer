@@ -384,6 +384,7 @@ export interface JiraIssueResult {
   updated?: string;
   description?: string;
   comments?: { author: string; body: string; created: string }[];
+  totalComments?: number;
   error?: string;
   duration?: number;
 }
@@ -3372,13 +3373,17 @@ function showTab(id){
               tc = { kind: 'jira_issue', issueKey, error: resultStr, duration } as JiraIssueResult;
             } else {
               const f = (data2.fields ?? {}) as Record<string, unknown>;
-              const comments = ((f.comment as Record<string,unknown>)?.comments ?? []) as Array<Record<string,unknown>>;
+              const commentMeta = (f.comment ?? {}) as Record<string, unknown>;
+              const totalComments = Number(commentMeta.total ?? 0);
+              // 서버에서 최신 댓글로 교체한 배열 사용 (orderBy=-created)
+              const comments = ((commentMeta.comments ?? []) as Array<Record<string, unknown>>).slice(0, 10);
               // ADF → 플레인텍스트 파싱
               const descText = parseAdfField(f.description);
-              const commentLines = comments.slice(-5).map((c) => {
-                const author = String((c.author as Record<string,unknown>)?.displayName ?? 'unknown');
-                const body = parseAdfField(c.body).slice(0, 200);
-                return `  [${author}]: ${body}`;
+              const commentLines = comments.map((c) => {
+                const author = String((c.author as Record<string, unknown>)?.displayName ?? '(알 수 없음)');
+                const created = String(c.created ?? '').slice(0, 16).replace('T', ' ');
+                const body = parseAdfField(c.body).slice(0, 500);
+                return `  [${created}] ${author}: ${body}`;
               });
               // Jira browse URL 생성
               const selfUrl = String(data2.self ?? '');
@@ -3387,33 +3392,36 @@ function showTab(id){
               resultStr = [
                 `이슈: [${issueKey}](${issueUrl}) - ${String(f.summary ?? '')}`,
                 `URL: ${issueUrl}`,
-                `상태: ${String((f.status as Record<string,unknown>)?.name ?? '')}`,
-                `유형: ${String((f.issuetype as Record<string,unknown>)?.name ?? '')}`,
-                `우선순위: ${String((f.priority as Record<string,unknown>)?.name ?? '')}`,
-                `담당자: ${String((f.assignee as Record<string,unknown>)?.displayName ?? '미배정')}`,
-                `보고자: ${String((f.reporter as Record<string,unknown>)?.displayName ?? '')}`,
-                `생성: ${String(f.created ?? '')}  수정: ${String(f.updated ?? '')}`,
-                `컴포넌트: ${((f.components as Array<Record<string,unknown>>) ?? []).map(c => c.name).join(', ') || '-'}`,
+                `상태: ${String((f.status as Record<string, unknown>)?.name ?? '')}`,
+                `유형: ${String((f.issuetype as Record<string, unknown>)?.name ?? '')}`,
+                `우선순위: ${String((f.priority as Record<string, unknown>)?.name ?? '')}`,
+                `담당자: ${String((f.assignee as Record<string, unknown>)?.displayName ?? '미배정')}`,
+                `보고자: ${String((f.reporter as Record<string, unknown>)?.displayName ?? '')}`,
                 `레이블: ${((f.labels as string[]) ?? []).join(', ') || '-'}`,
-                descText ? `설명:\n${descText.slice(0, 500)}` : '',
-                comments.length > 0 ? `\n최근 댓글 (${comments.length}개 중 최대 5개):\n${commentLines.join('\n')}` : '',
+                `컴포넌트: ${((f.components as Array<Record<string, unknown>>) ?? []).map(c => c.name).join(', ') || '-'}`,
+                `생성: ${String(f.created ?? '')}  수정: ${String(f.updated ?? '')}`,
+                descText ? `\n설명:\n${descText.slice(0, 800)}` : '',
+                totalComments > 0
+                  ? `\n댓글 (전체 ${totalComments}개 중 최근 ${comments.length}개):\n${commentLines.join('\n')}`
+                  : '\n댓글: 없음',
               ].filter(Boolean).join('\n');
               tc = { kind: 'jira_issue', issueKey,
                 url: jiraBase1 ? `${jiraBase1}/browse/${issueKey}` : '',
                 summary: String(f.summary ?? ''),
-                status: String((f.status as Record<string,unknown>)?.name ?? ''),
-                issuetype: String((f.issuetype as Record<string,unknown>)?.name ?? ''),
-                priority: String((f.priority as Record<string,unknown>)?.name ?? ''),
-                assignee: String((f.assignee as Record<string,unknown>)?.displayName ?? '미배정'),
-                reporter: String((f.reporter as Record<string,unknown>)?.displayName ?? ''),
+                status: String((f.status as Record<string, unknown>)?.name ?? ''),
+                issuetype: String((f.issuetype as Record<string, unknown>)?.name ?? ''),
+                priority: String((f.priority as Record<string, unknown>)?.name ?? ''),
+                assignee: String((f.assignee as Record<string, unknown>)?.displayName ?? '미배정'),
+                reporter: String((f.reporter as Record<string, unknown>)?.displayName ?? ''),
                 created: String(f.created ?? ''),
                 updated: String(f.updated ?? ''),
                 description: descText.slice(0, 1000),
-                comments: comments.slice(-5).map(c => ({
-                  author: String((c.author as Record<string,unknown>)?.displayName ?? ''),
-                  body: parseAdfField(c.body).slice(0, 300),
+                comments: comments.map(c => ({
+                  author: String((c.author as Record<string, unknown>)?.displayName ?? ''),
+                  body: parseAdfField(c.body).slice(0, 500),
                   created: String(c.created ?? ''),
                 })),
+                totalComments,
                 duration,
               } as JiraIssueResult;
             }
