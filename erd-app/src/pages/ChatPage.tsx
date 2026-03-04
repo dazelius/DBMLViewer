@@ -29,6 +29,8 @@ import {
   type ConfluenceMedia,
   type SceneYamlResult,
   type PrefabPreviewResult,
+  type PrefabHNode,
+  type PrefabSceneObject,
   type FbxAnimationResult,
   type DiffFile,
   type DiffHunk,
@@ -4498,23 +4500,109 @@ function PrefabViewerLazy({ prefabPath, height }: { prefabPath: string; height?:
   return <SceneViewerLazy scenePath={apiUrl} height={height} />;
 }
 
-// 프리팹 프리뷰 카드 (3D 뷰어)
-function PrefabPreviewCard({ tc }: { tc: PrefabPreviewResult }) {
-  const [showViewer, setShowViewer] = useState(false);
-  const hasError = !!tc.error;
+// ── 하이어라키 트리 아이템 ────────────────────────────────────────────────────
+function HierarchyNode({
+  node,
+  depth,
+  selectedId,
+  onSelect,
+}: {
+  node: PrefabHNode;
+  depth: number;
+  selectedId: string | null;
+  onSelect: (node: PrefabHNode) => void;
+}) {
+  const [expanded, setExpanded] = useState(depth < 2);
+  const isSelected = selectedId === node.id;
+  const hasChildren = node.children.length > 0;
+
+  // 타입별 아이콘 색상
+  const typeColor = node.type === 'fbx' ? '#60a5fa'
+    : node.type === 'probuilder' ? '#a78bfa'
+    : node.type === 'box' ? '#fb923c'
+    : '#94a3b8'; // empty
 
   return (
-    <div className="rounded-lg overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: `1px solid ${hasError ? 'rgba(239,68,68,0.3)' : 'rgba(52,211,153,0.3)'}` }}>
-      {/* 헤더 */}
-      <div className="flex items-center gap-2 px-3 py-2" style={{ background: hasError ? 'rgba(239,68,68,0.08)' : 'rgba(52,211,153,0.08)' }}>
+    <div>
+      <div
+        onClick={() => onSelect(node)}
+        className="flex items-center gap-0.5 py-[2px] pr-1 rounded cursor-pointer select-none"
+        style={{
+          paddingLeft: 4 + depth * 12,
+          background: isSelected ? 'rgba(52,211,153,0.15)' : 'transparent',
+          borderLeft: isSelected ? '2px solid #34d399' : '2px solid transparent',
+        }}
+      >
+        {/* expand/collapse */}
+        <button
+          onClick={e => { e.stopPropagation(); setExpanded(v => !v); }}
+          className="w-4 h-4 flex items-center justify-center flex-shrink-0"
+          style={{ visibility: hasChildren ? 'visible' : 'hidden', color: '#64748b' }}
+        >
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"
+            style={{ transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.12s' }}>
+            <polyline points="9 18 15 12 9 6"/>
+          </svg>
+        </button>
+        {/* 타입 점 */}
+        <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: typeColor }} />
+        {/* 이름 */}
+        <span className="truncate text-[11px] ml-1" style={{ color: isSelected ? '#6ee7b7' : '#cbd5e1' }}>
+          {node.name}
+        </span>
+        {/* 컴포넌트 수 */}
+        {node.components && node.components.length > 0 && (
+          <span className="flex-shrink-0 ml-auto text-[9px] tabular-nums" style={{ color: '#475569' }}>
+            {node.components.length}
+          </span>
+        )}
+      </div>
+      {expanded && node.children.map(child => (
+        <HierarchyNode
+          key={child.id}
+          node={child}
+          depth={depth + 1}
+          selectedId={selectedId}
+          onSelect={onSelect}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── 프리팹 프리뷰 카드 (3패널: Hierarchy + 3D + Inspector) ────────────────────
+function PrefabPreviewCard({ tc }: { tc: PrefabPreviewResult }) {
+  const hasError = !!tc.error;
+  const [selectedNode, setSelectedNode] = useState<PrefabHNode | null>(null);
+
+  // 선택된 노드의 sceneObject
+  const selectedObj: PrefabSceneObject | null = useMemo(() => {
+    if (!selectedNode || !tc.objects) return null;
+    if (selectedNode.objIdx >= 0 && selectedNode.objIdx < tc.objects.length)
+      return tc.objects[selectedNode.objIdx];
+    return null;
+  }, [selectedNode, tc.objects]);
+
+  // 컴포넌트 목록 (hierarchy 노드 우선, 없으면 sceneObj fallback)
+  const components = selectedNode?.components
+    ?? selectedObj?.components
+    ?? [];
+
+  const hasHierarchy = !!tc.hierarchy && tc.hierarchy.length > 0;
+
+  return (
+    <div className="rounded-lg overflow-hidden mb-2" style={{ background: '#0a0f1a', border: `1px solid ${hasError ? 'rgba(239,68,68,0.3)' : 'rgba(52,211,153,0.3)'}` }}>
+      {/* ── 헤더 ── */}
+      <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0" style={{ background: hasError ? 'rgba(239,68,68,0.08)' : 'rgba(52,211,153,0.06)', borderBottom: '1px solid rgba(52,211,153,0.15)' }}>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={hasError ? '#f87171' : '#34d399'} strokeWidth="2">
-          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+          <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
         </svg>
         <span className="text-[12px] font-semibold" style={{ color: hasError ? '#f87171' : '#34d399' }}>
-          🧩 프리팹: {tc.label}
+          🧩 {tc.label}
         </span>
         {!hasError && tc.totalObjects != null && (
-          <span className="ml-auto text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+          <span className="ml-auto text-[10px] font-mono" style={{ color: '#64748b' }}>
             {tc.totalObjects}개 오브젝트
             {tc.resolvedFbx ? ` · FBX ${tc.resolvedFbx}` : ''}
             {tc.resolvedProBuilder ? ` · PB ${tc.resolvedProBuilder}` : ''}
@@ -4523,39 +4611,121 @@ function PrefabPreviewCard({ tc }: { tc: PrefabPreviewResult }) {
         )}
       </div>
 
-      {/* 3D 뷰어 토글 */}
-      {!hasError && (
-        <div className="px-3 py-2">
-          <button
-            onClick={() => setShowViewer(!showViewer)}
-            className="text-[11px] px-3 py-1.5 rounded-lg"
-            style={{
-              background: showViewer ? 'rgba(52,211,153,0.3)' : 'rgba(52,211,153,0.12)',
-              color: '#34d399',
-              border: '1px solid rgba(52,211,153,0.3)',
-              cursor: 'pointer',
-            }}
-          >
-            {showViewer ? '▼ 뷰어 닫기' : '🧩 3D 프리팹 뷰어 열기'}
-          </button>
-        </div>
-      )}
+      {hasError ? (
+        <div className="px-3 py-3 text-[11px]" style={{ color: '#f87171' }}>{tc.error}</div>
+      ) : (
+        /* ── 3패널 본문 ── */
+        <div className="flex overflow-hidden" style={{ height: 460 }}>
 
-      {/* 인라인 3D 뷰어 */}
-      {showViewer && (
-        <div style={{ position: 'relative' }}>
-          <PrefabViewerLazy prefabPath={tc.prefabPath} height={480} />
-        </div>
-      )}
+          {/* ── 패널 1: Hierarchy ── */}
+          {hasHierarchy && (
+            <div className="flex flex-col flex-shrink-0 overflow-hidden" style={{ width: 180, borderRight: '1px solid rgba(52,211,153,0.15)' }}>
+              <div className="px-2 py-1.5 flex-shrink-0 flex items-center gap-1.5" style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.02)' }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round">
+                  <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+                  <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                </svg>
+                <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: '#64748b' }}>Hierarchy</span>
+              </div>
+              <div className="flex-1 overflow-y-auto py-1">
+                {tc.hierarchy!.map(node => (
+                  <HierarchyNode
+                    key={node.id}
+                    node={node}
+                    depth={0}
+                    selectedId={selectedNode?.id ?? null}
+                    onSelect={setSelectedNode}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
 
-      {/* 에러 표시 */}
-      {hasError && (
-        <div className="px-3 pb-3 text-[11px]" style={{ color: '#f87171' }}>{tc.error}</div>
+          {/* ── 패널 2: 3D 뷰어 ── */}
+          <div className="flex-1 overflow-hidden min-w-0">
+            <PrefabViewerLazy prefabPath={tc.prefabPath} height={460} />
+          </div>
+
+          {/* ── 패널 3: Inspector ── */}
+          <div className="flex flex-col flex-shrink-0 overflow-hidden" style={{ width: 180, borderLeft: '1px solid rgba(52,211,153,0.15)' }}>
+            <div className="px-2 py-1.5 flex-shrink-0 flex items-center gap-1.5" style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.02)' }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: '#64748b' }}>Inspector</span>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {!selectedNode ? (
+                <div className="flex flex-col items-center justify-center h-full gap-2 px-3" style={{ color: '#475569' }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                    <circle cx="12" cy="12" r="3"/>
+                  </svg>
+                  <span className="text-[10px] text-center">Hierarchy에서<br/>오브젝트를 선택하세요</span>
+                </div>
+              ) : (
+                <div className="px-2 py-2">
+                  {/* 오브젝트 이름 */}
+                  <div className="mb-2 pb-1.5" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                    <div className="text-[12px] font-semibold truncate" style={{ color: '#e2e8f0' }}>{selectedNode.name}</div>
+                    <div className="text-[10px] mt-0.5" style={{ color: '#475569' }}>
+                      {selectedNode.type === 'fbx' ? 'FBX Mesh'
+                        : selectedNode.type === 'probuilder' ? 'ProBuilder Mesh'
+                        : selectedNode.type === 'box' ? 'Box Primitive'
+                        : 'Empty GameObject'}
+                    </div>
+                  </div>
+
+                  {/* Transform */}
+                  {selectedObj && (
+                    <div className="mb-2">
+                      <div className="text-[10px] font-semibold mb-1 flex items-center gap-1" style={{ color: '#94a3b8' }}>
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                        Transform
+                      </div>
+                      {[
+                        { label: 'Position', val: selectedObj.pos },
+                        { label: 'Rotation', val: selectedObj.rot },
+                        { label: 'Scale', val: selectedObj.scale },
+                      ].map(({ label, val }) => val && (
+                        <div key={label} className="flex items-start gap-1 mb-0.5">
+                          <span className="text-[9px] w-12 flex-shrink-0 mt-0.5" style={{ color: '#64748b' }}>{label}</span>
+                          <span className="text-[9px] font-mono leading-tight" style={{ color: '#94a3b8' }}>
+                            {val.map((v: number) => v.toFixed(2)).join(', ')}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Components */}
+                  {components.length > 0 && (
+                    <div>
+                      <div className="text-[10px] font-semibold mb-1.5" style={{ color: '#94a3b8' }}>Components</div>
+                      <div className="flex flex-col gap-0.5">
+                        {components.map((comp, i) => (
+                          <div key={i} className="flex items-center gap-1.5 px-1.5 py-1 rounded" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                            <div className="w-1 h-1 rounded-full flex-shrink-0" style={{ background: '#34d399' }} />
+                            <span className="text-[10px] truncate" style={{ color: '#cbd5e1' }}>{comp}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {components.length === 0 && !selectedObj && (
+                    <div className="text-[10px]" style={{ color: '#475569' }}>컴포넌트 정보 없음</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 경로 표시 */}
-      <div className="px-3 pb-2">
-        <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>{tc.prefabPath}</span>
+      <div className="px-3 py-1.5 flex-shrink-0" style={{ borderTop: '1px solid rgba(52,211,153,0.1)' }}>
+        <span className="text-[9px] font-mono" style={{ color: '#334155' }}>{tc.prefabPath}</span>
       </div>
     </div>
   );

@@ -430,6 +430,29 @@ export interface SceneYamlResult {
   error?: string;
 }
 
+/** Unity Hierarchy 노드 (서버 HNode와 동일 구조) */
+export interface PrefabHNode {
+  id: string;
+  name: string;
+  type: 'fbx' | 'probuilder' | 'box' | 'empty';
+  objIdx: number;       // index in sceneObjects, -1 if not rendered
+  children: PrefabHNode[];
+  components?: string[];
+}
+
+/** 씬 오브젝트 (SceneViewer 렌더 단위) */
+export interface PrefabSceneObject {
+  id: string;
+  name: string;
+  type: string;
+  fbxPath?: string;
+  fbxUrl?: string;
+  pos?: [number, number, number];
+  rot?: [number, number, number];
+  scale?: [number, number, number];
+  components?: string[];
+}
+
 export interface PrefabPreviewResult {
   kind: 'prefab_preview';
   label: string;
@@ -438,6 +461,8 @@ export interface PrefabPreviewResult {
   resolvedFbx?: number;
   resolvedProBuilder?: number;
   resolvedBox?: number;
+  hierarchy?: PrefabHNode[];
+  objects?: PrefabSceneObject[];
   error?: string;
 }
 
@@ -2845,6 +2870,8 @@ function showTab(id){
                 resolvedFbx: data.resolvedFbx,
                 resolvedProBuilder: data.resolvedProBuilder,
                 resolvedBox: data.resolvedBox,
+                hierarchy: data.hierarchy as PrefabHNode[] | undefined,
+                objects: data.objects as PrefabSceneObject[] | undefined,
               } as PrefabPreviewResult;
             } catch (e) {
               resultStr = `프리팹 미리보기 실패: ${String(e)}`;
