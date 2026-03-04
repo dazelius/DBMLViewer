@@ -6535,19 +6535,48 @@ export default function ChatPage() {
               </div>
             )}
 
-            {messages.map((msg, idx) => (
-              <MessageBubble
-                key={msg.id}
-                msg={msg}
-                onContinue={
-                  // 마지막 assistant 메시지가 잘린 경우에만 버튼 활성화
-                  msg.isTruncated && !isLoading && idx === messages.length - 1
-                    ? () => sendMessage(
-                        '이전에 조회한 데이터를 기반으로 이어서 답변을 완성해주세요. 추가 데이터 조회 없이 기존에 수집된 데이터만으로 바로 답변해주세요. 필요하다면 create_artifact를 사용해 정리된 결과물을 만들어주세요.',
-                        '▶ 이어서 생성하기',
-                      )
-                    : undefined
-                }
+            {messages.map((msg, idx) => {
+              // ── 타임라인 구분선: 이전 메시지와 시간 차이가 5분 이상이거나 첫 메시지 ──
+              const prev = messages[idx - 1];
+              const timeDiff = prev ? msg.timestamp.getTime() - prev.timestamp.getTime() : Infinity;
+              const showDivider = idx === 0 || timeDiff >= 5 * 60 * 1000; // 5분
+
+              // 시간 포맷: 오늘이면 "오후 3:42", 다른 날이면 "3월 4일 오후 3:42"
+              const now = new Date();
+              const isToday = msg.timestamp.toDateString() === now.toDateString();
+              const isYesterday = (() => {
+                const y = new Date(now); y.setDate(now.getDate() - 1);
+                return msg.timestamp.toDateString() === y.toDateString();
+              })();
+              const timeLabel = isToday
+                ? msg.timestamp.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+                : isYesterday
+                ? `어제 ${msg.timestamp.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}`
+                : msg.timestamp.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+              return (
+                <React.Fragment key={msg.id}>
+                  {showDivider && (
+                    <div className="flex items-center gap-3 px-4 my-3 select-none">
+                      <div className="flex-1 h-px" style={{ background: 'linear-gradient(to right, transparent, rgba(99,102,241,0.2))' }} />
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full flex-shrink-0"
+                        style={{ color: '#4f5a74', background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.12)' }}>
+                        {timeLabel}
+                      </span>
+                      <div className="flex-1 h-px" style={{ background: 'linear-gradient(to left, transparent, rgba(99,102,241,0.2))' }} />
+                    </div>
+                  )}
+                  <MessageBubble
+                    msg={msg}
+                    onContinue={
+                      // 마지막 assistant 메시지가 잘린 경우에만 버튼 활성화
+                      msg.isTruncated && !isLoading && idx === messages.length - 1
+                        ? () => sendMessage(
+                            '이전에 조회한 데이터를 기반으로 이어서 답변을 완성해주세요. 추가 데이터 조회 없이 기존에 수집된 데이터만으로 바로 답변해주세요. 필요하다면 create_artifact를 사용해 정리된 결과물을 만들어주세요.',
+                            '▶ 이어서 생성하기',
+                          )
+                        : undefined
+                    }
                 artifactStreaming={
                   // 마지막 로딩 중인 메시지에만 아티팩트 스트리밍 전달
                   msg.isLoading && idx === messages.length - 1 ? artifactPanel : undefined
@@ -6564,7 +6593,9 @@ export default function ChatPage() {
                   });
                 }}
               />
-            ))}
+                </React.Fragment>
+              );
+            })}
 
             <div ref={bottomRef} />
             </div>{/* max-w 컨테이너 닫기 */}
