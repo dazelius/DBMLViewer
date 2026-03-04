@@ -1392,15 +1392,37 @@ function inlineMarkdown(text: string): React.ReactNode {
         if (isPrefabLink) {
           const pPath = /\.prefab$/i.test((linkText ?? '').trim()) ? (linkText ?? '').trim() : (linkUrl ?? '').trim();
           const pLabel = pPath.split('/').pop()?.replace('.prefab', '') ?? 'Prefab';
+          const pShortName = pPath.split('/').pop() ?? pPath;
           segments.push(
             <span
               key={key++}
-              className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity"
-              style={{ color: '#34d399', fontFamily: 'var(--font-mono)', fontSize: '0.9em', textDecoration: 'underline', textUnderlineOffset: '2px' }}
-              title={`프리팹 미리보기: ${pPath}`}
+              className="inline-flex items-center gap-1 cursor-pointer"
+              style={{
+                display: 'inline-flex', verticalAlign: 'middle',
+                background: 'rgba(52,211,153,0.08)',
+                border: '1px solid rgba(52,211,153,0.25)',
+                borderRadius: 4,
+                padding: '1px 6px 1px 4px',
+                fontFamily: 'var(--font-mono)', fontSize: '0.85em',
+                color: '#34d399',
+                transition: 'background 0.15s, border-color 0.15s',
+              }}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLElement).style.background = 'rgba(52,211,153,0.18)';
+                (e.currentTarget as HTMLElement).style.borderColor = 'rgba(52,211,153,0.5)';
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLElement).style.background = 'rgba(52,211,153,0.08)';
+                (e.currentTarget as HTMLElement).style.borderColor = 'rgba(52,211,153,0.25)';
+              }}
+              title={`프리팹 열기: ${pPath}`}
               onClick={() => { window.dispatchEvent(new CustomEvent('openPrefabPreview', { detail: { path: pPath, label: pLabel } })); }}
             >
-              🧩 {linkText || pPath}
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}>
+                <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+              </svg>
+              {linkText || pShortName}
             </span>,
           );
         } else {
@@ -1420,16 +1442,38 @@ function inlineMarkdown(text: string): React.ReactNode {
       if (isPrefabBold) {
         const pPath = boldText.trim();
         const pLabel = pPath.split('/').pop()?.replace('.prefab', '') ?? 'Prefab';
+        const pShortName = pPath.split('/').pop() ?? pPath;
         segments.push(
-          <strong
+          <span
             key={key++}
-            className="cursor-pointer hover:opacity-80 transition-opacity"
-            style={{ color: '#34d399', fontWeight: 700 }}
-            title={`프리팹 미리보기: ${pPath}`}
+            className="inline-flex items-center gap-1 cursor-pointer"
+            style={{
+              display: 'inline-flex', verticalAlign: 'middle',
+              background: 'rgba(52,211,153,0.08)',
+              border: '1px solid rgba(52,211,153,0.25)',
+              borderRadius: 4,
+              padding: '1px 6px 1px 4px',
+              fontFamily: 'var(--font-mono)', fontSize: '0.85em',
+              fontWeight: 700, color: '#34d399',
+              transition: 'background 0.15s, border-color 0.15s',
+            }}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLElement).style.background = 'rgba(52,211,153,0.18)';
+              (e.currentTarget as HTMLElement).style.borderColor = 'rgba(52,211,153,0.5)';
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLElement).style.background = 'rgba(52,211,153,0.08)';
+              (e.currentTarget as HTMLElement).style.borderColor = 'rgba(52,211,153,0.25)';
+            }}
+            title={`프리팹 열기: ${pPath}`}
             onClick={() => { window.dispatchEvent(new CustomEvent('openPrefabPreview', { detail: { path: pPath, label: pLabel } })); }}
           >
-            🧩 {boldText}
-          </strong>,
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}>
+              <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+              <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+            </svg>
+            {pShortName}
+          </span>,
         );
       } else {
         segments.push(<strong key={key++} style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{boldText}</strong>);
@@ -1440,16 +1484,38 @@ function inlineMarkdown(text: string): React.ReactNode {
       if (isPrefabCode) {
         const pPath = codeText.trim();
         const pLabel = pPath.split('/').pop()?.replace('.prefab', '') ?? 'Prefab';
+        const pShortName = pPath.split('/').pop() ?? pPath;
         segments.push(
-          <code
+          <span
             key={key++}
-            className="px-1.5 py-0.5 rounded text-[12px] cursor-pointer hover:opacity-80 transition-opacity"
-            style={{ background: 'rgba(52,211,153,0.1)', color: '#34d399', fontFamily: 'var(--font-mono)', border: '1px solid rgba(52,211,153,0.2)' }}
-            title={`프리팹 미리보기: ${pPath}`}
+            className="inline-flex items-center gap-1 cursor-pointer"
+            style={{
+              display: 'inline-flex', verticalAlign: 'middle',
+              background: 'rgba(52,211,153,0.1)',
+              border: '1px solid rgba(52,211,153,0.3)',
+              borderRadius: 4,
+              padding: '1px 6px 1px 4px',
+              fontFamily: 'var(--font-mono)', fontSize: '0.85em',
+              color: '#34d399',
+              transition: 'background 0.15s, border-color 0.15s',
+            }}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLElement).style.background = 'rgba(52,211,153,0.2)';
+              (e.currentTarget as HTMLElement).style.borderColor = 'rgba(52,211,153,0.5)';
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLElement).style.background = 'rgba(52,211,153,0.1)';
+              (e.currentTarget as HTMLElement).style.borderColor = 'rgba(52,211,153,0.3)';
+            }}
+            title={`프리팹 열기: ${pPath}`}
             onClick={() => { window.dispatchEvent(new CustomEvent('openPrefabPreview', { detail: { path: pPath, label: pLabel } })); }}
           >
-            🧩 {codeText}
-          </code>,
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}>
+              <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+              <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+            </svg>
+            {pShortName}
+          </span>,
         );
       } else {
         segments.push(
@@ -1462,15 +1528,37 @@ function inlineMarkdown(text: string): React.ReactNode {
     } else if (prefabPath !== undefined) {
       // .prefab 경로 (코드 블록 밖 plain text) → 클릭 시 프리팹 뷰어 열기
       const pLabel = prefabPath.split('/').pop()?.replace('.prefab', '') ?? 'Prefab';
+      const pShortName = prefabPath.split('/').pop() ?? prefabPath;
       segments.push(
         <span
           key={key++}
-          className="inline-flex items-center gap-0.5 cursor-pointer hover:opacity-80 transition-opacity"
-          style={{ color: '#34d399', fontFamily: 'var(--font-mono)', fontSize: '0.9em', textDecoration: 'underline', textUnderlineOffset: '2px' }}
-          title={`프리팹 미리보기: ${prefabPath}`}
+          className="inline-flex items-center gap-1 cursor-pointer"
+          style={{
+            display: 'inline-flex', verticalAlign: 'middle',
+            background: 'rgba(52,211,153,0.08)',
+            border: '1px solid rgba(52,211,153,0.25)',
+            borderRadius: 4,
+            padding: '1px 6px 1px 4px',
+            fontFamily: 'var(--font-mono)', fontSize: '0.85em',
+            color: '#34d399',
+            transition: 'background 0.15s, border-color 0.15s',
+          }}
+          onMouseEnter={e => {
+            (e.currentTarget as HTMLElement).style.background = 'rgba(52,211,153,0.18)';
+            (e.currentTarget as HTMLElement).style.borderColor = 'rgba(52,211,153,0.5)';
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as HTMLElement).style.background = 'rgba(52,211,153,0.08)';
+            (e.currentTarget as HTMLElement).style.borderColor = 'rgba(52,211,153,0.25)';
+          }}
+          title={`프리팹 열기: ${prefabPath}`}
           onClick={() => { window.dispatchEvent(new CustomEvent('openPrefabPreview', { detail: { path: prefabPath, label: pLabel } })); }}
         >
-          🧩 {prefabPath}
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}>
+            <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+            <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+          </svg>
+          {pShortName}
         </span>,
       );
     } else if (italicText !== undefined) {

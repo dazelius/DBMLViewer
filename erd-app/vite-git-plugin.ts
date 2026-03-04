@@ -1823,9 +1823,29 @@ function createGitMiddleware(options: GitPluginOptions) {
 
         // ── 씬 파일 읽기 ───────────────────────────────────────────────────────
         // 먼저 assets 폴더에서 찾고 없으면 unity_project 에서 찾기
+        let resolvedScenePath = scenePath
         let sceneAbsPath = join(SCENE_ASSETS_DIR, scenePath)
         if (!existsSync(sceneAbsPath)) {
           sceneAbsPath = join(UNITY_BASE2, scenePath)
+        }
+        // ── 파일명만 주어진 경우 (디렉토리 구분자 없음) → GUID 인덱스에서 스마트 검색 ──
+        if (!existsSync(sceneAbsPath) && !scenePath.includes('/') && !scenePath.includes('\\')) {
+          const filenameLower = scenePath.toLowerCase()
+          let foundRelPath: string | null = null
+          for (const relPath of Object.values(guidToRelPath)) {
+            const parts = relPath.replace(/\\/g, '/').split('/')
+            if (parts[parts.length - 1].toLowerCase() === filenameLower) {
+              foundRelPath = relPath.replace(/\\/g, '/')
+              break
+            }
+          }
+          if (foundRelPath) {
+            resolvedScenePath = foundRelPath
+            sceneAbsPath = join(UNITY_BASE2, foundRelPath)
+            if (!existsSync(sceneAbsPath)) {
+              sceneAbsPath = join(SCENE_ASSETS_DIR, foundRelPath)
+            }
+          }
         }
         if (!existsSync(sceneAbsPath)) {
           sendJson(res, 404, { error: `Scene not found: ${scenePath}` })
@@ -2546,7 +2566,7 @@ function createGitMiddleware(options: GitPluginOptions) {
         hierarchy.sort((a, b) => a.name.localeCompare(b.name))
 
         sendJson(res, 200, {
-          scenePath,
+          scenePath: resolvedScenePath,
           totalPrefabs: placements.length,
           totalDirect: directObjects.length,
           resolvedFbx: fbxResolved,
