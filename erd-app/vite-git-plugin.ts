@@ -64,6 +64,7 @@ interface PublishedMeta {
   createdAt: string
   updatedAt?: string
   author?: string
+  folderId?: string | null   // ← 폴더 분류
 }
 
 function readPublishedIndex(): PublishedMeta[] {
@@ -75,6 +76,27 @@ function readPublishedIndex(): PublishedMeta[] {
 function writePublishedIndex(list: PublishedMeta[]) {
   ensurePublishedDir()
   writeFileSync(PUBLISHED_INDEX, JSON.stringify(list, null, 2), 'utf-8')
+}
+
+// ── 폴더 메타 ─────────────────────────────────────────────────────────────────
+interface FolderMeta {
+  id: string
+  name: string
+  parentId: string | null
+  createdAt: string
+}
+
+const FOLDERS_INDEX = join(PUBLISHED_DIR, 'folders.json')
+
+function readFolders(): FolderMeta[] {
+  ensurePublishedDir()
+  if (!existsSync(FOLDERS_INDEX)) return []
+  try { return JSON.parse(readFileSync(FOLDERS_INDEX, 'utf-8')) } catch { return [] }
+}
+
+function writeFolders(list: FolderMeta[]) {
+  ensurePublishedDir()
+  writeFileSync(FOLDERS_INDEX, JSON.stringify(list, null, 2), 'utf-8')
 }
 
 function walkImages(dir: string, base: string, results: { name: string; path: string; relPath: string }[]) {
@@ -2936,6 +2958,79 @@ function createGitMiddleware(options: GitPluginOptions) {
     // ── /api/published : 출판된 문서 목록 (GET) ────────────────────────────────
     if (req.url === '/api/published' && req.method === 'GET') {
       sendJson(res, 200, readPublishedIndex())
+      return
+    }
+
+    // ── /api/folders : 폴더 CRUD ────────────────────────────────────────────
+    if (req.url?.startsWith('/api/folders')) {
+      const folderUrlObj = new URL(req.url, 'http://localhost')
+      const folderId = folderUrlObj.pathname.replace('/api/folders', '').replace(/^\//, '')
+
+      // GET /api/folders
+      if (req.method === 'GET' && !folderId) {
+        sendJson(res, 200, readFolders())
+        return
+      }
+
+      // POST /api/folders  { name, parentId? }
+      if (req.method === 'POST' && !folderId) {
+        const body = await readBody(req)
+        let payload: { name?: string; parentId?: string | null } = {}
+        try { payload = JSON.parse(body) } catch { sendJson(res, 400, { error: 'Invalid JSON' }); return }
+        const { name = '새 폴더', parentId = null } = payload
+        const id = `f_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`
+        const folder: FolderMeta = { id, name, parentId, createdAt: new Date().toISOString() }
+        const list = readFolders()
+        list.push(folder)
+        writeFolders(list)
+        sendJson(res, 200, folder)
+        return
+      }
+
+      // PUT /api/folders/:id  { name?, parentId? }
+      if (req.method === 'PUT' && folderId) {
+        const body = await readBody(req)
+        let payload: { name?: string; parentId?: string | null } = {}
+        try { payload = JSON.parse(body) } catch { sendJson(res, 400, { error: 'Invalid JSON' }); return }
+        const list = readFolders()
+        const idx = list.findIndex(f => f.id === folderId)
+        if (idx === -1) { sendJson(res, 404, { error: 'Not found' }); return }
+        list[idx] = { ...list[idx], ...payload }
+        writeFolders(list)
+        sendJson(res, 200, list[idx])
+        return
+      }
+
+      // DELETE /api/folders/:id  → 하위 폴더·문서를 부모로 이동
+      if (req.method === 'DELETE' && folderId) {
+        const folders = readFolders()
+        const target = folders.find(f => f.id === folderId)
+        if (!target) { sendJson(res, 404, { error: 'Not found' }); return }
+        // 하위 폴더 → 부모로 승격
+        const newFolders = folders
+          .map(f => f.parentId === folderId ? { ...f, parentId: target.parentId } : f)
+          .filter(f => f.id !== folderId)
+        writeFolders(newFolders)
+        // 이 폴더 안의 문서 → 부모 폴더로 이동
+        const docs = readPublishedIndex()
+        writePublishedIndex(docs.map(d => d.folderId === folderId ? { ...d, folderId: target.parentId } : d))
+        sendJson(res, 200, { ok: true })
+        return
+      }
+    }
+
+    // ── /api/publish/:id/folder : 문서 폴더 이동 (PATCH) ────────────────────
+    if (req.url?.match(/^\/api\/publish\/[^/]+\/folder$/) && req.method === 'PATCH') {
+      const docId = req.url.replace('/api/publish/', '').replace('/folder', '')
+      const body = await readBody(req)
+      let payload: { folderId?: string | null } = {}
+      try { payload = JSON.parse(body) } catch { sendJson(res, 400, { error: 'Invalid JSON' }); return }
+      const list = readPublishedIndex()
+      const idx = list.findIndex(m => m.id === docId)
+      if (idx === -1) { sendJson(res, 404, { error: 'Not found' }); return }
+      list[idx] = { ...list[idx], folderId: payload.folderId ?? null }
+      writePublishedIndex(list)
+      sendJson(res, 200, { ok: true })
       return
     }
 

@@ -5808,6 +5808,9 @@ export default function ChatPage() {
     finalTc?: ArtifactResult;
     artifactId?: string; // 저장된 아티팩트 id (출판 URL 연결용)
   } | null>(null);
+  // ★ artifactPanel의 최신값을 항상 참조하기 위한 ref (useCallback 클로저 stale 방지)
+  const artifactPanelRef = useRef(artifactPanel);
+  useEffect(() => { artifactPanelRef.current = artifactPanel; }, [artifactPanel]);
 
   // 채팅 내 프리팹 경로 클릭 → 프리팹 미리보기 모달
   const [chatPrefabPath, setChatPrefabPath] = useState<string | null>(null);
@@ -5936,8 +5939,10 @@ export default function ChatPage() {
     // 스트림 시작 시 버퍼 리셋
     if (isEditRequest) {
       // 패치 모드: 기존 아티팩트 HTML을 baseHtml에 보관
-      const existingHtml = artifactPanel?.finalTc?.html
-        || artifactPanel?.html
+      // artifactPanelRef.current 사용 → useCallback 클로저 stale 방지
+      const latestPanel = artifactPanelRef.current;
+      const existingHtml = latestPanel?.finalTc?.html
+        || latestPanel?.html
         || (_artBuf.html && _artBuf.html.length > 100 ? _artBuf.html : '')
         || '';
       _artBuf.html = existingHtml; // 기존 HTML부터 시작

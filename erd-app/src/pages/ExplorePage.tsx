@@ -19,6 +19,41 @@ interface PublishedMeta {
   createdAt: string;
   updatedAt?: string;
   author?: string;
+  folderId?: string | null;
+}
+
+interface FolderMeta {
+  id: string;
+  name: string;
+  parentId: string | null;
+  createdAt: string;
+}
+
+type FolderNode = FolderMeta & { children: FolderNode[]; docCount: number; totalCount: number };
+
+function buildFolderTree(folders: FolderMeta[], docs: PublishedMeta[]): FolderNode[] {
+  const countMap = new Map<string, number>();
+  for (const d of docs) { if (d.folderId) countMap.set(d.folderId, (countMap.get(d.folderId) ?? 0) + 1); }
+
+  const nodeMap = new Map<string, FolderNode>();
+  for (const f of folders) {
+    nodeMap.set(f.id, { ...f, children: [], docCount: countMap.get(f.id) ?? 0, totalCount: 0 });
+  }
+  const roots: FolderNode[] = [];
+  for (const node of nodeMap.values()) {
+    if (node.parentId && nodeMap.has(node.parentId)) {
+      nodeMap.get(node.parentId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+  // totalCount = self + descendants
+  function calcTotal(node: FolderNode): number {
+    node.totalCount = node.docCount + node.children.reduce((s, c) => s + calcTotal(c), 0);
+    return node.totalCount;
+  }
+  roots.forEach(calcTotal);
+  return roots;
 }
 
 function genId(): string {
@@ -139,17 +174,31 @@ function applyPatches(orig: string, patches: { find: string; replace: string }[]
 }
 
 // ── 개별 카드 ────────────────────────────────────────────────────────────────
-function DocCard({ meta, isSelected, onSelect, onDelete, viewMode }: {
+function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMode }: {
   meta: PublishedMeta;
   isSelected: boolean;
   onSelect: () => void;
   onDelete: (id: string) => void;
+  onMove: (docId: string, folderId: string | null) => void;
+  folders: FolderMeta[];
   viewMode: 'grid' | 'list';
 }) {
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [showMoveMenu, setShowMoveMenu] = useState(false);
+  const moveMenuRef = useRef<HTMLDivElement>(null);
   const confirmRef = useRef(false);
+
+  // 외부 클릭 시 move 메뉴 닫기
+  useEffect(() => {
+    if (!showMoveMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (moveMenuRef.current && !moveMenuRef.current.contains(e.target as Node)) setShowMoveMenu(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showMoveMenu]);
   const docUrl = `/api/p/${meta.id}`;
   const fullUrl = `${window.location.origin}${docUrl}`;
 
@@ -173,9 +222,52 @@ function DocCard({ meta, isSelected, onSelect, onDelete, viewMode }: {
     year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
 
+  // ── 폴더 이동 드롭다운 ──
+  const moveMenu = folders.length > 0 && (
+    <div ref={moveMenuRef} className="relative" onClick={e => e.stopPropagation()}>
+      <button
+        onClick={e => { e.stopPropagation(); setShowMoveMenu(v => !v); }}
+        title="폴더로 이동"
+        className="p-1.5 rounded hover:opacity-80 transition-opacity"
+        style={{ color: 'rgba(255,255,255,0.7)' }}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </svg>
+      </button>
+      {showMoveMenu && (
+        <div
+          className="absolute z-50 right-0 top-full mt-1 py-1 rounded-lg text-[11px] min-w-[160px] max-h-[200px] overflow-y-auto"
+          style={{ background: '#1e293b', border: '1px solid #334155', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}
+        >
+          <button
+            className="w-full px-3 py-1.5 text-left hover:bg-white/5 flex items-center gap-2"
+            style={{ color: meta.folderId == null ? '#818cf8' : 'var(--text-secondary)' }}
+            onClick={() => { onMove(meta.id, null); setShowMoveMenu(false); }}
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+            루트 (미분류)
+          </button>
+          {folders.map(f => (
+            <button
+              key={f.id}
+              className="w-full px-3 py-1.5 text-left hover:bg-white/5 flex items-center gap-2"
+              style={{ color: meta.folderId === f.id ? '#818cf8' : 'var(--text-secondary)' }}
+              onClick={() => { onMove(meta.id, f.id); setShowMoveMenu(false); }}
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              {f.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
   // ── 액션 버튼 ──
   const actionButtons = (
     <div className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
+      {moveMenu}
       <button onClick={handleCopy} title="URL 복사" className="p-1.5 rounded hover:opacity-80 transition-opacity" style={{ color: 'rgba(255,255,255,0.7)' }}>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
           <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
@@ -290,6 +382,263 @@ function DocCard({ meta, isSelected, onSelect, onDelete, viewMode }: {
           편집 중
         </div>
       )}
+    </div>
+  );
+}
+
+// ── 폴더 트리 아이템 ──────────────────────────────────────────────────────────
+function FolderTreeItem({
+  node,
+  depth,
+  selectedId,
+  onSelect,
+  onCreateChild,
+  onRename,
+  onDelete,
+}: {
+  node: FolderNode;
+  depth: number;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onCreateChild: (parentId: string) => void;
+  onRename: (id: string, name: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [hovered, setHovered] = useState(false);
+  const [showCtx, setShowCtx] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameVal, setRenameVal] = useState(node.name);
+  const ctxRef = useRef<HTMLDivElement>(null);
+  const renameRef = useRef<HTMLInputElement>(null);
+  const isSelected = selectedId === node.id;
+
+  useEffect(() => {
+    if (!showCtx) return;
+    const h = (e: MouseEvent) => { if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) setShowCtx(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [showCtx]);
+
+  useEffect(() => { if (renaming) renameRef.current?.focus(); }, [renaming]);
+
+  const commitRename = () => {
+    const v = renameVal.trim();
+    if (v && v !== node.name) onRename(node.id, v);
+    else setRenameVal(node.name);
+    setRenaming(false);
+  };
+
+  return (
+    <div>
+      <div
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onClick={() => onSelect(node.id)}
+        className="flex items-center gap-1 pr-1 py-1 rounded-lg cursor-pointer select-none group"
+        style={{
+          paddingLeft: 8 + depth * 14,
+          background: isSelected ? 'rgba(99,102,241,0.15)' : hovered ? 'rgba(255,255,255,0.04)' : 'transparent',
+        }}
+      >
+        {/* 확장/축소 chevron */}
+        <button
+          onClick={e => { e.stopPropagation(); setExpanded(v => !v); }}
+          className="flex-shrink-0 w-4 h-4 flex items-center justify-center rounded"
+          style={{ color: 'var(--text-muted)', visibility: node.children.length > 0 ? 'visible' : 'hidden' }}
+        >
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+            style={{ transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>
+            <polyline points="9 18 15 12 9 6"/>
+          </svg>
+        </button>
+        {/* 폴더 아이콘 */}
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={isSelected ? '#818cf8' : 'var(--text-muted)'} strokeWidth="1.8" strokeLinecap="round" className="flex-shrink-0">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </svg>
+        {/* 이름 */}
+        {renaming ? (
+          <input
+            ref={renameRef}
+            value={renameVal}
+            onChange={e => setRenameVal(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') { setRenameVal(node.name); setRenaming(false); } }}
+            onClick={e => e.stopPropagation()}
+            className="flex-1 min-w-0 bg-transparent outline-none text-[12px] border-b"
+            style={{ color: 'var(--text-primary)', borderColor: '#818cf8' }}
+          />
+        ) : (
+          <span className="flex-1 min-w-0 truncate text-[12px]" style={{ color: isSelected ? '#a5b4fc' : 'var(--text-secondary)' }}>
+            {node.name}
+          </span>
+        )}
+        {/* 문서 수 */}
+        {node.totalCount > 0 && !hovered && (
+          <span className="flex-shrink-0 text-[10px] tabular-nums" style={{ color: 'var(--text-muted)' }}>{node.totalCount}</span>
+        )}
+        {/* 컨텍스트 메뉴 버튼 */}
+        {hovered && !renaming && (
+          <div ref={ctxRef} className="flex-shrink-0 relative">
+            <button
+              onClick={e => { e.stopPropagation(); setShowCtx(v => !v); }}
+              className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>
+              </svg>
+            </button>
+            {showCtx && (
+              <div className="absolute z-50 right-0 top-full mt-1 py-1 rounded-lg text-[11px] w-36"
+                style={{ background: '#1e293b', border: '1px solid #334155', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
+                <button className="w-full px-3 py-1.5 text-left hover:bg-white/5 flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}
+                  onClick={e => { e.stopPropagation(); setShowCtx(false); onCreateChild(node.id); }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  하위 폴더 만들기
+                </button>
+                <button className="w-full px-3 py-1.5 text-left hover:bg-white/5 flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}
+                  onClick={e => { e.stopPropagation(); setShowCtx(false); setRenaming(true); }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  이름 변경
+                </button>
+                <div style={{ borderTop: '1px solid #334155', margin: '2px 0' }} />
+                <button className="w-full px-3 py-1.5 text-left hover:bg-white/5 flex items-center gap-2" style={{ color: '#f87171' }}
+                  onClick={e => { e.stopPropagation(); setShowCtx(false); onDelete(node.id); }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                  폴더 삭제
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      {/* 하위 폴더 재귀 */}
+      {expanded && node.children.map(child => (
+        <FolderTreeItem
+          key={child.id}
+          node={child}
+          depth={depth + 1}
+          selectedId={selectedId}
+          onSelect={onSelect}
+          onCreateChild={onCreateChild}
+          onRename={onRename}
+          onDelete={onDelete}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── 폴더 사이드바 ─────────────────────────────────────────────────────────────
+function FolderSidebar({
+  folders,
+  docs,
+  selectedFolderId,
+  onSelectFolder,
+  onCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
+}: {
+  folders: FolderMeta[];
+  docs: PublishedMeta[];
+  selectedFolderId: string | null;   // null = All
+  onSelectFolder: (id: string | null) => void;
+  onCreateFolder: (parentId: string | null) => void;
+  onRenameFolder: (id: string, name: string) => void;
+  onDeleteFolder: (id: string) => void;
+}) {
+  const tree = useMemo(() => buildFolderTree(folders, docs), [folders, docs]);
+  const allCount = docs.length;
+  const unfiledCount = docs.filter(d => !d.folderId).length;
+
+  return (
+    <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
+      {/* 헤더 */}
+      <div className="flex items-center justify-between px-3 py-2.5 flex-shrink-0" style={{ borderBottom: '1px solid var(--border-color)' }}>
+        <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>폴더</span>
+        <button
+          onClick={() => onCreateFolder(null)}
+          title="루트 폴더 만들기"
+          className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 transition-colors"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+        </button>
+      </div>
+
+      {/* 트리 */}
+      <div className="flex-1 overflow-y-auto py-1 px-1">
+        {/* All */}
+        <div
+          onClick={() => onSelectFolder(null)}
+          className="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer select-none"
+          style={{
+            background: selectedFolderId === null ? 'rgba(99,102,241,0.15)' : 'transparent',
+            color: selectedFolderId === null ? '#a5b4fc' : 'var(--text-secondary)',
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+            <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+          </svg>
+          <span className="flex-1 text-[12px] font-medium">전체 문서</span>
+          <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-muted)' }}>{allCount}</span>
+        </div>
+
+        {/* Unfiled */}
+        {unfiledCount > 0 && (
+          <div
+            onClick={() => onSelectFolder('__unfiled__')}
+            className="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer select-none"
+            style={{
+              background: selectedFolderId === '__unfiled__' ? 'rgba(99,102,241,0.15)' : 'transparent',
+              color: selectedFolderId === '__unfiled__' ? '#a5b4fc' : 'var(--text-secondary)',
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+              <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+            <span className="flex-1 text-[12px]">미분류</span>
+            <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-muted)' }}>{unfiledCount}</span>
+          </div>
+        )}
+
+        {/* 구분선 (폴더 있을 때) */}
+        {tree.length > 0 && (
+          <div style={{ borderTop: '1px solid var(--border-color)', margin: '4px 8px' }} />
+        )}
+
+        {/* 폴더 트리 */}
+        {tree.map(node => (
+          <FolderTreeItem
+            key={node.id}
+            node={node}
+            depth={0}
+            selectedId={selectedFolderId}
+            onSelect={onSelectFolder}
+            onCreateChild={onCreateFolder}
+            onRename={onRenameFolder}
+            onDelete={onDeleteFolder}
+          />
+        ))}
+
+        {tree.length === 0 && folders.length === 0 && (
+          <div className="px-3 py-4 text-center">
+            <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>폴더 없음</p>
+            <button
+              onClick={() => onCreateFolder(null)}
+              className="mt-2 text-[11px] hover:underline"
+              style={{ color: '#818cf8' }}
+            >
+              + 폴더 만들기
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -725,11 +1074,15 @@ export default function ExplorePage() {
   useDebouncedParse();
   const navigate = useNavigate();
   const [docs, setDocs] = useState<PublishedMeta[]>([]);
+  const [folders, setFolders] = useState<FolderMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  // null = 전체, '__unfiled__' = 미분류, 'f_...' = 특정 폴더
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(() => {
     try { return (localStorage.getItem('explore_viewMode') as 'grid' | 'list') || 'grid'; } catch { return 'grid'; }
   });
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // 선택된 문서 (편집 모드)
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
@@ -738,31 +1091,41 @@ export default function ExplorePage() {
 
   const selectedDoc = useMemo(() => docs.find(d => d.id === selectedDocId) ?? null, [docs, selectedDocId]);
 
-  const fetchDocs = useCallback(async () => {
+  // ── 데이터 로드 ──
+  const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/published');
-      const data = await res.json() as PublishedMeta[];
-      setDocs(Array.isArray(data) ? data : []);
-    } catch { setDocs([]); }
+      const [docsRes, foldersRes] = await Promise.all([fetch('/api/published'), fetch('/api/folders')]);
+      const docsData = await docsRes.json() as PublishedMeta[];
+      const foldersData = await foldersRes.json() as FolderMeta[];
+      setDocs(Array.isArray(docsData) ? docsData : []);
+      setFolders(Array.isArray(foldersData) ? foldersData : []);
+    } catch { setDocs([]); setFolders([]); }
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { fetchDocs(); }, [fetchDocs]);
+  useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  // ── 문서 삭제 ──
   const handleDelete = useCallback(async (id: string) => {
     await fetch(`/api/publish/${id}`, { method: 'DELETE' });
     setDocs(prev => prev.filter(d => d.id !== id));
     if (selectedDocId === id) { setSelectedDocId(null); setChatOpen(false); }
   }, [selectedDocId]);
 
-  // 문서 선택 → HTML 로드
+  // ── 문서 폴더 이동 ──
+  const handleMove = useCallback(async (docId: string, folderId: string | null) => {
+    await fetch(`/api/publish/${docId}/folder`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folderId }),
+    });
+    setDocs(prev => prev.map(d => d.id === docId ? { ...d, folderId } : d));
+  }, []);
+
+  // ── 문서 선택 → HTML 로드 ──
   const handleSelectDoc = useCallback(async (id: string) => {
-    if (selectedDocId === id) {
-      // 이미 선택된 문서 → 챗봇 토글
-      setChatOpen(prev => !prev);
-      return;
-    }
+    if (selectedDocId === id) { setChatOpen(prev => !prev); return; }
     setSelectedDocId(id);
     setChatOpen(true);
     try {
@@ -772,23 +1135,96 @@ export default function ExplorePage() {
     } catch { setDocHtml('<p>문서 로드 실패</p>'); }
   }, [selectedDocId]);
 
-  const handleDocUpdated = useCallback(async (newHtml: string) => {
-    setDocHtml(newHtml);
+  const handleDocUpdated = useCallback(async (newHtml: string) => { setDocHtml(newHtml); }, []);
+
+  // ── 폴더 CRUD ──
+  const handleCreateFolder = useCallback(async (parentId: string | null) => {
+    const name = prompt('폴더 이름을 입력하세요', '새 폴더');
+    if (!name?.trim()) return;
+    const res = await fetch('/api/folders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim(), parentId }),
+    });
+    const folder = await res.json() as FolderMeta;
+    setFolders(prev => [...prev, folder]);
   }, []);
 
-  const filtered = docs.filter(d =>
-    !search || d.title.toLowerCase().includes(search.toLowerCase()) || d.description.toLowerCase().includes(search.toLowerCase()),
-  );
+  const handleRenameFolder = useCallback(async (id: string, name: string) => {
+    await fetch(`/api/folders/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    setFolders(prev => prev.map(f => f.id === id ? { ...f, name } : f));
+  }, []);
+
+  const handleDeleteFolder = useCallback(async (id: string) => {
+    const folder = folders.find(f => f.id === id);
+    if (!folder) return;
+    if (!confirm(`"${folder.name}" 폴더를 삭제할까요?\n안에 있는 문서는 상위 폴더로 이동됩니다.`)) return;
+    await fetch(`/api/folders/${id}`, { method: 'DELETE' });
+    // 로컬 상태 동기화
+    setFolders(prev => prev
+      .map(f => f.parentId === id ? { ...f, parentId: folder.parentId } : f)
+      .filter(f => f.id !== id));
+    setDocs(prev => prev.map(d => d.folderId === id ? { ...d, folderId: folder.parentId } : d));
+    if (selectedFolderId === id) setSelectedFolderId(null);
+  }, [folders, selectedFolderId]);
+
+  // ── 필터링 ──
+  // 폴더 선택 시 하위 폴더 포함 여부 (특정 폴더 선택 시 해당 폴더만 표시)
+  const filtered = useMemo(() => {
+    let result = docs;
+    if (selectedFolderId === '__unfiled__') {
+      result = result.filter(d => !d.folderId);
+    } else if (selectedFolderId !== null) {
+      result = result.filter(d => d.folderId === selectedFolderId);
+    }
+    if (search) {
+      const q = search.toLowerCase();
+      result = result.filter(d => d.title.toLowerCase().includes(q) || d.description.toLowerCase().includes(q));
+    }
+    return result;
+  }, [docs, selectedFolderId, search]);
+
+  // 현재 폴더 이름
+  const currentFolderName = useMemo(() => {
+    if (selectedFolderId === null) return null;
+    if (selectedFolderId === '__unfiled__') return '미분류';
+    return folders.find(f => f.id === selectedFolderId)?.name ?? '폴더';
+  }, [selectedFolderId, folders]);
 
   // 레이아웃: 편집 모드일 때는 좌측 문서 목록 축소 + 가운데 미리보기 + 우측 챗봇
   const isEditMode = !!selectedDoc && chatOpen;
+  // 편집 모드일 때 사이드바 숨기기
+  const showSidebar = sidebarOpen && !isEditMode;
+
+  // 모든 폴더 평탄화 (DocCard move 드롭다운용)
+  const allFolders = useMemo(() => folders, [folders]);
 
   return (
     <div className="flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
       <Toolbar />
 
       <div className="flex flex-1 overflow-hidden">
-        {/* ── 좌측: 문서 목록 ── */}
+        {/* ── 폴더 사이드바 ── */}
+        {showSidebar && (
+          <div className="flex-shrink-0 flex flex-col overflow-hidden transition-all duration-200"
+            style={{ width: 200, borderRight: '1px solid var(--border-color)' }}>
+            <FolderSidebar
+              folders={folders}
+              docs={docs}
+              selectedFolderId={selectedFolderId}
+              onSelectFolder={setSelectedFolderId}
+              onCreateFolder={handleCreateFolder}
+              onRenameFolder={handleRenameFolder}
+              onDeleteFolder={handleDeleteFolder}
+            />
+          </div>
+        )}
+
+        {/* ── 가운데: 문서 목록 ── */}
         <div
           className="flex flex-col flex-shrink-0 overflow-hidden transition-all duration-300"
           style={{ width: isEditMode ? 300 : '100%', borderRight: isEditMode ? '1px solid var(--border-color)' : undefined }}
@@ -797,19 +1233,34 @@ export default function ExplorePage() {
           <div className="flex-shrink-0 px-4 pt-4 pb-3">
             <div className="flex items-center justify-between gap-3 mb-3">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'rgba(99,102,241,0.2)' }}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="1.5" strokeLinecap="round">
+                {/* 사이드바 토글 (편집 모드 아닐 때만) */}
+                {!isEditMode && (
+                  <button
+                    onClick={() => setSidebarOpen(v => !v)}
+                    className="p-1.5 rounded-lg hover:opacity-80"
+                    style={{ background: sidebarOpen ? 'rgba(99,102,241,0.2)' : 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: sidebarOpen ? '#818cf8' : 'var(--text-muted)' }}
+                    title={sidebarOpen ? '폴더 숨기기' : '폴더 보기'}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                    </svg>
+                  </button>
+                )}
+                <div className="w-7 h-7 rounded-xl flex items-center justify-center" style={{ background: 'rgba(99,102,241,0.2)' }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="1.5" strokeLinecap="round">
                     <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
                     <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
                   </svg>
                 </div>
                 <div>
-                  <h1 className="text-[16px] font-bold" style={{ color: 'var(--text-primary)' }}>Explore</h1>
-                  <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{docs.length}개 문서</p>
+                  <h1 className="text-[15px] font-bold" style={{ color: 'var(--text-primary)' }}>
+                    {currentFolderName ?? 'Explore'}
+                  </h1>
+                  <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{filtered.length}개 문서</p>
                 </div>
               </div>
               <div className="flex items-center gap-1.5">
-                <button onClick={fetchDocs} className="p-1.5 rounded-lg hover:opacity-80" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }} title="새로고침">
+                <button onClick={fetchAll} className="p-1.5 rounded-lg hover:opacity-80" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }} title="새로고침">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
                     <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
@@ -895,6 +1346,8 @@ export default function ExplorePage() {
                     isSelected={doc.id === selectedDocId}
                     onSelect={() => handleSelectDoc(doc.id)}
                     onDelete={handleDelete}
+                    onMove={handleMove}
+                    folders={allFolders}
                     viewMode="list"
                   />
                 ))}
@@ -915,6 +1368,8 @@ export default function ExplorePage() {
                     isSelected={doc.id === selectedDocId}
                     onSelect={() => handleSelectDoc(doc.id)}
                     onDelete={handleDelete}
+                    onMove={handleMove}
+                    folders={allFolders}
                     viewMode={isEditMode ? 'list' : 'grid'}
                   />
                 ))}
