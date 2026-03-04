@@ -1551,6 +1551,34 @@ function renderMarkdown(text: string): React.ReactNode[] {
       continue;
     }
 
+    // 체크리스트 (- [ ] / - [x]) — renderMarkdown 내에서는 정적 렌더링
+    if (/^- \[[ x]\] /i.test(line)) {
+      const checkItems: { label: string; checked: boolean }[] = [];
+      while (i < lines.length && /^- \[[ x]\] /i.test(lines[i])) {
+        const checked = /^- \[x\] /i.test(lines[i]);
+        const label = lines[i].replace(/^- \[[ x]\] /i, '');
+        checkItems.push({ label, checked });
+        i++;
+      }
+      nodes.push(
+        <div key={`checklist-${i}`} className="my-2 space-y-1.5 pl-1" data-checklist="true">
+          {checkItems.map((item, j) => (
+            <label key={j} className="flex items-center gap-2.5 py-1 text-[13px] cursor-default" style={{ color: 'var(--text-secondary)' }}>
+              <span className="flex-shrink-0 w-4 h-4 rounded border flex items-center justify-center text-[10px]"
+                style={{
+                  borderColor: item.checked ? '#818cf8' : 'var(--border-color)',
+                  background: item.checked ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: item.checked ? '#818cf8' : 'transparent',
+                }}
+              >{item.checked ? '✓' : ''}</span>
+              {inlineMarkdown(item.label)}
+            </label>
+          ))}
+        </div>,
+      );
+      continue;
+    }
+
     // 목록 (-, *, •)
     if (/^[-*•] /.test(line)) {
       const items: string[] = [];
@@ -6693,9 +6721,145 @@ function FeedbackWidget({ msg, onFeedback }: { msg: Message; onFeedback: (msgId:
   );
 }
 
+// ── 체크리스트에서 항목 추출 헬퍼 ────────────────────────────────────────────
+function extractChecklistItems(text: string): { label: string; checked: boolean }[] | null {
+  const lines = text.split('\n');
+  const items: { label: string; checked: boolean }[] = [];
+  for (const line of lines) {
+    if (/^- \[[ x]\] /i.test(line)) {
+      items.push({
+        checked: /^- \[x\] /i.test(line),
+        label: line.replace(/^- \[[ x]\] /i, ''),
+      });
+    }
+  }
+  return items.length >= 2 ? items : null;
+}
+
+// ── 인터랙티브 체크리스트 컴포넌트 ──────────────────────────────────────────
+function InteractiveChecklist({ items, onSubmit, msgId }: {
+  items: { label: string; checked: boolean }[];
+  onSubmit: (text: string, displayText?: string) => void;
+  msgId: string;
+}) {
+  const [checks, setChecks] = React.useState<boolean[]>(() => items.map(it => it.checked));
+  const [submitted, setSubmitted] = React.useState(false);
+
+  const toggle = (idx: number) => {
+    if (submitted) return;
+    setChecks(prev => { const n = [...prev]; n[idx] = !n[idx]; return n; });
+  };
+
+  const handleSubmit = () => {
+    if (submitted) return;
+    setSubmitted(true);
+    // 체크 결과를 텍스트로 변환하여 전송
+    const resultLines = items.map((it, idx) =>
+      `- [${checks[idx] ? 'x' : ' '}] ${it.label}`
+    );
+    const fullText = resultLines.join('\n');
+    // 표시용 텍스트는 체크된 것만 강조
+    const checkedLabels = items.filter((_, idx) => checks[idx]).map(it => it.label);
+    const uncheckedLabels = items.filter((_, idx) => !checks[idx]).map(it => it.label);
+    let displayText = '';
+    if (checkedLabels.length > 0) displayText += `✅ ${checkedLabels.join(', ')}`;
+    if (uncheckedLabels.length > 0) displayText += `${displayText ? '\n' : ''}❌ ${uncheckedLabels.join(', ')}`;
+    onSubmit(fullText, displayText || fullText);
+  };
+
+  const checkedCount = checks.filter(Boolean).length;
+
+  return (
+    <div
+      className="my-3 rounded-xl overflow-hidden"
+      style={{ border: '1px solid rgba(99,102,241,0.2)', background: 'rgba(15,17,26,0.6)' }}
+    >
+      {/* 헤더 */}
+      <div
+        className="flex items-center justify-between px-4 py-2.5"
+        style={{ borderBottom: '1px solid rgba(99,102,241,0.1)', background: 'rgba(99,102,241,0.04)' }}
+      >
+        <span className="text-[12px] font-semibold" style={{ color: '#a5b4fc' }}>
+          ☑️ 체크리스트 ({checkedCount}/{items.length})
+        </span>
+        {submitted && (
+          <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'rgba(34,197,94,0.15)', color: '#4ade80' }}>
+            ✓ 제출 완료
+          </span>
+        )}
+      </div>
+
+      {/* 항목들 */}
+      <div className="px-4 py-3 space-y-1">
+        {items.map((item, idx) => (
+          <label
+            key={`${msgId}-chk-${idx}`}
+            className="flex items-center gap-3 py-1.5 px-2 rounded-lg transition-colors"
+            style={{
+              cursor: submitted ? 'default' : 'pointer',
+              background: submitted
+                ? (checks[idx] ? 'rgba(34,197,94,0.06)' : 'rgba(239,68,68,0.04)')
+                : (checks[idx] ? 'rgba(99,102,241,0.06)' : 'transparent'),
+            }}
+            onClick={() => toggle(idx)}
+          >
+            {/* 커스텀 체크박스 */}
+            <span
+              className="flex-shrink-0 w-5 h-5 rounded-md flex items-center justify-center transition-all"
+              style={{
+                border: `2px solid ${submitted
+                  ? (checks[idx] ? '#4ade80' : 'rgba(239,68,68,0.4)')
+                  : (checks[idx] ? '#818cf8' : 'rgba(255,255,255,0.2)')}`,
+                background: submitted
+                  ? (checks[idx] ? 'rgba(34,197,94,0.15)' : 'transparent')
+                  : (checks[idx] ? 'rgba(99,102,241,0.2)' : 'transparent'),
+              }}
+            >
+              {checks[idx] && (
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M2.5 6L5 8.5L9.5 3.5" stroke={submitted ? '#4ade80' : '#818cf8'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              )}
+            </span>
+            <span
+              className="text-[13px]"
+              style={{
+                color: submitted
+                  ? (checks[idx] ? '#4ade80' : 'rgba(248,113,113,0.7)')
+                  : 'var(--text-secondary)',
+                textDecoration: submitted && !checks[idx] ? 'line-through' : 'none',
+              }}
+            >
+              {item.label}
+            </span>
+          </label>
+        ))}
+      </div>
+
+      {/* 제출 버튼 */}
+      {!submitted && (
+        <div className="px-4 py-3" style={{ borderTop: '1px solid rgba(99,102,241,0.1)' }}>
+          <button
+            onClick={handleSubmit}
+            className="w-full py-2 rounded-lg text-[12px] font-semibold transition-all active:scale-[0.98]"
+            style={{
+              background: 'linear-gradient(135deg, rgba(99,102,241,0.2), rgba(139,92,246,0.2))',
+              color: '#a5b4fc',
+              border: '1px solid rgba(99,102,241,0.3)',
+              cursor: 'pointer',
+            }}
+          >
+            📋 답변 제출 ({checkedCount}개 선택)
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 메시지 버블 ──────────────────────────────────────────────────────────────
 
-function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onFeedback }: { msg: Message; onContinue?: () => void; artifactStreaming?: { html: string; title: string; charCount: number; isComplete: boolean } | null; onOpenArtifact?: (tc: ArtifactResult) => void; onFeedback?: (msgId: string, rating: 'good' | 'bad', tags?: string[], comment?: string) => void }) {
+function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onFeedback, onSendMessage }: { msg: Message; onContinue?: () => void; artifactStreaming?: { html: string; title: string; charCount: number; isComplete: boolean } | null; onOpenArtifact?: (tc: ArtifactResult) => void; onFeedback?: (msgId: string, rating: 'good' | 'bad', tags?: string[], comment?: string) => void; onSendMessage?: (text: string, displayText?: string) => void }) {
   const isUser = msg.role === 'user';
 
   /* ── 유저 메시지: 우측 정렬 그라데이션 버블 ─────────────────────────────── */
@@ -6897,15 +7061,32 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onF
                   {msg.error}
                 </div>
               )}
-              {/* 본문 — 이터레이션별 분리 버블 */}
-              {(msg.iterations ?? [msg.content]).map((iterText, iterIdx, arr) => (
-                iterText?.trim() ? (
+              {/* 본문 — 이터레이션별 분리 버블 (체크리스트 감지 시 인터랙티브) */}
+              {(msg.iterations ?? [msg.content]).map((iterText, iterIdx, arr) => {
+                if (!iterText?.trim()) return null;
+                // 체크리스트 감지
+                const checkItems = extractChecklistItems(iterText);
+                // 체크리스트 앞뒤 텍스트 분리
+                let beforeChecklist = '';
+                let afterChecklist = '';
+                if (checkItems) {
+                  const checklistStart = iterText.search(/^- \[[ x]\] /im);
+                  beforeChecklist = iterText.slice(0, checklistStart).trim();
+                  // 체크리스트 마지막 줄 다음부터
+                  const checkLines = iterText.split('\n');
+                  let lastCheckIdx = -1;
+                  for (let ci = checkLines.length - 1; ci >= 0; ci--) {
+                    if (/^- \[[ x]\] /i.test(checkLines[ci])) { lastCheckIdx = ci; break; }
+                  }
+                  afterChecklist = checkLines.slice(lastCheckIdx + 1).join('\n').trim();
+                }
+                return (
                   <div key={iterIdx} className="relative">
                     {iterIdx > 0 && (
                       <div className="flex items-center gap-1.5 my-2 ml-1">
                         <div style={{ width: 1, height: 12, background: 'rgba(99,102,241,0.25)', marginLeft: 4 }} />
                         <span className="text-[10px] font-mono" style={{ color: '#4f5a74' }}>계속</span>
-              </div>
+                      </div>
                     )}
                     <div
                       className="text-[14px] leading-relaxed rounded-2xl"
@@ -6918,11 +7099,19 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onF
                         } : {}),
                       }}
                     >
-                      {renderMarkdown(iterText)}
+                      {checkItems && onSendMessage ? (
+                        <>
+                          {beforeChecklist && renderMarkdown(beforeChecklist)}
+                          <InteractiveChecklist items={checkItems} onSubmit={onSendMessage} msgId={msg.id} />
+                          {afterChecklist && renderMarkdown(afterChecklist)}
+                        </>
+                      ) : (
+                        renderMarkdown(iterText)
+                      )}
                     </div>
                   </div>
-                ) : null
-              ))}
+                );
+              })}
 
               {/* 잘린 응답 → 계속 생성 버튼 */}
               {msg.isTruncated && (
@@ -8059,6 +8248,7 @@ export default function ChatPage() {
                   });
                 }}
                 onFeedback={handleFeedback}
+                onSendMessage={sendMessage}
               />
                 </React.Fragment>
               );

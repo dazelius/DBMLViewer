@@ -967,6 +967,23 @@ function buildSystemPrompt(
   lines.push('- "기억해/저장해/널리지" 요청 → save_knowledge (name=영문_snake_case)');
   lines.push('- 널리지 목록에 있는 파일은 read_knowledge 도구로 언제든 읽을 수 있음');
   lines.push('');
+  lines.push('## ☑️ 인터랙티브 체크리스트 (확인/검증 질문 시 사용)');
+  lines.push('사용자에게 여러 항목의 맞다/틀리다, 있다/없다, 해당/비해당을 확인받아야 할 때:');
+  lines.push('표준 마크다운 체크박스를 사용하세요. UI가 자동으로 클릭 가능한 체크리스트로 변환합니다.');
+  lines.push('```');
+  lines.push('확인이 필요한 항목을 체크해주세요:');
+  lines.push('');
+  lines.push('- [ ] 항목 1 설명');
+  lines.push('- [ ] 항목 2 설명');
+  lines.push('- [ ] 항목 3 설명');
+  lines.push('- [ ] 항목 4 설명');
+  lines.push('```');
+  lines.push('규칙:');
+  lines.push('- 2개 이상 항목을 `- [ ]` 형식으로 나열하면 인터랙티브 체크리스트가 됨');
+  lines.push('- 사용자가 체크 후 "답변 제출" 버튼을 누르면 체크 결과가 자동 전송됨');
+  lines.push('- 예/아니오 확인, 해당 항목 선택, 검증 체크 등에 적극 활용할 것');
+  lines.push('');
+
   lines.push('## ⛔ HTML 출력 규칙');
   lines.push('채팅 텍스트에 HTML 태그(div/table/style/img 등) 절대 금지!');
   lines.push('모든 HTML/임베드 태그는 오직 아티팩트 안에만 (<<<ARTIFACT_START>>>...<<<ARTIFACT_END>>> 또는 patch_artifact)');

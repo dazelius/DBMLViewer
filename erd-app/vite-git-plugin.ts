@@ -5655,6 +5655,18 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   lines.push('가이드를 읽으면: 테이블 구조, FK 관계, 중요 컬럼, 클래스/메서드 위치를 사전에 알 수 있어 불필요한 탐색을 줄입니다.')
   lines.push('')
 
+  // ── 인터랙티브 체크리스트 ──
+  lines.push('[☑️ 인터랙티브 체크리스트 — 확인/검증 질문 시 사용]')
+  lines.push('사용자에게 여러 항목의 맞다/틀리다, 있다/없다, 해당/비해당을 확인받아야 할 때:')
+  lines.push('마크다운 체크박스 "- [ ] 항목" 형식 사용 → UI가 클릭 가능한 체크리스트로 자동 변환')
+  lines.push('예시:')
+  lines.push('  확인이 필요한 항목을 체크해주세요:')
+  lines.push('  - [ ] 항목 1')
+  lines.push('  - [ ] 항목 2')
+  lines.push('  - [ ] 항목 3')
+  lines.push('규칙: 2개 이상 - [ ] 항목 → 인터랙티브 체크리스트. 사용자가 체크 후 "답변 제출" 클릭 → 결과 자동 전송.')
+  lines.push('')
+
   // ── SQL 규칙 ──
   lines.push('[SQL 규칙 — 반드시 준수]')
   lines.push('- 테이블명: 대소문자 무시 (skill, Skill, SKILL 모두 동작)')
