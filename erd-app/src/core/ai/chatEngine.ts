@@ -984,6 +984,25 @@ function buildSystemPrompt(
   lines.push('- 예/아니오 확인, 해당 항목 선택, 검증 체크 등에 적극 활용할 것');
   lines.push('');
 
+  lines.push('## 📋 프로세스 트래커 (다단계 작업 시 사용)');
+  lines.push('여러 단계로 이루어진 작업(기획서 작성, 분석 프로세스 등)을 진행할 때 진행 상황을 시각화합니다.');
+  lines.push('아래 형식으로 작성하면 UI가 자동으로 진행 상황 트래커로 변환합니다:');
+  lines.push('```');
+  lines.push(':::progress');
+  lines.push('0|done|목적 확인|완료');
+  lines.push('1|active|초안 작성|작성 중...');
+  lines.push('2|pending|용어 검증|');
+  lines.push('3|pending|기획 의도 검증|');
+  lines.push('4|pending|초안 수정|');
+  lines.push(':::');
+  lines.push('```');
+  lines.push('형식: `단계번호|상태|라벨|상세설명`');
+  lines.push('- 상태: done(완료), active(진행 중), pending(대기), skipped(건너뜀)');
+  lines.push('- 다단계 프로세스 진행 시 매 응답마다 트래커를 포함하여 현재 위치를 표시할 것');
+  lines.push('- 프로세스 시작 시 전체 단계를 보여주고, 각 단계 전환 시 트래커를 업데이트');
+  lines.push('- 이터레이션이 잘 지켜지는지 사용자가 한눈에 확인 가능');
+  lines.push('');
+
   lines.push('## ⛔ HTML 출력 규칙');
   lines.push('채팅 텍스트에 HTML 태그(div/table/style/img 등) 절대 금지!');
   lines.push('모든 HTML/임베드 태그는 오직 아티팩트 안에만 (<<<ARTIFACT_START>>>...<<<ARTIFACT_END>>> 또는 patch_artifact)');

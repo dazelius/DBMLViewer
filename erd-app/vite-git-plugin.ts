@@ -5667,6 +5667,18 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   lines.push('규칙: 2개 이상 - [ ] 항목 → 인터랙티브 체크리스트. 사용자가 체크 후 "답변 제출" 클릭 → 결과 자동 전송.')
   lines.push('')
 
+  // ── 프로세스 트래커 ──
+  lines.push('[📋 프로세스 트래커 — 다단계 작업 시 사용]')
+  lines.push('여러 단계로 이루어진 작업 진행 시 아래 형식으로 진행 상황을 시각화:')
+  lines.push(':::progress')
+  lines.push('0|done|목적 확인|완료')
+  lines.push('1|active|초안 작성|작성 중...')
+  lines.push('2|pending|용어 검증|')
+  lines.push(':::')
+  lines.push('형식: 단계번호|상태(done/active/pending/skipped)|라벨|상세설명')
+  lines.push('매 응답마다 트래커를 포함하여 현재 단계를 표시할 것. 이터레이션 준수 확인용.')
+  lines.push('')
+
   // ── SQL 규칙 ──
   lines.push('[SQL 규칙 — 반드시 준수]')
   lines.push('- 테이블명: 대소문자 무시 (skill, Skill, SKILL 모두 동작)')

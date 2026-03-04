@@ -1449,6 +1449,131 @@ const ARTIFACTS_CACHE_KEY = 'datamaster_saved_artifacts';
 
 // ── 간단 마크다운 렌더러 ──────────────────────────────────────────────────────
 
+// ── 프로세스 트래커 컴포넌트 ──────────────────────────────────────────────
+type ProcessStep = { index: number; status: 'done' | 'active' | 'pending' | 'skipped'; label: string; detail: string };
+
+function ProcessTracker({ steps }: { steps: ProcessStep[] }) {
+  const activeIdx = steps.findIndex(s => s.status === 'active');
+  return (
+    <div
+      className="my-4 rounded-xl overflow-hidden"
+      style={{ border: '1px solid rgba(99,102,241,0.2)', background: 'rgba(15,17,26,0.7)' }}
+    >
+      {/* 헤더 */}
+      <div
+        className="flex items-center justify-between px-4 py-2.5"
+        style={{ borderBottom: '1px solid rgba(99,102,241,0.12)', background: 'rgba(99,102,241,0.04)' }}
+      >
+        <span className="text-[12px] font-semibold" style={{ color: '#a5b4fc' }}>
+          📋 프로세스 진행 상황
+        </span>
+        <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+          {steps.filter(s => s.status === 'done').length}/{steps.length} 완료
+        </span>
+      </div>
+
+      {/* 진행률 바 */}
+      <div className="px-4 pt-3 pb-1">
+        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
+          <div
+            className="h-full rounded-full transition-all duration-500"
+            style={{
+              width: `${Math.round(((steps.filter(s => s.status === 'done').length + (activeIdx >= 0 ? 0.5 : 0)) / steps.length) * 100)}%`,
+              background: 'linear-gradient(90deg, #818cf8, #a78bfa)',
+            }}
+          />
+        </div>
+      </div>
+
+      {/* 스텝 목록 */}
+      <div className="px-4 py-3 space-y-0">
+        {steps.map((step, idx) => {
+          const isDone = step.status === 'done';
+          const isActive = step.status === 'active';
+          const isSkipped = step.status === 'skipped';
+          const isPending = step.status === 'pending';
+          const isLast = idx === steps.length - 1;
+
+          return (
+            <div key={idx} className="flex">
+              {/* 타임라인 컬럼 (아이콘 + 연결선) */}
+              <div className="flex flex-col items-center mr-3 flex-shrink-0" style={{ width: 24 }}>
+                {/* 아이콘 */}
+                <div
+                  className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 transition-all"
+                  style={{
+                    background: isDone ? 'rgba(34,197,94,0.15)'
+                      : isActive ? 'rgba(99,102,241,0.2)'
+                      : isSkipped ? 'rgba(245,158,11,0.12)'
+                      : 'rgba(255,255,255,0.04)',
+                    border: `2px solid ${isDone ? '#4ade80' : isActive ? '#818cf8' : isSkipped ? '#f59e0b' : 'rgba(255,255,255,0.1)'}`,
+                    boxShadow: isActive ? '0 0 8px rgba(99,102,241,0.3)' : 'none',
+                  }}
+                >
+                  {isDone && (
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                      <path d="M2.5 6L5 8.5L9.5 3.5" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  )}
+                  {isActive && (
+                    <div className="w-2 h-2 rounded-full" style={{ background: '#818cf8', animation: 'pulse 2s cubic-bezier(0.4,0,0.6,1) infinite' }} />
+                  )}
+                  {isSkipped && (
+                    <span style={{ color: '#f59e0b', fontSize: 10, fontWeight: 700 }}>—</span>
+                  )}
+                  {isPending && (
+                    <span className="text-[9px] font-mono" style={{ color: 'rgba(255,255,255,0.25)' }}>{step.index}</span>
+                  )}
+                </div>
+                {/* 연결선 */}
+                {!isLast && (
+                  <div
+                    className="flex-1"
+                    style={{
+                      width: 2,
+                      minHeight: 16,
+                      background: isDone ? 'rgba(34,197,94,0.3)' : 'rgba(255,255,255,0.06)',
+                      borderRadius: 1,
+                    }}
+                  />
+                )}
+              </div>
+
+              {/* 라벨 + 상세 */}
+              <div className="flex-1 pb-3" style={{ minHeight: 32 }}>
+                <div className="flex items-center gap-2">
+                  <span
+                    className="text-[13px] font-medium"
+                    style={{
+                      color: isDone ? '#4ade80' : isActive ? '#e0e7ff' : isSkipped ? '#fbbf24' : 'var(--text-muted)',
+                      fontWeight: isActive ? 600 : 400,
+                    }}
+                  >
+                    {step.label}
+                  </span>
+                  {isActive && (
+                    <span
+                      className="text-[10px] px-2 py-0.5 rounded-full animate-pulse"
+                      style={{ background: 'rgba(99,102,241,0.15)', color: '#a5b4fc', border: '1px solid rgba(99,102,241,0.25)' }}
+                    >
+                      진행 중
+                    </span>
+                  )}
+                </div>
+                {step.detail && (
+                  <span className="text-[11px] mt-0.5 block" style={{ color: 'var(--text-muted)' }}>
+                    {step.detail}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function renderMarkdown(text: string): React.ReactNode[] {
   const lines = text.split('\n');
   const nodes: React.ReactNode[] = [];
@@ -1456,6 +1581,32 @@ function renderMarkdown(text: string): React.ReactNode[] {
 
   while (i < lines.length) {
     const line = lines[i];
+
+    // 프로세스 트래커 블록 (:::progress ... :::)
+    if (line.trim() === ':::progress') {
+      const stepLines: string[] = [];
+      i++;
+      while (i < lines.length && lines[i].trim() !== ':::') {
+        if (lines[i].trim()) stepLines.push(lines[i].trim());
+        i++;
+      }
+      if (i < lines.length) i++; // skip closing :::
+
+      const steps = stepLines.map(sl => {
+        const parts = sl.split('|');
+        return {
+          index: parseInt(parts[0] ?? '0', 10),
+          status: (parts[1] ?? 'pending') as 'done' | 'active' | 'pending' | 'skipped',
+          label: parts[2] ?? '',
+          detail: parts[3] ?? '',
+        };
+      }).filter(s => s.label);
+
+      if (steps.length > 0) {
+        nodes.push(<ProcessTracker key={`proc-${i}`} steps={steps} />);
+      }
+      continue;
+    }
 
     // 코드 블록 (``` 또는 ```lang)
     if (line.startsWith('```')) {
