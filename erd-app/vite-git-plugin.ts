@@ -4569,6 +4569,32 @@ const API_TOOLS = [
       required: [],
     },
   },
+  // ── Jira 쓰기 ──
+  {
+    name: 'add_jira_comment',
+    description: '지정한 Jira 이슈에 댓글을 작성합니다. 이슈 키(예: AEGIS-1234) 또는 Jira 이슈 URL(예: https://jira.example.com/browse/AEGIS-1234) 중 하나를 issueKeyOrUrl로 전달하세요. comment는 마크다운 형식으로 작성하면 자동으로 Jira 형식으로 변환됩니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        issueKeyOrUrl: { type: 'string', description: 'Jira 이슈 키(예: AEGIS-1234) 또는 전체 URL(예: https://jira.example.com/browse/AEGIS-1234)' },
+        comment: { type: 'string', description: '작성할 댓글 내용 (마크다운 지원)' },
+      },
+      required: ['issueKeyOrUrl', 'comment'],
+    },
+  },
+  {
+    name: 'update_jira_issue_status',
+    description: 'Jira 이슈의 상태를 변경합니다 (예: "In Progress", "Done", "To Do"). 가능한 상태 목록은 이슈마다 다르므로, 정확한 상태명을 모르면 listTransitions: true를 설정하여 목록을 먼저 확인하세요.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        issueKeyOrUrl: { type: 'string', description: 'Jira 이슈 키 또는 URL' },
+        targetStatus: { type: 'string', description: '변경할 상태 이름. 예: "In Progress", "Done", "To Do"' },
+        listTransitions: { type: 'boolean', description: 'true이면 상태 변경 없이 가능한 상태 목록만 반환' },
+      },
+      required: ['issueKeyOrUrl'],
+    },
+  },
 ]
 
 // ── 서버사이드 Tool 실행 ──
@@ -4992,6 +5018,93 @@ async function serverExecuteToolAsync(
     'build_character_profile', 'read_guide']
   if (syncTools.includes(toolName)) return serverExecuteTool(toolName, input, options)
 
+  // ── Jira 이슈 키 파싱 헬퍼 (URL or 키 모두 허용) ──
+  const parseIssueKey = (raw: string): string => {
+    const s = raw.trim()
+    // URL 형태: https://jira.example.com/browse/AEGIS-1234
+    const urlMatch = s.match(/\/browse\/([A-Z][A-Z0-9_]+-\d+)/i)
+    if (urlMatch) return urlMatch[1].toUpperCase()
+    // 순수 키 형태: AEGIS-1234
+    const keyMatch = s.match(/([A-Z][A-Z0-9_]+-\d+)/i)
+    if (keyMatch) return keyMatch[1].toUpperCase()
+    return s
+  }
+
+  // ── 마크다운 → Jira ADF 변환 ──
+  const markdownToAdf = (md: string): Record<string, unknown> => {
+    const lines = md.split('\n')
+    const content: Record<string, unknown>[] = []
+    let i = 0
+    while (i < lines.length) {
+      const line = lines[i]
+      // 코드 블록
+      if (line.startsWith('```')) {
+        const lang = line.slice(3).trim()
+        const codeLines: string[] = []
+        i++
+        while (i < lines.length && !lines[i].startsWith('```')) { codeLines.push(lines[i]); i++ }
+        content.push({ type: 'codeBlock', attrs: { language: lang || null }, content: [{ type: 'text', text: codeLines.join('\n') }] })
+        i++; continue
+      }
+      // 제목
+      const hMatch = line.match(/^(#{1,3})\s+(.+)$/)
+      if (hMatch) {
+        const level = Math.min(hMatch[1].length, 3)
+        content.push({ type: 'heading', attrs: { level }, content: inlineAdf(hMatch[2]) })
+        i++; continue
+      }
+      // 불릿 리스트 (연속 항목 묶기)
+      if (/^[-*]\s+/.test(line)) {
+        const items: Record<string, unknown>[] = []
+        while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
+          items.push({ type: 'listItem', content: [{ type: 'paragraph', content: inlineAdf(lines[i].replace(/^[-*]\s+/, '')) }] })
+          i++
+        }
+        content.push({ type: 'bulletList', content: items })
+        continue
+      }
+      // 번호 리스트
+      if (/^\d+\.\s+/.test(line)) {
+        const items: Record<string, unknown>[] = []
+        while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
+          items.push({ type: 'listItem', content: [{ type: 'paragraph', content: inlineAdf(lines[i].replace(/^\d+\.\s+/, '')) }] })
+          i++
+        }
+        content.push({ type: 'orderedList', content: items })
+        continue
+      }
+      // 수평선
+      if (/^---+$/.test(line.trim())) {
+        content.push({ type: 'rule' })
+        i++; continue
+      }
+      // 빈 줄 → 단락 구분자 역할 (아무것도 추가 안 함)
+      if (!line.trim()) { i++; continue }
+      // 일반 단락
+      content.push({ type: 'paragraph', content: inlineAdf(line) })
+      i++
+    }
+    if (content.length === 0) content.push({ type: 'paragraph', content: [{ type: 'text', text: md }] })
+    return { version: 1, type: 'doc', content }
+  }
+
+  // 인라인 마크다운 → ADF inline nodes
+  const inlineAdf = (text: string): Record<string, unknown>[] => {
+    const nodes: Record<string, unknown>[] = []
+    const re = /\*\*([^*]+)\*\*|_([^_]+)_|\`([^`]+)\`|\[([^\]]+)\]\(([^)]+)\)/g
+    let last = 0, m: RegExpExecArray | null
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) nodes.push({ type: 'text', text: text.slice(last, m.index) })
+      if (m[1]) nodes.push({ type: 'text', text: m[1], marks: [{ type: 'strong' }] })
+      else if (m[2]) nodes.push({ type: 'text', text: m[2], marks: [{ type: 'em' }] })
+      else if (m[3]) nodes.push({ type: 'text', text: m[3], marks: [{ type: 'code' }] })
+      else if (m[4] && m[5]) nodes.push({ type: 'text', text: m[4], marks: [{ type: 'link', attrs: { href: m[5] } }] })
+      last = m.index + m[0].length
+    }
+    if (last < text.length) nodes.push({ type: 'text', text: text.slice(last) })
+    return nodes.length > 0 ? nodes : [{ type: 'text', text }]
+  }
+
   const jiraToken = options.jiraApiToken || ''
   const jiraEmail = options.jiraUserEmail || ''
   const jiraBase = (options.jiraBaseUrl || '').replace(/\/$/, '')
@@ -5147,6 +5260,87 @@ async function serverExecuteToolAsync(
           data: { pageId, title: String(data.title ?? ''), space, url: confPageUrl, contentLength: htmlContent.length }
         }
       } catch (e) { return { result: `Confluence 페이지 조회 오류: ${e instanceof Error ? e.message : String(e)}` } }
+    }
+
+    // ── add_jira_comment ──
+    case 'add_jira_comment': {
+      const rawKey = String(input.issueKeyOrUrl ?? '')
+      const comment = String(input.comment ?? '')
+      if (!rawKey) return { result: 'issueKeyOrUrl이 필요합니다.' }
+      if (!comment.trim()) return { result: '댓글 내용이 비어 있습니다.' }
+      if (!jiraToken || !jiraBase) return { result: 'Jira 연결 정보가 설정되지 않았습니다 (.env 확인).' }
+      const issueKey = parseIssueKey(rawKey)
+      try {
+        const adfBody = markdownToAdf(comment)
+        const apiUrl = `${jiraBase}/rest/api/3/issue/${issueKey}/comment`
+        const resp = await fetch(apiUrl, {
+          method: 'POST',
+          headers: { Authorization: authHeader, Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body: adfBody }),
+        })
+        const data = await resp.json() as Record<string, unknown>
+        if (!resp.ok) {
+          const errMsg = (data?.errorMessages as string[])?.[0]
+            ?? JSON.stringify(data?.errors ?? data).slice(0, 200)
+          return { result: `댓글 작성 실패 (${resp.status}): ${errMsg}` }
+        }
+        const commentId = String(data.id ?? '')
+        const selfUrl = String(data.self ?? '')
+        const base0 = selfUrl.split('/rest/')[0]
+        const issueUrl = base0 ? `${base0}/browse/${issueKey}` : ''
+        return {
+          result: `✅ 댓글 작성 완료!\n이슈: ${issueKey}${issueUrl ? ` (${issueUrl})` : ''}\n댓글 ID: ${commentId}`,
+          data: { issueKey, commentId, issueUrl },
+        }
+      } catch (e) { return { result: `댓글 작성 오류: ${e instanceof Error ? e.message : String(e)}` } }
+    }
+
+    // ── update_jira_issue_status ──
+    case 'update_jira_issue_status': {
+      const rawKey = String(input.issueKeyOrUrl ?? '')
+      const targetStatus = String(input.targetStatus ?? '').trim()
+      const listOnly = input.listTransitions === true
+      if (!rawKey) return { result: 'issueKeyOrUrl이 필요합니다.' }
+      if (!jiraToken || !jiraBase) return { result: 'Jira 연결 정보가 설정되지 않았습니다.' }
+      const issueKey = parseIssueKey(rawKey)
+      try {
+        // 가능한 트랜지션 목록 조회
+        const transUrl = `${jiraBase}/rest/api/3/issue/${issueKey}/transitions`
+        const transResp = await fetch(transUrl, { headers: { Authorization: authHeader, Accept: 'application/json' } })
+        const transData = await transResp.json() as Record<string, unknown>
+        if (!transResp.ok) return { result: `트랜지션 조회 실패: ${transResp.status}` }
+        type Trans = { id: string; name: string; to?: Record<string, unknown> }
+        const transitions = (Array.isArray(transData.transitions) ? transData.transitions : []) as Trans[]
+
+        // 목록 반환 모드
+        if (listOnly || !targetStatus) {
+          const list = transitions.map(t => `  [${t.id}] ${t.name}`).join('\n')
+          return { result: `${issueKey} 가능한 상태 전환:\n${list}`, data: { transitions } }
+        }
+
+        // 대상 상태 검색 (대소문자 무시)
+        const target = transitions.find(t => t.name.toLowerCase() === targetStatus.toLowerCase())
+          ?? transitions.find(t => t.name.toLowerCase().includes(targetStatus.toLowerCase()))
+        if (!target) {
+          const names = transitions.map(t => t.name).join(', ')
+          return { result: `상태 "${targetStatus}"를 찾을 수 없습니다. 가능한 상태: ${names}` }
+        }
+
+        // 상태 전환 실행
+        const doResp = await fetch(transUrl, {
+          method: 'POST',
+          headers: { Authorization: authHeader, Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ transition: { id: target.id } }),
+        })
+        if (!doResp.ok) {
+          const errData = await doResp.json().catch(() => ({})) as Record<string, unknown>
+          return { result: `상태 변경 실패 (${doResp.status}): ${JSON.stringify(errData).slice(0, 200)}` }
+        }
+        return {
+          result: `✅ ${issueKey} 상태를 "${target.name}"으로 변경했습니다.`,
+          data: { issueKey, newStatus: target.name, transitionId: target.id },
+        }
+      } catch (e) { return { result: `상태 변경 오류: ${e instanceof Error ? e.message : String(e)}` } }
     }
 
     default:
