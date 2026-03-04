@@ -7408,14 +7408,86 @@ export default function ChatPage() {
       }
     } catch { /* 새 파일 생성 */ }
 
-    // 새 피드백 항목 생성
+    // 새 피드백 항목 생성 — 도구별 상세 정보 추출
     const emoji = rating === 'good' ? '✅' : '❌';
-    const toolNames = aiMsg.toolCalls?.map(tc => tc.kind).join(', ') ?? '';
+    const toolDetails: string[] = [];
+    const knowledgeFiles = new Set<string>();
+    const sqlQueries: string[] = [];
+    const jiraIssues: string[] = [];
+    const codeFiles: string[] = [];
+    const otherTools: string[] = [];
+
+    for (const tc of (aiMsg.toolCalls ?? [])) {
+      switch (tc.kind) {
+        case 'knowledge': {
+          const kr = tc as KnowledgeResult;
+          knowledgeFiles.add(`${kr.action}:${kr.name}`);
+          break;
+        }
+        case 'data_query': {
+          const dq = tc as DataQueryResult;
+          sqlQueries.push(dq.sql?.slice(0, 100) ?? '');
+          break;
+        }
+        case 'jira_issue': {
+          const ji = tc as JiraIssueResult;
+          jiraIssues.push(`조회:${ji.issueKey}`);
+          break;
+        }
+        case 'jira_comment': {
+          const jc = tc as JiraCommentResult;
+          jiraIssues.push(`댓글:${jc.issueKey ?? ''}`);
+          break;
+        }
+        case 'jira_create': {
+          const jcr = tc as JiraCreateResult;
+          jiraIssues.push(`생성:${jcr.issueKey ?? ''}`);
+          break;
+        }
+        case 'jira_status': {
+          const js = tc as JiraStatusResult;
+          jiraIssues.push(`상태변경:${js.issueKey ?? ''}`);
+          break;
+        }
+        case 'code_search': {
+          const cs = tc as CodeSearchResult;
+          otherTools.push(`코드검색:"${cs.query?.slice(0, 40) ?? ''}"`);
+          break;
+        }
+        case 'code_file': {
+          const cf = tc as CodeFileResult;
+          codeFiles.push(cf.path?.split('/').pop() ?? '');
+          break;
+        }
+        case 'schema_card':
+          otherTools.push(`스키마:${(tc as SchemaCardResult).tableName}`);
+          break;
+        case 'git_history':
+          otherTools.push('Git이력조회');
+          break;
+        case 'revision_diff':
+          otherTools.push(`Git diff:${(tc as RevisionDiffResult).commit?.short ?? ''}`);
+          break;
+        case 'artifact':
+        case 'artifact_patch':
+          otherTools.push('아티팩트 생성');
+          break;
+        default:
+          otherTools.push(tc.kind);
+      }
+    }
+
+    if (knowledgeFiles.size > 0) toolDetails.push(`📚 널리지: ${[...knowledgeFiles].join(', ')}`);
+    if (sqlQueries.length > 0) toolDetails.push(`🔍 SQL: ${sqlQueries.map(q => `\`${q}\``).join(', ')}`);
+    if (jiraIssues.length > 0) toolDetails.push(`🎫 Jira: ${jiraIssues.join(', ')}`);
+    if (codeFiles.length > 0) toolDetails.push(`💻 코드: ${codeFiles.join(', ')}`);
+    if (otherTools.length > 0) toolDetails.push(`🔧 기타: ${otherTools.join(', ')}`);
+
     const newEntry = [
       `## ${emoji} [${dateStr} ${timeStr}] ${rating === 'good' ? '긍정' : '부정'} 피드백`,
       `- **질문**: ${userQuery}`,
       `- **AI 답변 요약**: ${aiAnswer.replace(/\n/g, ' ').slice(0, 200)}`,
-      toolNames ? `- **사용 도구**: ${toolNames}` : '',
+      ...toolDetails.map(d => `- **${d}**`),
       comment ? `- **사용자 의견**: ${comment}` : '',
       rating === 'bad' ? `- **개선 필요**: 이 패턴의 질문에 대해 더 정확하고 유용한 답변이 필요함` : `- **유지 패턴**: 이런 방식의 답변이 사용자에게 도움이 됨`,
       '',
@@ -7465,14 +7537,33 @@ export default function ChatPage() {
       // 1개 이상부터 개선 가이드 생성 (매번 갱신)
       if (totalCount < 1) return;
 
+      // 피드백 항목에서 상세 정보 추출 헬퍼
+      const extractEntryDetails = (entry: string) => {
+        const question = entry.match(/\*\*질문\*\*:\s*(.+)/)?.[1]?.slice(0, 100) ?? '';
+        const answer = entry.match(/\*\*AI 답변 요약\*\*:\s*(.+)/)?.[1]?.slice(0, 80) ?? '';
+        const opinion = entry.match(/\*\*사용자 의견\*\*:\s*(.+)/)?.[1]?.slice(0, 80) ?? '';
+        // 상세 도구 정보 추출 (📚, 🔍, 🎫, 💻, 🔧)
+        const tools: string[] = [];
+        const knMatch = entry.match(/\*\*📚 널리지:\s*(.+?)\*\*/);
+        if (knMatch) tools.push(`널리지: ${knMatch[1].slice(0, 60)}`);
+        const sqlMatch = entry.match(/\*\*🔍 SQL:\s*(.+?)\*\*/);
+        if (sqlMatch) tools.push(`SQL: ${sqlMatch[1].slice(0, 60)}`);
+        const jiraMatch = entry.match(/\*\*🎫 Jira:\s*(.+?)\*\*/);
+        if (jiraMatch) tools.push(`Jira: ${jiraMatch[1].slice(0, 40)}`);
+        const codeMatch = entry.match(/\*\*💻 코드:\s*(.+?)\*\*/);
+        if (codeMatch) tools.push(`코드: ${codeMatch[1].slice(0, 40)}`);
+        return { question, answer, opinion, tools };
+      };
+
       // 긍정 패턴 추출
       const positiveEntries = content.split(/\n(?=## ✅)/).filter(e => e.startsWith('## ✅'));
       const goodPatterns: string[] = [];
       for (const entry of positiveEntries.slice(0, 15)) {
-        const questionMatch = entry.match(/\*\*질문\*\*:\s*(.+)/);
-        const toolMatch = entry.match(/\*\*사용 도구\*\*:\s*(.+)/);
-        if (questionMatch) {
-          goodPatterns.push(`✅ ${questionMatch[1].slice(0, 80)}${toolMatch ? ` [도구: ${toolMatch[1].slice(0, 40)}]` : ''}`);
+        const d = extractEntryDetails(entry);
+        if (d.question) {
+          let line = `✅ ${d.question}`;
+          if (d.tools.length > 0) line += ` [${d.tools.join(' | ')}]`;
+          goodPatterns.push(line);
         }
       }
 
@@ -7480,10 +7571,12 @@ export default function ChatPage() {
       const negativeEntries = content.split(/\n(?=## ❌)/).filter(e => e.startsWith('## ❌'));
       const badPatterns: string[] = [];
       for (const entry of negativeEntries.slice(0, 15)) {
-        const questionMatch = entry.match(/\*\*질문\*\*:\s*(.+)/);
-        const opinionMatch = entry.match(/\*\*사용자 의견\*\*:\s*(.+)/);
-        if (questionMatch) {
-          badPatterns.push(`❌ ${questionMatch[1].slice(0, 80)}${opinionMatch ? ` → "${opinionMatch[1].slice(0, 60)}"` : ''}`);
+        const d = extractEntryDetails(entry);
+        if (d.question) {
+          let line = `❌ ${d.question}`;
+          if (d.opinion) line += ` → "${d.opinion}"`;
+          if (d.tools.length > 0) line += ` [${d.tools.join(' | ')}]`;
+          badPatterns.push(line);
         }
       }
 
