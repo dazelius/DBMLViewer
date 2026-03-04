@@ -187,6 +187,7 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
   const [showDelete, setShowDelete] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [showMoveMenu, setShowMoveMenu] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const moveMenuRef = useRef<HTMLDivElement>(null);
   const confirmRef = useRef(false);
 
@@ -199,6 +200,14 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [showMoveMenu]);
+
+  const handleDragStart = (e: React.DragEvent) => {
+    e.dataTransfer.setData('text/plain', meta.id);
+    e.dataTransfer.effectAllowed = 'move';
+    setDragging(true);
+  };
+  const handleDragEnd = () => setDragging(false);
+
   const docUrl = `/api/p/${meta.id}`;
   const fullUrl = `${window.location.origin}${docUrl}`;
 
@@ -291,6 +300,9 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
   if (viewMode === 'list') {
     return (
       <div
+        draggable
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
         onClick={onSelect}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
@@ -298,6 +310,7 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
         style={{
           background: isSelected ? 'rgba(99,102,241,0.12)' : hovered ? 'rgba(255,255,255,0.03)' : 'transparent',
           border: isSelected ? '1px solid rgba(99,102,241,0.4)' : '1px solid transparent',
+          opacity: dragging ? 0.4 : 1,
         }}
       >
         {/* 아이콘 */}
@@ -325,6 +338,9 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
   // ══════════════ 그리드 뷰 (썸네일 전용) ══════════════
   return (
     <div
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
       onClick={onSelect}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -333,6 +349,7 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
         background: '#0a0f1a',
         border: isSelected ? '2px solid #818cf8' : '1px solid var(--border-color)',
         boxShadow: isSelected ? '0 0 20px rgba(99,102,241,0.25)' : hovered ? '0 4px 20px rgba(0,0,0,0.5)' : '0 2px 8px rgba(0,0,0,0.3)',
+        opacity: dragging ? 0.4 : 1,
         aspectRatio: '16/10',
       }}
     >
@@ -391,18 +408,26 @@ function FolderTreeItem({
   node,
   depth,
   selectedId,
+  dragOverId,
   onSelect,
   onCreateChild,
   onRename,
   onDelete,
+  onDrop,
+  onDragEnter,
+  onDragLeave,
 }: {
   node: FolderNode;
   depth: number;
   selectedId: string | null;
+  dragOverId: string | null;
   onSelect: (id: string) => void;
   onCreateChild: (parentId: string) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
+  onDrop: (docId: string, folderId: string) => void;
+  onDragEnter: (folderId: string) => void;
+  onDragLeave: () => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [hovered, setHovered] = useState(false);
@@ -412,6 +437,7 @@ function FolderTreeItem({
   const ctxRef = useRef<HTMLDivElement>(null);
   const renameRef = useRef<HTMLInputElement>(null);
   const isSelected = selectedId === node.id;
+  const isDragOver = dragOverId === node.id;
 
   useEffect(() => {
     if (!showCtx) return;
@@ -435,10 +461,15 @@ function FolderTreeItem({
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         onClick={() => onSelect(node.id)}
+        onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; onDragEnter(node.id); }}
+        onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) onDragLeave(); }}
+        onDrop={e => { e.preventDefault(); const docId = e.dataTransfer.getData('text/plain'); if (docId) onDrop(docId, node.id); onDragLeave(); }}
         className="flex items-center gap-1 pr-1 py-1 rounded-lg cursor-pointer select-none group"
         style={{
           paddingLeft: 8 + depth * 14,
-          background: isSelected ? 'rgba(99,102,241,0.15)' : hovered ? 'rgba(255,255,255,0.04)' : 'transparent',
+          background: isDragOver ? 'rgba(99,102,241,0.25)' : isSelected ? 'rgba(99,102,241,0.15)' : hovered ? 'rgba(255,255,255,0.04)' : 'transparent',
+          border: isDragOver ? '1px dashed rgba(129,140,248,0.7)' : '1px solid transparent',
+          transition: 'background 0.1s, border 0.1s',
         }}
       >
         {/* 확장/축소 chevron */}
@@ -520,10 +551,14 @@ function FolderTreeItem({
           node={child}
           depth={depth + 1}
           selectedId={selectedId}
+          dragOverId={dragOverId}
           onSelect={onSelect}
           onCreateChild={onCreateChild}
           onRename={onRename}
           onDelete={onDelete}
+          onDrop={onDrop}
+          onDragEnter={onDragEnter}
+          onDragLeave={onDragLeave}
         />
       ))}
     </div>
@@ -539,18 +574,31 @@ function FolderSidebar({
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
+  onMove,
 }: {
   folders: FolderMeta[];
   docs: PublishedMeta[];
-  selectedFolderId: string | null;   // null = All
+  selectedFolderId: string | null;
   onSelectFolder: (id: string | null) => void;
   onCreateFolder: (parentId: string | null) => void;
   onRenameFolder: (id: string, name: string) => void;
   onDeleteFolder: (id: string) => void;
+  onMove: (docId: string, folderId: string | null) => void;
 }) {
   const tree = useMemo(() => buildFolderTree(folders, docs), [folders, docs]);
   const allCount = docs.length;
   const unfiledCount = docs.filter(d => !d.folderId).length;
+
+  // 드래그 중 강조 표시할 대상 ID
+  // '__root__' = 루트(미분류)로 이동, 폴더 id = 해당 폴더로 이동
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+
+  const handleDrop = (docId: string, folderId: string | null) => {
+    onMove(docId, folderId);
+    setDragOverId(null);
+  };
+
+  const rootDragOver = dragOverId === '__root__';
 
   return (
     <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
@@ -571,13 +619,18 @@ function FolderSidebar({
 
       {/* 트리 */}
       <div className="flex-1 overflow-y-auto py-1 px-1">
-        {/* All */}
+        {/* All — 드롭하면 루트(미분류)로 이동 */}
         <div
           onClick={() => onSelectFolder(null)}
+          onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverId('__root__'); }}
+          onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverId(null); }}
+          onDrop={e => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id) handleDrop(id, null); }}
           className="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer select-none"
           style={{
-            background: selectedFolderId === null ? 'rgba(99,102,241,0.15)' : 'transparent',
+            background: rootDragOver ? 'rgba(99,102,241,0.25)' : selectedFolderId === null ? 'rgba(99,102,241,0.15)' : 'transparent',
+            border: rootDragOver ? '1px dashed rgba(129,140,248,0.7)' : '1px solid transparent',
             color: selectedFolderId === null ? '#a5b4fc' : 'var(--text-secondary)',
+            transition: 'background 0.1s, border 0.1s',
           }}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
@@ -619,10 +672,14 @@ function FolderSidebar({
             node={node}
             depth={0}
             selectedId={selectedFolderId}
+            dragOverId={dragOverId}
             onSelect={onSelectFolder}
             onCreateChild={onCreateFolder}
             onRename={onRenameFolder}
             onDelete={onDeleteFolder}
+            onDrop={(docId, folderId) => handleDrop(docId, folderId)}
+            onDragEnter={setDragOverId}
+            onDragLeave={() => setDragOverId(null)}
           />
         ))}
 
@@ -1220,6 +1277,7 @@ export default function ExplorePage() {
               onCreateFolder={handleCreateFolder}
               onRenameFolder={handleRenameFolder}
               onDeleteFolder={handleDeleteFolder}
+              onMove={handleMove}
             />
           </div>
         )}
