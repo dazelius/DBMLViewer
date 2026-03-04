@@ -6230,7 +6230,7 @@ export default function ChatPage() {
   // 현재 AI 표정 계산 (최신 AI 메시지 기준)
   const currentExpression = useMemo<ExpressionKey>(() => {
     const lastAI = [...messages].reverse().find(m => m.role === 'assistant');
-    if (!lastAI) return 'smile';
+    if (!lastAI) return 'happy';
     return getExpressionForMessage(lastAI);
   }, [messages]);
 
@@ -6883,7 +6883,7 @@ export default function ChatPage() {
               <div className="fixed inset-0 flex flex-col items-center justify-center text-center pointer-events-none" style={{ color: 'var(--text-muted)', zIndex: 0 }}>
                 <div className="pointer-events-auto flex flex-col items-center text-center">
                 {/* 캐릭터 포트레이트 — 빈 화면 */}
-                <CharacterPortrait expression="smile" size={96} className="mb-5" />
+                <CharacterPortrait expression="happy" size={96} className="mb-5" />
                 <h2 className="text-[22px] font-bold mb-3" style={{ color: 'var(--text-primary)' }}>
                   DataMaster
                 </h2>
