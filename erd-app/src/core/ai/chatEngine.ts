@@ -1774,6 +1774,8 @@ export async function sendChatMessage(
   onArtifactProgress?: (html: string, title: string, charCount: number, rawJson?: string) => void,
   onThinkingUpdate?: (step: ThinkingStep) => void,
   onTokenUsage?: (usage: TokenUsageSummary) => void,
+  /** 도구 필터: 지정 시 해당 이름의 도구만 사용 가능 (예: ['patch_artifact']) */
+  toolFilter?: string[],
 ): Promise<{ content: string; toolCalls: ToolCallResult[]; rawMessages?: ClaudeMsg[]; tokenUsage?: TokenUsageSummary }> {
   // 컴포넌트가 아직 로딩 중일 때 schema가 null일 수 있으므로 스토어에서 fallback
   const effectiveSchema = schema ?? useSchemaStore.getState().schema;
@@ -1962,8 +1964,11 @@ export async function sendChatMessage(
   // cache_control 마커를 추가하면 동일한 시스템 프롬프트가 서버에 캐싱됨 (5분 TTL)
   // 첫 요청: cache_creation_input_tokens 발생 (25% 비용 증가)
   // 후속 요청: cache_read_input_tokens 발생 (90% 비용 절감 + TTFT 80% 감소)
-  const cachedTools = TOOLS.map((tool, idx) =>
-    idx === TOOLS.length - 1
+  // 도구 필터 적용: toolFilter가 있으면 해당 도구만 사용
+  const filteredTools = toolFilter ? TOOLS.filter(t => toolFilter.includes(t.name)) : TOOLS;
+  if (toolFilter) console.log(`[Chat] 🔒 도구 제한: ${toolFilter.join(', ')} (${filteredTools.length}/${TOOLS.length}개)`);
+  const cachedTools = filteredTools.map((tool, idx) =>
+    idx === filteredTools.length - 1
       ? { ...tool, cache_control: { type: 'ephemeral' as const } }  // 마지막 도구에 캐시 브레이크포인트
       : tool
   );

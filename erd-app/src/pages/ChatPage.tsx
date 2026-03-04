@@ -2781,8 +2781,13 @@ function ArtifactSidePanel({
       const changed = _artBuf.ver !== lastVer;
       if (changed) lastVer = _artBuf.ver;
 
-      // ── 1) iframe body 갱신 (ver 변경 또는 길이 증가 시 — 패치 모드에서는 길이가 줄 수도 있음) ──
-      if (_artBuf.html.length > lastIframeHtmlLen || (changed && _artBuf.html.length > 0 && _artBuf.html.length !== lastIframeHtmlLen)) {
+      // ── 1) iframe body 갱신 ──
+      // 패치 모드: ver 변경될 때마다 무조건 갱신 (길이가 같아도 내용이 다를 수 있음)
+      // 생성 모드: 길이 증가 시에만 갱신
+      const shouldUpdateIframe = _artBuf.baseHtml
+        ? (changed && _artBuf.html.length > 0)  // 패치 모드: ver 변경 = 패치 적용됨
+        : (_artBuf.html.length > lastIframeHtmlLen || (changed && _artBuf.html.length > 0 && _artBuf.html.length !== lastIframeHtmlLen));
+      if (shouldUpdateIframe) {
         const iframe = streamIframeRef.current ?? document.getElementById('artifact-stream-iframe') as HTMLIFrameElement | null;
         const doc = iframe?.contentDocument;
         if (doc?.body) {
@@ -6044,6 +6049,8 @@ export default function ChatPage() {
             ),
           );
         },
+        // ★ 편집 요청 시 patch_artifact만 사용 가능 (데이터 조회 등 차단 → 속도 대폭 향상)
+        isEditRequest ? ['patch_artifact'] : undefined,
       );
 
       // history 갱신 (max_tokens로 잘린 경우 rawMessages 포함 → 계속해줘 지원)
