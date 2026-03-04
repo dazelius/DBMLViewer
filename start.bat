@@ -40,6 +40,12 @@ echo [INFO] 빌드 완료!
 
 :START_SERVER
 echo.
+echo [INFO] 5173 포트 기존 프로세스 종료 중...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5173 " 2^>nul') do (
+  taskkill /PID %%a /F >nul 2>&1
+)
+timeout /t 1 /nobreak >nul
+
 echo [INFO] 서버 시작 중...
 echo [INFO] 주소: http://localhost:5173/TableMaster
 echo [INFO] 종료하려면 Ctrl+C 를 누르세요.
