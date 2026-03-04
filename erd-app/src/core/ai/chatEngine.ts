@@ -529,6 +529,8 @@ export const TOOL_META: ToolMeta[] = [
   { name: 'patch_artifact',         label: '아티팩트 수정',       emoji: '✏️', dataSources: [] },
   { name: 'search_jira',            label: 'Jira 검색',          emoji: '🎫', dataSources: ['jira'] },
   { name: 'get_jira_issue',         label: 'Jira 이슈',          emoji: '🎫', dataSources: ['jira'] },
+  { name: 'add_jira_comment',       label: 'Jira 댓글 작성',     emoji: '✍️', dataSources: ['jira'] },
+  { name: 'update_jira_issue_status', label: 'Jira 상태 변경',   emoji: '🔄', dataSources: ['jira'] },
   { name: 'search_confluence',      label: 'Confluence 검색',    emoji: '📚', dataSources: ['confluence'] },
   { name: 'get_confluence_page',    label: 'Confluence 페이지',   emoji: '📚', dataSources: ['confluence'] },
   { name: 'save_knowledge',         label: '널리지 저장',         emoji: '🧠', dataSources: ['knowledge'] },
@@ -837,6 +839,32 @@ const TOOLS = [
         name: { type: 'string', description: '파일 이름 (""=전체 목록)' },
       },
       required: [],
+    },
+  },
+  // ── Jira 쓰기 툴 ──────────────────────────────────────────────────────────
+  {
+    name: 'add_jira_comment',
+    description: '⭐ Jira 이슈에 댓글을 직접 작성합니다. 이슈 키(AEGIS-1234) 또는 전체 URL을 issueKey로 전달하세요. comment는 마크다운 형식으로 작성하면 됩니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        issueKey: { type: 'string', description: 'Jira 이슈 키(AEGIS-1234) 또는 전체 URL' },
+        comment: { type: 'string', description: '작성할 댓글 내용 (마크다운 지원)' },
+      },
+      required: ['issueKey', 'comment'],
+    },
+  },
+  {
+    name: 'update_jira_issue_status',
+    description: '⭐ Jira 이슈의 상태를 변경합니다. 가능한 상태 목록을 모르면 listTransitions: true로 먼저 조회하세요.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        issueKey: { type: 'string', description: 'Jira 이슈 키 또는 URL' },
+        targetStatus: { type: 'string', description: '변경할 상태명 (예: "In Progress", "Done")' },
+        listTransitions: { type: 'boolean', description: 'true이면 가능한 상태 목록만 반환' },
+      },
+      required: ['issueKey'],
     },
   },
 ];
@@ -1686,6 +1714,7 @@ const KIND_TO_TOOL: Record<string, string> = {
   asset_search: 'search_assets', scene_yaml: 'read_scene_yaml',
   prefab_preview: 'preview_prefab', fbx_animation: 'preview_fbx_animation',
   jira_search: 'search_jira', jira_issue: 'get_jira_issue',
+  jira_comment: 'add_jira_comment', jira_status: 'update_jira_issue_status',
   confluence_search: 'search_confluence', confluence_page: 'get_confluence_page',
 };
 
@@ -3245,6 +3274,84 @@ function showTab(id){
           } catch (e) {
             resultStr = `Jira 이슈 조회 오류: ${String(e)}`;
             tc = { kind: 'jira_issue', issueKey, error: String(e), duration: 0 } as JiraIssueResult;
+          }
+        }
+
+        // ── add_jira_comment ──
+        else if (tb.name === 'add_jira_comment') {
+          const rawKey = String(inp.issueKey ?? inp.issueKeyOrUrl ?? '').trim();
+          const comment = String(inp.comment ?? inp.commentBody ?? '').trim();
+          // URL에서 이슈 키 추출
+          const issueKey = rawKey.match(/[A-Z]+-\d+/)?.[0] ?? rawKey;
+          const t0 = performance.now();
+          try {
+            const resp = await fetch('/api/jira/comment', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ issueKey, comment }),
+            });
+            const data2 = await resp.json() as Record<string, unknown>;
+            const duration = performance.now() - t0;
+            if (!resp.ok) {
+              resultStr = `Jira 댓글 작성 실패 (${resp.status}): ${String(data2.error ?? data2)}`;
+              tc = { kind: 'jira_comment', issueKey, error: resultStr, duration } as unknown as ToolCallResult;
+            } else {
+              const commentId = String(data2.commentId ?? '');
+              const issueUrl = String(data2.issueUrl ?? '');
+              resultStr = `✅ 댓글 작성 완료!\n이슈: ${issueKey}${issueUrl ? ` (${issueUrl})` : ''}\n댓글 ID: ${commentId}\n작성 내용:\n${comment}`;
+              tc = { kind: 'jira_comment', issueKey, commentId, issueUrl, comment, duration } as unknown as ToolCallResult;
+            }
+          } catch (e) {
+            resultStr = `Jira 댓글 작성 오류: ${String(e)}`;
+            tc = { kind: 'jira_comment', issueKey, error: String(e), duration: 0 } as unknown as ToolCallResult;
+          }
+        }
+
+        // ── update_jira_issue_status ──
+        else if (tb.name === 'update_jira_issue_status') {
+          const rawKey = String(inp.issueKey ?? inp.issueKeyOrUrl ?? '').trim();
+          const targetStatus = String(inp.targetStatus ?? inp.statusName ?? '').trim();
+          const listOnly = Boolean(inp.listTransitions ?? false);
+          const issueKey = rawKey.match(/[A-Z]+-\d+/)?.[0] ?? rawKey;
+          const t0 = performance.now();
+          try {
+            // 가능한 트랜지션 목록 조회
+            const transResp = await fetch(`/api/jira/transitions/${encodeURIComponent(issueKey)}`);
+            const transData = await transResp.json() as Record<string, unknown>;
+            type Trans = { id: string; name: string };
+            const transitions = (Array.isArray(transData.transitions) ? transData.transitions : []) as Trans[];
+
+            if (listOnly || !targetStatus) {
+              const list = transitions.map((t: Trans) => `  [${t.id}] ${t.name}`).join('\n');
+              resultStr = `${issueKey} 가능한 상태 전환:\n${list}`;
+              tc = { kind: 'jira_status', issueKey, transitions, duration: performance.now() - t0 } as unknown as ToolCallResult;
+            } else {
+              const target = transitions.find((t: Trans) => t.name.toLowerCase() === targetStatus.toLowerCase())
+                ?? transitions.find((t: Trans) => t.name.toLowerCase().includes(targetStatus.toLowerCase()));
+              if (!target) {
+                const names = transitions.map((t: Trans) => t.name).join(', ');
+                resultStr = `상태 "${targetStatus}"를 찾을 수 없습니다. 가능한 상태: ${names}`;
+                tc = { kind: 'jira_status', issueKey, error: resultStr, duration: performance.now() - t0 } as unknown as ToolCallResult;
+              } else {
+                const doResp = await fetch(`/api/jira/transitions/${encodeURIComponent(issueKey)}`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ transitionId: target.id }),
+                });
+                const duration = performance.now() - t0;
+                if (!doResp.ok) {
+                  const errData = await doResp.json().catch(() => ({})) as Record<string, unknown>;
+                  resultStr = `상태 변경 실패 (${doResp.status}): ${JSON.stringify(errData).slice(0, 200)}`;
+                  tc = { kind: 'jira_status', issueKey, error: resultStr, duration } as unknown as ToolCallResult;
+                } else {
+                  resultStr = `✅ ${issueKey} 상태를 "${target.name}"으로 변경했습니다.`;
+                  tc = { kind: 'jira_status', issueKey, newStatus: target.name, duration } as unknown as ToolCallResult;
+                }
+              }
+            }
+          } catch (e) {
+            resultStr = `Jira 상태 변경 오류: ${String(e)}`;
+            tc = { kind: 'jira_status', issueKey, error: String(e), duration: 0 } as unknown as ToolCallResult;
           }
         }
 

@@ -3195,6 +3195,80 @@ function createGitMiddleware(options: GitPluginOptions) {
           return
         }
 
+        // ── POST /api/jira/comment  →  이슈에 댓글 작성 ───────────────────────
+        if (req.url.startsWith('/api/jira/comment') && req.method === 'POST') {
+          const body = await readBody(req)
+          let parsed: Record<string, unknown> = {}
+          try { parsed = JSON.parse(body) } catch { /* ignore */ }
+          const issueKey = String(parsed.issueKey ?? '').trim()
+          const commentMd = String(parsed.comment ?? '').trim()
+          if (!issueKey) { sendJson(res, 400, { error: 'issueKey 필요' }); return }
+          if (!commentMd) { sendJson(res, 400, { error: 'comment 필요' }); return }
+
+          // Markdown → Jira ADF 변환 (단순 paragraph 분할)
+          function mdToAdf(md: string): Record<string, unknown> {
+            const paras = md.split(/\n{2,}/).map(p => p.trim()).filter(Boolean)
+            return {
+              version: 1,
+              type: 'doc',
+              content: paras.map(p => ({
+                type: 'paragraph',
+                content: [{ type: 'text', text: p }],
+              })),
+            }
+          }
+          const adfBody = mdToAdf(commentMd)
+          const apiUrl = `${baseUrl}/rest/api/3/issue/${issueKey}/comment`
+          const apiResp = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { Authorization: authHeader, Accept: 'application/json', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body: adfBody }),
+          })
+          const data = await apiResp.json() as Record<string, unknown>
+          if (!apiResp.ok) {
+            const errMsg = (data?.errorMessages as string[])?.[0] ?? JSON.stringify(data?.errors ?? data).slice(0, 200)
+            sendJson(res, apiResp.status, { error: errMsg, raw: data })
+          } else {
+            const selfUrl = String(data.self ?? '')
+            const issueUrl = selfUrl ? `${selfUrl.split('/rest/')[0]}/browse/${issueKey}` : ''
+            sendJson(res, 200, { commentId: String(data.id ?? ''), issueKey, issueUrl })
+          }
+          return
+        }
+
+        // ── GET /api/jira/transitions/:key  →  가능한 상태 목록 조회 ──────────
+        if (req.url.startsWith('/api/jira/transitions/') && req.method === 'GET') {
+          const issueKey = url2.pathname.replace('/api/jira/transitions/', '').split('?')[0]
+          const apiUrl = `${baseUrl}/rest/api/3/issue/${issueKey}/transitions`
+          const apiResp = await fetch(apiUrl, { headers: { Authorization: authHeader, Accept: 'application/json' } })
+          const data = await apiResp.json() as Record<string, unknown>
+          sendJson(res, apiResp.ok ? 200 : apiResp.status, data)
+          return
+        }
+
+        // ── POST /api/jira/transitions/:key  →  상태 변경 ────────────────────
+        if (req.url.startsWith('/api/jira/transitions/') && req.method === 'POST') {
+          const issueKey = url2.pathname.replace('/api/jira/transitions/', '').split('?')[0]
+          const body = await readBody(req)
+          let parsed: Record<string, unknown> = {}
+          try { parsed = JSON.parse(body) } catch { /* ignore */ }
+          const transitionId = String(parsed.transitionId ?? '').trim()
+          if (!transitionId) { sendJson(res, 400, { error: 'transitionId 필요' }); return }
+          const apiUrl = `${baseUrl}/rest/api/3/issue/${issueKey}/transitions`
+          const apiResp = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { Authorization: authHeader, Accept: 'application/json', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ transition: { id: transitionId } }),
+          })
+          if (apiResp.status === 204 || apiResp.ok) {
+            sendJson(res, 200, { ok: true })
+          } else {
+            const data = await apiResp.json().catch(() => ({})) as Record<string, unknown>
+            sendJson(res, apiResp.status, { error: JSON.stringify(data).slice(0, 200) })
+          }
+          return
+        }
+
         sendJson(res, 404, { error: 'Unknown Jira/Confluence endpoint' })
         return
       } catch (jiraErr) {
