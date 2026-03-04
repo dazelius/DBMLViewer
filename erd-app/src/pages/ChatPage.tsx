@@ -5836,7 +5836,7 @@ function CharacterPortrait({
       style={{
         width: size,
         height: size,
-        backgroundImage: 'url(/portrait.png)',
+        backgroundImage: 'url(/TableMaster/portrait.png)',
         backgroundSize: '500% 300%',
         backgroundPosition: `${xPct}% ${yPct}%`,
         border: animate ? '2px solid rgba(99,102,241,0.7)' : '2px solid rgba(99,102,241,0.35)',
