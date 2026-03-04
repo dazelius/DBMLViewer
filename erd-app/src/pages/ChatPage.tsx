@@ -6895,15 +6895,21 @@ function extractMultipleChoice(text: string): { key: string; label: string; full
   const lines = text.split('\n');
   const items: { key: string; label: string; fullLine: string }[] = [];
   for (const line of lines) {
-    const m = line.trim().match(MC_PATTERN);
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const m = trimmed.match(MC_PATTERN);
     if (m) {
-      items.push({ key: m[1], label: m[2], fullLine: line.trim() });
+      items.push({ key: m[1], label: m[2], fullLine: trimmed });
     }
   }
-  // 최소 2개 이상이고, key가 연속 알파벳/숫자인 경우만
+  // 최소 2개 이상
   if (items.length < 2) return null;
   // 체크리스트와 혼동 방지: - [ ] 패턴이 있으면 null
-  if (lines.some(l => /^- \[[ x]\] /i.test(l))) return null;
+  if (lines.some(l => /^- \[[ x]\] /i.test(l.trim()))) return null;
+  // 키가 전부 한 글자(A,B,C...)인 경우만 MC로 인식 (오탐 방지)
+  const allSingleChar = items.every(it => it.key.length <= 2);
+  if (!allSingleChar) return null;
+  console.log('[MC] 객관식 감지:', items.length, '개 항목', items.map(it => it.key));
   return items;
 }
 
@@ -7319,13 +7325,16 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onF
                   {msg.error}
                 </div>
               )}
-              {/* 본문 — 이터레이션별 분리 버블 (체크리스트 감지 시 인터랙티브) */}
+              {/* 본문 — 이터레이션별 분리 버블 (체크리스트/객관식 감지 시 인터랙티브) */}
               {(msg.iterations ?? [msg.content]).map((iterText, iterIdx, arr) => {
                 if (!iterText?.trim()) return null;
                 // 체크리스트 감지
                 const checkItems = extractChecklistItems(iterText);
                 // 객관식 선택지 감지
                 const mcItems = !checkItems ? extractMultipleChoice(iterText) : null;
+                if (!msg.isLoading) {
+                  console.log(`[MC-Debug] msg=${msg.id.slice(0,8)} iter=${iterIdx} checkItems=${!!checkItems} mcItems=${mcItems?.length ?? 'null'} textLen=${iterText.length} first80="${iterText.slice(0, 80).replace(/\n/g, '\\n')}"`);
+                }
 
                 // 체크리스트 앞뒤 텍스트 분리
                 let beforeChecklist = '';
