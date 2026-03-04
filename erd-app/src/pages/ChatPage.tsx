@@ -5776,59 +5776,115 @@ const EXPRESSIONS: Record<ExpressionKey, { col: number; row: number; label: stri
   panic:      { col: 4, row: 2, label: '패닉' },
 };
 
-/** 메시지 상태 → 표정 매핑 */
-function getExpressionForMessage(msg: Message): ExpressionKey {
-  if (msg.error) return 'apologetic';
-
-  const toolKinds = (msg.liveToolCalls ?? msg.toolCalls ?? []).map(tc => tc.kind);
-  const hasError = toolKinds.some(k => k.includes('error'));
-  const hasJiraWrite = toolKinds.some(k => k === 'jira_comment' || k === 'jira_create' || k === 'jira_status');
-  const hasDataQuery = toolKinds.some(k => k === 'data_query' || k === 'schema_card');
-  const hasCodeSearch = toolKinds.some(k => k === 'code_search' || k === 'code_file');
-  const hasGitDiff = toolKinds.some(k => k === 'git_history' || k === 'revision_diff');
+/** 로딩 중 표정 사이클 시퀀스 (도구 종류별) */
+function getLoadingCycle(msg: Message): ExpressionKey[] {
+  const toolKinds = (msg.liveToolCalls ?? []).map(tc => tc.kind);
+  const hasError    = toolKinds.some(k => k.includes('error'));
+  const hasJiraWrite= toolKinds.some(k => k === 'jira_comment' || k === 'jira_create' || k === 'jira_status');
+  const hasDataQuery= toolKinds.some(k => k === 'data_query' || k === 'schema_card');
+  const hasCodeSearch=toolKinds.some(k => k === 'code_search' || k === 'code_file');
+  const hasGitDiff  = toolKinds.some(k => k === 'git_history' || k === 'revision_diff');
   const hasArtifact = toolKinds.some(k => k === 'artifact' || k === 'artifact_patch');
-  const hasJiraSearch = toolKinds.some(k => k === 'jira_search' || k === 'jira_issue' || k === 'confluence_search' || k === 'confluence_page');
+  const hasJiraSearch=toolKinds.some(k => k === 'jira_search' || k === 'jira_issue' || k === 'confluence_search' || k === 'confluence_page');
+  const isStreaming  = !!(msg.content || msg.iterations?.some(t => t.trim()));
 
-  if (hasError) return 'apologetic';
+  if (hasError)       return ['apologetic', 'worried', 'sad'];
+  if (hasArtifact)    return ['idea', 'excited', 'smile', 'happy'];
+  if (hasJiraWrite)   return ['excited', 'happy', 'smile', 'excited'];
+  if (hasDataQuery)   return ['thinking', 'idea', 'smile', 'thinking'];
+  if (hasCodeSearch)  return ['thinking', 'confused', 'idea', 'thinking'];
+  if (hasGitDiff)     return ['surprised', 'thinking', 'idea', 'smile'];
+  if (hasJiraSearch)  return ['surprised', 'thinking', 'smile', 'surprised'];
+  if (isStreaming)    return ['smile', 'happy', 'smile', 'excited'];
+  // 대기 (아직 응답 없음) — 초조하게 기다리는 느낌
+  return ['confused', 'worried', 'thinking', 'flustered'];
+}
 
-  if (msg.isLoading) {
-    if (msg.liveToolCalls && msg.liveToolCalls.length > 0) {
-      if (hasJiraWrite) return 'excited';         // Jira 쓰기 → Go!
-      if (hasArtifact) return 'idea';             // 아티팩트 생성
-      if (hasDataQuery) return 'thinking';        // 데이터 조회 → 생각중
-      if (hasCodeSearch || hasGitDiff) return 'thinking'; // 코드/Git 검색
-      if (hasJiraSearch) return 'surprised';      // Jira/Confluence 검색
-      return 'flustered';                         // 기타 도구 사용
-    }
-    // 스트리밍 텍스트 있으면 미소
-    if (msg.content || msg.iterations?.some(t => t.trim())) return 'smile';
-    // 대기 중 (아직 응답 없음)
-    return 'confused';
-  }
+/** 완료 메시지 표정 (내용 감정 분석 포함) */
+function getCompletedExpression(msg: Message): ExpressionKey {
+  if (msg.error) return 'apologetic';
+  const toolKinds = (msg.toolCalls ?? []).map(tc => tc.kind);
+  const content   = (msg.content || '').toLowerCase();
 
-  // 완료된 메시지
-  if (hasJiraWrite || hasArtifact) return 'happy'; // 뭔가 만들거나 Jira 작업 완료
-  if (hasDataQuery && (msg.content?.length ?? 0) > 200) return 'smile'; // 긴 분석
-  if (toolKinds.length > 3) return 'smile';        // 많은 도구 사용 → 열심히 함
-  if (!msg.content || msg.content.length < 20) return 'neutral';
+  const hasError    = toolKinds.some(k => k.includes('error'));
+  const hasJiraWrite= toolKinds.some(k => k === 'jira_comment' || k === 'jira_create' || k === 'jira_status');
+  const hasArtifact = toolKinds.some(k => k === 'artifact' || k === 'artifact_patch');
+  const hasDataQuery= toolKinds.some(k => k === 'data_query' || k === 'schema_card');
+
+  // 내용 기반 감정 분석
+  const isApologetic= ['죄송', '미안', '양해', '어렵', '불가'].some(w => content.includes(w));
+  const isError     = ['오류', '에러', '실패', '문제', '없습니', 'error', 'fail'].some(w => content.includes(w));
+  const isSuccess   = ['성공', '완료', '됐', '찾았', '해결', '확인', 'success', 'done'].some(w => content.includes(w));
+  const isExcited   = ['흥미롭', '놀랍', '대단', '훌륭', '완벽', '최고'].some(w => content.includes(w));
+  const hasManyTools= toolKinds.length >= 3;
+
+  if (hasError || isError) return isApologetic ? 'apologetic' : 'worried';
+  if (isApologetic)        return 'apologetic';
+  if (hasJiraWrite || hasArtifact) return isSuccess ? 'happy' : 'smile';
+  if (isExcited)           return 'excited';
+  if (isSuccess)           return 'happy';
+  if (hasManyTools)        return 'smile';
+  if (hasDataQuery && content.length > 300) return 'thinking';
+  if (content.length > 400) return 'smile';
+  if (content.length < 30)  return 'shy';
   return 'neutral';
 }
 
-/** 캐릭터 표정 컴포넌트 */
+/** 메시지 상태 → 표정 (로딩 중엔 사이클 첫 프레임) */
+function getExpressionForMessage(msg: Message): ExpressionKey {
+  if (msg.isLoading) return getLoadingCycle(msg)[0];
+  return getCompletedExpression(msg);
+}
+
+/** 표정 사이클 훅 — animate=true일 때 intervalMs마다 다음 표정으로 전환 */
+function useExpressionCycle(
+  base: ExpressionKey,
+  cycle: ExpressionKey[] | undefined,
+  animate: boolean,
+  intervalMs = 1800,
+): ExpressionKey {
+  const [idx, setIdx] = useState(0);
+
+  useEffect(() => {
+    setIdx(0);
+    if (!animate || !cycle || cycle.length <= 1) return;
+    const t = setInterval(() => setIdx(i => (i + 1) % cycle.length), intervalMs);
+    return () => clearInterval(t);
+  }, [animate, cycle, intervalMs]);
+
+  return animate && cycle && cycle.length > 0 ? cycle[idx] : base;
+}
+
+/** 캐릭터 표정 컴포넌트 (cycleSequence 지정 시 animate=true일 때 자동 사이클링) */
 function CharacterPortrait({
   expression,
   size = 56,
   animate = false,
+  cycleSequence,
   className = '',
 }: {
   expression: ExpressionKey;
   size?: number;
   animate?: boolean;
+  cycleSequence?: ExpressionKey[];
   className?: string;
 }) {
-  const expr = EXPRESSIONS[expression];
-  const xPct = expr.col * 25;  // 0, 25, 50, 75, 100
-  const yPct = expr.row * 50;  // 0, 50, 100
+  const activeExpr = useExpressionCycle(expression, cycleSequence, animate);
+  const [fade, setFade] = useState(true);
+  const prevExpr = useRef(activeExpr);
+
+  // 표정 바뀔 때 페이드 효과
+  useEffect(() => {
+    if (prevExpr.current !== activeExpr) {
+      setFade(false);
+      const t = setTimeout(() => { setFade(true); prevExpr.current = activeExpr; }, 120);
+      return () => clearTimeout(t);
+    }
+  }, [activeExpr]);
+
+  const expr = EXPRESSIONS[activeExpr];
+  const xPct = expr.col * 25;
+  const yPct = expr.row * 50;
 
   return (
     <div
@@ -5839,11 +5895,12 @@ function CharacterPortrait({
         backgroundImage: 'url(/TableMaster/portrait.png)',
         backgroundSize: '500% 300%',
         backgroundPosition: `${xPct}% ${yPct}%`,
-        border: animate ? '2px solid rgba(99,102,241,0.7)' : '2px solid rgba(99,102,241,0.35)',
+        border: animate ? '2px solid rgba(99,102,241,0.8)' : '2px solid rgba(99,102,241,0.35)',
         boxShadow: animate
-          ? '0 0 12px rgba(99,102,241,0.5), 0 2px 8px rgba(0,0,0,0.4)'
+          ? '0 0 18px rgba(99,102,241,0.65), 0 0 6px rgba(99,102,241,0.4), 0 2px 8px rgba(0,0,0,0.4)'
           : '0 2px 8px rgba(0,0,0,0.3)',
-        transition: 'background-position 0.35s ease, box-shadow 0.3s ease',
+        opacity: fade ? 1 : 0,
+        transition: 'background-position 0.3s ease, box-shadow 0.3s ease, opacity 0.12s ease, border-color 0.3s ease',
       }}
       title={expr.label}
     />
@@ -5938,6 +5995,7 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
 
   /* ── AI 메시지: 풀폭, 헤더 + 내용 ──────────────────────────────────────── */
   const expression = getExpressionForMessage(msg);
+  const loadingCycle = msg.isLoading ? getLoadingCycle(msg) : undefined;
   const exprLabel = EXPRESSIONS[expression].label;
 
   return (
@@ -5948,9 +6006,10 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
           expression={expression}
           size={60}
           animate={!!msg.isLoading}
+          cycleSequence={loadingCycle}
         />
         <div className="flex flex-col gap-0.5">
-          <span className="text-[13px] font-semibold" style={{ color: 'var(--accent)' }}>AI Assistant</span>
+          <span className="text-[13px] font-semibold" style={{ color: 'var(--accent)' }}>DataMaster</span>
           <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
             {msg.isLoading
               ? (msg.liveToolCalls && msg.liveToolCalls.length > 0 ? `${exprLabel}...` : '생각중...')
@@ -6171,9 +6230,19 @@ export default function ChatPage() {
   // 현재 AI 표정 계산 (최신 AI 메시지 기준)
   const currentExpression = useMemo<ExpressionKey>(() => {
     const lastAI = [...messages].reverse().find(m => m.role === 'assistant');
-    if (!lastAI) return 'neutral';
+    if (!lastAI) return 'smile';
     return getExpressionForMessage(lastAI);
   }, [messages]);
+
+  // 플로팅 포트레이트용 로딩 사이클 시퀀스
+  const globalLoadingCycle = useMemo<ExpressionKey[] | undefined>(() => {
+    if (!isLoading) return undefined;
+    const loadingMsg = [...messages].reverse().find(m => m.role === 'assistant' && m.isLoading);
+    return loadingMsg ? getLoadingCycle(loadingMsg) : ['confused', 'worried', 'thinking', 'flustered'];
+  }, [isLoading, messages]);
+
+  // 플로팅 포트레이트 표정 사이클 (ChatPage 레벨에서 관리 → 뱃지도 동기화)
+  const floatingExpr = useExpressionCycle(currentExpression, globalLoadingCycle, isLoading);
   const [showRagGraph, setShowRagGraph] = useState(false);
 
   // 아티팩트 사이드 패널 상태
@@ -6816,7 +6885,7 @@ export default function ChatPage() {
                 {/* 캐릭터 포트레이트 — 빈 화면 */}
                 <CharacterPortrait expression="smile" size={96} className="mb-5" />
                 <h2 className="text-[22px] font-bold mb-3" style={{ color: 'var(--text-primary)' }}>
-                  게임 데이터 AI 어시스턴트
+                  DataMaster
                 </h2>
                 <p className="text-[15px] max-w-lg leading-relaxed mb-6">
                   {hasData
@@ -6939,7 +7008,7 @@ export default function ChatPage() {
                 transform: 'translateY(0)',
               }}
             >
-              {/* 표정 이름 뱃지 */}
+              {/* 표정 이름 뱃지 — floatingExpr와 동기화 */}
               <div
                 style={{
                   fontSize: 11,
@@ -6953,10 +7022,11 @@ export default function ChatPage() {
                   whiteSpace: 'nowrap',
                 }}
               >
-                {isLoading ? `${EXPRESSIONS[currentExpression].label}...` : EXPRESSIONS[currentExpression].label}
+                {isLoading ? `${EXPRESSIONS[floatingExpr].label}...` : EXPRESSIONS[floatingExpr].label}
               </div>
+              {/* cycleSequence 없이 floatingExpr가 이미 사이클링된 표정 */}
               <CharacterPortrait
-                expression={currentExpression}
+                expression={floatingExpr}
                 size={96}
                 animate={isLoading}
               />
