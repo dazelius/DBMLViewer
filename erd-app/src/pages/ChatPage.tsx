@@ -6021,6 +6021,9 @@ export default function ChatPage() {
       _artBuf.baseHtml = '';
     }
 
+    // 이터레이션 간 텍스트 누적 버퍼 (tool_use 이터레이션마다 fullText가 리셋되는 문제 방지)
+    let _accumulatedChatText = '';
+
     try {
       const { content, toolCalls, rawMessages, tokenUsage } = await sendChatMessage(
         text.trim(),
@@ -6037,12 +6040,13 @@ export default function ChatPage() {
             ),
           );
         },
-        (_, fullText) => {
-          // 실시간 텍스트 스트리밍 업데이트
+        (delta, _fullText) => {
+          // 실시간 텍스트 스트리밍 업데이트 — delta 누적 (이터레이션 간 덮어씌우기 방지)
+          _accumulatedChatText += delta;
           setMessages((prev) =>
             prev.map((m) =>
               m.id === loadingId
-                ? { ...m, content: fullText, isLoading: true }
+                ? { ...m, content: _accumulatedChatText, isLoading: true }
                 : m,
             ),
           );
