@@ -4,6 +4,7 @@ title TableMaster - Dev Server
 
 echo ========================================
 echo   TableMaster ERD App - Dev Server
+echo   (개발용 / 코드 수정 시 HMR 지원)
 echo ========================================
 echo.
 
@@ -15,5 +16,4 @@ echo [INFO] 종료하려면 Ctrl+C 를 누르세요.
 echo.
 
 npm run dev
-
 pause
