@@ -806,28 +806,47 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
   const limitedIds = [...includedIds].slice(0, 25);
   const limitedSet = new Set(limitedIds);
 
-  // ── 테이블 데이터 구축 ──
-  const COL_H = 24, HDR_H = 36, PAD = 30, GAP_X = 60, GAP_Y = 50;
-  const C = { hc: '#312e81', hr: '#1a2035', ht: '#e2e8f0', cb: '#0f172a', ct: '#cbd5e1',
-    pk: '#818cf8', fk: '#fbbf24', nn: '#64748b', bd: '#334155', bc: '#6366f1', ln: '#6366f1' };
+  // ── 테이블 데이터 구축 (TableRenderer.ts DARK 테마 색상 재사용) ──
+  const COL_H = 26, HDR_H = 36, PAD = 30, GAP_X = 60, GAP_Y = 50;
+  const STRIPE_W = 5, BORDER_R = 8;
+  // TableRenderer.ts DARK theme 색상 그대로 사용
+  const C = {
+    tableBg: '#161821', headerBg: '#1c1e2a', headerText: '#e2e4ed',
+    border: 'rgba(255,255,255,0.08)', borderSelected: '#6c8eef',
+    colText: '#a0a4b8', typeText: '#5c6078',
+    pkBg: 'rgba(224,166,99,0.15)', pkText: '#e0a663',
+    fkBg: 'rgba(108,142,239,0.12)', fkText: '#6c8eef',
+    nnBg: 'rgba(239,68,68,0.12)', nnText: '#f87171',
+    locBg: 'rgba(45,212,191,0.12)', locText: '#2dd4bf',
+    rowAlt: 'rgba(255,255,255,0.015)',
+    ungrouped: '#5c6078',
+    ln: '#6c8eef',    // 연결선
+    canvasBg: '#0e1015',
+  };
 
-  interface ErdCol { name: string; type: string; pk: boolean; fk: boolean; nn: boolean; note: string }
-  interface ErdTable { name: string; isCenter: boolean; columns: ErdCol[]; truncated: number; w: number; h: number; x: number; y: number }
+  interface ErdCol { name: string; type: string; pk: boolean; fk: boolean; nn: boolean; loc: boolean; note: string }
+  interface ErdTable { name: string; isCenter: boolean; groupColor: string; columns: ErdCol[]; truncated: number; w: number; h: number; x: number; y: number }
 
   const tables: ErdTable[] = limitedIds.map(id => {
     const t = schema.tables.find(x => x.id === id);
     if (!t) return null;
     const cols: ErdCol[] = t.columns.slice(0, 18).map(c => ({
-      name: c.name, type: c.type, pk: !!c.isPrimaryKey, fk: !!c.isForeignKey, nn: !!c.isNotNull, note: c.note ?? '',
+      name: c.name, type: c.type, pk: !!c.isPrimaryKey, fk: !!c.isForeignKey,
+      nn: !!c.isNotNull, loc: !!c.isLocalize, note: c.note ?? '',
     }));
-    // 너비 계산: 이름 + 뱃지 + 타입이 겹치지 않도록 넉넉하게
-    const nameMaxLen = Math.max(...cols.map(c => c.name.length + (c.pk ? 3 : c.fk ? 2 : 0)), t.name.length);
+    // 뱃지 수에 따른 동적 너비 계산
+    const badgeW = cols.reduce((max, c) => {
+      let bw = 0;
+      if (c.pk) bw += 30; if (c.fk) bw += 28; if (c.nn && !c.pk) bw += 28; if (c.loc) bw += 36;
+      return Math.max(max, bw);
+    }, 0);
+    const nameMaxLen = Math.max(...cols.map(c => c.name.length), t.name.length);
     const typeMaxLen = Math.max(...cols.map(c => c.type.length), 4);
-    const badgeW = 75; // PK FK NN 뱃지 최대 공간
-    const w = Math.max(260, nameMaxLen * 7.2 + typeMaxLen * 6.5 + badgeW + 30);
+    const w = Math.max(260, nameMaxLen * 7.5 + typeMaxLen * 6.5 + badgeW + STRIPE_W + 40);
     const trunc = t.columns.length > 18 ? t.columns.length - 18 : 0;
-    const h = HDR_H + cols.length * COL_H + (trunc ? COL_H : 0) + 8;
-    return { name: t.name, isCenter: centerIds.has(id), columns: cols, truncated: trunc, w, h, x: 0, y: 0 };
+    const h = HDR_H + cols.length * COL_H + (trunc ? COL_H : 0) + 4;
+    const accent = t.groupColor ?? C.ungrouped;
+    return { name: t.name, isCenter: centerIds.has(id), groupColor: accent, columns: cols, truncated: trunc, w, h, x: 0, y: 0 };
   }).filter((x): x is ErdTable => !!x);
 
   const refs: { from: string; fromCol: string; to: string; toCol: string; type: string }[] = [];
@@ -866,18 +885,15 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
   let svgW = 0, svgH = 0;
   all.forEach(t => { svgW = Math.max(svgW, t.x + t.w + PAD); svgH = Math.max(svgH, t.y + t.h + PAD); });
 
-  // ── SVG 문자열 빌드 (서버사이드, viewBox 기반 오토핏) ──
+  // ── SVG 문자열 빌드 (TableRenderer.ts DARK 테마 디자인 복제) ──
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const svgParts: string[] = [];
-  // viewBox로 SVG 좌표계를 정의, 컨테이너에 맞춰 자동 스케일
-  svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;display:block" class="erd-svg">`);
-  // defs: markers
+  svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;display:block;font-family:'Inter','Segoe UI',system-ui,sans-serif" class="erd-svg">`);
   svgParts.push(`<defs>`);
   svgParts.push(`<marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="${C.ln}"/></marker>`);
-  svgParts.push(`<marker id="diamond" markerWidth="10" markerHeight="8" refX="0" refY="4" orient="auto"><polygon points="0 4,5 0,10 4,5 8" fill="${C.fk}"/></marker>`);
+  svgParts.push(`<marker id="diamond" markerWidth="10" markerHeight="8" refX="0" refY="4" orient="auto"><polygon points="0 4,5 0,10 4,5 8" fill="${C.fkText}"/></marker>`);
   svgParts.push(`</defs>`);
-  // 배경 rect
-  svgParts.push(`<rect width="${svgW}" height="${svgH}" fill="#0d1117"/>`);
+  svgParts.push(`<rect width="${svgW}" height="${svgH}" fill="${C.canvasBg}"/>`);
 
   // ── 연결선 ──
   const tByName: Record<string, ErdTable> = {};
@@ -898,62 +914,106 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
     const cpOff = Math.max(dx * 0.4, 40);
     const cp1x = fx < tx ? fx + cpOff : fx - cpOff;
     const cp2x = fx < tx ? tx - cpOff : tx + cpOff;
-    svgParts.push(`<path d="M${fx},${fy} C${cp1x},${fy} ${cp2x},${ty} ${tx},${ty}" stroke="${C.ln}" stroke-width="1.5" fill="none" opacity="0.6" marker-end="url(#arrowhead)" marker-start="url(#diamond)"/>`);
+    svgParts.push(`<path d="M${fx},${fy} C${cp1x},${fy} ${cp2x},${ty} ${tx},${ty}" stroke="${C.ln}" stroke-width="1.5" fill="none" opacity="0.5" marker-end="url(#arrowhead)" marker-start="url(#diamond)"/>`);
     if (ref.fromCol) {
       const lblX = (fx + tx) / 2, lblY = (fy + ty) / 2 - 6;
-      svgParts.push(`<rect x="${lblX - ref.fromCol.length * 3 - 4}" y="${lblY - 9}" width="${ref.fromCol.length * 6 + 8}" height="13" rx="3" fill="#0d1117" opacity="0.8"/>`);
-      svgParts.push(`<text x="${lblX}" y="${lblY}" text-anchor="middle" fill="#64748b" font-size="9" font-family="Consolas,monospace">${esc(ref.fromCol)}</text>`);
+      svgParts.push(`<rect x="${lblX - ref.fromCol.length * 3 - 4}" y="${lblY - 9}" width="${ref.fromCol.length * 6 + 8}" height="13" rx="3" fill="${C.canvasBg}" opacity="0.85"/>`);
+      svgParts.push(`<text x="${lblX}" y="${lblY}" text-anchor="middle" fill="${C.typeText}" font-size="9" font-family="'JetBrains Mono','Fira Code',monospace">${esc(ref.fromCol)}</text>`);
     }
   });
 
-  // ── 테이블 노드 ──
+  // ── 테이블 노드 (TableRenderer.ts drawTableFull 디자인 재현) ──
   all.forEach(t => {
+    const accent = t.groupColor;
     svgParts.push(`<g transform="translate(${t.x},${t.y})" data-table="${esc(t.name)}" style="cursor:grab">`);
-    // 그림자
-    svgParts.push(`<rect x="4" y="4" width="${t.w}" height="${t.h}" rx="8" fill="rgba(0,0,0,0.35)"/>`);
-    // 배경
-    svgParts.push(`<rect width="${t.w}" height="${t.h}" rx="8" fill="${C.cb}" stroke="${t.isCenter ? C.bc : C.bd}" stroke-width="${t.isCenter ? 2 : 1}"/>`);
-    // 헤더
-    svgParts.push(`<rect width="${t.w}" height="${HDR_H}" rx="8" fill="${t.isCenter ? C.hc : C.hr}"/>`);
-    svgParts.push(`<rect y="${HDR_H - 8}" width="${t.w}" height="8" fill="${t.isCenter ? C.hc : C.hr}"/>`);
-    svgParts.push(`<line x1="0" y1="${HDR_H}" x2="${t.w}" y2="${HDR_H}" stroke="${t.isCenter ? C.bc : C.bd}"/>`);
-    // 헤더 아이콘 + 이름
-    svgParts.push(`<text x="12" y="${HDR_H / 2 + 5}" fill="${t.isCenter ? '#a5b4fc' : '#94a3b8'}" font-size="12">🗄</text>`);
-    svgParts.push(`<text x="30" y="${HDR_H / 2 + 5}" fill="${C.ht}" font-size="13" font-weight="700">${esc(t.name)}</text>`);
-    svgParts.push(`<text x="${t.w - 12}" y="${HDR_H / 2 + 5}" text-anchor="end" fill="#475569" font-size="10">${t.columns.length}${t.truncated ? '+' + t.truncated : ''} cols</text>`);
 
-    // 컬럼들 — 3구간: [왼: icon+name] [중: badges] [오: type]
-    const typeColStart = t.w - 10;   // 타입 영역 (오른쪽 정렬)
+    // 그림자
+    svgParts.push(`<rect x="2" y="4" width="${t.w}" height="${t.h}" rx="${BORDER_R}" fill="rgba(0,0,0,0.5)" opacity="0.5"/>`);
+
+    // 테이블 배경
+    svgParts.push(`<rect width="${t.w}" height="${t.h}" rx="${BORDER_R}" fill="${C.tableBg}" stroke="${t.isCenter ? accent : C.border}" stroke-width="${t.isCenter ? 2 : 1}"/>`);
+
+    // 좌측 악센트 스트라이프 (클립용 rect)
+    svgParts.push(`<rect width="${STRIPE_W}" height="${t.h}" rx="${BORDER_R}" fill="${accent}"/>`);
+    svgParts.push(`<rect x="${STRIPE_W - BORDER_R}" width="${BORDER_R}" height="${t.h}" fill="${accent}"/>`);
+
+    // 헤더 배경 (headerBg + accent 오버레이)
+    svgParts.push(`<rect x="${STRIPE_W}" width="${t.w - STRIPE_W}" height="${HDR_H}" fill="${C.headerBg}"/>`);
+    // rx 상단만 둥글게 위해 작은 rect로 모서리 커버
+    svgParts.push(`<rect x="${t.w - BORDER_R}" y="0" width="${BORDER_R}" height="${BORDER_R}" rx="${BORDER_R}" fill="${C.headerBg}"/>`);
+    svgParts.push(`<rect x="${STRIPE_W}" y="0" width="${t.w - STRIPE_W}" height="${HDR_H}" fill="${accent}" opacity="0.12"/>`);
+
+    // 헤더 하단 구분선
+    svgParts.push(`<line x1="${STRIPE_W}" y1="${HDR_H}" x2="${t.w}" y2="${HDR_H}" stroke="${C.border}" stroke-width="1"/>`);
+
+    // 헤더: 도트 인디케이터 + 테이블명
+    const dotX = STRIPE_W + 12;
+    const dotY = HDR_H / 2;
+    svgParts.push(`<circle cx="${dotX}" cy="${dotY}" r="3.5" fill="${accent}"/>`);
+
+    const nameX = dotX + 10;
+    // 컬럼수 뱃지
+    const countStr = `${t.columns.length}${t.truncated ? '+' : ''}`;
+    const countBW = countStr.length * 6.5 + 10;
+    const countBX = t.w - countBW - 10;
+    svgParts.push(`<rect x="${countBX}" y="${dotY - 8}" width="${countBW}" height="16" rx="4" fill="${accent}" opacity="0.2"/>`);
+    svgParts.push(`<text x="${countBX + countBW / 2}" y="${dotY + 4}" text-anchor="middle" fill="${accent}" font-size="10" font-weight="600" opacity="0.8">${countStr}</text>`);
+
+    svgParts.push(`<text x="${nameX}" y="${dotY + 5}" fill="${C.headerText}" font-size="13" font-weight="700">${esc(t.name)}</text>`);
+
+    // ── 컬럼 행 (TableRenderer 뱃지 스타일 + 타입 우측 정렬) ──
+    const pad = 10;
+    const typeAreaMaxW = t.w * 0.38;
+    const MONO = "'JetBrains Mono','Fira Code',monospace";
+
     t.columns.forEach((col, ci) => {
       const cy = HDR_H + ci * COL_H;
-      if (ci % 2 === 1) {
-        svgParts.push(`<rect y="${cy}" width="${t.w}" height="${COL_H}" fill="rgba(255,255,255,0.02)"/>`);
-      }
-      const nameClr = col.pk ? C.pk : col.fk ? C.fk : C.ct;
-      const fw = col.pk || col.fk ? '600' : '400';
       const textY = cy + COL_H / 2 + 4;
-      // 아이콘
-      if (col.pk) svgParts.push(`<text x="8" y="${textY}" fill="${C.pk}" font-size="10">🔑</text>`);
-      else if (col.fk) svgParts.push(`<text x="10" y="${textY}" fill="${C.fk}" font-size="10" font-family="Consolas,monospace">↳</text>`);
-      // 이름
-      svgParts.push(`<text x="24" y="${textY}" fill="${nameClr}" font-size="11" font-weight="${fw}" font-family="Consolas,monospace">${esc(col.name)}</text>`);
+
+      // 짝수행 alt 배경
+      if (ci % 2 === 1) {
+        svgParts.push(`<rect x="${STRIPE_W}" y="${cy}" width="${t.w - STRIPE_W}" height="${COL_H}" fill="${C.rowAlt}"/>`);
+      }
+
+      // 뱃지들 (왼→오: PK, FK, NN, L10n)
+      let xOff = STRIPE_W + pad;
+
+      if (col.pk) {
+        svgParts.push(`<rect x="${xOff}" y="${textY - 8}" width="24" height="14" rx="3" fill="${C.pkBg}"/>`);
+        svgParts.push(`<text x="${xOff + 12}" y="${textY + 1}" text-anchor="middle" fill="${C.pkText}" font-size="8.5" font-weight="700">PK</text>`);
+        xOff += 28;
+      }
+      if (col.fk) {
+        svgParts.push(`<rect x="${xOff}" y="${textY - 8}" width="22" height="14" rx="3" fill="${C.fkBg}"/>`);
+        svgParts.push(`<text x="${xOff + 11}" y="${textY + 1}" text-anchor="middle" fill="${C.fkText}" font-size="8.5" font-weight="700">FK</text>`);
+        xOff += 26;
+      }
+      if (col.nn && !col.pk) {
+        svgParts.push(`<rect x="${xOff}" y="${textY - 8}" width="24" height="14" rx="3" fill="${C.nnBg}"/>`);
+        svgParts.push(`<text x="${xOff + 12}" y="${textY + 1}" text-anchor="middle" fill="${C.nnText}" font-size="8.5" font-weight="700">NN</text>`);
+        xOff += 28;
+      }
+      if (col.loc) {
+        svgParts.push(`<rect x="${xOff}" y="${textY - 8}" width="30" height="14" rx="3" fill="${C.locBg}"/>`);
+        svgParts.push(`<text x="${xOff + 15}" y="${textY + 1}" text-anchor="middle" fill="${C.locText}" font-size="8.5" font-weight="700">L10n</text>`);
+        xOff += 34;
+      }
+      if (!col.pk && !col.fk && !col.nn && !col.loc) xOff += 2;
+
       // 타입 (오른쪽 정렬)
-      svgParts.push(`<text x="${typeColStart}" y="${textY}" text-anchor="end" fill="#475569" font-size="10" font-family="Consolas,monospace">${esc(col.type)}</text>`);
-      // 뱃지 (타입 왼쪽)
-      const badges: { t: string; c: string; bg: string }[] = [];
-      if (col.pk) badges.push({ t: 'PK', c: '#818cf8', bg: 'rgba(99,102,241,.2)' });
-      if (col.fk) badges.push({ t: 'FK', c: '#fbbf24', bg: 'rgba(234,179,8,.15)' });
-      if (col.nn && !col.pk) badges.push({ t: 'NN', c: '#64748b', bg: 'rgba(100,116,139,.2)' });
-      let bx = typeColStart - (col.type.length * 6.5 + 10);
-      badges.reverse().forEach(b => {
-        const bw = 24; bx -= bw + 3;
-        svgParts.push(`<rect x="${bx}" y="${cy + 5}" width="${bw}" height="14" rx="3" fill="${b.bg}"/>`);
-        svgParts.push(`<text x="${bx + bw / 2}" y="${cy + 15}" text-anchor="middle" fill="${b.c}" font-size="8" font-weight="700">${b.t}</text>`);
-      });
+      const typeLen = Math.min(col.type.length * 6.5, typeAreaMaxW);
+      const typeX = t.w - pad;
+      svgParts.push(`<text x="${typeX}" y="${textY}" text-anchor="end" fill="${C.typeText}" font-size="10" font-family="${MONO}">${esc(col.type)}</text>`);
+
+      // 컬럼 이름 (남은 공간)
+      const nameMaxW = (typeX - typeLen - 6) - xOff;
+      svgParts.push(`<text x="${xOff}" y="${textY}" fill="${C.colText}" font-size="11.5" font-weight="500">${esc(col.name)}</text>`);
+      void nameMaxW; // truncation은 SVG에서 CSS clip으로 처리 가능
     });
+
     if (t.truncated) {
       const ty2 = HDR_H + t.columns.length * COL_H;
-      svgParts.push(`<text x="${t.w / 2}" y="${ty2 + COL_H / 2 + 4}" text-anchor="middle" fill="#475569" font-size="10" font-style="italic">... +${t.truncated} more columns</text>`);
+      svgParts.push(`<text x="${t.w / 2}" y="${ty2 + COL_H / 2 + 4}" text-anchor="middle" fill="${C.typeText}" font-size="10" font-style="italic">... +${t.truncated} more columns</text>`);
     }
     svgParts.push(`</g>`);
   });
@@ -1038,9 +1098,9 @@ var btn=document.getElementById("${canvasId}_reset");
 if(btn)btn.addEventListener("click",function(){vb.x=0;vb.y=0;vb.w=VW;vb.h=VH;applyVB();});
 })();<` + `/script>`;
 
-  return `<div style="background:#0d1117;border:1px solid #2d3f5e;border-radius:10px;overflow:hidden;margin:12px 0">
-<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#131d2e;border-bottom:1px solid #2d3f5e;flex-wrap:wrap">
-<span style="font-size:14px">🔀</span><span style="font-weight:700;color:#e2e8f0;font-size:13px">ERD 관계 그래프</span>
+  return `<div style="background:${C.canvasBg};border:1px solid rgba(255,255,255,0.08);border-radius:10px;overflow:hidden;margin:12px 0">
+<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:${C.headerBg};border-bottom:1px solid rgba(255,255,255,0.08);flex-wrap:wrap">
+<span style="font-size:14px">🔀</span><span style="font-weight:700;color:${C.headerText};font-size:13px">ERD 관계 그래프</span>
 <span style="color:#64748b;font-size:11px">${requested.join(', ')} 중심 · ${tables.length}개 테이블 · ${refs.length}개 연결${truncatedLabel}</span>
 <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
 <button id="${canvasId}_reset" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer">🔄 핏</button>
