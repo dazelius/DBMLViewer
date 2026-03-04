@@ -24,6 +24,9 @@ import {
   type AssetSearchResult,
   type JiraSearchResult,
   type JiraIssueResult,
+  type JiraCreateResult,
+  type JiraCommentResult,
+  type JiraStatusResult,
   type ConfluenceSearchResult,
   type ConfluencePageResult,
   type ConfluenceMedia,
@@ -4015,6 +4018,154 @@ function JiraIssueCard({ tc }: { tc: JiraIssueResult }) {
   );
 }
 
+// ── JiraCreateCard ────────────────────────────────────────────────────────────
+function JiraCreateCard({ tc }: { tc: JiraCreateResult }) {
+  const issueKey = tc.issueKey ?? '';
+  const issueUrl = tc.issueUrl ?? '';
+  const summary = tc.summary ?? '';
+  const issueType = tc.issueType ?? 'Task';
+  const priority = tc.priority ?? '';
+  const error = tc.error ?? '';
+  const duration = tc.duration ?? 0;
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: `1px solid ${error ? 'rgba(239,68,68,0.3)' : 'rgba(34,197,94,0.3)'}` }}>
+      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: error ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.1)', borderBottom: `1px solid ${error ? 'rgba(239,68,68,0.18)' : 'rgba(34,197,94,0.18)'}` }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: error ? 'rgba(239,68,68,0.2)' : 'rgba(34,197,94,0.2)' }}>
+          {error
+            ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+            : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
+          }
+        </div>
+        <span className="font-semibold text-[13px]" style={{ color: error ? '#f87171' : '#4ade80' }}>
+          {error ? 'Jira 일감 생성 실패' : '✅ Jira 일감 생성 완료'}
+        </span>
+        {duration > 0 && <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{duration.toFixed(0)}ms</span>}
+      </div>
+      {error ? (
+        <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{error}</div>
+      ) : (
+        <div className="px-4 py-4 space-y-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {issueUrl ? (
+              <a href={issueUrl} target="_blank" rel="noopener noreferrer"
+                className="font-bold text-[15px] font-mono hover:underline"
+                style={{ color: '#4ade80' }}>{issueKey}</a>
+            ) : (
+              <span className="font-bold text-[15px] font-mono" style={{ color: '#4ade80' }}>{issueKey}</span>
+            )}
+            {issueType && <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'rgba(99,102,241,0.2)', color: '#a5b4fc' }}>{issueType}</span>}
+            {priority && <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24' }}>{priority}</span>}
+          </div>
+          {summary && <div className="text-[13px]" style={{ color: 'var(--text-primary)' }}>{summary}</div>}
+          {issueUrl && (
+            <a href={issueUrl} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[11px] hover:underline mt-1"
+              style={{ color: 'var(--text-muted)' }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              Jira에서 보기
+            </a>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── JiraCommentCard ───────────────────────────────────────────────────────────
+function JiraCommentCard({ tc }: { tc: JiraCommentResult }) {
+  const issueKey = tc.issueKey ?? '';
+  const issueUrl = tc.issueUrl ?? '';
+  const commentId = tc.commentId ?? '';
+  const comment = tc.comment ?? '';
+  const error = tc.error ?? '';
+  const duration = tc.duration ?? 0;
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: `1px solid ${error ? 'rgba(239,68,68,0.3)' : 'rgba(96,165,250,0.3)'}` }}>
+      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: error ? 'rgba(239,68,68,0.08)' : 'rgba(96,165,250,0.1)', borderBottom: `1px solid ${error ? 'rgba(239,68,68,0.18)' : 'rgba(96,165,250,0.18)'}` }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: error ? 'rgba(239,68,68,0.2)' : 'rgba(96,165,250,0.2)' }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={error ? '#f87171' : '#60a5fa'} strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <span className="font-semibold text-[13px]" style={{ color: error ? '#f87171' : '#60a5fa' }}>
+          {error ? 'Jira 댓글 작성 실패' : '✅ Jira 댓글 작성 완료'}
+        </span>
+        {issueUrl ? (
+          <a href={issueUrl} target="_blank" rel="noopener noreferrer"
+            className="font-mono text-[12px] hover:underline ml-1" style={{ color: '#93c5fd' }}>{issueKey}</a>
+        ) : (
+          <span className="font-mono text-[12px] ml-1" style={{ color: '#93c5fd' }}>{issueKey}</span>
+        )}
+        {duration > 0 && <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{duration.toFixed(0)}ms</span>}
+      </div>
+      {error ? (
+        <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{error}</div>
+      ) : (
+        <div className="px-4 py-4 space-y-2">
+          {comment && (
+            <div className="text-[12px] rounded-lg whitespace-pre-wrap" style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', padding: '10px 14px', maxHeight: 160, overflowY: 'auto' }}>
+              {comment.slice(0, 400)}{comment.length > 400 ? '…' : ''}
+            </div>
+          )}
+          <div className="flex items-center gap-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            {commentId && <span>댓글 ID: {commentId}</span>}
+            {issueUrl && (
+              <a href={issueUrl} target="_blank" rel="noopener noreferrer" className="hover:underline flex items-center gap-1" style={{ color: '#60a5fa' }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                이슈 바로가기
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── JiraStatusCard ────────────────────────────────────────────────────────────
+function JiraStatusCard({ tc }: { tc: JiraStatusResult }) {
+  const issueKey = tc.issueKey ?? '';
+  const newStatus = tc.newStatus ?? '';
+  const error = tc.error ?? '';
+  const duration = tc.duration ?? 0;
+  const transitions = tc.transitions ?? null;
+  const statusColor = (() => {
+    const l = newStatus.toLowerCase();
+    if (l.includes('done') || l.includes('closed')) return '#22c55e';
+    if (l.includes('progress') || l.includes('review')) return '#3b82f6';
+    return '#a78bfa';
+  })();
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: `1px solid ${error ? 'rgba(239,68,68,0.3)' : 'rgba(167,139,250,0.3)'}` }}>
+      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: error ? 'rgba(239,68,68,0.08)' : 'rgba(167,139,250,0.1)', borderBottom: `1px solid ${error ? 'rgba(239,68,68,0.18)' : 'rgba(167,139,250,0.18)'}` }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: error ? 'rgba(239,68,68,0.2)' : 'rgba(167,139,250,0.2)' }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={error ? '#f87171' : '#a78bfa'} strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </div>
+        <span className="font-semibold text-[13px]" style={{ color: error ? '#f87171' : '#a78bfa' }}>
+          {transitions ? 'Jira 상태 목록' : error ? 'Jira 상태 변경 실패' : '✅ Jira 상태 변경 완료'}
+        </span>
+        <span className="font-mono text-[12px] ml-1" style={{ color: '#c4b5fd' }}>{issueKey}</span>
+        {duration > 0 && <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{duration.toFixed(0)}ms</span>}
+      </div>
+      {error ? (
+        <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{error}</div>
+      ) : transitions ? (
+        <div className="px-4 py-3">
+          <div className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>가능한 상태 전환:</div>
+          <div className="flex flex-wrap gap-1.5">
+            {transitions.map((t) => (
+              <span key={t.id} className="text-[11px] px-2.5 py-1 rounded-full" style={{ background: 'rgba(167,139,250,0.15)', color: '#c4b5fd' }}>{t.name}</span>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="px-4 py-3 flex items-center gap-2">
+          <span className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>새 상태:</span>
+          <span className="text-[12px] px-2.5 py-0.5 rounded-full font-semibold" style={{ background: statusColor + '22', color: statusColor }}>{newStatus}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ConfluenceSearchCard ──────────────────────────────────────────────────────
 function ConfluenceSearchCard({ tc }: { tc: ConfluenceSearchResult }) {
   return (
@@ -4774,6 +4925,9 @@ function ToolCallCard({ tc, index, onOpenArtifact }: { tc: ToolCallResult; index
   if (tc.kind === 'fbx_animation') return <FbxAnimationCard tc={tc} />;
   if (tc.kind === 'jira_search') return <JiraSearchCard tc={tc} />;
   if (tc.kind === 'jira_issue') return <JiraIssueCard tc={tc} />;
+  if (tc.kind === 'jira_create') return <JiraCreateCard tc={tc as JiraCreateResult} />;
+  if (tc.kind === 'jira_comment') return <JiraCommentCard tc={tc as JiraCommentResult} />;
+  if (tc.kind === 'jira_status') return <JiraStatusCard tc={tc as JiraStatusResult} />;
   if (tc.kind === 'confluence_search') return <ConfluenceSearchCard tc={tc} />;
   if (tc.kind === 'confluence_page') return <ConfluencePageCard tc={tc} />;
   if (tc.kind === 'knowledge') return <KnowledgeCard tc={tc} />;

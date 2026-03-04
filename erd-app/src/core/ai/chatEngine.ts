@@ -388,6 +388,36 @@ export interface JiraIssueResult {
   duration?: number;
 }
 
+export interface JiraCreateResult {
+  kind: 'jira_create';
+  issueKey?: string;
+  issueUrl?: string;
+  summary?: string;
+  issueType?: string;
+  priority?: string;
+  error?: string;
+  duration?: number;
+}
+
+export interface JiraCommentResult {
+  kind: 'jira_comment';
+  issueKey: string;
+  issueUrl?: string;
+  commentId?: string;
+  comment?: string;
+  error?: string;
+  duration?: number;
+}
+
+export interface JiraStatusResult {
+  kind: 'jira_status';
+  issueKey: string;
+  newStatus?: string;
+  transitions?: { id: string; name: string }[];
+  error?: string;
+  duration?: number;
+}
+
 export interface ConfluenceSearchResult {
   kind: 'confluence_search';
   cql: string;
@@ -488,7 +518,7 @@ export interface KnowledgeResult {
   error?: string;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult | JiraSearchResult | JiraIssueResult | ConfluenceSearchResult | ConfluencePageResult | SceneYamlResult | PrefabPreviewResult | FbxAnimationResult | KnowledgeResult;
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult | JiraSearchResult | JiraIssueResult | JiraCreateResult | JiraCommentResult | JiraStatusResult | ConfluenceSearchResult | ConfluencePageResult | SceneYamlResult | PrefabPreviewResult | FbxAnimationResult | KnowledgeResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -529,6 +559,7 @@ export const TOOL_META: ToolMeta[] = [
   { name: 'patch_artifact',         label: '아티팩트 수정',       emoji: '✏️', dataSources: [] },
   { name: 'search_jira',            label: 'Jira 검색',          emoji: '🎫', dataSources: ['jira'] },
   { name: 'get_jira_issue',         label: 'Jira 이슈',          emoji: '🎫', dataSources: ['jira'] },
+  { name: 'create_jira_issue',      label: 'Jira 일감 생성',     emoji: '➕', dataSources: ['jira'] },
   { name: 'add_jira_comment',       label: 'Jira 댓글 작성',     emoji: '✍️', dataSources: ['jira'] },
   { name: 'update_jira_issue_status', label: 'Jira 상태 변경',   emoji: '🔄', dataSources: ['jira'] },
   { name: 'search_confluence',      label: 'Confluence 검색',    emoji: '📚', dataSources: ['confluence'] },
@@ -843,6 +874,24 @@ const TOOLS = [
   },
   // ── Jira 쓰기 툴 ──────────────────────────────────────────────────────────
   {
+    name: 'create_jira_issue',
+    description: '⭐ 새 Jira 이슈(일감)를 생성합니다. 버그/작업/스토리 등 issuetype을 지정하세요.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: '이슈 제목 (필수)' },
+        description: { type: 'string', description: '이슈 설명 (마크다운 지원)' },
+        issueType: { type: 'string', description: '이슈 유형 (Bug, Task, Story, Epic 등, 기본=Task)' },
+        priority: { type: 'string', description: '우선순위 (Highest, High, Medium, Low, Lowest)' },
+        assignee: { type: 'string', description: '담당자 이름 또는 계정 ID' },
+        labels: { type: 'array', items: { type: 'string' }, description: '레이블 목록' },
+        epicKey: { type: 'string', description: '상위 Epic 키 (예: AEGIS-100)' },
+        projectKey: { type: 'string', description: '프로젝트 키 (미입력 시 기본 프로젝트 사용)' },
+      },
+      required: ['summary'],
+    },
+  },
+  {
     name: 'add_jira_comment',
     description: '⭐ Jira 이슈에 댓글을 직접 작성합니다. 이슈 키(AEGIS-1234) 또는 전체 URL을 issueKey로 전달하세요. comment는 마크다운 형식으로 작성하면 됩니다.',
     input_schema: {
@@ -918,6 +967,7 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap,
   lines.push('');
   lines.push('## ⭐⭐⭐ Jira 쓰기(Write) — 반드시 준수');
   lines.push('당신은 Jira에 직접 댓글을 달고 상태를 변경할 수 있습니다! 절대 "쓰기 불가", "직접 할 수 없다", "기능이 없다"고 말하지 마세요.');
+  lines.push('- "일감 만들어줘" / "이슈 생성" / "버그 등록" → create_jira_issue(summary, ...) 즉시 호출');
   lines.push('- "댓글 달아줘" / "코멘트 남겨줘" / "이슈에 써줘" → add_jira_comment(issueKey, comment) 즉시 호출');
   lines.push('- issueKey: "AEGIS-1234" 또는 전체 URL "https://.../browse/AEGIS-1234" 모두 허용');
   lines.push('- 댓글 내용은 마크다운으로 작성 → 자동으로 Jira ADF 형식으로 변환됨');
@@ -1714,7 +1764,7 @@ const KIND_TO_TOOL: Record<string, string> = {
   asset_search: 'search_assets', scene_yaml: 'read_scene_yaml',
   prefab_preview: 'preview_prefab', fbx_animation: 'preview_fbx_animation',
   jira_search: 'search_jira', jira_issue: 'get_jira_issue',
-  jira_comment: 'add_jira_comment', jira_status: 'update_jira_issue_status',
+  jira_create: 'create_jira_issue', jira_comment: 'add_jira_comment', jira_status: 'update_jira_issue_status',
   confluence_search: 'search_confluence', confluence_page: 'get_confluence_page',
 };
 
@@ -3274,6 +3324,48 @@ function showTab(id){
           } catch (e) {
             resultStr = `Jira 이슈 조회 오류: ${String(e)}`;
             tc = { kind: 'jira_issue', issueKey, error: String(e), duration: 0 } as JiraIssueResult;
+          }
+        }
+
+        // ── create_jira_issue ──
+        else if (tb.name === 'create_jira_issue') {
+          const t0 = performance.now();
+          try {
+            const resp = await fetch('/api/jira/issue', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                summary: String(inp.summary ?? ''),
+                description: String(inp.description ?? ''),
+                issueType: String(inp.issueType ?? 'Task'),
+                priority: String(inp.priority ?? ''),
+                assignee: String(inp.assignee ?? ''),
+                labels: Array.isArray(inp.labels) ? inp.labels : [],
+                epicKey: String(inp.epicKey ?? ''),
+                projectKey: String(inp.projectKey ?? ''),
+              }),
+            });
+            const data2 = await resp.json() as Record<string, unknown>;
+            const duration = performance.now() - t0;
+            if (!resp.ok) {
+              resultStr = `Jira 이슈 생성 실패 (${resp.status}): ${String(data2.error ?? data2)}`;
+              tc = { kind: 'jira_create', error: resultStr, duration } as unknown as ToolCallResult;
+            } else {
+              const issueKey = String(data2.issueKey ?? '');
+              const issueUrl = String(data2.issueUrl ?? '');
+              resultStr = `✅ Jira 이슈 생성 완료!\n이슈 키: ${issueKey}\n제목: ${String(inp.summary ?? '')}\n링크: ${issueUrl}`;
+              tc = {
+                kind: 'jira_create',
+                issueKey, issueUrl,
+                summary: String(inp.summary ?? ''),
+                issueType: String(inp.issueType ?? 'Task'),
+                priority: String(inp.priority ?? ''),
+                duration,
+              } as unknown as ToolCallResult;
+            }
+          } catch (e) {
+            resultStr = `Jira 이슈 생성 오류: ${String(e)}`;
+            tc = { kind: 'jira_create', error: String(e), duration: 0 } as unknown as ToolCallResult;
           }
         }
 

@@ -3195,6 +3195,63 @@ function createGitMiddleware(options: GitPluginOptions) {
           return
         }
 
+        // ── POST /api/jira/issue  →  새 이슈 생성 ────────────────────────────
+        if (req.url === '/api/jira/issue' && req.method === 'POST') {
+          const body = await readBody(req)
+          let parsed: Record<string, unknown> = {}
+          try { parsed = JSON.parse(body) } catch { /* ignore */ }
+          const projectKey = String(parsed.projectKey ?? options.jiraDefaultProject ?? '').trim()
+          const summary = String(parsed.summary ?? '').trim()
+          const description = String(parsed.description ?? '').trim()
+          const issueType = String(parsed.issueType ?? 'Task').trim()
+          const priority = String(parsed.priority ?? '').trim()
+          const assignee = String(parsed.assignee ?? '').trim()
+          const labels = Array.isArray(parsed.labels) ? (parsed.labels as string[]) : []
+          const epicKey = String(parsed.epicKey ?? '').trim()
+
+          if (!projectKey) { sendJson(res, 400, { error: 'projectKey 필요 (또는 JIRA_DEFAULT_PROJECT .env 설정)' }); return }
+          if (!summary) { sendJson(res, 400, { error: 'summary 필요' }); return }
+
+          // ADF description
+          function mdToAdf2(md: string): Record<string, unknown> {
+            if (!md) return { version: 1, type: 'doc', content: [] }
+            const paras = md.split(/\n{2,}/).map((p: string) => p.trim()).filter(Boolean)
+            return {
+              version: 1, type: 'doc',
+              content: paras.map((p: string) => ({ type: 'paragraph', content: [{ type: 'text', text: p }] })),
+            }
+          }
+
+          const fields: Record<string, unknown> = {
+            project: { key: projectKey },
+            summary,
+            issuetype: { name: issueType },
+            description: mdToAdf2(description),
+          }
+          if (priority) fields.priority = { name: priority }
+          if (assignee) fields.assignee = { name: assignee }
+          if (labels.length) fields.labels = labels
+          if (epicKey) fields['customfield_10014'] = epicKey // Epic Link (Jira Cloud)
+
+          const apiUrl = `${baseUrl}/rest/api/3/issue`
+          const apiResp = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { Authorization: authHeader, Accept: 'application/json', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fields }),
+          })
+          const data = await apiResp.json() as Record<string, unknown>
+          if (!apiResp.ok) {
+            const errMsg = (data?.errorMessages as string[])?.[0] ?? JSON.stringify(data?.errors ?? data).slice(0, 300)
+            sendJson(res, apiResp.status, { error: errMsg, raw: data })
+          } else {
+            const issueKey2 = String(data.key ?? '')
+            const selfUrl = String(data.self ?? '')
+            const issueUrl = selfUrl ? `${selfUrl.split('/rest/')[0]}/browse/${issueKey2}` : `${baseUrl}/browse/${issueKey2}`
+            sendJson(res, 200, { issueKey: issueKey2, issueUrl, id: String(data.id ?? '') })
+          }
+          return
+        }
+
         // ── POST /api/jira/comment  →  이슈에 댓글 작성 ───────────────────────
         if (req.url.startsWith('/api/jira/comment') && req.method === 'POST') {
           const body = await readBody(req)
