@@ -2661,20 +2661,28 @@ function ArtifactSidePanel({
   const [keepOverlay, setKeepOverlay] = useState(false);
   const overlayStartRef = useRef(0);
   useEffect(() => {
+    // 패치 모드인지 확인: _artBuf.baseHtml이 있으면 패치 모드
+    const isPatchMode = !!_artBuf.baseHtml;
+
     if (!isComplete && charCount > 0 && !overlayStartRef.current) {
       // 스트리밍 시작
       overlayStartRef.current = performance.now();
-      setKeepOverlay(true);
+      if (!isPatchMode) setKeepOverlay(true); // 패치 모드에서는 keepOverlay 불필요
     }
     if (isComplete && overlayStartRef.current && keepOverlay) {
-      // 완료됨 → 최소 2초 또는 HTML 크기 비례 시간 유지 후 전환
-      const elapsed = performance.now() - overlayStartRef.current;
-      const minTime = Math.min(3000, Math.max(1500, (html?.length ?? 0) / 5));
-      if (elapsed >= minTime) {
+      if (isPatchMode) {
+        // 패치 모드: 즉시 완료 전환 (오버레이가 없으므로 대기 불필요)
         setKeepOverlay(false);
       } else {
-        const timer = setTimeout(() => setKeepOverlay(false), minTime - elapsed);
-        return () => clearTimeout(timer);
+        // 생성 모드: 최소 시간 동안 오버레이 유지 후 전환
+        const elapsed = performance.now() - overlayStartRef.current;
+        const minTime = Math.min(3000, Math.max(1500, (html?.length ?? 0) / 5));
+        if (elapsed >= minTime) {
+          setKeepOverlay(false);
+        } else {
+          const timer = setTimeout(() => setKeepOverlay(false), minTime - elapsed);
+          return () => clearTimeout(timer);
+        }
       }
     }
   }, [isComplete, charCount, html, keepOverlay]);
@@ -2731,9 +2739,13 @@ function ArtifactSidePanel({
 
   const handleStreamIframeLoad = useCallback(() => {
     setStreamIframeReady(true);
-    // 로드 완료 시 이미 쌓인 html 이 있으면 즉시 반영
     const doc = streamIframeRef.current?.contentDocument;
-    if (doc?.body && pendingHtmlRef.current) {
+    // 패치 모드: baseHtml로 즉시 iframe 초기화 (기존 아티팩트 표시)
+    if (doc?.body && _artBuf.baseHtml) {
+      doc.body.innerHTML = _artBuf.baseHtml;
+    }
+    // 로드 완료 시 이미 쌓인 html 이 있으면 즉시 반영
+    if (doc?.body && pendingHtmlRef.current && !_artBuf.baseHtml) {
       doc.body.innerHTML = pendingHtmlRef.current;
     }
     // FBX 스크립트 주입
@@ -2752,6 +2764,10 @@ function ArtifactSidePanel({
   const typingBarRef = useRef<HTMLDivElement>(null);
   const typingSnippetRef = useRef<HTMLSpanElement>(null);
   const typingCountRef = useRef<HTMLSpanElement>(null);
+  // 패치 모드 전용 상태바 refs
+  const patchStatusRef = useRef<HTMLDivElement>(null);
+  const patchStatusLabelRef = useRef<HTMLSpanElement>(null);
+  const patchProgressBarRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (isComplete) return;
@@ -2778,26 +2794,20 @@ function ArtifactSidePanel({
         }
       }
 
-      // ── 2) 오버레이: 스트리밍 중 항상 코드 뷰 표시 (완료될 때까지 숨기지 않음) ──
+      // ── 2) 오버레이 제어 ──
+      const isPatchMode = !!_artBuf.baseHtml;
+
       if (overlayRef.current) {
-        if (_artBuf.charCount > 0 || _artBuf.html.length > 0) {
-          // 데이터 수신 중 → 코드 에디터 스타일 표시
+        if (isPatchMode) {
+          // ★ 패치 모드: 전체화면 코드 오버레이 숨기고 iframe이 보이게
+          overlayRef.current.style.display = 'none';
+        } else if (_artBuf.charCount > 0 || _artBuf.html.length > 0) {
+          // 신규 생성 모드: 코드 에디터 스타일 표시
+          overlayRef.current.style.display = '';
           if (spinnerRef.current) spinnerRef.current.style.display = 'none';
           if (codePreRef.current) {
             codePreRef.current.style.display = '';
-            // 패치 모드: rawJson을 prettify해서 표시, 아니면 HTML 코드
-            let codeSource: string;
-            if (_artBuf.baseHtml && _artBuf.rawJson) {
-              // 패치 JSON prettify (줄바꿈 추가)
-              codeSource = _artBuf.rawJson
-                .replace(/\{"find"/g, '\n  {\n    "find"')
-                .replace(/,"replace"/g, ',\n    "replace"')
-                .replace(/\}\s*,/g, '\n  },')
-                .replace(/\}\s*\]/g, '\n  }\n]')
-                .replace(/^\{"patches":\s*\[/, '{\n  "patches": [');
-            } else {
-              codeSource = _artBuf.html || _artBuf.rawJson || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`;
-            }
+            const codeSource = _artBuf.html || _artBuf.rawJson || `/* 아티팩트 생성 중... ${_artBuf.charCount}자 수신 */`;
             const lines = codeSource.split('\n');
             const maxVisible = Math.min(40, Math.max(16, Math.floor((overlayRef.current.clientHeight - 60) / 18)));
             const visible = lines.slice(-maxVisible);
@@ -2814,15 +2824,13 @@ function ArtifactSidePanel({
           }
         } else {
           // 아직 데이터 없음 → thinking 상태 (경과 시간 표시)
+          overlayRef.current.style.display = '';
           if (spinnerRef.current) spinnerRef.current.style.display = '';
           if (codePreRef.current) codePreRef.current.style.display = 'none';
         }
-        if (overlayStatusRef.current) {
+        if (overlayStatusRef.current && !isPatchMode) {
           const lc = _artBuf.html ? _artBuf.html.split('\n').length : 0;
-          if (_artBuf.baseHtml && _artBuf.charCount > 0) {
-            // 패치 수정 모드
-            overlayStatusRef.current.textContent = `${_artBuf.title} · ${_artBuf.html.length.toLocaleString()}자 (${elapsed}초)`;
-          } else if (_artBuf.charCount > 0) {
+          if (_artBuf.charCount > 0) {
             overlayStatusRef.current.textContent = `HTML 코드 작성 중... ${_artBuf.html.length.toLocaleString()}자 · ${lc}줄 (${elapsed}초)`;
           } else {
             overlayStatusRef.current.textContent = `Claude가 HTML 문서를 구성하고 있습니다... (${elapsed}초)`;
@@ -2830,9 +2838,31 @@ function ArtifactSidePanel({
         }
       }
 
-      // ── 3) 타이핑바 ──
+      // ── 2b) 패치 모드 상태바 (별도 ref) ──
+      if (patchStatusRef.current) {
+        if (isPatchMode && !isComplete) {
+          patchStatusRef.current.style.display = '';
+          // rawJson에서 완료된 패치 수 추출
+          const completedPatches = (_artBuf.rawJson.match(/"replace"\s*:\s*"/g) || []).length;
+          const patchLabel = patchStatusLabelRef.current;
+          if (patchLabel) {
+            patchLabel.textContent = completedPatches > 0
+              ? `🔧 패치 적용 중... ${completedPatches}개 수정 (${elapsed}초)`
+              : `🔧 패치 분석 중... (${elapsed}초)`;
+          }
+          // 진행바 애니메이션
+          const bar = patchProgressBarRef.current;
+          if (bar) {
+            bar.style.width = completedPatches > 0 ? `${Math.min(95, completedPatches * 20)}%` : '10%';
+          }
+        } else {
+          patchStatusRef.current.style.display = 'none';
+        }
+      }
+
+      // ── 3) 타이핑바 (패치 모드에서는 숨김 — 패치 상태바가 대체) ──
       if (typingBarRef.current) {
-        if (_artBuf.html.length > 0) {
+        if (!isPatchMode && _artBuf.html.length > 0) {
           typingBarRef.current.style.display = '';
           if (typingSnippetRef.current) typingSnippetRef.current.textContent = _artBuf.html.slice(-100).replace(/\s+/g, ' ');
           if (typingCountRef.current) typingCountRef.current.textContent = `${_artBuf.charCount.toLocaleString()}자`;
@@ -3291,7 +3321,32 @@ function ArtifactSidePanel({
               style={{ background: '#0f1117', display: 'block' }}
             />
 
-            {/* ★ 하단 타이핑바 — 초기 숨김, RAF 루프에서 직접 제어 */}
+            {/* ★ 패치 모드 상태바 — iframe 위에 플로팅 표시 */}
+            <div
+              ref={patchStatusRef}
+              className="absolute bottom-0 left-0 right-0 z-20 flex flex-col"
+              style={{ display: 'none' }}
+            >
+              {/* 진행바 */}
+              <div style={{ height: 3, background: 'rgba(99,102,241,0.15)' }}>
+                <div
+                  ref={patchProgressBarRef}
+                  style={{ height: '100%', width: '10%', background: 'linear-gradient(90deg, #6366f1, #818cf8)', borderRadius: '0 2px 2px 0', transition: 'width 0.5s ease-out' }}
+                />
+              </div>
+              {/* 상태 텍스트 */}
+              <div className="flex items-center gap-2 px-3 py-2" style={{ background: 'rgba(15,17,23,0.92)', backdropFilter: 'blur(8px)', borderTop: '1px solid rgba(99,102,241,0.25)' }}>
+                <svg className="animate-spin w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                <span ref={patchStatusLabelRef} className="text-[11px] font-medium truncate" style={{ color: '#a5b4fc' }}>🔧 패치 분석 중...</span>
+                <div className="ml-auto flex gap-0.5">
+                  {[0, 1, 2].map(j => (
+                    <span key={j} className="w-1 h-1 rounded-full" style={{ background: '#818cf8', animation: `chatDot 1.4s ease-in-out ${j * 0.16}s infinite` }} />
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* ★ 하단 타이핑바 (신규 생성 모드 전용) — 초기 숨김, 루프에서 직접 제어 */}
             <div
               ref={typingBarRef}
               className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5"
