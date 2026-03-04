@@ -888,6 +888,14 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap,
   lines.push('- 프로젝트 키: AEGIS. JQL에 날짜 필터 자동 추가 금지. ORDER BY updated DESC 기본 사용.');
   lines.push('- 이슈번호 언급(AEGIS-1234) → get_jira_issue 바로 호출.');
   lines.push('');
+  lines.push('## ⭐⭐⭐ Jira 쓰기(Write) — 반드시 준수');
+  lines.push('당신은 Jira에 직접 댓글을 달고 상태를 변경할 수 있습니다! 절대 "쓰기 불가", "직접 할 수 없다", "기능이 없다"고 말하지 마세요.');
+  lines.push('- "댓글 달아줘" / "코멘트 남겨줘" / "이슈에 써줘" → add_jira_comment(issueKey, comment) 즉시 호출');
+  lines.push('- issueKey: "AEGIS-1234" 또는 전체 URL "https://.../browse/AEGIS-1234" 모두 허용');
+  lines.push('- 댓글 내용은 마크다운으로 작성 → 자동으로 Jira ADF 형식으로 변환됨');
+  lines.push('- "상태 바꿔줘" / "In Progress로 변경" → update_jira_issue_status(issueKey, targetStatus) 호출');
+  lines.push('- 가능한 상태 목록 모를 때 → update_jira_issue_status(issueKey, listTransitions: true) 로 먼저 확인');
+  lines.push('');
   lines.push('## 아티팩트 생성 프로토콜');
   lines.push('문서/보고서/시트/3D 요청 시:');
   lines.push('1. <<<ARTIFACT_START>>> + HTML(body 내용만, 다크테마 bg:#0f1117 text:#e2e8f0 accent:#6366f1) + <<<ARTIFACT_END>>>');

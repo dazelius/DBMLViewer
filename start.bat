@@ -23,7 +23,7 @@ if %errorlevel% neq 0 (
 
 echo.
 echo [INFO] 서버 시작 완료!
-echo [INFO] 주소: http://localhost:4173/TableMaster
+echo [INFO] 주소: http://localhost:5173/TableMaster
 echo [INFO] 종료하려면 Ctrl+C 를 누르세요.
 echo.
 
