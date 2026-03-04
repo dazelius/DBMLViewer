@@ -340,11 +340,21 @@ function sendJson(res: ServerResponse, status: number, data: unknown) {
   res.end(JSON.stringify(data))
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve) => {
+function readBody(req: IncomingMessage, maxBytes = 1_048_576 /* 1MB */): Promise<string> {
+  return new Promise((resolve, reject) => {
     let body = ''
-    req.on('data', (c: Buffer) => { body += c.toString() })
+    let size = 0
+    req.on('data', (c: Buffer) => {
+      size += c.length
+      if (size > maxBytes) {
+        req.destroy()
+        reject(new Error(`Request body too large (>${maxBytes} bytes)`))
+        return
+      }
+      body += c.toString()
+    })
     req.on('end', () => resolve(body))
+    req.on('error', reject)
   })
 }
 
@@ -3910,6 +3920,83 @@ function getOrCreateSession(id?: string): ChatSession {
   return s
 }
 
+// ── 세션 안전장치 헬퍼 ────────────────────────────────────────────────────────
+
+/** 세션 메모리 TTL eviction — 1시간 이상 미사용 세션을 메모리에서 해제 (디스크는 유지) */
+function evictStaleSessions() {
+  const TTL_MS = 60 * 60 * 1000  // 1시간
+  const now = Date.now()
+  for (const [id, s] of _sessions) {
+    const lastActive = new Date(s.updated).getTime()
+    if (now - lastActive > TTL_MS) {
+      _sessions.delete(id)
+      sLog('INFO', `[session] evicted stale session ${id} (inactive ${Math.round((now - lastActive) / 60000)}min)`)
+    }
+  }
+}
+// 5분마다 자동 실행
+setInterval(evictStaleSessions, 5 * 60 * 1000).unref()
+
+/** 진행 중인 요청 세트 — 세션당 1개 요청만 허용 */
+const _activeRequests = new Set<string>()
+
+/**
+ * 대략적인 토큰 수 추정 — 영문 4자/토큰, 한글 2자/토큰 근사치
+ * Claude context window: claude-opus 200K tokens
+ */
+function estimateTokens(messages: Array<{ role: string; content: unknown }>): number {
+  let chars = 0
+  for (const m of messages) {
+    const text = typeof m.content === 'string'
+      ? m.content
+      : JSON.stringify(m.content)
+    chars += text.length
+  }
+  // 한글 비율이 높다고 가정 → 2.5자/토큰 근사
+  return Math.ceil(chars / 2.5)
+}
+
+/** tool 결과 크기 제한 — 10KB 초과 시 앞부분만 유지 */
+const TOOL_RESULT_MAX_CHARS = 10_000
+
+function truncateToolResult(content: string): string {
+  if (content.length <= TOOL_RESULT_MAX_CHARS) return content
+  const truncated = content.slice(0, TOOL_RESULT_MAX_CHARS)
+  return truncated + `\n\n... [결과가 너무 길어 ${content.length - TOOL_RESULT_MAX_CHARS}자 잘렸습니다]`
+}
+
+/**
+ * messages 슬라이딩 윈도우 적용
+ * - 최대 토큰 초과 시 오래된 턴(user+assistant 쌍)부터 제거
+ * - 첫 번째 user 메시지(현재 요청)는 항상 보존
+ * - MAX_HISTORY_TURNS: 세션 히스토리 최대 보존 턴 수
+ */
+const MAX_CONTEXT_TOKENS = 120_000  // 여유 있게 200K의 60%
+const MAX_HISTORY_TURNS  = 40       // 히스토리 최대 20쌍(user+assistant)
+
+function applyContextWindow(messages: Array<{ role: string; content: unknown }>): Array<{ role: string; content: unknown }> {
+  if (messages.length === 0) return messages
+
+  // 1) 히스토리 턴 수 제한 — 끝에서 MAX_HISTORY_TURNS 개만 유지 (마지막 항목 = 현재 user 메시지 보존)
+  let trimmed = messages
+  if (trimmed.length > MAX_HISTORY_TURNS + 1) {
+    const currentUserMsg = trimmed[trimmed.length - 1]
+    trimmed = [...trimmed.slice(-(MAX_HISTORY_TURNS)), currentUserMsg]
+    // user 메시지로 시작해야 Claude API 규칙 충족
+    while (trimmed.length > 1 && trimmed[0].role !== 'user') trimmed.shift()
+  }
+
+  // 2) 토큰 수 제한 — 초과하면 앞부분 쌍씩 제거
+  while (trimmed.length > 1 && estimateTokens(trimmed) > MAX_CONTEXT_TOKENS) {
+    // 앞에서 2개(user+assistant 쌍) 제거, 마지막 메시지(현재 user)는 보존
+    if (trimmed.length <= 2) break
+    trimmed = trimmed.slice(2)
+    while (trimmed.length > 1 && trimmed[0].role !== 'user') trimmed.shift()
+  }
+
+  return trimmed
+}
+
 // ── 서버사이드 xlsx 데이터 로딩 ──
 
 /** 첫 5행 중 컬럼 헤더로 가장 적합한 행 인덱스를 반환 (클라이언트 findHeaderRow 와 동일 로직) */
@@ -5302,11 +5389,23 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       const MAX_ITERATIONS = 12
       const systemPrompt = buildServerSystemPrompt()
 
-      // Claude messages 빌드 (히스토리 + 새 메시지)
-      const messages: Array<{ role: string; content: unknown }> = [
+      // ── 동시 요청 중복 방지 ──
+      if (_activeRequests.has(session.id)) {
+        sendJson(res, 429, { error: '이미 처리 중인 요청이 있습니다. 잠시 후 다시 시도해주세요.' })
+        return
+      }
+      _activeRequests.add(session.id)
+
+      // Claude messages 빌드 (히스토리 + 새 메시지) → 슬라이딩 윈도우 적용
+      const rawMessages: Array<{ role: string; content: unknown }> = [
         ...session.messages,
         { role: 'user', content: userMessage },
       ]
+      const messages = applyContextWindow(rawMessages)
+      const trimmedCount = rawMessages.length - messages.length
+      if (trimmedCount > 0) {
+        sLog('WARN', `[chatApi] context window 초과 — ${trimmedCount}개 오래된 메시지 제거 (추정 ${estimateTokens(rawMessages).toLocaleString()} → ${estimateTokens(messages).toLocaleString()} tokens)`)
+      }
 
       const allToolCalls: Array<{ tool: string; input: unknown; result: unknown; summary?: string }> = []
 
@@ -5355,12 +5454,20 @@ function createChatApiMiddleware(options: GitPluginOptions) {
               for (const tb of toolBlocks) {
                 if (res.writableEnded) break  // 클라이언트 끊기면 툴 실행 중단
                 try { res.write(`event: tool_start\ndata: ${JSON.stringify({ tool: tb.name, input: tb.input })}\n\n`) } catch { break }
-                const { result, data: toolData } = await serverExecuteToolAsync(tb.name!, tb.input ?? {}, options)
+                const { result: rawResult, data: toolData } = await serverExecuteToolAsync(tb.name!, tb.input ?? {}, options)
+                const result = truncateToolResult(rawResult)  // ← tool 결과 크기 제한
                 allToolCalls.push({ tool: tb.name!, input: tb.input, result: toolData ?? result, summary: result.slice(0, 300) })
                 toolResults.push({ type: 'tool_result', tool_use_id: tb.id!, content: result })
                 if (!res.writableEnded) try { res.write(`event: tool_done\ndata: ${JSON.stringify({ tool: tb.name, summary: result.slice(0, 300) })}\n\n`) } catch { /* ignore */ }
               }
               messages.push({ role: 'user', content: toolResults })
+              // tool 실행 후 context 재확인 (반복 누적 대비)
+              const tokenEst = estimateTokens(messages)
+              if (tokenEst > MAX_CONTEXT_TOKENS) {
+                sLog('WARN', `[chatApi/stream] 반복 중 context 초과 (${tokenEst.toLocaleString()} tokens) — 오래된 메시지 제거`)
+                const trimmed = applyContextWindow(messages)
+                messages.length = 0; messages.push(...trimmed)
+              }
               continue
             }
 
@@ -5430,6 +5537,8 @@ function createChatApiMiddleware(options: GitPluginOptions) {
               res.end()
             }
           } catch { /* 이미 소켓 닫힘 */ }
+        } finally {
+          _activeRequests.delete(session.id)  // 완료·에러 모두 해제
         }
         return
       }
@@ -5468,11 +5577,19 @@ function createChatApiMiddleware(options: GitPluginOptions) {
             const toolResults: Array<{ type: string; tool_use_id: string; content: string }> = []
 
             for (const tb of toolBlocks) {
-              const { result, data: toolData } = await serverExecuteToolAsync(tb.name!, tb.input ?? {}, options)
+              const { result: rawResult, data: toolData } = await serverExecuteToolAsync(tb.name!, tb.input ?? {}, options)
+              const result = truncateToolResult(rawResult)  // ← tool 결과 크기 제한
               allToolCalls.push({ tool: tb.name!, input: tb.input, result: toolData ?? result, summary: result.slice(0, 300) })
               toolResults.push({ type: 'tool_result', tool_use_id: tb.id!, content: result })
             }
             messages.push({ role: 'user', content: toolResults })
+            // tool 실행 후 context 재확인
+            const tokenEst = estimateTokens(messages)
+            if (tokenEst > MAX_CONTEXT_TOKENS) {
+              sLog('WARN', `[chatApi/non-stream] 반복 중 context 초과 (${tokenEst.toLocaleString()} tokens) — 오래된 메시지 제거`)
+              const trimmed = applyContextWindow(messages)
+              messages.length = 0; messages.push(...trimmed)
+            }
             continue
           }
 
@@ -5531,6 +5648,8 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         sendJson(res, 500, { error: msg })
+      } finally {
+        _activeRequests.delete(session.id)  // 완료·에러 모두 해제
       }
       return
     }
