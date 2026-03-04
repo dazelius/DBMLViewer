@@ -5302,7 +5302,7 @@ function FbxAnimationCard({ tc }: { tc: FbxAnimationResult }) {
   );
 }
 
-function KnowledgeCard({ tc }: { tc: KnowledgeResult }) {
+function KnowledgeCard({ tc, compact }: { tc: KnowledgeResult; compact?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const isError = !!tc.error;
   const isSave = tc.action === 'save';
@@ -5316,8 +5316,26 @@ function KnowledgeCard({ tc }: { tc: KnowledgeResult }) {
     : `널리지 읽기: ${tc.name}`;
   const badge = isError ? '오류' : isSave ? `${tc.sizeKB ?? 0}KB` : isList ? `${tc.items?.length ?? 0}개` : `${tc.sizeKB ?? 0}KB`;
 
+  // 컴팩트 모드 (그룹 내부): 한 줄 요약만
+  if (compact && !expanded) {
+    return (
+      <button onClick={() => setExpanded(true)} className="w-full flex items-center gap-2 px-2 py-1 rounded text-left hover:bg-white/[0.03] transition-colors" style={{ background: 'transparent' }}>
+        <span className="text-[11px] flex-shrink-0">{icon}</span>
+        <span className="text-[11px] flex-1 min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
+          {isSave ? tc.name : isList ? `목록 ${tc.items?.length ?? 0}개` : tc.name}
+        </span>
+        <span className="text-[9px] px-1.5 py-0.5 rounded-full flex-shrink-0" style={{
+          background: isError ? 'rgba(239,68,68,0.15)' : 'rgba(139,92,246,0.1)',
+          color: isError ? '#f87171' : '#a78bfa',
+        }}>
+          {badge}
+        </span>
+      </button>
+    );
+  }
+
   return (
-    <div className="rounded-xl overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(139,92,246,0.25)' }}>
+    <div className={compact ? 'overflow-hidden' : 'rounded-xl overflow-hidden mb-2'} style={compact ? {} : { background: 'var(--bg-secondary)', border: '1px solid rgba(139,92,246,0.25)' }}>
       <button onClick={() => setExpanded(!expanded)} className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left" style={{ background: 'transparent' }}>
         <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 text-[13px]" style={{ background: 'rgba(139,92,246,0.12)' }}>
           {icon}
@@ -5362,6 +5380,47 @@ function KnowledgeCard({ tc }: { tc: KnowledgeResult }) {
               <span className="text-[11px]">널리지가 성공적으로 저장되었습니다.</span>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 여러 Knowledge 카드를 하나의 접히는 그룹으로 묶어 표시 */
+function KnowledgeGroup({ items }: { items: KnowledgeResult[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const readCount = items.filter(t => t.action === 'read').length;
+  const saveCount = items.filter(t => t.action === 'save').length;
+  const listCount = items.filter(t => t.action === 'list').length;
+  const totalKB = items.reduce((s, t) => s + (t.sizeKB ?? 0), 0);
+  const parts: string[] = [];
+  if (readCount) parts.push(`읽기 ${readCount}`);
+  if (saveCount) parts.push(`저장 ${saveCount}`);
+  if (listCount) parts.push(`목록 ${listCount}`);
+
+  return (
+    <div className="rounded-xl overflow-hidden mb-2" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(139,92,246,0.25)' }}>
+      <button onClick={() => setExpanded(e => !e)} className="w-full flex items-center gap-2.5 px-4 py-2 text-left" style={{ background: 'transparent' }}>
+        <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 text-[13px]" style={{ background: 'rgba(139,92,246,0.12)' }}>
+          🧠
+        </div>
+        <span className="text-[12px] font-medium flex-1 min-w-0 truncate" style={{ color: 'var(--text-secondary)' }}>
+          널리지 {items.length}건
+          <span className="ml-1.5 text-[10px]" style={{ color: 'var(--text-muted)' }}>({parts.join(' · ')})</span>
+        </span>
+        {totalKB > 0 && (
+          <span className="text-[10px] px-2 py-0.5 rounded-full flex-shrink-0" style={{ background: 'rgba(139,92,246,0.15)', color: '#a78bfa' }}>
+            {totalKB}KB
+          </span>
+        )}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+          style={{ color: 'var(--text-muted)', transition: 'transform 0.2s', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', flexShrink: 0 }}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {expanded && (
+        <div className="px-2 pb-2 space-y-0.5" style={{ borderTop: '1px solid rgba(139,92,246,0.1)' }}>
+          {items.map((tc, i) => <KnowledgeCard key={i} tc={tc} compact />)}
         </div>
       )}
     </div>
@@ -6503,11 +6562,21 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
               {msg.thinkingSteps && msg.thinkingSteps.length > 0 && (
                 <ThinkingPanel steps={msg.thinkingSteps} isActive={true} />
               )}
-              {msg.liveToolCalls && msg.liveToolCalls.length > 0 && (
-                <div className="mb-4 space-y-2.5">
-                  {msg.liveToolCalls.map((tc, i) => <ToolCallCard key={i} tc={tc} index={i} onOpenArtifact={onOpenArtifact} />)}
-                </div>
-              )}
+              {msg.liveToolCalls && msg.liveToolCalls.length > 0 && (() => {
+                const knowledgeTCs = msg.liveToolCalls.filter(tc => tc.kind === 'knowledge') as KnowledgeResult[];
+                const otherTCs = msg.liveToolCalls.filter(tc => tc.kind !== 'knowledge');
+                return (
+                  <div className="mb-4 space-y-2.5">
+                    {knowledgeTCs.length > 1
+                      ? <KnowledgeGroup items={knowledgeTCs} />
+                      : knowledgeTCs.length === 1
+                        ? <KnowledgeCard tc={knowledgeTCs[0]} />
+                        : null
+                    }
+                    {otherTCs.map((tc, i) => <ToolCallCard key={i} tc={tc} index={i} onOpenArtifact={onOpenArtifact} />)}
+                  </div>
+                );
+              })()}
               {/* 아티팩트 실시간 생성 → HTML 코드가 있으면 코드 오버레이, 없으면 진행 표시 */}
               {artifactStreaming && !artifactStreaming.isComplete && artifactStreaming.charCount > 0 && (
                 artifactStreaming.html ? (
@@ -6566,14 +6635,24 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
               {msg.thinkingSteps && msg.thinkingSteps.length > 1 && (
                 <ThinkingPanel steps={msg.thinkingSteps} isActive={false} />
               )}
-              {/* Tool calls */}
-              {msg.toolCalls && msg.toolCalls.length > 0 && (
-                <div className="mb-4 space-y-2.5">
-                  {msg.toolCalls.map((tc, i) => (
-                    <ToolCallCard key={i} tc={tc} index={i} onOpenArtifact={onOpenArtifact} />
-                  ))}
-                </div>
-              )}
+              {/* Tool calls — 널리지 카드는 그룹으로 묶어 접기 */}
+              {msg.toolCalls && msg.toolCalls.length > 0 && (() => {
+                const knowledgeTCs = msg.toolCalls.filter(tc => tc.kind === 'knowledge') as KnowledgeResult[];
+                const otherTCs = msg.toolCalls.filter(tc => tc.kind !== 'knowledge');
+                return (
+                  <div className="mb-4 space-y-2.5">
+                    {knowledgeTCs.length > 1
+                      ? <KnowledgeGroup items={knowledgeTCs} />
+                      : knowledgeTCs.length === 1
+                        ? <KnowledgeCard tc={knowledgeTCs[0]} />
+                        : null
+                    }
+                    {otherTCs.map((tc, i) => (
+                      <ToolCallCard key={i} tc={tc} index={i} onOpenArtifact={onOpenArtifact} />
+                    ))}
+                  </div>
+                );
+              })()}
               {/* 오류 */}
               {msg.error && (
                 <div
