@@ -181,21 +181,30 @@ const COMP_ICONS: Record<string, string> = {
   Canvas: '🖥️', SpriteRenderer: '🖼️', LineRenderer: '〰️',
 }
 
+/** Unity Quaternion → Three.js Euler (degrees) */
+function quatToEulerDeg(q: Quat): { x: number; y: number; z: number } {
+  const e = new THREE.Euler().setFromQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w))
+  return {
+    x: THREE.MathUtils.radToDeg(e.x),
+    y: THREE.MathUtils.radToDeg(e.y),
+    z: THREE.MathUtils.radToDeg(e.z),
+  }
+}
+
 // ── 하이어라키 트리 노드 컴포넌트 ─────────────────────────────────────────────
 interface HierarchyTreeNodeProps {
   node: HierarchyNode
   depth: number
   expandedNodes: Set<string>
-  selectedObjIdx: number
+  selectedNodeId: string | null
   onToggle: (id: string) => void
-  onSelect: (objIdx: number) => void
+  onSelect: (node: HierarchyNode) => void
 }
 
-function HierarchyTreeNode({ node, depth, expandedNodes, selectedObjIdx, onToggle, onSelect }: HierarchyTreeNodeProps) {
+function HierarchyTreeNode({ node, depth, expandedNodes, selectedNodeId, onToggle, onSelect }: HierarchyTreeNodeProps) {
   const hasChildren = node.children.length > 0
   const isExpanded  = expandedNodes.has(node.id)
-  const isSelected  = node.objIdx >= 0 && node.objIdx === selectedObjIdx
-  const isClickable = node.objIdx >= 0
+  const isSelected  = node.id === selectedNodeId
 
   const icon = HIERARCHY_ICONS[node.type] || HIERARCHY_ICONS.empty
 
@@ -205,16 +214,16 @@ function HierarchyTreeNode({ node, depth, expandedNodes, selectedObjIdx, onToggl
         onClick={(e) => {
           e.stopPropagation()
           if (hasChildren) onToggle(node.id)
-          if (isClickable) onSelect(node.objIdx)
+          onSelect(node)
         }}
         style={{
           display: 'flex', alignItems: 'center', gap: 2,
           paddingLeft: 8 + depth * 14, paddingRight: 6,
           paddingTop: 2, paddingBottom: 2,
-          cursor: isClickable || hasChildren ? 'pointer' : 'default',
+          cursor: 'pointer',
           background: isSelected ? 'rgba(99,102,241,0.2)' : 'transparent',
           borderLeft: isSelected ? '2px solid #818cf8' : '2px solid transparent',
-          color: isClickable ? '#e2e8f0' : '#64748b',
+          color: '#e2e8f0',
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
           transition: 'background 0.1s',
         }}
@@ -278,7 +287,7 @@ function HierarchyTreeNode({ node, depth, expandedNodes, selectedObjIdx, onToggl
           node={child}
           depth={depth + 1}
           expandedNodes={expandedNodes}
-          selectedObjIdx={selectedObjIdx}
+          selectedNodeId={selectedNodeId}
           onToggle={onToggle}
           onSelect={onSelect}
         />
@@ -304,11 +313,13 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
   const [sceneInfo, setSceneInfo] = useState<Omit<SceneData, 'objects'> | null>(null)
   const cleanupRef = useRef<() => void>(() => {})
 
-  // ── Hierarchy 패널 상태 ──
+  // ── Hierarchy / Inspector 패널 상태 ──
   const [hierarchyData, setHierarchyData] = useState<HierarchyNode[]>([])
+  const [sceneObjects, setSceneObjects] = useState<SceneObject[]>([])
   const [showHierarchy, setShowHierarchy] = useState(true)
+  const [showInspector, setShowInspector] = useState(true)
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set())
-  const [selectedObjIdx, setSelectedObjIdx] = useState<number>(-1)
+  const [selectedNode, setSelectedNode] = useState<HierarchyNode | null>(null)
 
   // Three.js 객체 참조 (hierarchy → camera focus용)
   const cameraRef   = useRef<THREE.PerspectiveCamera | null>(null)
@@ -457,6 +468,8 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
           resolvedProBuilder: data.resolvedProBuilder,
           resolvedBox: data.resolvedBox,
         })
+        // 오브젝트 배열 저장 (Inspector에서 Transform 표시용)
+        setSceneObjects(data.objects)
         // 하이어라키 트리 데이터 저장
         if (data.hierarchy) {
           setHierarchyData(data.hierarchy)
@@ -904,10 +917,11 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
 
   const sceneName = scenePath.split('/').pop()?.replace('.unity', '') ?? 'Scene'
 
-  // ── 카메라 포커스 함수 ──
-  const focusOnObject = (objIdx: number) => {
-    setSelectedObjIdx(objIdx)
-    const obj = sceneObjMap.current.get(objIdx)
+  // ── 노드 선택 + 카메라 포커스 ──
+  const selectAndFocus = (node: HierarchyNode) => {
+    setSelectedNode(node)
+    if (node.objIdx < 0) return
+    const obj = sceneObjMap.current.get(node.objIdx)
     const camera = cameraRef.current
     const controls = controlsRef.current
     if (!obj || !camera || !controls) return
@@ -985,24 +999,42 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
           </span>
         )}
 
-        {/* 하이어라키 토글 버튼 */}
+        {/* 하이어라키 / 인스펙터 토글 버튼 */}
         {hierarchyData.length > 0 && (
-          <button
-            onClick={() => setShowHierarchy(!showHierarchy)}
-            title={showHierarchy ? '하이어라키 숨기기' : '하이어라키 보기'}
-            style={{
-              marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4,
-              background: showHierarchy ? 'rgba(99,102,241,0.2)' : 'rgba(100,116,139,0.15)',
-              color: showHierarchy ? '#818cf8' : '#94a3b8',
-              border: `1px solid ${showHierarchy ? 'rgba(99,102,241,0.3)' : 'rgba(100,116,139,0.2)'}`,
-              borderRadius: 5, padding: '2px 8px', fontSize: 11, cursor: 'pointer',
-            }}
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/>
-            </svg>
-            Hierarchy
-          </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+            <button
+              onClick={() => setShowHierarchy(!showHierarchy)}
+              title={showHierarchy ? '하이어라키 숨기기' : '하이어라키 보기'}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4,
+                background: showHierarchy ? 'rgba(99,102,241,0.2)' : 'rgba(100,116,139,0.15)',
+                color: showHierarchy ? '#818cf8' : '#94a3b8',
+                border: `1px solid ${showHierarchy ? 'rgba(99,102,241,0.3)' : 'rgba(100,116,139,0.2)'}`,
+                borderRadius: 5, padding: '2px 8px', fontSize: 11, cursor: 'pointer',
+              }}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/>
+              </svg>
+              Hierarchy
+            </button>
+            <button
+              onClick={() => setShowInspector(!showInspector)}
+              title={showInspector ? '인스펙터 숨기기' : '인스펙터 보기'}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4,
+                background: showInspector ? 'rgba(52,211,153,0.2)' : 'rgba(100,116,139,0.15)',
+                color: showInspector ? '#34d399' : '#94a3b8',
+                border: `1px solid ${showInspector ? 'rgba(52,211,153,0.3)' : 'rgba(100,116,139,0.2)'}`,
+                borderRadius: 5, padding: '2px 8px', fontSize: 11, cursor: 'pointer',
+              }}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+              </svg>
+              Inspector
+            </button>
+          </div>
         )}
 
         {status === 'loading-fbx' && !hierarchyData.length && (
@@ -1059,9 +1091,9 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
                   node={node}
                   depth={0}
                   expandedNodes={expandedNodes}
-                  selectedObjIdx={selectedObjIdx}
+                  selectedNodeId={selectedNode?.id ?? null}
                   onToggle={toggleExpand}
-                  onSelect={focusOnObject}
+                  onSelect={selectAndFocus}
                 />
               ))}
             </div>
@@ -1090,6 +1122,143 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
 
         {/* ── 3D 뷰포트 ── */}
         <div ref={mountRef} style={{ flex: 1, height: '100%', position: 'relative' }} />
+
+        {/* ── Inspector 패널 ── */}
+        {showInspector && hierarchyData.length > 0 && (
+          <div style={{
+            width: 220, minWidth: 180, maxWidth: 280,
+            borderLeft: '1px solid #1e293b',
+            background: '#111827',
+            display: 'flex', flexDirection: 'column',
+            fontSize: 11, fontFamily: 'monospace',
+            overflowX: 'hidden',
+          }}>
+            {/* 인스펙터 헤더 */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              padding: '5px 8px',
+              borderBottom: '1px solid #1e293b',
+              background: '#0f172a',
+            }}>
+              <span style={{ color: '#64748b', fontSize: 10, fontWeight: 600, letterSpacing: 0.5 }}>
+                INSPECTOR
+              </span>
+              {selectedNode && (
+                <span style={{
+                  marginLeft: 'auto', fontSize: 9,
+                  color: selectedNode.type === 'fbx' ? '#60a5fa'
+                    : selectedNode.type === 'probuilder' ? '#a78bfa'
+                    : selectedNode.type === 'box' ? '#fb923c' : '#94a3b8',
+                }}>
+                  {selectedNode.type}
+                </span>
+              )}
+            </div>
+
+            {/* 인스펙터 본문 */}
+            <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
+              {selectedNode ? (
+                <div style={{ padding: '8px' }}>
+                  {/* 오브젝트 이름 */}
+                  <div style={{
+                    fontWeight: 600, color: '#e2e8f0', fontSize: 12,
+                    marginBottom: 10, wordBreak: 'break-all', lineHeight: 1.4,
+                  }}>
+                    {selectedNode.name || '[unnamed]'}
+                  </div>
+
+                  {/* Transform (objIdx >= 0 인 오브젝트만) */}
+                  {selectedNode.objIdx >= 0 && sceneObjects[selectedNode.objIdx] && (() => {
+                    const obj = sceneObjects[selectedNode.objIdx]
+                    const euler = quatToEulerDeg(obj.rot)
+                    const rows: Array<{ label: string; v: { x: number; y: number; z: number } }> = [
+                      { label: 'Position', v: obj.pos },
+                      { label: 'Rotation', v: euler },
+                      { label: 'Scale',    v: obj.scale },
+                    ]
+                    return (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{
+                          color: '#475569', fontSize: 9, fontWeight: 600,
+                          letterSpacing: 0.5, marginBottom: 4, paddingBottom: 2,
+                          borderBottom: '1px solid #1e293b',
+                        }}>
+                          TRANSFORM
+                        </div>
+                        {rows.map(({ label, v }) => (
+                          <div key={label} style={{ marginBottom: 4 }}>
+                            <div style={{ color: '#64748b', fontSize: 9, marginBottom: 1 }}>{label}</div>
+                            <div style={{
+                              display: 'grid', gridTemplateColumns: '1fr 1fr 1fr',
+                              gap: 2,
+                            }}>
+                              {(['x', 'y', 'z'] as const).map(axis => (
+                                <div key={axis} style={{
+                                  background: '#0f172a', borderRadius: 3,
+                                  padding: '2px 4px', fontSize: 9,
+                                }}>
+                                  <span style={{ color: axis === 'x' ? '#f87171' : axis === 'y' ? '#4ade80' : '#60a5fa', marginRight: 2 }}>
+                                    {axis.toUpperCase()}
+                                  </span>
+                                  <span style={{ color: '#cbd5e1' }}>
+                                    {(v[axis] as number).toFixed(2)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  })()}
+
+                  {/* Components */}
+                  {(selectedNode.components?.length ?? 0) > 0 && (
+                    <div>
+                      <div style={{
+                        color: '#475569', fontSize: 9, fontWeight: 600,
+                        letterSpacing: 0.5, marginBottom: 4, paddingBottom: 2,
+                        borderBottom: '1px solid #1e293b',
+                      }}>
+                        COMPONENTS ({selectedNode.components!.length})
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        {selectedNode.components!.map((comp, i) => (
+                          <div key={i} style={{
+                            display: 'flex', alignItems: 'center', gap: 5,
+                            background: '#0f172a', borderRadius: 4,
+                            padding: '3px 6px', border: '1px solid #1e293b',
+                          }}>
+                            <span style={{ fontSize: 10, flexShrink: 0 }}>
+                              {COMP_ICONS[comp] || '•'}
+                            </span>
+                            <span style={{ fontSize: 10, color: '#cbd5e1', wordBreak: 'break-word' }}>
+                              {comp}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 렌더링 없는 empty 노드 안내 */}
+                  {selectedNode.objIdx < 0 && (selectedNode.components?.length ?? 0) === 0 && (
+                    <div style={{ color: '#475569', fontSize: 10, lineHeight: 1.5 }}>
+                      렌더링 없는 오브젝트
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div style={{
+                  color: '#475569', fontSize: 10, padding: '20px 8px',
+                  textAlign: 'center', lineHeight: 1.8,
+                }}>
+                  Hierarchy에서<br/>오브젝트를 선택하세요
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 오버레이: 씬 로딩 */}
