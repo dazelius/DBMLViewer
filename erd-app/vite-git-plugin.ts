@@ -3206,7 +3206,32 @@ function createGitMiddleware(options: GitPluginOptions) {
 
     // ── /api/published : 출판된 문서 목록 (GET) ────────────────────────────────
     if (req.url === '/api/published' && req.method === 'GET') {
-      sendJson(res, 200, readPublishedIndex())
+      const list = readPublishedIndex()
+      // 각 문서 HTML의 첫 번째 h1/h2 텍스트를 title로 사용 (없으면 기존 title 유지)
+      const enriched = list.map(meta => {
+        try {
+          const htmlPath = join(PUBLISHED_DIR, `${meta.id}.html`)
+          if (existsSync(htmlPath)) {
+            const html = readFileSync(htmlPath, 'utf-8')
+            // <h1> 또는 <h2> 태그의 텍스트 추출 (태그 안의 HTML 엔티티·태그 제거)
+            const m = html.match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/i)
+            if (m) {
+              const headingText = m[1]
+                .replace(/<[^>]+>/g, '')          // 내부 태그 제거
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&#39;/g, "'")
+                .replace(/&nbsp;/g, ' ')
+                .trim()
+              if (headingText) return { ...meta, title: headingText }
+            }
+          }
+        } catch { /* HTML 읽기 실패 시 기존 title 사용 */ }
+        return meta
+      })
+      sendJson(res, 200, enriched)
       return
     }
 
