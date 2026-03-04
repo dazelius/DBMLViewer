@@ -371,20 +371,352 @@ const MERMAID_INIT_SCRIPT = '<script type="module">'
   + '}).observe(document.body,{childList:true,subtree:true});'
   + '</' + 'script>';
 
-/** 스키마 테이블 embed → HTML */
+/** 인터랙티브 SVG ERD 렌더러 (artifact iframe 내에서 실행) */
+const ERD_RENDERER_SCRIPT = `<` + `script>
+(function(){
+var COL_H=22,HDR_H=34,PAD=16,MIN_W=210,MAX_COL=18,GAP_X=50,GAP_Y=40;
+var C={hc:'#312e81',hr:'#1a2035',ht:'#e2e8f0',cb:'#0f172a',ct:'#cbd5e1',
+  pk:'#818cf8',fk:'#fbbf24',nn:'#64748b',bd:'#334155',bc:'#6366f1',
+  ln:'#6366f1',bg:'#0d1117'};
+
+function initERD(){
+  document.querySelectorAll('.erd-container').forEach(function(el){
+    if(el._rendered)return; el._rendered=true;
+    try{
+      var data=JSON.parse(el.dataset.erd);
+      var canvas=el.querySelector('.erd-canvas');
+      if(canvas)renderERD(canvas,data);
+    }catch(e){el.innerHTML='<div style="color:#ef4444;padding:10px">ERD 오류: '+e.message+'</div>';}
+  });
+}
+
+function renderERD(container,data){
+  var tables=data.tables, refs=data.refs;
+  // 테이블 크기 계산
+  tables.forEach(function(t){
+    var maxL=t.name.length;
+    t.columns.forEach(function(c){maxL=Math.max(maxL,(c.name+c.type).length);});
+    t.w=Math.max(MIN_W,maxL*7+90);
+    t.h=HDR_H+t.columns.length*COL_H+(t.truncated?COL_H:0)+6;
+  });
+  // 그리드 레이아웃
+  var centers=tables.filter(function(t){return t.isCenter;});
+  var others=tables.filter(function(t){return !t.isCenter;});
+  var all=[].concat(centers,others);
+  var COLS=Math.min(4,Math.ceil(Math.sqrt(all.length)));
+  var rowH=[];
+  all.forEach(function(t,i){var r=Math.floor(i/COLS);rowH[r]=Math.max(rowH[r]||0,t.h);});
+  all.forEach(function(t,i){
+    var r=Math.floor(i/COLS),c=i%COLS;
+    var py=PAD; for(var k=0;k<r;k++)py+=rowH[k]+GAP_Y;
+    t.x=PAD+c*(MIN_W+GAP_X+60); t.y=py;
+  });
+  var svgW=0,svgH=0;
+  all.forEach(function(t){svgW=Math.max(svgW,t.x+t.w+PAD);svgH=Math.max(svgH,t.y+t.h+PAD);});
+
+  // SVG 생성
+  var ns='http://www.w3.org/2000/svg';
+  var svg=document.createElementNS(ns,'svg');
+  svg.setAttribute('width',svgW);svg.setAttribute('height',svgH);
+  svg.style.cssText='position:absolute;left:0;top:0;';
+  // defs: arrow marker
+  var defs=document.createElementNS(ns,'defs');
+  var marker=document.createElementNS(ns,'marker');
+  marker.setAttribute('id','arrowhead');marker.setAttribute('markerWidth','8');
+  marker.setAttribute('markerHeight','6');marker.setAttribute('refX','8');
+  marker.setAttribute('refY','3');marker.setAttribute('orient','auto');
+  var poly=document.createElementNS(ns,'polygon');
+  poly.setAttribute('points','0 0, 8 3, 0 6');poly.setAttribute('fill',C.ln);
+  marker.appendChild(poly);defs.appendChild(marker);
+  // diamond marker (many)
+  var dm=document.createElementNS(ns,'marker');
+  dm.setAttribute('id','diamond');dm.setAttribute('markerWidth','10');
+  dm.setAttribute('markerHeight','8');dm.setAttribute('refX','0');
+  dm.setAttribute('refY','4');dm.setAttribute('orient','auto');
+  var dp=document.createElementNS(ns,'polygon');
+  dp.setAttribute('points','0 4,5 0,10 4,5 8');dp.setAttribute('fill',C.fk);
+  dm.appendChild(dp);defs.appendChild(dm);
+  svg.appendChild(defs);
+
+  // 연결선
+  var tByName={};all.forEach(function(t){tByName[t.name]=t;});
+  refs.forEach(function(ref){
+    var ft=tByName[ref.from],tt=tByName[ref.to];
+    if(!ft||!tt)return;
+    var fci=0,tci=0;
+    ft.columns.forEach(function(c,i){if(c.name===ref.fromCol)fci=i;});
+    tt.columns.forEach(function(c,i){if(c.name===ref.toCol)tci=i;});
+    var fx,fy=ft.y+HDR_H+fci*COL_H+COL_H/2;
+    var tx,ty=tt.y+HDR_H+tci*COL_H+COL_H/2;
+    // 연결 방향 결정
+    if(ft.x+ft.w<tt.x){fx=ft.x+ft.w;tx=tt.x;}
+    else if(tt.x+tt.w<ft.x){fx=ft.x;tx=tt.x+tt.w;}
+    else{fx=ft.x+ft.w;tx=tt.x+tt.w;}
+    var mx=(fx+tx)/2;
+    var path=document.createElementNS(ns,'path');
+    path.setAttribute('d','M'+fx+','+fy+' C'+mx+','+fy+' '+mx+','+ty+' '+tx+','+ty);
+    path.setAttribute('stroke',C.ln);path.setAttribute('stroke-width','1.5');
+    path.setAttribute('fill','none');path.setAttribute('opacity','0.7');
+    path.setAttribute('marker-end','url(#arrowhead)');
+    path.setAttribute('marker-start','url(#diamond)');
+    svg.appendChild(path);
+    // FK 라벨
+    if(ref.fromCol){
+      var lbl=document.createElementNS(ns,'text');
+      lbl.setAttribute('x',(fx+tx)/2);lbl.setAttribute('y',(fy+ty)/2-6);
+      lbl.setAttribute('text-anchor','middle');lbl.setAttribute('fill','#64748b');
+      lbl.setAttribute('font-size','9');lbl.textContent=ref.fromCol;
+      svg.appendChild(lbl);
+    }
+  });
+
+  // 테이블 노드 그리기
+  all.forEach(function(t){
+    var g=document.createElementNS(ns,'g');
+    g.setAttribute('transform','translate('+t.x+','+t.y+')');
+    g.style.cursor='grab';
+    // 그림자
+    var shadow=document.createElementNS(ns,'rect');
+    shadow.setAttribute('x','3');shadow.setAttribute('y','3');
+    shadow.setAttribute('width',t.w);shadow.setAttribute('height',t.h);
+    shadow.setAttribute('rx','8');shadow.setAttribute('fill','rgba(0,0,0,0.4)');
+    shadow.setAttribute('filter','blur(4px)');g.appendChild(shadow);
+    // 배경
+    var bg=document.createElementNS(ns,'rect');
+    bg.setAttribute('width',t.w);bg.setAttribute('height',t.h);bg.setAttribute('rx','8');
+    bg.setAttribute('fill',C.cb);
+    bg.setAttribute('stroke',t.isCenter?C.bc:C.bd);
+    bg.setAttribute('stroke-width',t.isCenter?'2':'1');g.appendChild(bg);
+    // 헤더
+    var hdr=document.createElementNS(ns,'rect');
+    hdr.setAttribute('width',t.w);hdr.setAttribute('height',HDR_H);hdr.setAttribute('rx','8');
+    hdr.setAttribute('fill',t.isCenter?C.hc:C.hr);g.appendChild(hdr);
+    var hdr2=document.createElementNS(ns,'rect');
+    hdr2.setAttribute('y',HDR_H-8);hdr2.setAttribute('width',t.w);hdr2.setAttribute('height','8');
+    hdr2.setAttribute('fill',t.isCenter?C.hc:C.hr);g.appendChild(hdr2);
+    // 헤더 구분선
+    var hline=document.createElementNS(ns,'line');
+    hline.setAttribute('x1','0');hline.setAttribute('y1',HDR_H);
+    hline.setAttribute('x2',t.w);hline.setAttribute('y2',HDR_H);
+    hline.setAttribute('stroke',t.isCenter?C.bc:C.bd);g.appendChild(hline);
+    // 헤더 텍스트
+    var icon=document.createElementNS(ns,'text');
+    icon.setAttribute('x','12');icon.setAttribute('y',HDR_H/2+5);
+    icon.setAttribute('fill',t.isCenter?'#a5b4fc':'#94a3b8');
+    icon.setAttribute('font-size','12');icon.textContent='\\u{1F5C4}';g.appendChild(icon);
+    var htxt=document.createElementNS(ns,'text');
+    htxt.setAttribute('x','30');htxt.setAttribute('y',HDR_H/2+5);
+    htxt.setAttribute('fill',C.ht);htxt.setAttribute('font-size','13');
+    htxt.setAttribute('font-weight','700');htxt.textContent=t.name;g.appendChild(htxt);
+    // 컬럼 수 뱃지
+    var cntBadge=document.createElementNS(ns,'text');
+    cntBadge.setAttribute('x',t.w-12);cntBadge.setAttribute('y',HDR_H/2+5);
+    cntBadge.setAttribute('text-anchor','end');cntBadge.setAttribute('fill','#475569');
+    cntBadge.setAttribute('font-size','10');
+    cntBadge.textContent=t.columns.length+(t.truncated?'+'+t.truncated:'')+'cols';
+    g.appendChild(cntBadge);
+    // 컬럼
+    t.columns.forEach(function(col,ci){
+      var cy=HDR_H+ci*COL_H;
+      if(ci%2===1){
+        var rb=document.createElementNS(ns,'rect');
+        rb.setAttribute('y',cy);rb.setAttribute('width',t.w);rb.setAttribute('height',COL_H);
+        rb.setAttribute('fill','rgba(255,255,255,0.02)');g.appendChild(rb);
+      }
+      // 아이콘
+      var pre=col.pk?'\\u{1F511} ':col.fk?'\\u{21B3} ':'   ';
+      var cn=document.createElementNS(ns,'text');
+      cn.setAttribute('x','10');cn.setAttribute('y',cy+COL_H/2+4);
+      cn.setAttribute('fill',col.pk?C.pk:col.fk?C.fk:C.ct);
+      cn.setAttribute('font-size','11');cn.setAttribute('font-weight',col.pk||col.fk?'600':'400');
+      cn.setAttribute('font-family','Consolas,monospace');
+      cn.textContent=pre+col.name;g.appendChild(cn);
+      // 타입
+      var ct=document.createElementNS(ns,'text');
+      ct.setAttribute('x',t.w-10);ct.setAttribute('y',cy+COL_H/2+4);
+      ct.setAttribute('text-anchor','end');ct.setAttribute('fill','#475569');
+      ct.setAttribute('font-size','10');ct.setAttribute('font-family','Consolas,monospace');
+      ct.textContent=col.type;g.appendChild(ct);
+      // PK/FK/NN 뱃지
+      var badges=[];
+      if(col.pk)badges.push({t:'PK',c:'#818cf8',bg:'rgba(99,102,241,.2)'});
+      if(col.fk)badges.push({t:'FK',c:'#fbbf24',bg:'rgba(234,179,8,.15)'});
+      if(col.nn&&!col.pk)badges.push({t:'NN',c:'#64748b',bg:'rgba(100,116,139,.2)'});
+      var bx=t.w-10-(col.type.length*6+8);
+      badges.reverse().forEach(function(b){
+        var bw=22;bx-=bw+3;
+        var br=document.createElementNS(ns,'rect');
+        br.setAttribute('x',bx);br.setAttribute('y',cy+4);
+        br.setAttribute('width',bw);br.setAttribute('height','14');
+        br.setAttribute('rx','3');br.setAttribute('fill',b.bg);g.appendChild(br);
+        var bt=document.createElementNS(ns,'text');
+        bt.setAttribute('x',bx+bw/2);bt.setAttribute('y',cy+14);
+        bt.setAttribute('text-anchor','middle');bt.setAttribute('fill',b.c);
+        bt.setAttribute('font-size','8');bt.setAttribute('font-weight','700');
+        bt.textContent=b.t;g.appendChild(bt);
+      });
+    });
+    if(t.truncated){
+      var ty2=HDR_H+t.columns.length*COL_H;
+      var mt=document.createElementNS(ns,'text');
+      mt.setAttribute('x',t.w/2);mt.setAttribute('y',ty2+COL_H/2+4);
+      mt.setAttribute('text-anchor','middle');mt.setAttribute('fill','#475569');
+      mt.setAttribute('font-size','10');mt.textContent='... +'+t.truncated+' more columns';
+      g.appendChild(mt);
+    }
+    svg.appendChild(g);
+    // 드래그
+    var dragging=false,ox,oy;
+    g.addEventListener('mousedown',function(e){
+      e.preventDefault();dragging=true;ox=e.clientX-t.x;oy=e.clientY-t.y;
+      g.style.cursor='grabbing';
+      var onMove=function(ev){
+        if(!dragging)return;
+        var sc=parseFloat(svg.getAttribute('width'))/svg.viewBox.baseVal.width||1;
+        t.x=(ev.clientX-ox);t.y=(ev.clientY-oy);
+        g.setAttribute('transform','translate('+t.x+','+t.y+')');
+        redrawLines();
+      };
+      var onUp=function(){dragging=false;g.style.cursor='grab';
+        document.removeEventListener('mousemove',onMove);
+        document.removeEventListener('mouseup',onUp);};
+      document.addEventListener('mousemove',onMove);
+      document.addEventListener('mouseup',onUp);
+    });
+  });
+
+  // 연결선 재그리기 함수
+  function redrawLines(){
+    svg.querySelectorAll('path,text[data-ref]').forEach(function(p){p.remove();});
+    refs.forEach(function(ref){
+      var ft=tByName[ref.from],tt=tByName[ref.to];
+      if(!ft||!tt)return;
+      var fci=0,tci=0;
+      ft.columns.forEach(function(c,i){if(c.name===ref.fromCol)fci=i;});
+      tt.columns.forEach(function(c,i){if(c.name===ref.toCol)tci=i;});
+      var fx,fy=ft.y+HDR_H+fci*COL_H+COL_H/2;
+      var tx,ty2=tt.y+HDR_H+tci*COL_H+COL_H/2;
+      if(ft.x+ft.w<tt.x){fx=ft.x+ft.w;tx=tt.x;}
+      else if(tt.x+tt.w<ft.x){fx=ft.x;tx=tt.x+tt.w;}
+      else{fx=ft.x+ft.w;tx=tt.x+tt.w;}
+      var mx=(fx+tx)/2;
+      var path=document.createElementNS(ns,'path');
+      path.setAttribute('d','M'+fx+','+fy+' C'+mx+','+fy+' '+mx+','+ty2+' '+tx+','+ty2);
+      path.setAttribute('stroke',C.ln);path.setAttribute('stroke-width','1.5');
+      path.setAttribute('fill','none');path.setAttribute('opacity','0.7');
+      path.setAttribute('marker-end','url(#arrowhead)');
+      path.setAttribute('marker-start','url(#diamond)');
+      // 테이블 노드 앞(맨 앞이 아닌 뒤)에 삽입
+      svg.insertBefore(path,svg.querySelector('g'));
+    });
+  }
+
+  // pan & zoom
+  var vx=0,vy=0,scale=1;
+  function applyTransform(){
+    svg.style.transform='translate('+vx+'px,'+vy+'px) scale('+scale+')';
+    svg.style.transformOrigin='0 0';
+  }
+  container.addEventListener('wheel',function(e){
+    e.preventDefault();
+    var d=e.deltaY>0?0.9:1.1;
+    scale=Math.max(0.3,Math.min(3,scale*d));
+    applyTransform();
+  });
+  var panning=false,px,py;
+  container.addEventListener('mousedown',function(e){
+    if(e.target===container||e.target===svg){
+      panning=true;px=e.clientX-vx;py=e.clientY-vy;container.style.cursor='grabbing';
+    }
+  });
+  container.addEventListener('mousemove',function(e){
+    if(!panning)return;vx=e.clientX-px;vy=e.clientY-py;applyTransform();
+  });
+  container.addEventListener('mouseup',function(){panning=false;container.style.cursor='grab';});
+  container.addEventListener('mouseleave',function(){panning=false;container.style.cursor='grab';});
+
+  container.appendChild(svg);
+}
+
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',initERD);
+else setTimeout(initERD,50);
+new MutationObserver(function(muts){
+  for(var m of muts)for(var n of m.addedNodes){
+    if(n.nodeType===1&&(n.classList&&n.classList.contains('erd-container')||n.querySelector&&n.querySelector('.erd-container')))setTimeout(initERD,50);
+  }
+}).observe(document.body,{childList:true,subtree:true});
+})();
+<` + `/script>`;
+
+/** 인터랙티브 테이블 스크립트 (정렬/검색) */
+const INTERACTIVE_TABLE_SCRIPT = `<` + `script>
+(function(){
+function initTables(){
+  document.querySelectorAll('.embed-query').forEach(function(el){
+    if(el._enhanced)return; el._enhanced=true;
+    var table=el.querySelector('.embed-table');
+    if(!table)return;
+    var thead=table.querySelector('thead');
+    var tbody=table.querySelector('tbody');
+    if(!thead||!tbody)return;
+    var ths=thead.querySelectorAll('th');
+    var rows=Array.from(tbody.querySelectorAll('tr'));
+    // 정렬
+    var sortCol=-1,sortDir=1;
+    ths.forEach(function(th,i){
+      th.style.cursor='pointer';th.style.userSelect='none';
+      th.title='클릭하여 정렬';
+      th.addEventListener('click',function(){
+        if(sortCol===i)sortDir*=-1;else{sortCol=i;sortDir=1;}
+        ths.forEach(function(h){h.textContent=h.textContent.replace(/[▲▼]/g,'').trim();});
+        th.textContent=th.textContent+(sortDir>0?' ▲':' ▼');
+        rows.sort(function(a,b){
+          var av=(a.children[i]||{}).textContent||'';
+          var bv=(b.children[i]||{}).textContent||'';
+          var an=parseFloat(av),bn=parseFloat(bv);
+          if(!isNaN(an)&&!isNaN(bn))return(an-bn)*sortDir;
+          return av.localeCompare(bv)*sortDir;
+        });
+        rows.forEach(function(r){tbody.appendChild(r);});
+      });
+    });
+    // 검색
+    var search=document.createElement('input');
+    search.type='text';search.placeholder='\\u{1F50D} 검색...';
+    search.style.cssText='width:100%;padding:6px 10px;margin-bottom:8px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:11px;outline:none;';
+    search.addEventListener('input',function(){
+      var q=search.value.toLowerCase();
+      rows.forEach(function(r){
+        r.style.display=r.textContent.toLowerCase().includes(q)?'':'none';
+      });
+    });
+    el.insertBefore(search,el.querySelector('[style*="overflow"]')||table);
+  });
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',initTables);
+else setTimeout(initTables,50);
+new MutationObserver(function(){setTimeout(initTables,100);}).observe(document.body,{childList:true,subtree:true});
+})();
+<` + `/script>`;
+
+/** 스키마 테이블 embed → ERD 노드 카드 스타일 HTML */
 function renderSchemaEmbedHtml(tableName: string, schema: ParsedSchema | null): string {
   if (!schema) return `<div class="embed-error">스키마 없음</div>`;
   const table = schema.tables.find(t => t.name.toLowerCase() === tableName.toLowerCase());
   if (!table) return `<div class="embed-error">테이블 '${tableName}'을 찾을 수 없습니다</div>`;
   const nameById = new Map(schema.tables.map(t => [t.id, t.name]));
 
-  const colRows = table.columns.map(c => {
+  const colRows = table.columns.map((c, i) => {
+    const icon = c.isPrimaryKey ? '🔑' : c.isForeignKey ? '↳' : '&nbsp;&nbsp;';
+    const nameColor = c.isPrimaryKey ? '#818cf8' : c.isForeignKey ? '#fbbf24' : '#e2e8f0';
+    const fontW = c.isPrimaryKey || c.isForeignKey ? '600' : '400';
     const badges = [
       c.isPrimaryKey ? '<span class="badge-pk">PK</span>' : '',
       c.isForeignKey ? '<span class="badge-fk">FK</span>' : '',
       c.isNotNull && !c.isPrimaryKey ? '<span class="badge-nn">NN</span>' : '',
     ].filter(Boolean).join('');
-    return `<tr><td>${c.name}</td><td style="color:#94a3b8">${c.type}</td><td>${badges}</td><td style="color:#64748b;font-size:10px">${c.note ?? ''}</td></tr>`;
+    const bg = i % 2 === 1 ? 'background:rgba(255,255,255,0.02);' : '';
+    return `<tr style="${bg}"><td style="color:${nameColor};font-weight:${fontW};font-family:Consolas,monospace;padding:4px 8px 4px 6px"><span style="font-size:11px">${icon}</span> ${c.name}</td><td style="color:#64748b;font-family:Consolas,monospace;font-size:10px;padding:4px 6px">${c.type}</td><td style="padding:4px 4px">${badges}</td><td style="color:#475569;font-size:10px;padding:4px 6px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(c.note ?? '').replace(/"/g, '&quot;')}">${c.note ?? ''}</td></tr>`;
   }).join('');
 
   const refs = schema.refs.filter(r => r.fromTable === table.id || r.toTable === table.id);
@@ -393,13 +725,24 @@ function renderSchemaEmbedHtml(tableName: string, schema: ParsedSchema | null): 
     const other = nameById.get(isFrom ? r.toTable : r.fromTable) ?? '?';
     const dir = isFrom ? '→' : '←';
     const cols = isFrom ? `${r.fromColumns[0]} → ${r.toColumns[0]}` : `${r.toColumns[0]} ← ${r.fromColumns[0]}`;
-    return `<tr><td style="color:#818cf8">${dir}</td><td style="color:#e2e8f0">${other}</td><td style="color:#94a3b8">${cols}</td><td style="color:#64748b">${r.type}</td></tr>`;
+    return `<tr><td style="color:#818cf8;padding:4px 8px">${dir}</td><td style="color:#e2e8f0;font-weight:600;padding:4px 8px">${other}</td><td style="color:#94a3b8;font-family:Consolas,monospace;font-size:11px;padding:4px 8px">${cols}</td><td style="color:#64748b;padding:4px 8px">${r.type}</td></tr>`;
   }).join('');
 
-  return `<div class="embed-card embed-schema">
-<div class="embed-header"><span class="embed-icon">🗄️</span><span class="embed-title">${table.name}</span><span class="embed-meta">${table.groupName ?? ''} · ${table.columns.length}컬럼${refs.length > 0 ? ` · 관계 ${refs.length}개` : ''}</span></div>
-<table class="embed-table"><thead><tr><th>컬럼</th><th>타입</th><th>속성</th><th>설명</th></tr></thead><tbody>${colRows}</tbody></table>
-${refs.length > 0 ? `<div class="embed-subtitle">관계 (FK)</div><table class="embed-table"><thead><tr><th>방향</th><th>테이블</th><th>컬럼</th><th>타입</th></tr></thead><tbody>${relRows}</tbody></table>` : ''}
+  const pkCols = table.columns.filter(c => c.isPrimaryKey).map(c => c.name).join(', ');
+  const fkCols = table.columns.filter(c => c.isForeignKey).map(c => c.name).join(', ');
+
+  return `<div style="background:#0d1117;border:1px solid ${refs.length > 0 ? '#6366f1' : '#334155'};border-radius:10px;overflow:hidden;margin:12px 0;font-size:12px">
+<div style="background:${refs.length > 0 ? '#312e81' : '#1a2035'};padding:10px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #2d3f5e">
+  <span style="font-size:14px">🗄️</span>
+  <span style="font-weight:700;color:#e2e8f0;font-size:14px">${table.name}</span>
+  <span style="color:#64748b;font-size:11px">${table.groupName ?? ''} · ${table.columns.length}컬럼${refs.length > 0 ? ` · ${refs.length}관계` : ''}</span>
+  ${pkCols ? `<span style="margin-left:auto;background:rgba(99,102,241,.15);color:#818cf8;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600">PK: ${pkCols}</span>` : ''}
+</div>
+<div style="overflow-x:auto"><table class="embed-table" style="margin:0"><thead><tr><th style="padding:6px 8px;background:#0f1a2e;min-width:120px">컬럼</th><th style="padding:6px 6px;background:#0f1a2e">타입</th><th style="padding:6px 4px;background:#0f1a2e;width:60px">속성</th><th style="padding:6px 6px;background:#0f1a2e">설명</th></tr></thead><tbody>${colRows}</tbody></table></div>
+${refs.length > 0 ? `<div style="background:#131d2e;border-top:1px solid #2d3f5e;padding:8px 14px">
+  <div style="font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">🔗 관계 (FK)</div>
+  <table class="embed-table" style="margin:0"><thead><tr><th style="padding:4px 8px;background:#0f1a2e;width:30px">방향</th><th style="padding:4px 8px;background:#0f1a2e">테이블</th><th style="padding:4px 8px;background:#0f1a2e">컬럼</th><th style="padding:4px 8px;background:#0f1a2e">타입</th></tr></thead><tbody>${relRows}</tbody></table>
+</div>` : ''}
 </div>`;
 }
 
@@ -493,13 +836,25 @@ function renderQueryEmbedHtml(sql: string, tableData: TableDataMap, schema: Pars
     }
     if (result.rowCount === 0) return `<div class="embed-empty">결과 없음 — <code style="font-size:10px">${finalSql}</code></div>`;
 
-    const headers = result.columns.map(c => `<th>${c}</th>`).join('');
-    const rows = result.rows.map(row =>
-      `<tr>${result.columns.map(c => `<td>${String((row as Record<string, unknown>)[c] ?? '')}</td>`).join('')}</tr>`
+    const headers = result.columns.map(c => `<th style="padding:6px 10px;background:#0f1a2e;color:#94a3b8;font-weight:600;border-bottom:2px solid #334155;position:sticky;top:0;cursor:pointer;user-select:none" title="클릭하여 정렬">${c}</th>`).join('');
+    const rows = result.rows.map((row, ri) =>
+      `<tr style="${ri % 2 === 1 ? 'background:rgba(255,255,255,0.02)' : ''}">${result.columns.map(c => {
+        const v = String((row as Record<string, unknown>)[c] ?? '');
+        const isNum = /^-?\d+(\.\d+)?$/.test(v);
+        return `<td style="padding:5px 10px;border-bottom:1px solid rgba(45,63,94,.4);color:#cbd5e1;font-family:${isNum ? 'Consolas,monospace' : 'inherit'};${isNum ? 'text-align:right' : ''}">${v}</td>`;
+      }).join('')}</tr>`
     ).join('');
-    return `<div class="embed-card embed-query">
-<div class="embed-header"><span class="embed-icon">📊</span><span class="embed-meta">${result.rowCount}행${repairNote}</span><span class="embed-sql">${finalSql}</span></div>
-<div style="overflow-x:auto"><table class="embed-table"><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table></div>
+    return `<div class="embed-card embed-query" style="background:#0d1117;border:1px solid #2d3f5e;border-radius:10px;overflow:hidden;margin:12px 0">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:#131d2e;border-bottom:1px solid #2d3f5e;flex-wrap:wrap">
+  <span style="font-size:14px">📊</span>
+  <span style="font-weight:700;color:#e2e8f0;font-size:12px">쿼리 결과</span>
+  <span style="background:rgba(99,102,241,.15);color:#818cf8;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">${result.rowCount}행 × ${result.columns.length}열${repairNote}</span>
+  <span style="color:#64748b;font-size:10px;font-family:Consolas,monospace;background:rgba(99,102,241,.08);padding:2px 6px;border-radius:3px;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${finalSql}</span>
+</div>
+<div style="overflow-x:auto;max-height:400px;overflow-y:auto"><table class="embed-table" style="margin:0;border-collapse:collapse;width:100%"><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table></div>
+<div style="padding:4px 14px;background:#0a0f1a;border-top:1px solid #1e293b;display:flex;align-items:center;gap:8px">
+  <span style="color:#475569;font-size:10px">📋 ${result.rowCount}행 반환</span>
+</div>
 </div>`;
   } catch (e) {
     return `<div class="embed-error">오류: ${String(e)}</div>`;
@@ -531,7 +886,7 @@ ${outRows || inRows ? `<table class="embed-table"><thead><tr><th>연결 테이�
 </div>`;
 }
 
-/** 관계 그래프 embed → Mermaid LR 다이어그램 HTML */
+/** 관계 그래프 embed → 인터랙티브 SVG ERD HTML (Canvas급 퀄리티) */
 function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null): string {
   if (!schema) return `<div class="embed-error">스키마 없음</div>`;
 
@@ -539,7 +894,6 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
   const nameById = new Map(schema.tables.map(t => [t.id, t.name]));
   const idByName = new Map(schema.tables.map(t => [t.name.toLowerCase(), t.id]));
 
-  // 요청 테이블 + 직접 FK 연결 테이블 수집
   const includedIds = new Set<string>();
   const centerIds = new Set<string>();
   for (const name of requested) {
@@ -552,66 +906,53 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
       if (r.toTable === id) includedIds.add(r.fromTable);
     });
   }
-
   if (includedIds.size === 0)
     return `<div class="embed-error">테이블을 찾을 수 없습니다: ${tableNamesRaw}</div>`;
 
-  // 최대 25개 테이블로 제한 (그래프 과부하 방지)
   const limitedIds = [...includedIds].slice(0, 25);
   const limitedSet = new Set(limitedIds);
 
-  // 노드 ID: ASCII 전용 (한글 포함 비ASCII 제거), 중복 방지를 위해 인덱스 suffix
-  const idMap = new Map<string, string>();
-  let idxCounter = 0;
-  const safeId = (name: string): string => {
-    if (idMap.has(name)) return idMap.get(name)!;
-    // ASCII 영숫자/_만 허용, 시작은 반드시 알파벳
-    const base = 'N' + name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/_+/g, '_').slice(0, 20);
-    const sid = base + (idxCounter++);
-    idMap.set(name, sid);
-    return sid;
-  };
-  // FK 컬럼명 라벨 안전 처리 (따옴표·특수문자 제거)
-  const safeLabel = (col: string) => col.replace(/[^a-zA-Z0-9_가-힣]/g, '_').slice(0, 20);
+  // JSON 데이터 구축
+  const tables = limitedIds.map(id => {
+    const t = schema.tables.find(x => x.id === id);
+    if (!t) return null;
+    return {
+      name: t.name,
+      isCenter: centerIds.has(id),
+      columns: t.columns.slice(0, 18).map(c => ({
+        name: c.name,
+        type: c.type,
+        pk: !!c.isPrimaryKey,
+        fk: !!c.isForeignKey,
+        nn: !!c.isNotNull,
+        note: c.note ?? '',
+      })),
+      truncated: t.columns.length > 18 ? t.columns.length - 18 : 0,
+    };
+  }).filter(Boolean);
 
-  const lines: string[] = ['graph LR'];
-
-  // 노드 정의 — HTML 태그 없이 plain text 라벨 사용
-  for (const id of limitedIds) {
-    const name = nameById.get(id) ?? id;
-    const sid = safeId(name);
-    if (centerIds.has(id)) {
-      lines.push(`  ${sid}["${name}"]:::center`);
-    } else {
-      lines.push(`  ${sid}["${name}"]`);
-    }
-  }
-
-  // 스타일 클래스
-  lines.push('  classDef center fill:#312e81,stroke:#6366f1,color:#e2e8f0,font-weight:bold');
-
-  // 엣지 정의 (중복 방지)
+  const refs: { from: string; fromCol: string; to: string; toCol: string; type: string }[] = [];
   const addedEdges = new Set<string>();
   for (const ref of schema.refs) {
     if (!limitedSet.has(ref.fromTable) || !limitedSet.has(ref.toTable)) continue;
     const fromName = nameById.get(ref.fromTable) ?? ref.fromTable;
-    const toName   = nameById.get(ref.toTable)   ?? ref.toTable;
-    const key = `${fromName}->${toName}`;
+    const toName = nameById.get(ref.toTable) ?? ref.toTable;
+    const key = `${fromName}->${toName}:${ref.fromColumns[0]}`;
     if (addedEdges.has(key)) continue;
     addedEdges.add(key);
-    const fkCol = ref.fromColumns[0] ?? '';
-    const label = fkCol ? `|${safeLabel(fkCol)}|` : '';
-    lines.push(`  ${safeId(fromName)} -->${label} ${safeId(toName)}`);
+    refs.push({ from: fromName, fromCol: ref.fromColumns[0] ?? '', to: toName, toCol: ref.toColumns[0] ?? '', type: ref.type ?? 'one-to-many' });
   }
 
-  const mermaidCode = lines.join('\n');
-  const tableCount = limitedIds.length;
-  const edgeCount = addedEdges.size;
+  const erdData = JSON.stringify({ tables, refs }).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
   const truncated = includedIds.size > 25 ? ` (${includedIds.size - 25}개 생략)` : '';
 
-  return `<div class="embed-card embed-graph">
-<div class="embed-header"><span class="embed-icon">🔀</span><span class="embed-title">관계 그래프</span><span class="embed-meta">${requested.join(', ')} 중심 · ${tableCount}개 테이블 · ${edgeCount}개 연결${truncated}</span></div>
-<div class="mermaid">${mermaidCode}</div>
+  return `<div class="erd-container" data-erd="${erdData.replace(/"/g, '&quot;')}" style="background:#0d1117;border:1px solid #2d3f5e;border-radius:10px;overflow:hidden;margin:12px 0">
+<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#131d2e;border-bottom:1px solid #2d3f5e">
+<span style="font-size:14px">🔀</span><span style="font-weight:700;color:#e2e8f0;font-size:13px">ERD 관계 그래프</span>
+<span style="color:#64748b;font-size:11px">${requested.join(', ')} 중심 · ${tables.length}개 테이블 · ${refs.length}개 연결${truncated}</span>
+<span style="margin-left:auto;color:#475569;font-size:10px">드래그: 이동 · 스크롤: 확대/축소</span>
+</div>
+<div class="erd-canvas" style="width:100%;height:500px;overflow:hidden;position:relative;cursor:grab"></div>
 </div>`;
 }
 
@@ -2562,6 +2903,7 @@ hr{border:none;border-top:1px solid #334155;margin:16px 0}
 try{document.getElementById('dynbase').href=parent.location.origin+'/';}catch(e){}
 </script>
 <script id="__fbx_viewer_init__"></script>
+${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}
 </head><body></body></html>`;
 
 // ── FBX postMessage 클릭 가로채기 스크립트 ────────────────────────────────────
@@ -2985,7 +3327,7 @@ function ArtifactSidePanel({
     const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
     const fullHtml = resolved.includes('<!DOCTYPE') || resolved.includes('<html')
       ? resolved
-      : `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">${base}<title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}ul,ol{padding-left:1.4em;margin:.4em 0}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script><script>${FBX_VIEWER_SCRIPT}</script>${MERMAID_INIT_SCRIPT}</head><body>${resolved}</body></html>`;
+      : `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">${base}<title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}ul,ol{padding-left:1.4em;margin:.4em 0}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script><script>${FBX_VIEWER_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
     const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     setCompleteBlobUrl(url);
@@ -2997,7 +3339,7 @@ function ArtifactSidePanel({
     if (!finalTc) return;
     const origin = window.location.origin;
     const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
-    const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}</head><body>${resolved}</body></html>`;
+    const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
     const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -3037,7 +3379,7 @@ function ArtifactSidePanel({
     try {
       const origin = window.location.origin;
       const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
-      const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}</head><body>${resolved}</body></html>`;
+      const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
       const res = await fetch('/api/publish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3067,7 +3409,7 @@ function ArtifactSidePanel({
     try {
       const origin = window.location.origin;
       const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
-      const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}</head><body>${resolved}</body></html>`;
+      const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
       const res = await fetch(`/api/publish/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
