@@ -5753,7 +5753,7 @@ function ThinkingStepRow({ step, idx, steps, isLast }: { step: ThinkingStepUI; i
 type ExpressionKey =
   | 'happy' | 'neutral' | 'sad' | 'worried' | 'angry'
   | 'flustered' | 'surprised' | 'confused' | 'thinking' | 'excited'
-  | 'idea' | 'smile' | 'shy' | 'apologetic' | 'panic';
+  | 'idea' | 'shy' | 'apologetic' | 'panic';
 
 const EXPRESSIONS: Record<ExpressionKey, { col: number; row: number; label: string }> = {
   // Row 0
@@ -5770,7 +5770,6 @@ const EXPRESSIONS: Record<ExpressionKey, { col: number; row: number; label: stri
   excited:    { col: 4, row: 1, label: '흥분' },
   // Row 2
   idea:       { col: 0, row: 2, label: '아이디어' },
-  smile:      { col: 1, row: 2, label: '의기양양' },
   shy:        { col: 2, row: 2, label: '수줍음' },
   apologetic: { col: 3, row: 2, label: '피곤함' },
   panic:      { col: 4, row: 2, label: '패닉' },
@@ -5789,13 +5788,13 @@ function getLoadingCycle(msg: Message): ExpressionKey[] {
   const isStreaming  = !!(msg.content || msg.iterations?.some(t => t.trim()));
 
   if (hasError)       return ['worried', 'sad', 'apologetic'];
-  if (hasArtifact)    return ['idea', 'excited', 'smile', 'happy'];
-  if (hasJiraWrite)   return ['excited', 'happy', 'smile', 'excited'];
-  if (hasDataQuery)   return ['thinking', 'idea', 'smile', 'thinking'];
+  if (hasArtifact)    return ['idea', 'excited', 'happy', 'excited'];
+  if (hasJiraWrite)   return ['excited', 'happy', 'excited', 'happy'];
+  if (hasDataQuery)   return ['thinking', 'idea', 'happy', 'thinking'];
   if (hasCodeSearch)  return ['thinking', 'confused', 'idea', 'thinking'];
-  if (hasGitDiff)     return ['surprised', 'thinking', 'idea', 'smile'];
-  if (hasJiraSearch)  return ['surprised', 'thinking', 'smile', 'surprised'];
-  if (isStreaming)    return ['smile', 'happy', 'smile', 'excited'];
+  if (hasGitDiff)     return ['surprised', 'thinking', 'idea', 'happy'];
+  if (hasJiraSearch)  return ['surprised', 'thinking', 'happy', 'surprised'];
+  if (isStreaming)    return ['happy', 'excited', 'happy', 'neutral'];
   // 대기 (아직 응답 없음) — 초조하게 기다리는 느낌
   return ['confused', 'worried', 'thinking', 'flustered'];
 }
@@ -5820,12 +5819,12 @@ function getCompletedExpression(msg: Message): ExpressionKey {
 
   if (hasError || isError) return 'worried';
   if (isApologetic)        return 'sad';       // 사과 → 슬픔
-  if (hasJiraWrite || hasArtifact) return isSuccess ? 'happy' : 'smile';
+  if (hasJiraWrite || hasArtifact) return 'happy';
   if (isExcited)           return 'excited';
   if (isSuccess)           return 'happy';
-  if (hasManyTools)        return 'smile';
+  if (hasManyTools)        return 'happy';
   if (hasDataQuery && content.length > 300) return 'thinking';
-  if (content.length > 400) return 'smile';
+  if (content.length > 400) return 'happy';
   if (content.length < 30)  return 'shy';
   return 'neutral';
 }
