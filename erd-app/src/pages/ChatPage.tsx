@@ -5757,7 +5757,7 @@ type ExpressionKey =
 
 const EXPRESSIONS: Record<ExpressionKey, { col: number; row: number; label: string }> = {
   // Row 0
-  happy:      { col: 0, row: 0, label: '기쁨' },
+  happy:      { col: 0, row: 0, label: '미소' },
   neutral:    { col: 1, row: 0, label: '보통' },
   sad:        { col: 2, row: 0, label: '슬픔' },
   worried:    { col: 3, row: 0, label: '걱정' },
@@ -5770,9 +5770,9 @@ const EXPRESSIONS: Record<ExpressionKey, { col: number; row: number; label: stri
   excited:    { col: 4, row: 1, label: '흥분' },
   // Row 2
   idea:       { col: 0, row: 2, label: '아이디어' },
-  smile:      { col: 1, row: 2, label: '미소' },
+  smile:      { col: 1, row: 2, label: '의기양양' },
   shy:        { col: 2, row: 2, label: '수줍음' },
-  apologetic: { col: 3, row: 2, label: '미안함' },
+  apologetic: { col: 3, row: 2, label: '피곤함' },
   panic:      { col: 4, row: 2, label: '패닉' },
 };
 
@@ -5788,7 +5788,7 @@ function getLoadingCycle(msg: Message): ExpressionKey[] {
   const hasJiraSearch=toolKinds.some(k => k === 'jira_search' || k === 'jira_issue' || k === 'confluence_search' || k === 'confluence_page');
   const isStreaming  = !!(msg.content || msg.iterations?.some(t => t.trim()));
 
-  if (hasError)       return ['apologetic', 'worried', 'sad'];
+  if (hasError)       return ['worried', 'sad', 'apologetic'];
   if (hasArtifact)    return ['idea', 'excited', 'smile', 'happy'];
   if (hasJiraWrite)   return ['excited', 'happy', 'smile', 'excited'];
   if (hasDataQuery)   return ['thinking', 'idea', 'smile', 'thinking'];
@@ -5802,7 +5802,7 @@ function getLoadingCycle(msg: Message): ExpressionKey[] {
 
 /** 완료 메시지 표정 (내용 감정 분석 포함) */
 function getCompletedExpression(msg: Message): ExpressionKey {
-  if (msg.error) return 'apologetic';
+  if (msg.error) return 'worried';
   const toolKinds = (msg.toolCalls ?? []).map(tc => tc.kind);
   const content   = (msg.content || '').toLowerCase();
 
@@ -5818,8 +5818,8 @@ function getCompletedExpression(msg: Message): ExpressionKey {
   const isExcited   = ['흥미롭', '놀랍', '대단', '훌륭', '완벽', '최고'].some(w => content.includes(w));
   const hasManyTools= toolKinds.length >= 3;
 
-  if (hasError || isError) return isApologetic ? 'apologetic' : 'worried';
-  if (isApologetic)        return 'apologetic';
+  if (hasError || isError) return 'worried';
+  if (isApologetic)        return 'sad';       // 사과 → 슬픔
   if (hasJiraWrite || hasArtifact) return isSuccess ? 'happy' : 'smile';
   if (isExcited)           return 'excited';
   if (isSuccess)           return 'happy';
