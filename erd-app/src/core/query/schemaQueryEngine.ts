@@ -277,6 +277,15 @@ export function executeDataSQL(
       }
     }
 
+    // 스키마가 있으면 가상 테이블(TABLES, COLUMNS, REFS, ENUMS)도 등록
+    if (schema) {
+      const vdata = buildVirtualData(schema);
+      for (const [name, rows] of Object.entries(vdata)) {
+        if (!alasql.tables[name]) alasql(`CREATE TABLE IF NOT EXISTS \`${name}\``);
+        alasql.tables[name].data = rows;
+      }
+    }
+
     // 주석 제거
     const stripped = sql
       .replace(/--[^\n]*/g, '')
@@ -290,9 +299,12 @@ export function executeDataSQL(
     // `;`로 구분된 여러 구문 처리
     const stmts = splitStatements(stripped);
 
+    // 가상테이블명 변환 포함 (TABLES→_dm_tables, ENUMS→_dm_enums 등)
+    const translate = (s: string) => translateSQL(normalizeIdentifiers(s, remap));
+
     if (stmts.length > 1) {
       const multiResults: SingleResult[] = stmts.map(stmt => {
-        const processed = normalizeIdentifiers(stmt, remap);
+        const processed = translate(stmt);
         return execOne(processed);
       });
       const totalRows = multiResults.reduce((s, r) => s + r.rowCount, 0);
@@ -304,7 +316,7 @@ export function executeDataSQL(
     }
 
     // 단일 구문
-    const processed = normalizeIdentifiers(stmts[0], remap);
+    const processed = translate(stmts[0]);
     const result = alasql(processed) as Row[];
 
     if (!Array.isArray(result)) {
