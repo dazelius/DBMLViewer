@@ -55,7 +55,7 @@ const SCHEMA_EXAMPLES = [
   { label: 'PK 없는 테이블',        sql: 'SELECT name, group_name, column_count FROM TABLES WHERE pk_count = 0' },
   { label: '관계 전체 조회',         sql: 'SELECT from_table, from_col, rel_type, to_table, to_col FROM REFS ORDER BY from_table' },
   { label: '컬럼 수 많은 순',        sql: 'SELECT name, group_name, column_count FROM TABLES ORDER BY column_count DESC LIMIT 20' },
-  { label: 'Enum 목록',             sql: 'SELECT enum_name, value, note FROM ENUMS ORDER BY enum_name' },
+  { label: 'Enum 목록',             sql: 'SELECT enum_name, enum_value, note FROM ENUMS ORDER BY enum_name' },
 ];
 
 // DATA_EXAMPLES는 런타임에 테이블명 기반으로 동적 생성
@@ -633,7 +633,7 @@ REFS
   to_col, rel_type
 
 ENUMS
-  enum_name, value, note`}
+  enum_name, enum_value, note`}
               </pre>
             </div>
           )}

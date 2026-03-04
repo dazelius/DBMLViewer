@@ -140,8 +140,9 @@ REFS(from_table, from_col, to_table, to_col, rel_type)
   - 테이블 간 관계 목록
   - rel_type: 'one-to-one' | 'one-to-many' | 'many-to-one' | 'many-to-many'
 
-ENUMS(enum_name, value, note)
-  - 모든 Enum 값 목록`;
+ENUMS(enum_name, enum_value, note)
+  - 모든 Enum 값 목록
+  - ⚠ 컬럼명은 enum_value (value 아님 — SQL 예약어 충돌 방지)`;
 
 // ── 가상 테이블 데이터 빌드 ─────────────────────────────────────────────────
 function buildVirtualData(schema: ParsedSchema) {
@@ -184,8 +185,8 @@ function buildVirtualData(schema: ParsedSchema) {
     [T.ENUMS]: schema.enums.flatMap(e =>
       e.values.map(v => ({
         enum_name: e.name,
-        value: v.name,
-        note: v.note ?? '',
+        enum_value: String(v.name ?? ''),
+        note: String(v.note ?? ''),
       }))
     ),
   };
