@@ -807,7 +807,7 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
   const limitedSet = new Set(limitedIds);
 
   // ── 테이블 데이터 구축 ──
-  const COL_H = 22, HDR_H = 34, PAD = 16, MIN_W = 210, GAP_X = 50, GAP_Y = 40;
+  const COL_H = 24, HDR_H = 36, PAD = 30, GAP_X = 60, GAP_Y = 50;
   const C = { hc: '#312e81', hr: '#1a2035', ht: '#e2e8f0', cb: '#0f172a', ct: '#cbd5e1',
     pk: '#818cf8', fk: '#fbbf24', nn: '#64748b', bd: '#334155', bc: '#6366f1', ln: '#6366f1' };
 
@@ -820,10 +820,13 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
     const cols: ErdCol[] = t.columns.slice(0, 18).map(c => ({
       name: c.name, type: c.type, pk: !!c.isPrimaryKey, fk: !!c.isForeignKey, nn: !!c.isNotNull, note: c.note ?? '',
     }));
-    const maxL = Math.max(t.name.length, ...cols.map(c => (c.name + c.type).length));
-    const w = Math.max(MIN_W, maxL * 7 + 90);
+    // 너비 계산: 이름 + 뱃지 + 타입이 겹치지 않도록 넉넉하게
+    const nameMaxLen = Math.max(...cols.map(c => c.name.length + (c.pk ? 3 : c.fk ? 2 : 0)), t.name.length);
+    const typeMaxLen = Math.max(...cols.map(c => c.type.length), 4);
+    const badgeW = 75; // PK FK NN 뱃지 최대 공간
+    const w = Math.max(260, nameMaxLen * 7.2 + typeMaxLen * 6.5 + badgeW + 30);
     const trunc = t.columns.length > 18 ? t.columns.length - 18 : 0;
-    const h = HDR_H + cols.length * COL_H + (trunc ? COL_H : 0) + 6;
+    const h = HDR_H + cols.length * COL_H + (trunc ? COL_H : 0) + 8;
     return { name: t.name, isCenter: centerIds.has(id), columns: cols, truncated: trunc, w, h, x: 0, y: 0 };
   }).filter((x): x is ErdTable => !!x);
 
@@ -839,31 +842,42 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
     refs.push({ from: fromName, fromCol: ref.fromColumns[0] ?? '', to: toName, toCol: ref.toColumns[0] ?? '', type: ref.type ?? 'one-to-many' });
   }
 
-  // ── 그리드 레이아웃 ──
+  // ── 그리드 레이아웃 (실제 너비 기반) ──
   const centers = tables.filter(t => t.isCenter);
   const others = tables.filter(t => !t.isCenter);
   const all = [...centers, ...others];
   const COLS = Math.min(4, Math.ceil(Math.sqrt(all.length)));
-  const rowH: number[] = [];
-  all.forEach((t, i) => { const r = Math.floor(i / COLS); rowH[r] = Math.max(rowH[r] || 0, t.h); });
+
+  // 열별 최대 너비 / 행별 최대 높이 계산
+  const colMaxW: number[] = [];
+  const rowMaxH: number[] = [];
   all.forEach((t, i) => {
     const r = Math.floor(i / COLS), c = i % COLS;
-    let py = PAD; for (let k = 0; k < r; k++) py += (rowH[k] || 0) + GAP_Y;
-    t.x = PAD + c * (MIN_W + GAP_X + 60);
+    colMaxW[c] = Math.max(colMaxW[c] || 0, t.w);
+    rowMaxH[r] = Math.max(rowMaxH[r] || 0, t.h);
+  });
+  all.forEach((t, i) => {
+    const r = Math.floor(i / COLS), c = i % COLS;
+    let px = PAD; for (let k = 0; k < c; k++) px += (colMaxW[k] || 0) + GAP_X;
+    let py = PAD; for (let k = 0; k < r; k++) py += (rowMaxH[k] || 0) + GAP_Y;
+    t.x = px;
     t.y = py;
   });
   let svgW = 0, svgH = 0;
   all.forEach(t => { svgW = Math.max(svgW, t.x + t.w + PAD); svgH = Math.max(svgH, t.y + t.h + PAD); });
 
-  // ── SVG 문자열 빌드 (서버사이드) ──
+  // ── SVG 문자열 빌드 (서버사이드, viewBox 기반 오토핏) ──
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const svgParts: string[] = [];
-  svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" style="position:absolute;left:0;top:0" class="erd-svg">`);
+  // viewBox로 SVG 좌표계를 정의, 컨테이너에 맞춰 자동 스케일
+  svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;display:block" class="erd-svg">`);
   // defs: markers
   svgParts.push(`<defs>`);
   svgParts.push(`<marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="${C.ln}"/></marker>`);
   svgParts.push(`<marker id="diamond" markerWidth="10" markerHeight="8" refX="0" refY="4" orient="auto"><polygon points="0 4,5 0,10 4,5 8" fill="${C.fk}"/></marker>`);
   svgParts.push(`</defs>`);
+  // 배경 rect
+  svgParts.push(`<rect width="${svgW}" height="${svgH}" fill="#0d1117"/>`);
 
   // ── 연결선 ──
   const tByName: Record<string, ErdTable> = {};
@@ -880,52 +894,66 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
     if (ft.x + ft.w < tt.x) { fx = ft.x + ft.w; tx = tt.x; }
     else if (tt.x + tt.w < ft.x) { fx = ft.x; tx = tt.x + tt.w; }
     else { fx = ft.x + ft.w; tx = tt.x + tt.w; }
-    const mx = (fx + tx) / 2;
-    svgParts.push(`<path d="M${fx},${fy} C${mx},${fy} ${mx},${ty} ${tx},${ty}" stroke="${C.ln}" stroke-width="1.5" fill="none" opacity="0.7" marker-end="url(#arrowhead)" marker-start="url(#diamond)"/>`);
+    const dx = Math.abs(fx - tx);
+    const cpOff = Math.max(dx * 0.4, 40);
+    const cp1x = fx < tx ? fx + cpOff : fx - cpOff;
+    const cp2x = fx < tx ? tx - cpOff : tx + cpOff;
+    svgParts.push(`<path d="M${fx},${fy} C${cp1x},${fy} ${cp2x},${ty} ${tx},${ty}" stroke="${C.ln}" stroke-width="1.5" fill="none" opacity="0.6" marker-end="url(#arrowhead)" marker-start="url(#diamond)"/>`);
     if (ref.fromCol) {
-      svgParts.push(`<text x="${(fx + tx) / 2}" y="${(fy + ty) / 2 - 6}" text-anchor="middle" fill="#64748b" font-size="9">${esc(ref.fromCol)}</text>`);
+      const lblX = (fx + tx) / 2, lblY = (fy + ty) / 2 - 6;
+      svgParts.push(`<rect x="${lblX - ref.fromCol.length * 3 - 4}" y="${lblY - 9}" width="${ref.fromCol.length * 6 + 8}" height="13" rx="3" fill="#0d1117" opacity="0.8"/>`);
+      svgParts.push(`<text x="${lblX}" y="${lblY}" text-anchor="middle" fill="#64748b" font-size="9" font-family="Consolas,monospace">${esc(ref.fromCol)}</text>`);
     }
   });
 
   // ── 테이블 노드 ──
   all.forEach(t => {
     svgParts.push(`<g transform="translate(${t.x},${t.y})" data-table="${esc(t.name)}" style="cursor:grab">`);
-    // 그림자 (SVG filter 대신 offset된 rect)
-    svgParts.push(`<rect x="3" y="3" width="${t.w}" height="${t.h}" rx="8" fill="rgba(0,0,0,0.3)"/>`);
+    // 그림자
+    svgParts.push(`<rect x="4" y="4" width="${t.w}" height="${t.h}" rx="8" fill="rgba(0,0,0,0.35)"/>`);
     // 배경
     svgParts.push(`<rect width="${t.w}" height="${t.h}" rx="8" fill="${C.cb}" stroke="${t.isCenter ? C.bc : C.bd}" stroke-width="${t.isCenter ? 2 : 1}"/>`);
     // 헤더
     svgParts.push(`<rect width="${t.w}" height="${HDR_H}" rx="8" fill="${t.isCenter ? C.hc : C.hr}"/>`);
     svgParts.push(`<rect y="${HDR_H - 8}" width="${t.w}" height="8" fill="${t.isCenter ? C.hc : C.hr}"/>`);
     svgParts.push(`<line x1="0" y1="${HDR_H}" x2="${t.w}" y2="${HDR_H}" stroke="${t.isCenter ? C.bc : C.bd}"/>`);
-    // 헤더 아이콘 + 텍스트
+    // 헤더 아이콘 + 이름
     svgParts.push(`<text x="12" y="${HDR_H / 2 + 5}" fill="${t.isCenter ? '#a5b4fc' : '#94a3b8'}" font-size="12">🗄</text>`);
     svgParts.push(`<text x="30" y="${HDR_H / 2 + 5}" fill="${C.ht}" font-size="13" font-weight="700">${esc(t.name)}</text>`);
     svgParts.push(`<text x="${t.w - 12}" y="${HDR_H / 2 + 5}" text-anchor="end" fill="#475569" font-size="10">${t.columns.length}${t.truncated ? '+' + t.truncated : ''} cols</text>`);
-    // 컬럼
+
+    // 컬럼들 — 3구간: [왼: icon+name] [중: badges] [오: type]
+    const typeColStart = t.w - 10;   // 타입 영역 (오른쪽 정렬)
     t.columns.forEach((col, ci) => {
       const cy = HDR_H + ci * COL_H;
       if (ci % 2 === 1) {
         svgParts.push(`<rect y="${cy}" width="${t.w}" height="${COL_H}" fill="rgba(255,255,255,0.02)"/>`);
       }
-      const pre = col.pk ? '🔑 ' : col.fk ? '↳ ' : '   ';
-      svgParts.push(`<text x="10" y="${cy + COL_H / 2 + 4}" fill="${col.pk ? C.pk : col.fk ? C.fk : C.ct}" font-size="11" font-weight="${col.pk || col.fk ? '600' : '400'}" font-family="Consolas,monospace">${esc(pre + col.name)}</text>`);
-      svgParts.push(`<text x="${t.w - 10}" y="${cy + COL_H / 2 + 4}" text-anchor="end" fill="#475569" font-size="10" font-family="Consolas,monospace">${esc(col.type)}</text>`);
-      // 뱃지
+      const nameClr = col.pk ? C.pk : col.fk ? C.fk : C.ct;
+      const fw = col.pk || col.fk ? '600' : '400';
+      const textY = cy + COL_H / 2 + 4;
+      // 아이콘
+      if (col.pk) svgParts.push(`<text x="8" y="${textY}" fill="${C.pk}" font-size="10">🔑</text>`);
+      else if (col.fk) svgParts.push(`<text x="10" y="${textY}" fill="${C.fk}" font-size="10" font-family="Consolas,monospace">↳</text>`);
+      // 이름
+      svgParts.push(`<text x="24" y="${textY}" fill="${nameClr}" font-size="11" font-weight="${fw}" font-family="Consolas,monospace">${esc(col.name)}</text>`);
+      // 타입 (오른쪽 정렬)
+      svgParts.push(`<text x="${typeColStart}" y="${textY}" text-anchor="end" fill="#475569" font-size="10" font-family="Consolas,monospace">${esc(col.type)}</text>`);
+      // 뱃지 (타입 왼쪽)
       const badges: { t: string; c: string; bg: string }[] = [];
       if (col.pk) badges.push({ t: 'PK', c: '#818cf8', bg: 'rgba(99,102,241,.2)' });
       if (col.fk) badges.push({ t: 'FK', c: '#fbbf24', bg: 'rgba(234,179,8,.15)' });
       if (col.nn && !col.pk) badges.push({ t: 'NN', c: '#64748b', bg: 'rgba(100,116,139,.2)' });
-      let bx = t.w - 10 - (col.type.length * 6 + 8);
+      let bx = typeColStart - (col.type.length * 6.5 + 10);
       badges.reverse().forEach(b => {
-        const bw = 22; bx -= bw + 3;
-        svgParts.push(`<rect x="${bx}" y="${cy + 4}" width="${bw}" height="14" rx="3" fill="${b.bg}"/>`);
-        svgParts.push(`<text x="${bx + bw / 2}" y="${cy + 14}" text-anchor="middle" fill="${b.c}" font-size="8" font-weight="700">${b.t}</text>`);
+        const bw = 24; bx -= bw + 3;
+        svgParts.push(`<rect x="${bx}" y="${cy + 5}" width="${bw}" height="14" rx="3" fill="${b.bg}"/>`);
+        svgParts.push(`<text x="${bx + bw / 2}" y="${cy + 15}" text-anchor="middle" fill="${b.c}" font-size="8" font-weight="700">${b.t}</text>`);
       });
     });
     if (t.truncated) {
       const ty2 = HDR_H + t.columns.length * COL_H;
-      svgParts.push(`<text x="${t.w / 2}" y="${ty2 + COL_H / 2 + 4}" text-anchor="middle" fill="#475569" font-size="10">... +${t.truncated} more columns</text>`);
+      svgParts.push(`<text x="${t.w / 2}" y="${ty2 + COL_H / 2 + 4}" text-anchor="middle" fill="#475569" font-size="10" font-style="italic">... +${t.truncated} more columns</text>`);
     }
     svgParts.push(`</g>`);
   });
@@ -933,41 +961,93 @@ function renderGraphEmbedHtml(tableNamesRaw: string, schema: ParsedSchema | null
 
   const truncatedLabel = includedIds.size > 25 ? ` (${includedIds.size - 25}개 생략)` : '';
 
-  // ── pan/zoom 인라인 스크립트 ──
+  // ── pan/zoom 인라인 스크립트 (viewBox 기반) ──
   const canvasId = `erd_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  // 컨테이너 높이: SVG 비율로 계산하되 최소 400, 최대 650
+  const containerAspect = svgW > 0 ? svgH / svgW : 1;
+  const containerH = Math.max(400, Math.min(650, Math.round(containerAspect * 800)));
+
   const dragZoomScript = `<` + `script>(function(){
 var el=document.getElementById("${canvasId}");if(!el)return;
 var svg=el.querySelector(".erd-svg");if(!svg)return;
-var vx=0,vy=0,scale=1;
-function apply(){svg.style.transform="translate("+vx+"px,"+vy+"px) scale("+scale+")";svg.style.transformOrigin="0 0";}
-el.addEventListener("wheel",function(e){e.preventDefault();var d=e.deltaY>0?0.9:1.1;scale=Math.max(0.3,Math.min(3,scale*d));apply();});
-var panning=false,px=0,py=0;
-el.addEventListener("mousedown",function(e){if(e.target===el||e.target===svg||e.target.tagName==="svg"){panning=true;px=e.clientX-vx;py=e.clientY-vy;el.style.cursor="grabbing";}});
-el.addEventListener("mousemove",function(e){if(!panning)return;vx=e.clientX-px;vy=e.clientY-py;apply();});
-el.addEventListener("mouseup",function(){panning=false;el.style.cursor="grab";});
-el.addEventListener("mouseleave",function(){panning=false;el.style.cursor="grab";});
-// 노드 드래그
+var VW=${svgW},VH=${svgH};
+// viewBox 상태: x, y, w, h (초기에는 전체를 보여줌)
+var vb={x:0,y:0,w:VW,h:VH};
+function applyVB(){svg.setAttribute("viewBox",vb.x+" "+vb.y+" "+vb.w+" "+vb.h);}
+applyVB();
+
+// 줌 (스크롤)
+el.addEventListener("wheel",function(e){
+  e.preventDefault();
+  var factor=e.deltaY>0?1.1:0.9;
+  var rect=el.getBoundingClientRect();
+  var mx=(e.clientX-rect.left)/rect.width;
+  var my=(e.clientY-rect.top)/rect.height;
+  var nw=Math.max(VW*0.15,Math.min(VW*4,vb.w*factor));
+  var nh=Math.max(VH*0.15,Math.min(VH*4,vb.h*factor));
+  vb.x+=(vb.w-nw)*mx;
+  vb.y+=(vb.h-nh)*my;
+  vb.w=nw;vb.h=nh;
+  applyVB();
+});
+
+// 팬 (드래그)
+var panning=false,startX=0,startY=0,startVBx=0,startVBy=0;
+el.addEventListener("mousedown",function(e){
+  if(e.target===el||e.target===svg||e.target.tagName==="rect"||e.target.tagName==="svg"){
+    panning=true;startX=e.clientX;startY=e.clientY;startVBx=vb.x;startVBy=vb.y;el.style.cursor="grabbing";
+  }
+});
+document.addEventListener("mousemove",function(e){
+  if(!panning)return;
+  var rect=el.getBoundingClientRect();
+  var dx=(e.clientX-startX)/rect.width*vb.w;
+  var dy=(e.clientY-startY)/rect.height*vb.h;
+  vb.x=startVBx-dx;vb.y=startVBy-dy;
+  applyVB();
+});
+document.addEventListener("mouseup",function(){if(panning){panning=false;el.style.cursor="grab";}});
+
+// 노드 드래그 (viewBox 좌표계)
 var gs=svg.querySelectorAll("g[data-table]");
 gs.forEach(function(g){
   var dragging=false,ox=0,oy=0;
   var m=g.getAttribute("transform").match(/translate\\(([-\\d.]+),([-\\d.]+)\\)/);
   var gx=m?parseFloat(m[1]):0,gy=m?parseFloat(m[2]):0;
   g.addEventListener("mousedown",function(e){
-    e.stopPropagation();dragging=true;ox=e.clientX/scale-gx;oy=e.clientY/scale-gy;g.style.cursor="grabbing";
-    function onMove(ev){if(!dragging)return;gx=ev.clientX/scale-ox;gy=ev.clientY/scale-oy;g.setAttribute("transform","translate("+gx+","+gy+")");}
+    e.stopPropagation();dragging=true;
+    var rect=el.getBoundingClientRect();
+    var svgX=vb.x+(e.clientX-rect.left)/rect.width*vb.w;
+    var svgY=vb.y+(e.clientY-rect.top)/rect.height*vb.h;
+    ox=svgX-gx;oy=svgY-gy;g.style.cursor="grabbing";
+    function onMove(ev){
+      if(!dragging)return;
+      var r=el.getBoundingClientRect();
+      var sx=vb.x+(ev.clientX-r.left)/r.width*vb.w;
+      var sy=vb.y+(ev.clientY-r.top)/r.height*vb.h;
+      gx=sx-ox;gy=sy-oy;
+      g.setAttribute("transform","translate("+gx+","+gy+")");
+    }
     function onUp(){dragging=false;g.style.cursor="grab";document.removeEventListener("mousemove",onMove);document.removeEventListener("mouseup",onUp);}
     document.addEventListener("mousemove",onMove);document.addEventListener("mouseup",onUp);
   });
 });
+
+// 리셋 버튼
+var btn=document.getElementById("${canvasId}_reset");
+if(btn)btn.addEventListener("click",function(){vb.x=0;vb.y=0;vb.w=VW;vb.h=VH;applyVB();});
 })();<` + `/script>`;
 
   return `<div style="background:#0d1117;border:1px solid #2d3f5e;border-radius:10px;overflow:hidden;margin:12px 0">
-<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#131d2e;border-bottom:1px solid #2d3f5e">
+<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#131d2e;border-bottom:1px solid #2d3f5e;flex-wrap:wrap">
 <span style="font-size:14px">🔀</span><span style="font-weight:700;color:#e2e8f0;font-size:13px">ERD 관계 그래프</span>
 <span style="color:#64748b;font-size:11px">${requested.join(', ')} 중심 · ${tables.length}개 테이블 · ${refs.length}개 연결${truncatedLabel}</span>
-<span style="margin-left:auto;color:#475569;font-size:10px">드래그: 이동 · 스크롤: 확대/축소</span>
+<div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+<button id="${canvasId}_reset" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer">🔄 핏</button>
+<span style="color:#475569;font-size:10px">드래그: 이동 · 스크롤: 확대/축소</span>
 </div>
-<div id="${canvasId}" style="width:100%;height:${Math.min(svgH + 20, 600)}px;overflow:hidden;position:relative;cursor:grab;background:#0d1117">
+</div>
+<div id="${canvasId}" style="width:100%;height:${containerH}px;overflow:hidden;position:relative;cursor:grab;background:#0d1117">
 ${svgParts.join('\n')}
 </div>
 </div>${dragZoomScript}`;
