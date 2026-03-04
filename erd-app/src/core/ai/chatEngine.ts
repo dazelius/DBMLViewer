@@ -989,6 +989,12 @@ function buildSystemPrompt(schema: ParsedSchema | null, tableData: TableDataMap,
   lines.push('build_character_profile 결과의 [EMBED_SQL] 힌트를 data-embed="query" 태그에 사용.');
   lines.push('기획서=카드 레이아웃, 시트뷰=탭 레이아웃(showTab JS 패턴 사용).');
   lines.push('');
+  lines.push('## Git 데이터 변경 이력 분석');
+  lines.push('- "언제 수정됐어?" / "뭐가 바뀌었어?" → query_git_history → 커밋 hash 확인 → show_revision_diff(hash) 호출');
+  lines.push('- show_revision_diff 결과에는 실제 +/- 변경 라인이 포함됨 → 구체적인 값 변경 내용 분석 가능');
+  lines.push('- 바이너리 파일(.xlsx 등)은 내용 미표시 → 텍스트 파일(csv/json/dbml 등) 위주로 분석');
+  lines.push('- 특정 파일만 보려면 show_revision_diff(hash, file_path="경로") 사용');
+  lines.push('');
   lines.push('## 코드 분석');
   lines.push('read_guide("_OVERVIEW") → 도메인 가이드 → search_code → read_code_file 순서.');
   lines.push('');
@@ -2414,9 +2420,13 @@ export async function sendChatMessage(
                 date: c.date,
                 author: c.author,
                 message: c.message,
-                files: c.files?.slice(0, 10),
+                files: c.files?.slice(0, 30), // 파일 목록 30개로 확장
               })),
             });
+            // 데이터 수정점 분석을 위한 힌트
+            if (commits.length > 0) {
+              resultStr += '\n\n[힌트] 특정 커밋의 실제 변경 내용(+/- 라인)을 보려면 show_revision_diff(commit_hash)를 호출하세요.'
+            }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             tc = { kind: 'git_history', reason, commits: [], filterPath, repo, error: msg, duration: performance.now() - t0 };
@@ -2453,16 +2463,48 @@ export async function sendChatMessage(
                 repo,
                 duration,
               } as RevisionDiffResult;
-              resultStr = JSON.stringify({
-                commit: data.commit?.short,
-                message: data.commit?.message,
-                totalFiles: data.totalFiles,
-                files: (data.files || []).slice(0, 5).map((f: DiffFile) => ({
+              // Claude에게 실제 변경 내용(hunks)을 포함해서 전달
+              const diffFiles = (data.files || []) as DiffFile[];
+              const MAX_DIFF_LINES = 300; // 파일당 최대 라인
+              const MAX_FILES_WITH_CONTENT = 10;
+              let totalLines = 0;
+              const fileDetails = diffFiles.slice(0, 20).map((f: DiffFile, idx: number) => {
+                const base: Record<string, unknown> = {
                   path: f.path,
-                  status: f.status,
+                  status: f.status === 'A' ? '추가됨' : f.status === 'D' ? '삭제됨' : f.status === 'R' ? '이름변경' : '수정됨',
                   additions: f.additions,
                   deletions: f.deletions,
-                })),
+                };
+                if (f.binary) {
+                  base.note = '바이너리 파일 (내용 미표시)';
+                } else if (idx < MAX_FILES_WITH_CONTENT && f.hunks && f.hunks.length > 0 && totalLines < 1000) {
+                  // 실제 변경 라인 포함
+                  const diffLines: string[] = [];
+                  for (const hunk of f.hunks) {
+                    diffLines.push(hunk.header);
+                    for (const line of hunk.lines) {
+                      if (line.type === 'add') diffLines.push(`+ ${line.content}`);
+                      else if (line.type === 'del') diffLines.push(`- ${line.content}`);
+                      else diffLines.push(`  ${line.content}`);
+                      if (diffLines.length >= MAX_DIFF_LINES) break;
+                    }
+                    if (diffLines.length >= MAX_DIFF_LINES) {
+                      diffLines.push('... (이하 생략)');
+                      break;
+                    }
+                  }
+                  totalLines += diffLines.length;
+                  base.diff = diffLines.join('\n');
+                }
+                return base;
+              });
+              resultStr = JSON.stringify({
+                commit: data.commit?.short,
+                date: data.commit?.date,
+                author: data.commit?.author,
+                message: data.commit?.message,
+                totalFiles: data.totalFiles,
+                files: fileDetails,
               });
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);

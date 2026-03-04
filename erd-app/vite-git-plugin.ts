@@ -5541,6 +5541,7 @@ function buildServerSystemPrompt(): string {
   lines.push('- query_game_data: 실제 게임 데이터를 SQL로 조회')
   lines.push('- show_table_schema: 테이블의 스키마 구조(컬럼, 타입, 행 수) 조회')
   lines.push('- query_git_history: Git 변경 이력 조회. repo="data"(aegisdata 데이터 저장소, 기본값) 또는 repo="aegis"(aegis 코드 저장소)')
+  lines.push('- show_revision_diff: ⭐ 특정 커밋의 실제 변경 내용(+추가/-삭제 라인) 조회. "뭐가 바뀌었어?" → query_git_history → show_revision_diff(hash) 순서로 호출')
   lines.push('- create_artifact: HTML 문서/보고서 생성. 분석 결과를 정리된 문서로 제공할 때 사용')
   lines.push('- search_code: C# 게임 클라이언트 소스코드 검색 (클래스/메서드/파일명/내용 전문검색). 코드 구현 방식, 로직, 버그 분석 시 사용')
   lines.push('- read_code_file: 특정 .cs 파일 전체 내용 읽기. search_code로 경로 확인 후 호출')
