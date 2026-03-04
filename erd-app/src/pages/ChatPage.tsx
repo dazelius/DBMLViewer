@@ -5747,6 +5747,109 @@ function ThinkingStepRow({ step, idx, steps, isLast }: { step: ThinkingStepUI; i
   );
 }
 
+// ── 캐릭터 표정 시스템 ─────────────────────────────────────────────────────────
+// portrait.png: 5열 × 3행 스프라이트 시트 (2560×1664px)
+
+type ExpressionKey =
+  | 'happy' | 'neutral' | 'sad' | 'worried' | 'angry'
+  | 'flustered' | 'surprised' | 'confused' | 'thinking' | 'excited'
+  | 'idea' | 'smile' | 'shy' | 'apologetic' | 'panic';
+
+const EXPRESSIONS: Record<ExpressionKey, { col: number; row: number; label: string }> = {
+  // Row 0
+  happy:      { col: 0, row: 0, label: '기쁨' },
+  neutral:    { col: 1, row: 0, label: '보통' },
+  sad:        { col: 2, row: 0, label: '슬픔' },
+  worried:    { col: 3, row: 0, label: '걱정' },
+  angry:      { col: 4, row: 0, label: '화남' },
+  // Row 1
+  flustered:  { col: 0, row: 1, label: '당황' },
+  surprised:  { col: 1, row: 1, label: '놀람' },
+  confused:   { col: 2, row: 1, label: '의아함' },
+  thinking:   { col: 3, row: 1, label: '생각중' },
+  excited:    { col: 4, row: 1, label: '흥분' },
+  // Row 2
+  idea:       { col: 0, row: 2, label: '아이디어' },
+  smile:      { col: 1, row: 2, label: '미소' },
+  shy:        { col: 2, row: 2, label: '수줍음' },
+  apologetic: { col: 3, row: 2, label: '미안함' },
+  panic:      { col: 4, row: 2, label: '패닉' },
+};
+
+/** 메시지 상태 → 표정 매핑 */
+function getExpressionForMessage(msg: Message): ExpressionKey {
+  if (msg.error) return 'apologetic';
+
+  const toolKinds = (msg.liveToolCalls ?? msg.toolCalls ?? []).map(tc => tc.kind);
+  const hasError = toolKinds.some(k => k.includes('error'));
+  const hasJiraWrite = toolKinds.some(k => k === 'jira_comment' || k === 'jira_create' || k === 'jira_status');
+  const hasDataQuery = toolKinds.some(k => k === 'data_query' || k === 'schema_card');
+  const hasCodeSearch = toolKinds.some(k => k === 'code_search' || k === 'code_file');
+  const hasGitDiff = toolKinds.some(k => k === 'git_history' || k === 'revision_diff');
+  const hasArtifact = toolKinds.some(k => k === 'artifact' || k === 'artifact_patch');
+  const hasJiraSearch = toolKinds.some(k => k === 'jira_search' || k === 'jira_issue' || k === 'confluence_search' || k === 'confluence_page');
+
+  if (hasError) return 'apologetic';
+
+  if (msg.isLoading) {
+    if (msg.liveToolCalls && msg.liveToolCalls.length > 0) {
+      if (hasJiraWrite) return 'excited';         // Jira 쓰기 → Go!
+      if (hasArtifact) return 'idea';             // 아티팩트 생성
+      if (hasDataQuery) return 'thinking';        // 데이터 조회 → 생각중
+      if (hasCodeSearch || hasGitDiff) return 'thinking'; // 코드/Git 검색
+      if (hasJiraSearch) return 'surprised';      // Jira/Confluence 검색
+      return 'flustered';                         // 기타 도구 사용
+    }
+    // 스트리밍 텍스트 있으면 미소
+    if (msg.content || msg.iterations?.some(t => t.trim())) return 'smile';
+    // 대기 중 (아직 응답 없음)
+    return 'confused';
+  }
+
+  // 완료된 메시지
+  if (hasJiraWrite || hasArtifact) return 'happy'; // 뭔가 만들거나 Jira 작업 완료
+  if (hasDataQuery && (msg.content?.length ?? 0) > 200) return 'smile'; // 긴 분석
+  if (toolKinds.length > 3) return 'smile';        // 많은 도구 사용 → 열심히 함
+  if (!msg.content || msg.content.length < 20) return 'neutral';
+  return 'neutral';
+}
+
+/** 캐릭터 표정 컴포넌트 */
+function CharacterPortrait({
+  expression,
+  size = 56,
+  animate = false,
+  className = '',
+}: {
+  expression: ExpressionKey;
+  size?: number;
+  animate?: boolean;
+  className?: string;
+}) {
+  const expr = EXPRESSIONS[expression];
+  const xPct = expr.col * 25;  // 0, 25, 50, 75, 100
+  const yPct = expr.row * 50;  // 0, 50, 100
+
+  return (
+    <div
+      className={`flex-shrink-0 rounded-full overflow-hidden ${className}`}
+      style={{
+        width: size,
+        height: size,
+        backgroundImage: 'url(/portrait.png)',
+        backgroundSize: '500% 300%',
+        backgroundPosition: `${xPct}% ${yPct}%`,
+        border: animate ? '2px solid rgba(99,102,241,0.7)' : '2px solid rgba(99,102,241,0.35)',
+        boxShadow: animate
+          ? '0 0 12px rgba(99,102,241,0.5), 0 2px 8px rgba(0,0,0,0.4)'
+          : '0 2px 8px rgba(0,0,0,0.3)',
+        transition: 'background-position 0.35s ease, box-shadow 0.3s ease',
+      }}
+      title={expr.label}
+    />
+  );
+}
+
 function ThinkingIndicator({ liveToolCalls }: { liveToolCalls?: ToolCallResult[] }) {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -5834,20 +5937,26 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact }: {
   }
 
   /* ── AI 메시지: 풀폭, 헤더 + 내용 ──────────────────────────────────────── */
+  const expression = getExpressionForMessage(msg);
+  const exprLabel = EXPRESSIONS[expression].label;
+
   return (
     <div className="flex flex-col gap-4 px-2 py-3">
-      {/* AI 헤더 */}
+      {/* AI 헤더 — 캐릭터 표정 아바타 */}
       <div className="flex items-center gap-2.5">
-        <div
-          className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
-          style={{ background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)', boxShadow: '0 2px 10px rgba(99,102,241,0.45)' }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83" />
-          </svg>
+        <CharacterPortrait
+          expression={expression}
+          size={48}
+          animate={!!msg.isLoading}
+        />
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[13px] font-semibold" style={{ color: 'var(--accent)' }}>AI Assistant</span>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            {msg.isLoading
+              ? (msg.liveToolCalls && msg.liveToolCalls.length > 0 ? `${exprLabel}...` : '생각중...')
+              : exprLabel}
+          </span>
         </div>
-        <span className="text-[13px] font-semibold" style={{ color: 'var(--accent)' }}>AI Assistant</span>
       </div>
 
       {/* 내용 */}
@@ -6058,6 +6167,13 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // 현재 AI 표정 계산 (최신 AI 메시지 기준)
+  const currentExpression = useMemo<ExpressionKey>(() => {
+    const lastAI = [...messages].reverse().find(m => m.role === 'assistant');
+    if (!lastAI) return 'neutral';
+    return getExpressionForMessage(lastAI);
+  }, [messages]);
   const [showRagGraph, setShowRagGraph] = useState(false);
 
   // 아티팩트 사이드 패널 상태
@@ -6697,14 +6813,8 @@ export default function ChatPage() {
             {messages.length === 0 && (
               <div className="fixed inset-0 flex flex-col items-center justify-center text-center pointer-events-none" style={{ color: 'var(--text-muted)', zIndex: 0 }}>
                 <div className="pointer-events-auto flex flex-col items-center text-center">
-                <div
-                  className="w-20 h-20 rounded-3xl flex items-center justify-center mb-5"
-                  style={{ background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)', boxShadow: '0 8px 32px rgba(99,102,241,0.35)' }}
-                >
-                  <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round">
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                  </svg>
-                </div>
+                {/* 캐릭터 포트레이트 — 빈 화면 */}
+                <CharacterPortrait expression="smile" size={96} className="mb-5" />
                 <h2 className="text-[22px] font-bold mb-3" style={{ color: 'var(--text-primary)' }}>
                   게임 데이터 AI 어시스턴트
                 </h2>
@@ -6813,6 +6923,17 @@ export default function ChatPage() {
             style={{ borderTop: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}
           >
             <div className="w-full px-6">
+              {/* 캐릭터 포트레이트 + 입력 바 */}
+              <div className="flex items-end gap-3 mb-0">
+                {/* 입력창 왼쪽: 현재 AI 표정 포트레이트 */}
+                <div className="flex-shrink-0 flex flex-col items-center pb-1">
+                  <CharacterPortrait
+                    expression={currentExpression}
+                    size={52}
+                    animate={isLoading}
+                  />
+                </div>
+              <div className="flex-1">
               <div
                 className="flex items-end gap-3 rounded-2xl px-5 py-3.5"
                 style={{
@@ -6887,6 +7008,8 @@ export default function ChatPage() {
               <div className="text-[11px] mt-2 text-center" style={{ color: 'var(--text-muted)' }}>
                 Claude AI · Enter로 전송 · Shift+Enter로 줄바꿈
               </div>
+              </div>{/* flex-1 닫기 */}
+              </div>{/* 포트레이트+입력 row 닫기 */}
             </div>
           </div>
         </div>
