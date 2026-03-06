@@ -6533,7 +6533,23 @@ function createChatApiMiddleware(options: GitPluginOptions) {
               for (const tb of toolBlocks) {
                 if (res.writableEnded) break  // 클라이언트 끊기면 툴 실행 중단
                 try { res.write(`event: tool_start\ndata: ${JSON.stringify({ tool: tb.name, input: tb.input })}\n\n`) } catch { break }
-                const { result: rawResult, data: toolData } = await serverExecuteToolAsync(tb.name!, tb.input ?? {}, options)
+                
+                // 도구 실행 중 keepalive 하트비트 (연결 유지)
+                const heartbeat = setInterval(() => {
+                  if (!res.writableEnded) {
+                    try { res.write(`event: heartbeat\ndata: ${JSON.stringify({ tool: tb.name, ts: Date.now() })}\n\n`) } catch { /* ignore */ }
+                  }
+                }, 15_000) // 15초마다
+                
+                let rawResult: string, toolData: unknown
+                try {
+                  const toolOut = await serverExecuteToolAsync(tb.name!, tb.input ?? {}, options)
+                  rawResult = toolOut.result
+                  toolData = toolOut.data
+                } finally {
+                  clearInterval(heartbeat)
+                }
+                
                 const result = truncateToolResult(rawResult)  // ← tool 결과 크기 제한
                 allToolCalls.push({ tool: tb.name!, input: tb.input, result: toolData ?? result, summary: result.slice(0, 300) })
                 toolResults.push({ type: 'tool_result', tool_use_id: tb.id!, content: result })

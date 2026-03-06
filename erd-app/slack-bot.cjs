@@ -216,7 +216,9 @@ async function callDataMasterStreaming(message, sessionId, onToolStart) {
   const url = `${DATAMASTER_URL}/api/v1/chat`;
   
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 180_000); // 3분 타임아웃
+  const TOTAL_TIMEOUT = 300_000;  // 전체 5분 타임아웃
+  const READ_TIMEOUT = 120_000;   // 개별 read 2분 타임아웃 (도구 실행이 오래 걸릴 수 있으므로)
+  const totalTimeout = setTimeout(() => controller.abort(), TOTAL_TIMEOUT);
 
   try {
     const resp = await fetch(url, {
@@ -226,7 +228,6 @@ async function callDataMasterStreaming(message, sessionId, onToolStart) {
         message,
         session_id: sessionId,
         stream: true,
-        fast: true,  // Slack은 빠른 응답 우선 → Sonnet 모델 사용
       }),
       signal: controller.signal,
     });
@@ -246,10 +247,27 @@ async function callDataMasterStreaming(message, sessionId, onToolStart) {
     const toolCalls = [];
     let sessionIdReturned = sessionId;
     let currentEventType = '';
+    let lastDataTime = Date.now();  // 마지막으로 데이터 받은 시간
 
     while (true) {
-      const { done, value } = await reader.read();
+      // 개별 read에 타임아웃 적용
+      const readPromise = reader.read();
+      const timeoutPromise = new Promise((_, reject) => {
+        const tid = setTimeout(() => reject(new Error('SSE read timeout')), READ_TIMEOUT);
+        readPromise.then(() => clearTimeout(tid), () => clearTimeout(tid));
+      });
+      
+      let readResult;
+      try {
+        readResult = await Promise.race([readPromise, timeoutPromise]);
+      } catch (readErr) {
+        console.warn(`[SSE] read 타임아웃 (${READ_TIMEOUT/1000}초 무응답) — 현재까지의 결과 반환`);
+        break;
+      }
+      
+      const { done, value } = readResult;
       if (done) break;
+      lastDataTime = Date.now();
 
       buffer += decoder.decode(value, { stream: true });
       
@@ -312,6 +330,11 @@ async function callDataMasterStreaming(message, sessionId, onToolStart) {
                 }
                 break;
                 
+              case 'heartbeat':
+                // 서버가 도구 실행 중 — 연결 유지용 (아무것도 안 해도 됨)
+                lastDataTime = Date.now();
+                break;
+                
               case 'error':
                 // 서버에서 보낸 에러 이벤트 (msg_too_long 등)
                 const errMsg = data.error || 'Unknown error';
@@ -340,7 +363,7 @@ async function callDataMasterStreaming(message, sessionId, onToolStart) {
 
     return { content: finalContent, toolCalls, sessionId: sessionIdReturned };
   } finally {
-    clearTimeout(timeout);
+    clearTimeout(totalTimeout);
   }
 }
 
