@@ -12,13 +12,14 @@ import { useSchemaStore } from '../../store/useSchemaStore.ts';
 
 // ── 타입 ──
 
-type NT = 'guide_db' | 'guide_code' | 'table' | 'tool' | 'source' | 'domain' | 'system_prompt';
+type NT = 'guide_db' | 'guide_code' | 'table' | 'tool' | 'source' | 'domain' | 'system_prompt' | 'knowledge';
 interface N { id: string; name: string; label: string; type: NT; val: number; x?: number; y?: number; z?: number }
 interface L { source: string; target: string; type: string }
 
 const C: Record<NT, string> = {
   system_prompt: '#ef4444', domain: '#c084fc', tool: '#f472b6',
   source: '#22d3ee', guide_db: '#818cf8', guide_code: '#4ade80', table: '#f59e0b',
+  knowledge: '#a78bfa',
 };
 
 // ── tool call → 활성 노드 ──
@@ -85,6 +86,17 @@ function extractTrace(calls: ToolCallResult[], allNodes: N[]): TraceResult {
       }
     }
 
+    // knowledge tool call → 해당 md 노드 활성화
+    if (tc.kind === 'knowledge') {
+      const knName = (tc as any).name as string;
+      if (knName) {
+        const knId = `kn:${knName}`;
+        const knNode = allNodes.find(n => n.id === knId);
+        if (knNode) { allIds.add(knId); stepIds.push(knId); }
+      }
+      allIds.add('src:knowledge'); stepIds.push('src:knowledge');
+    }
+
     perCall.push({ toolId, nodeIds: stepIds });
   }
   return { allIds, perCall };
@@ -95,9 +107,10 @@ function extractTrace(calls: ToolCallResult[], allNodes: N[]): TraceResult {
 interface Props {
   liveToolCalls?: ToolCallResult[];
   isStreaming?: boolean;
+  knowledgeNames?: string[];
 }
 
-export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
+export default function MiniRagGraph({ liveToolCalls, isStreaming, knowledgeNames }: Props) {
   const schema = useSchemaStore(s => s.schema);
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<any>(null);
@@ -160,9 +173,23 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
       links.push({ source: 'sys:prompt', target: 'src:excel', type: 'prompt_injects' });
     }
 
+    // ── 널리지 개별 노드 (md 파일 하나당 하나) ──
+    if (knowledgeNames && knowledgeNames.length > 0) {
+      for (const kn of knowledgeNames) {
+        const knId = `kn:${kn}`;
+        // .md 확장자 제거한 짧은 라벨
+        const shortLabel = kn.replace(/\.md$/i, '');
+        add({ id: knId, name: kn, label: shortLabel, type: 'knowledge', val: 1.2 });
+        // knowledge 소스 노드에 연결
+        if (ids.has('src:knowledge')) {
+          links.push({ source: 'src:knowledge', target: knId, type: 'source_knowledge' });
+        }
+      }
+    }
+
     nodesRef.current = nodes;
     return { nodes, links };
-  }, [schema]);
+  }, [schema, knowledgeNames]);
 
   // 글로우 텍스처 캐시
   const texCache = useRef<Map<string, THREE.CanvasTexture>>(new Map());
@@ -208,6 +235,18 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
     ringTexRef.current = tex;
     return tex;
   }, []);
+
+  // graphData 변경 시 기존 3D 그래프에 데이터 업데이트 (knowledgeNames 등 추가 시)
+  const prevGraphDataRef = useRef(graphData);
+  useEffect(() => {
+    if (!graphRef.current || graphData === prevGraphDataRef.current) return;
+    prevGraphDataRef.current = graphData;
+    graphRef.current.graphData({
+      nodes: JSON.parse(JSON.stringify(graphData.nodes)),
+      links: JSON.parse(JSON.stringify(graphData.links)),
+    });
+    nodesRef.current = graphData.nodes;
+  }, [graphData]);
 
   // 3D 렌더
   useEffect(() => {
@@ -505,6 +544,7 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming }: Props) {
             const labels: Record<string, string> = {
               system_prompt: 'Prompt', domain: '도메인', tool: '도구',
               source: '소스', guide_db: 'DB가이드', guide_code: '코드가이드', table: '테이블',
+              knowledge: '널리지',
             };
             return (
               <div key={type} className="flex items-center gap-1">

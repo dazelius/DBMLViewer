@@ -38,6 +38,7 @@ import {
   type ThinkingStep,
   type TokenUsageSummary,
   type KnowledgeResult,
+  getKnowledgeEntries,
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
 import type { ParsedSchema } from '../core/schema/types.ts';
@@ -7600,6 +7601,22 @@ export default function ChatPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
+  // RAG Graph용 널리지 파일 목록
+  const [knowledgeNames, setKnowledgeNames] = useState<string[]>([]);
+  useEffect(() => {
+    getKnowledgeEntries().then(entries => {
+      setKnowledgeNames(entries.map(e => e.name));
+    }).catch(() => {});
+    // knowledge-updated 이벤트 시 갱신
+    const onKnUpdate = () => {
+      getKnowledgeEntries().then(entries => {
+        setKnowledgeNames(entries.map(e => e.name));
+      }).catch(() => {});
+    };
+    window.addEventListener('knowledge-updated', onKnUpdate);
+    return () => window.removeEventListener('knowledge-updated', onKnUpdate);
+  }, []);
+
   // 현재 AI 표정 계산 (최신 AI 메시지 기준)
   const currentExpression = useMemo<ExpressionKey>(() => {
     const lastAI = [...messages].reverse().find(m => m.role === 'assistant');
@@ -8870,6 +8887,7 @@ export default function ChatPage() {
                     return loading?.liveToolCalls ?? loading?.toolCalls;
                   })()}
                   isStreaming={isLoading}
+                  knowledgeNames={knowledgeNames}
                 />
               </Suspense>
             </div>

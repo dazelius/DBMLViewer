@@ -1918,7 +1918,7 @@ export interface TokenUsageSummary {
 let _knowledgeCache: { entries: { name: string; sizeKB: number; content: string }[]; ts: number } | null = null;
 const KNOWLEDGE_CACHE_TTL = 30_000; // 30초
 
-async function _getKnowledgeEntries(): Promise<{ name: string; sizeKB: number; content: string }[]> {
+export async function getKnowledgeEntries(): Promise<{ name: string; sizeKB: number; content: string }[]> {
   if (_knowledgeCache && Date.now() - _knowledgeCache.ts < KNOWLEDGE_CACHE_TTL) {
     return _knowledgeCache.entries;
   }
@@ -1979,7 +1979,7 @@ export async function sendChatMessage(
   const effectiveSchema = schema ?? useSchemaStore.getState().schema;
 
   // 저장된 널리지 목록 + 내용 가져오기 (인메모리 캐싱으로 매번 API 호출 방지)
-  const knowledgeEntries = await _getKnowledgeEntries();
+  const knowledgeEntries = await getKnowledgeEntries();
 
   const systemPrompt = buildSystemPrompt(effectiveSchema, tableData, knowledgeEntries, userMessage);
 
