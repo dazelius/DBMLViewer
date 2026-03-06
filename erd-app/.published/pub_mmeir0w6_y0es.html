@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Character 테이블 시트 — DataMaster</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0f1117; color: #e2e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.7; padding: 32px 24px; max-width: 960px; margin: 0 auto;
+  }
+  h1 { color: #a5b4fc; font-size: 1.6em; margin-bottom: 24px; padding-bottom: 12px; border-bottom: 1px solid #2d3748; }
+  h2 { color: #93c5fd; font-size: 1.3em; margin: 28px 0 12px; }
+  h3 { color: #86efac; font-size: 1.1em; margin: 20px 0 8px; }
+  h4 { color: #fbbf24; font-size: 1em; margin: 16px 0 6px; }
+  p { margin: 8px 0; }
+  a { color: #818cf8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    background: #1e293b; color: #fbbf24; padding: 2px 6px;
+    border-radius: 4px; font-size: 0.9em; font-family: 'Consolas', 'Monaco', monospace;
+  }
+  pre {
+    background: #1e293b; border: 1px solid #334155; border-radius: 8px;
+    padding: 16px; margin: 12px 0; overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; color: #e2e8f0; }
+  table {
+    width: 100%; border-collapse: collapse; margin: 16px 0;
+    background: #1a1f2e; border-radius: 8px; overflow: hidden;
+  }
+  thead { background: #252d3d; }
+  th {
+    padding: 10px 14px; text-align: left; color: #a5b4fc;
+    font-weight: 600; font-size: 0.85em; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 2px solid #3b4a6b;
+  }
+  td {
+    padding: 8px 14px; border-bottom: 1px solid #2d3748;
+    font-size: 0.9em;
+  }
+  tr:hover td { background: #252d3d; }
+  ul { padding-left: 24px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  hr { border: none; border-top: 1px solid #2d3748; margin: 24px 0; }
+  strong { color: #f8fafc; }
+  em { color: #cbd5e1; }
+  .header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+    padding-bottom: 16px; border-bottom: 1px solid #2d3748;
+  }
+  .header-logo { font-size: 1.5em; }
+  .header-title { font-size: 1.4em; color: #a5b4fc; font-weight: 700; }
+  .header-sub { color: #64748b; font-size: 0.8em; margin-top: 4px; }
+  .footer {
+    margin-top: 40px; padding-top: 16px; border-top: 1px solid #2d3748;
+    color: #475569; font-size: 0.8em; text-align: center;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <span class="header-logo">📊</span>
+    <div>
+      <div class="header-title">Character 테이블 시트</div>
+      <div class="header-sub">DataMaster · 2026. 3. 6. PM 3:34:01</div>
+    </div>
+  </div>
+  
+<style>
+  body { background: #0f1117; color: #e2e8f0; font-family: 'Segoe UI', sans-serif; padding: 20px; margin: 0; }
+  h1 { color: #6366f1; font-size: 22px; margin-bottom: 4px; }
+  .subtitle { color: #94a3b8; font-size: 13px; margin-bottom: 16px; }
+  .table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #1e293b; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; white-space: nowrap; }
+  thead th { background: #1e293b; color: #a5b4fc; padding: 8px 10px; text-align: left; position: sticky; top: 0; border-bottom: 2px solid #6366f1; }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid #1e293b; }
+  tbody tr:hover { background: #1e293b; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .tag-tank { background: #1e3a5f; color: #60a5fa; }
+  .tag-damage { background: #5f1e1e; color: #f87171; }
+  .tag-support { background: #1e5f3a; color: #4ade80; }
+  .tag-player { background: #312e81; color: #a5b4fc; }
+  .tag-skill { background: #4a3728; color: #fbbf24; }
+  .tag-active { background: #064e3b; color: #34d399; }
+  .tag-inactive { background: #3f3f46; color: #a1a1aa; }
+  .legend { margin-bottom: 14px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .legend span { font-size: 12px; }
+  .section { margin-top: 28px; }
+  .section h2 { color: #a5b4fc; font-size: 16px; border-bottom: 1px solid #1e293b; padding-bottom: 6px; }
+  .trunc { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+</style>
+
+<h1>📋 Character 테이블</h1>
+<div class="subtitle">전체 17행 · 15컬럼 · AEGIS Game Data</div>
+
+<div class="legend">
+  <span><span class="tag tag-tank">Tank</span> 탱커</span>
+  <span><span class="tag tag-damage">Damage</span> 딜러</span>
+  <span><span class="tag tag-support">Support</span> 서포터</span>
+  <span><span class="tag tag-active">●</span> 활성</span>
+  <span><span class="tag tag-inactive">●</span> 비활성</span>
+</div>
+
+<!-- ===== 메인 플레이어 캐릭터 ===== -->
+<div class="section">
+<h2>🎮 플레이어 캐릭터 (is_display = 1)</h2>
+<div class="table-wrap">
+<table>
+<thead>
+  <tr><th>id</th><th>#char_memo</th><th>type</th><th>display</th><th>character_class</th><th>#class_memo</th><th>icon_id</th><th>appearance_id</th><th>stat_id</th><th>gear_set_id</th><th>passive_set_id</th><th>skill_set_id</th></tr>
+</thead>
+<tbody>
+  <tr><td>1001</td><td><b>프리드웬</b></td><td><span class="tag tag-player">Player</span></td><td><span class="tag tag-active">1</span></td><td><span class="tag tag-tank">Tank</span></td><td>탱커</td><td>icon_hero_vanguard</td><td>1001</td><td>1001</td><td>1001</td><td>1001</td><td>1001</td></tr>
+  <tr><td>2001</td><td><b>카야</b></td><td><span class="tag tag-player">Player</span></td><td><span class="tag tag-active">1</span></td><td><span class="tag tag-damage">Damage</span></td><td>딜러</td><td>icon_hero_striker</td><td>2001</td><td>2001</td><td>2001</td><td>2001</td><td>2001</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<!-- ===== 비활성 플레이어 캐릭터 ===== -->
+<div class="section">
+<h2>🚧 비활성 플레이어 캐릭터 (is_display = 0)</h2>
+<div class="table-wrap">
+<table>
+<thead>
+  <tr><th>id</th><th>#char_memo</th><th>type</th><th>display</th><th>character_class</th><th>#class_memo</th><th>icon_id</th><th>appearance_id</th><th>stat_id</th><th>gear_set_id</th><th>passive_set_id</th><th>skill_set_id</th></tr>
+</thead>
+<tbody>
+  <tr><td>3001</td><td><b>엔젤</b></td><td><span class="tag tag-player">Player</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-damage">Damage</span></td><td>딜러</td><td>icon_hero_agent</td><td>3001</td><td>3001</td><td>3001</td><td>3001</td><td>3001</td></tr>
+  <tr><td>4001</td><td><b>시냅스</b></td><td><span class="tag tag-player">Player</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-support">Support</span></td><td>서포터</td><td>icon_hero_mechanic</td><td>4001</td><td>4001</td><td>4001</td><td>4001</td><td>4001</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<!-- ===== 구버전 캐릭터 ===== -->
+<div class="section">
+<h2>📦 구버전 캐릭터 (old)</h2>
+<div class="table-wrap">
+<table>
+<thead>
+  <tr><th>id</th><th>#char_memo</th><th>type</th><th>display</th><th>character_class</th><th>#class_memo</th><th>icon_id</th><th>appearance_id</th><th>stat_id</th><th>gear_set_id</th><th>passive_set_id</th><th>skill_set_id</th></tr>
+</thead>
+<tbody>
+  <tr><td>100100</td><td>뱅가드 (old)</td><td><span class="tag tag-player">Player</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-tank">Tank</span></td><td>탱커</td><td>icon_hero_vanguard</td><td>100100</td><td>1001</td><td>100100</td><td>1001</td><td>1001</td></tr>
+  <tr><td>200100</td><td>스트라이커 (old)</td><td><span class="tag tag-player">Player</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-damage">Damage</span></td><td>딜러</td><td>icon_hero_striker</td><td>200100</td><td>2001</td><td>200100</td><td>2001</td><td>2001</td></tr>
+  <tr><td>300100</td><td>에이전트 (old)</td><td><span class="tag tag-player">Player</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-damage">Damage</span></td><td>딜러</td><td>icon_hero_agent</td><td>300100</td><td>3001</td><td>300100</td><td>3001</td><td>-1</td></tr>
+  <tr><td>400100</td><td>메카닉 (old)</td><td><span class="tag tag-player">Player</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-support">Support</span></td><td>서포터</td><td>icon_hero_mechanic</td><td>400100</td><td>4001</td><td>400100</td><td>4001</td><td>-1</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<!-- ===== 봇 캐릭터 ===== -->
+<div class="section">
+<h2>🤖 봇 캐릭터</h2>
+<div class="table-wrap">
+<table>
+<thead>
+  <tr><th>id</th><th>#char_memo</th><th>type</th><th>display</th><th>character_class</th><th>#class_memo</th><th>icon_id</th><th>appearance_id</th><th>stat_id</th><th>gear_set_id</th><th>passive_set_id</th><th>skill_set_id</th></tr>
+</thead>
+<tbody>
+  <tr><td>100101</td><td>프리드웬_bot01</td><td><span class="tag tag-player">Player</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-tank">Tank</span></td><td>탱커</td><td>icon_hero_vanguard</td><td>1001</td><td>1001</td><td>100101</td><td>1001</td><td>1001</td></tr>
+  <tr><td>200101</td><td>카야_bot01</td><td><span class="tag tag-player">Player</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-damage">Damage</span></td><td>딜러</td><td>icon_hero_striker</td><td>2001</td><td>2001</td><td>200101</td><td>2001</td><td>2001</td></tr>
+  <tr><td>300101</td><td>엔젤_bot1 (임시 카야)</td><td><span class="tag tag-player">Player</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-damage">Damage</span></td><td>딜러</td><td>icon_hero_striker</td><td>2001</td><td>3001</td><td>200101</td><td>2001</td><td>2001</td></tr>
+  <tr><td>400101</td><td>시냅스_bot1 (임시 카야)</td><td><span class="tag tag-player">Player</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-damage">Damage</span></td><td>딜러</td><td>icon_hero_striker</td><td>2001</td><td>4001</td><td>200101</td><td>2001</td><td>2001</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<!-- ===== 스킬 오브젝트 ===== -->
+<div class="section">
+<h2>⚡ 스킬 오브젝트</h2>
+<div class="table-wrap">
+<table>
+<thead>
+  <tr><th>id</th><th>#char_memo</th><th>type</th><th>display</th><th>character_class</th><th>#class_memo</th><th>icon_id</th><th>appearance_id</th><th>stat_id</th><th>gear_set_id</th><th>passive_set_id</th><th>skill_set_id</th></tr>
+</thead>
+<tbody>
+  <tr><td>4002</td><td>시냅스_불확정역장</td><td><span class="tag tag-skill">SkillObject</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-support">Support</span></td><td>서포터</td><td>icon_hero_mechanic</td><td>4002</td><td>4002</td><td>-1</td><td>-1</td><td>4002</td></tr>
+  <tr><td>4003</td><td>시냅스_방해전파장치</td><td><span class="tag tag-skill">SkillObject</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-support">Support</span></td><td>서포터</td><td>icon_hero_mechanic</td><td>4003</td><td>4003</td><td>-1</td><td>4003</td><td>-1</td></tr>
+  <tr><td>4004</td><td>시냅스_바이러스노드</td><td><span class="tag tag-skill">SkillObject</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-support">Support</span></td><td>서포터</td><td>icon_hero_mechanic</td><td>4004</td><td>4004</td><td>-1</td><td>4004</td><td>-1</td></tr>
+  <tr><td>4005</td><td>시냅스_바이러스노드(약화)</td><td><span class="tag tag-skill">SkillObject</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-support">Support</span></td><td>서포터</td><td>icon_hero_mechanic</td><td>4005</td><td>4005</td><td>-1</td><td>4005</td><td>-1</td></tr>
+  <tr><td>4006</td><td>시냅스_방해전파장치_교란 필터</td><td><span class="tag tag-skill">SkillObject</span></td><td><span class="tag tag-inactive">0</span></td><td><span class="tag tag-support">Support</span></td><td>서포터</td><td>icon_hero_mechanic</td><td>4003</td><td>4003</td><td>-1</td><td>4006</td><td>-1</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+  <div class="footer">Generated by DataMaster</div>
+</body>
+</html>

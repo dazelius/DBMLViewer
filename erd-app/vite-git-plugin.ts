@@ -6338,7 +6338,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
 
     // ── POST /api/v1/publish : 마크다운/HTML 콘텐츠를 출판하고 URL 반환 ──
     if (path === '/api/v1/publish' && req.method === 'POST') {
-      let body: { title?: string; markdown?: string; html?: string }
+      let body: { title?: string; markdown?: string; html?: string; source?: string }
       try {
         const raw = await readBody(req)
         body = JSON.parse(raw || '{}')
@@ -6347,6 +6347,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       const title = body.title || 'DataMaster 분석 결과'
       const markdown = body.markdown || ''
       const rawHtml = body.html || ''
+      const source = body.source || 'slack'
 
       // markdown → HTML 변환 (간단한 변환기)
       let contentHtml = rawHtml
@@ -6355,28 +6356,47 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       }
       if (!contentHtml) { sendJson(res, 400, { error: 'markdown 또는 html이 필요합니다.' }); return }
 
-      // ID 생성 및 저장
+      // ID 생성 및 Explore와 동일한 published/ 폴더에 저장 (index.json에 등록)
       const id = `pub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
-      const publishDir = join(process.cwd(), '.published')
-      if (!existsSync(publishDir)) mkdirSync(publishDir, { recursive: true })
+      ensurePublishedDir()
 
       const fullHtml = buildPublishedPage(title, contentHtml)
-      writeFileSync(join(publishDir, `${id}.html`), fullHtml, 'utf-8')
+      writeFileSync(join(PUBLISHED_DIR, `${id}.html`), fullHtml, 'utf-8')
 
-      // URL 생성 (호스트는 요청 헤더에서 추출)
+      // index.json에 메타 등록 → Explore 페이지에서 바로 보임
+      const list = readPublishedIndex()
+      // description: HTML에서 첫 200자 텍스트 추출
+      const descText = contentHtml.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 200)
+      list.unshift({
+        id,
+        title,
+        description: descText,
+        createdAt: new Date().toISOString(),
+        author: source === 'slack' ? 'Slack' : 'API',
+        folderId: null,
+      })
+      writePublishedIndex(list)
+
+      // URL 생성 (Explore의 /api/p/:id 경로 사용)
       const host = req.headers.host || 'localhost:5173'
       const protocol = req.headers['x-forwarded-proto'] || 'http'
-      const url = `${protocol}://${host}/api/v1/published/${id}`
+      const url = `${protocol}://${host}/api/p/${id}`
 
+      sLog('INFO', `[Publish] ${source} → "${title}" (${id})`)
       sendJson(res, 200, { id, url, title })
       return
     }
 
-    // ── GET /api/v1/published/:id : 출판된 콘텐츠 HTML 서빙 ──
+    // ── GET /api/v1/published/:id : 출판된 콘텐츠 HTML 서빙 (레거시 URL 호환) ──
     const publishMatch = path.match(/^\/api\/v1\/published\/([^/]+)$/)
     if (publishMatch && req.method === 'GET') {
-      const publishDir = join(process.cwd(), '.published')
-      const fp = join(publishDir, `${publishMatch[1]}.html`)
+      // 통합된 published/ 폴더 우선, 이전 .published/ 폴더 fallback
+      const fileId = publishMatch[1]
+      let fp = join(PUBLISHED_DIR, `${fileId}.html`)
+      if (!existsSync(fp)) {
+        const legacyDir = join(process.cwd(), '.published')
+        fp = join(legacyDir, `${fileId}.html`)
+      }
       if (!existsSync(fp)) {
         res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' })
         res.end('<h1>404 — 페이지를 찾을 수 없습니다</h1>')
