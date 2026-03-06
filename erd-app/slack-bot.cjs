@@ -89,6 +89,22 @@ function getSessionId(channel, threadTs) {
   return threadSessions.get(key);
 }
 
+// ── 봇 응답 추적 (리액션 피드백용) ──
+// 봇 응답 ts → { channel, threadTs, userText, toolCount, responseLen, timestamp }
+const botResponses = new Map();
+const BOT_RESPONSE_TTL = 24 * 60 * 60 * 1000; // 24시간
+
+function trackBotResponse(msgTs, info) {
+  botResponses.set(msgTs, { ...info, timestamp: Date.now() });
+  // 오래된 항목 정리
+  if (botResponses.size > 200) {
+    const now = Date.now();
+    for (const [ts, data] of botResponses) {
+      if (now - data.timestamp > BOT_RESPONSE_TTL) botResponses.delete(ts);
+    }
+  }
+}
+
 // ── 쓰레드별 메타정보 축적 ──
 // 각 쓰레드에서 조회된 테이블, 스키마, Jira 이슈 등 핵심 데이터를 축적
 const threadMeta = new Map();
@@ -657,6 +673,78 @@ async function fetchThreadContext(client, channel, threadTs, currentTs) {
   }
 }
 
+// ── 세션/메타 TTL 자동 정리 (1시간마다, 4시간 이상 미사용 세션 삭제) ──
+const SESSION_TTL = 4 * 60 * 60 * 1000; // 4시간
+const sessionLastUsed = new Map(); // key → timestamp
+
+function touchSession(key) {
+  sessionLastUsed.set(key, Date.now());
+}
+
+setInterval(() => {
+  const now = Date.now();
+  let cleaned = 0;
+  for (const [key, lastUsed] of sessionLastUsed) {
+    if (now - lastUsed > SESSION_TTL) {
+      threadSessions.delete(key);
+      threadMeta.delete(key);
+      sessionLastUsed.delete(key);
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) console.log(`[Slack] 세션 정리: ${cleaned}개 만료 세션 삭제 (남은: ${threadSessions.size}개)`);
+}, 60 * 60 * 1000); // 1시간마다
+
+// ── help / reset 커맨드 처리 ──
+const HELP_BLOCKS = [
+  {
+    type: 'header',
+    text: { type: 'plain_text', text: '📖 DataMaster 사용 가이드', emoji: true },
+  },
+  {
+    type: 'section',
+    text: { type: 'mrkdwn', text: [
+      '*📊 데이터 조회*',
+      '`전사 HP 데이터 보여줘` · `MapInfo 테이블 구조 알려줘`',
+      '`카드 프리셋 중 type이 attack인 것만`',
+      '',
+      '*💻 코드 분석*',
+      '`GunBase.cs의 Reload 로직 분석해줘`',
+      '`Skill 시스템 구조 설명해줘`',
+      '',
+      '*🎫 Jira / Confluence*',
+      '`AEGIS-1234 이슈 내용 보여줘`',
+      '`AEGIS-1234에 댓글 달아줘: 확인했습니다`',
+      '`Confluence에서 전장변수 문서 찾아줘`',
+      '',
+      '*📄 문서/아티팩트 생성*',
+      '`전사 캐릭터 기획서 만들어줘`',
+      '`MapInfo 관련 데이터 정리해줘`',
+      '',
+      '*🌐 웹 검색*',
+      '`Unity ECS 최신 문서 검색해줘`',
+      '',
+      '*🔧 기타 명령*',
+      '`새 대화` 또는 `reset` — 세션 초기화',
+      '`도움말` 또는 `help` — 이 가이드 표시',
+    ].join('\n') },
+  },
+  {
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: '💡 쓰레드에서 대화하면 이전 맥락을 기억합니다. | ✅ 👍 리액션으로 좋은 답변 피드백을 남겨주세요!' }],
+  },
+];
+
+function isHelpCommand(text) {
+  const lower = text.toLowerCase().trim();
+  return ['help', '도움말', '도움', '사용법', '가이드', '?'].includes(lower);
+}
+
+function isResetCommand(text) {
+  const lower = text.toLowerCase().trim();
+  return ['reset', '새 대화', '새대화', '리셋', '초기화', 'new', 'clear'].includes(lower);
+}
+
 // ── 메시지 처리 핸들러 ──
 async function handleMessage({ message, say, client, event }) {
   // 봇 자신의 메시지 무시
@@ -669,7 +757,24 @@ async function handleMessage({ message, say, client, event }) {
 
   if (!userText) return;
 
+  // ── help 커맨드 ──
+  if (isHelpCommand(userText)) {
+    await say({ blocks: HELP_BLOCKS, text: 'DataMaster 사용 가이드', thread_ts: threadTs });
+    return;
+  }
+
+  // ── reset 커맨드 ──
+  if (isResetCommand(userText)) {
+    const key = `${channel}:${threadTs || 'main'}`;
+    threadSessions.delete(key);
+    threadMeta.delete(key);
+    sessionLastUsed.delete(key);
+    await say({ text: '🔄 세션이 초기화되었습니다. 새로운 대화를 시작합니다!', thread_ts: threadTs });
+    return;
+  }
+
   const sessionId = getSessionId(channel, threadTs);
+  touchSession(`${channel}:${threadTs || 'main'}`);
 
   // 로딩 표시
   let loadingMsg;
@@ -850,7 +955,42 @@ async function handleMessage({ message, say, client, event }) {
       lastUpdate = 0;
     };
     
-    const result = await callDataMasterStreaming(enrichedMessage, sessionId, onToolStart, onIteration);
+    // 에러 시 자동 재시도 (최대 2회)
+    let result;
+    const MAX_RETRIES = 2;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        result = await callDataMasterStreaming(enrichedMessage, sessionId, onToolStart, onIteration);
+        break; // 성공 시 루프 탈출
+      } catch (apiErr) {
+        const errMsg = apiErr.message || '';
+        const isRetryable = errMsg.includes('429') || errMsg.includes('upstream connect') 
+          || errMsg.includes('connection termination') || errMsg.includes('ECONNREFUSED')
+          || errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed')
+          || errMsg.includes('SSE read timeout');
+        
+        if (isRetryable && attempt < MAX_RETRIES) {
+          const waitSec = (attempt + 1) * 3; // 3초, 6초
+          console.warn(`[Slack] 재시도 ${attempt + 1}/${MAX_RETRIES}: ${errMsg.slice(0, 80)} — ${waitSec}초 대기`);
+          if (loadingMsg?.ts) {
+            try {
+              await client.chat.update({
+                channel, ts: loadingMsg.ts,
+                text: `⏳ 일시적 오류 — ${waitSec}초 후 재시도 (${attempt + 1}/${MAX_RETRIES})...`,
+                blocks: [{ type: 'context', elements: [{ type: 'mrkdwn', text: `⏳ 일시적 오류 발생 — *${waitSec}초 후 자동 재시도* (${attempt + 1}/${MAX_RETRIES})` }] }],
+              });
+            } catch { /* ignore */ }
+          }
+          await new Promise(r => setTimeout(r, waitSec * 1000));
+          // 재시도 시 진행상황 초기화
+          toolProgress.length = 0;
+          lastUpdate = 0;
+          continue;
+        }
+        throw apiErr; // 재시도 불가능한 오류 → 위쪽 catch로
+      }
+    }
+    if (!result) throw new Error('재시도 횟수 초과');
     const rawContent = result.content || '';
     
     // ── 도구 결과에서 메타정보 축적 ──
@@ -1036,6 +1176,20 @@ async function handleMessage({ message, say, client, event }) {
 
     console.log(`[Slack] 응답 완료: ${result.content.length}자, 도구 ${result.toolCalls.length}개`);
 
+    // 봇 응답 추적 (리액션 피드백용)
+    const botMsgTs = loadingMsg?.ts;
+    if (botMsgTs) {
+      trackBotResponse(botMsgTs, {
+        channel,
+        threadTs,
+        userText: userText.slice(0, 200),
+        toolCount: result.toolCalls.length,
+        tools: [...new Set(result.toolCalls.map(tc => tc.tool))],
+        responseLen: rawContent.length,
+        published: !!publishedUrl,
+      });
+    }
+
   } catch (error) {
     console.error('[Slack] 처리 오류:', error);
     
@@ -1068,6 +1222,86 @@ app.event('message', async (args) => {
   // DM 채널만 처리 (im 타입)
   if (event.channel_type === 'im') {
     await handleMessage({ ...args, message: event });
+  }
+});
+
+// ── 리액션 피드백 (👍 ✅ ❤️ = 긍정, 👎 ❌ = 부정) ──
+const POSITIVE_REACTIONS = new Set(['+1', 'thumbsup', 'white_check_mark', 'heavy_check_mark', 'heart', 'star', 'fire', 'clap', '100']);
+const NEGATIVE_REACTIONS = new Set(['-1', 'thumbsdown', 'x', 'no_entry', 'confused', 'disappointed']);
+
+app.event('reaction_added', async ({ event, client }) => {
+  try {
+    const { reaction, item, user } = event;
+    if (item.type !== 'message') return;
+
+    const msgTs = item.ts;
+    const botResp = botResponses.get(msgTs);
+    if (!botResp) return; // 봇 응답이 아닌 메시지에 달린 리액션은 무시
+
+    const isPositive = POSITIVE_REACTIONS.has(reaction);
+    const isNegative = NEGATIVE_REACTIONS.has(reaction);
+    if (!isPositive && !isNegative) return;
+
+    const feedbackType = isPositive ? 'positive' : 'negative';
+    const emoji = isPositive ? '👍' : '👎';
+    
+    console.log(`[Slack] ${emoji} 피드백 수신: user=${user}, reaction=:${reaction}:, question="${botResp.userText.slice(0, 50)}"`);
+
+    // DataMaster 서버의 피드백 API 호출 (knowledge 저장)
+    const timestamp = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+    const toolList = botResp.tools?.join(', ') || '없음';
+    
+    const feedbackEntry = [
+      `## ${isPositive ? '✅' : '❌'} [${timestamp}] ${isPositive ? '긍정' : '부정'} 피드백 (Slack)`,
+      `- **질문**: ${botResp.userText}`,
+      `- **사용 도구**: ${toolList}`,
+      `- **응답 길이**: ${botResp.responseLen}자`,
+      `- **아티팩트 생성**: ${botResp.published ? '예' : '아니오'}`,
+      `- **리액션**: :${reaction}:`,
+      `- **${isPositive ? '유지 패턴' : '개선 필요'}**: ${isPositive ? '이런 방식의 답변이 Slack에서 효과적' : '답변 개선 필요'}`,
+    ].join('\n');
+
+    // 피드백 로그 저장 (DataMaster API 경유)
+    try {
+      const saveFeedbackResp = await fetch(`${DATAMASTER_URL}/api/v1/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: `[시스템] 피드백을 _feedback_log에 추가해줘. 아래 내용을 기존 내용 뒤에 추가:\n\n${feedbackEntry}`,
+          session_id: `feedback-${Date.now()}`,
+          stream: false,
+        }),
+      });
+      
+      if (saveFeedbackResp.ok) {
+        console.log(`[Slack] ${emoji} 피드백 저장 완료`);
+      } else {
+        console.warn(`[Slack] 피드백 저장 실패: ${saveFeedbackResp.status}`);
+      }
+    } catch (feedbackErr) {
+      console.warn('[Slack] 피드백 저장 오류:', feedbackErr.message);
+    }
+
+    // 부정 피드백 시 쓰레드에 안내 메시지
+    if (isNegative && botResp.channel && botResp.threadTs) {
+      try {
+        await client.chat.postMessage({
+          channel: botResp.channel,
+          thread_ts: botResp.threadTs,
+          text: '💡 답변이 마음에 들지 않으셨군요. 어떤 부분이 아쉬웠는지 알려주시면 더 나은 답변을 드릴 수 있어요!',
+          blocks: [{
+            type: 'context',
+            elements: [{ type: 'mrkdwn', text: '💡 답변이 아쉬우셨나요? 구체적으로 어떤 점이 부족했는지 알려주시면 개선하겠습니다!' }],
+          }],
+        });
+      } catch { /* ignore */ }
+    }
+
+    // 추적 데이터에서 제거 (중복 피드백 방지)
+    botResponses.delete(msgTs);
+    
+  } catch (err) {
+    console.error('[Slack] 리액션 이벤트 처리 오류:', err.message);
   }
 });
 
