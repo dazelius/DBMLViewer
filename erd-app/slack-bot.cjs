@@ -89,6 +89,126 @@ function getSessionId(channel, threadTs) {
   return threadSessions.get(key);
 }
 
+// ── 쓰레드별 메타정보 축적 ──
+// 각 쓰레드에서 조회된 테이블, 스키마, Jira 이슈 등 핵심 데이터를 축적
+const threadMeta = new Map();
+
+function getThreadMeta(channel, threadTs) {
+  const key = `${channel}:${threadTs || 'main'}`;
+  if (!threadMeta.has(key)) {
+    threadMeta.set(key, {
+      queriedTables: [],   // 조회한 테이블 + 요약
+      schemas: [],         // 확인한 스키마
+      jiraIssues: [],      // 조회한 Jira 이슈
+      codeFiles: [],       // 조회한 코드 파일
+      keyFindings: [],     // 핵심 발견사항
+      questionCount: 0,
+    });
+  }
+  return threadMeta.get(key);
+}
+
+// 도구 결과에서 메타정보 추출하여 축적
+function accumulateToolMeta(channel, threadTs, toolCalls) {
+  const meta = getThreadMeta(channel, threadTs);
+  
+  for (const tc of toolCalls) {
+    const summary = tc.summary || '';
+    
+    switch (tc.tool) {
+      case 'query_game_data': {
+        // "17행 조회됨 (표시: 17행)컬럼: id, name, ..." → 테이블 + 행 수 + 컬럼
+        const rowMatch = summary.match(/(\d+)행 조회됨/);
+        const colMatch = summary.match(/컬럼:\s*(.+)/);
+        const tableMatch = (tc.input || '').match(/FROM\s+[`"]?(\w+)[`"]?/i);
+        const entry = {
+          table: tableMatch?.[1] || '(알 수 없음)',
+          rows: rowMatch?.[1] || '?',
+          columns: colMatch?.[1]?.slice(0, 80) || '',
+          query: (tc.input || '').slice(0, 100),
+          time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+        };
+        // 중복 방지
+        if (!meta.queriedTables.some(t => t.table === entry.table && t.query === entry.query)) {
+          meta.queriedTables.push(entry);
+          if (meta.queriedTables.length > 10) meta.queriedTables.shift(); // 최대 10개 유지
+        }
+        break;
+      }
+      case 'show_table_schema': {
+        const tblMatch = summary.match(/테이블:\s*(\S+)/);
+        const colMatch = summary.match(/컬럼\s*\((\d+)개\):\s*(.+)/);
+        if (tblMatch) {
+          const entry = {
+            table: tblMatch[1],
+            columnCount: colMatch?.[1] || '?',
+            columns: colMatch?.[2]?.slice(0, 100) || '',
+          };
+          if (!meta.schemas.some(s => s.table === entry.table)) {
+            meta.schemas.push(entry);
+            if (meta.schemas.length > 8) meta.schemas.shift();
+          }
+        }
+        break;
+      }
+      case 'get_jira_issue':
+      case 'search_jira': {
+        const issueMatch = summary.match(/([A-Z]+-\d+)/);
+        if (issueMatch && !meta.jiraIssues.includes(issueMatch[1])) {
+          meta.jiraIssues.push(issueMatch[1]);
+          if (meta.jiraIssues.length > 5) meta.jiraIssues.shift();
+        }
+        break;
+      }
+      case 'search_code':
+      case 'read_code_file': {
+        const fileMatch = (tc.input || '').match(/[\w/]+\.\w+/);
+        if (fileMatch && !meta.codeFiles.includes(fileMatch[0])) {
+          meta.codeFiles.push(fileMatch[0]);
+          if (meta.codeFiles.length > 5) meta.codeFiles.shift();
+        }
+        break;
+      }
+    }
+  }
+  
+  meta.questionCount++;
+}
+
+// 축적된 메타정보를 컨텍스트 텍스트로 변환
+function buildMetaContext(channel, threadTs) {
+  const meta = getThreadMeta(channel, threadTs);
+  if (meta.questionCount === 0) return '';
+  
+  const parts = [];
+  
+  if (meta.queriedTables.length > 0) {
+    const tableList = meta.queriedTables.map(t => 
+      `  • ${t.table} (${t.rows}행) — ${t.columns}`
+    ).join('\n');
+    parts.push(`📊 이 쓰레드에서 이미 조회한 테이블:\n${tableList}`);
+  }
+  
+  if (meta.schemas.length > 0) {
+    const schemaList = meta.schemas.map(s => 
+      `  • ${s.table} (${s.columnCount}개 컬럼: ${s.columns})`
+    ).join('\n');
+    parts.push(`📋 확인한 스키마:\n${schemaList}`);
+  }
+  
+  if (meta.jiraIssues.length > 0) {
+    parts.push(`🎫 조회한 Jira 이슈: ${meta.jiraIssues.join(', ')}`);
+  }
+  
+  if (meta.codeFiles.length > 0) {
+    parts.push(`💻 조회한 코드 파일: ${meta.codeFiles.join(', ')}`);
+  }
+  
+  if (parts.length === 0) return '';
+  
+  return `[이전 대화에서 수집된 데이터 — ${meta.questionCount}번째 질문]\n${parts.join('\n')}\n위 데이터를 참고하여 답변하세요. 이미 조회한 테이블은 중복 쿼리하지 않아도 됩니다.`;
+}
+
 // ── DataMaster API 호출 (SSE 스트리밍 — 텍스트 + 도구 진행 상황 수집) ──
 async function callDataMasterStreaming(message, sessionId, onToolStart) {
   const url = `${DATAMASTER_URL}/api/v1/chat`;
@@ -603,6 +723,13 @@ async function handleMessage({ message, say, client, event }) {
       enrichedMessage = userText + `\n\n[메시지에 포함된 링크]\n${linkDescs.join('\n')}`;
     }
     
+    // ── 축적된 메타정보 주입 ──
+    const metaCtx = buildMetaContext(channel, threadTs);
+    if (metaCtx) {
+      enrichedMessage = `${metaCtx}\n\n---\n\n${enrichedMessage}`;
+      console.log(`[Slack] 메타정보 주입: 테이블 ${getThreadMeta(channel, threadTs).queriedTables.length}개, 스키마 ${getThreadMeta(channel, threadTs).schemas.length}개`);
+    }
+    
     // 실시간 도구 사용 표시 (SSE 스트리밍)
     const toolProgress = [];
     const TOOL_EMOJI = {
@@ -647,6 +774,13 @@ async function handleMessage({ message, say, client, event }) {
 
     const result = await callDataMasterStreaming(enrichedMessage, sessionId, onToolStart);
     const rawContent = result.content || '';
+    
+    // ── 도구 결과에서 메타정보 축적 ──
+    if (result.toolCalls.length > 0) {
+      accumulateToolMeta(channel, threadTs, result.toolCalls);
+      const meta = getThreadMeta(channel, threadTs);
+      console.log(`[Slack] 메타 축적: 테이블 ${meta.queriedTables.length}개, 스키마 ${meta.schemas.length}개, Jira ${meta.jiraIssues.length}개, Q#${meta.questionCount}`);
+    }
     
     // ── 복잡한 콘텐츠 감지 (테이블, 긴 응답, 코드블록 등) ──
     const hasTable = /\|.+\|.+\|/.test(rawContent) && rawContent.split('\n').filter(l => l.includes('|')).length > 2;

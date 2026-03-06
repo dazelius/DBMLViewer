@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>카야 스탯좀 보여줘 — DataMaster</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0f1117; color: #e2e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.7; padding: 32px 24px; max-width: 960px; margin: 0 auto;
+  }
+  h1 { color: #a5b4fc; font-size: 1.6em; margin-bottom: 24px; padding-bottom: 12px; border-bottom: 1px solid #2d3748; }
+  h2 { color: #93c5fd; font-size: 1.3em; margin: 28px 0 12px; }
+  h3 { color: #86efac; font-size: 1.1em; margin: 20px 0 8px; }
+  h4 { color: #fbbf24; font-size: 1em; margin: 16px 0 6px; }
+  p { margin: 8px 0; }
+  a { color: #818cf8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    background: #1e293b; color: #fbbf24; padding: 2px 6px;
+    border-radius: 4px; font-size: 0.9em; font-family: 'Consolas', 'Monaco', monospace;
+  }
+  pre {
+    background: #1e293b; border: 1px solid #334155; border-radius: 8px;
+    padding: 16px; margin: 12px 0; overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; color: #e2e8f0; }
+  table {
+    width: 100%; border-collapse: collapse; margin: 16px 0;
+    background: #1a1f2e; border-radius: 8px; overflow: hidden;
+  }
+  thead { background: #252d3d; }
+  th {
+    padding: 10px 14px; text-align: left; color: #a5b4fc;
+    font-weight: 600; font-size: 0.85em; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 2px solid #3b4a6b;
+  }
+  td {
+    padding: 8px 14px; border-bottom: 1px solid #2d3748;
+    font-size: 0.9em;
+  }
+  tr:hover td { background: #252d3d; }
+  ul { padding-left: 24px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  hr { border: none; border-top: 1px solid #2d3748; margin: 24px 0; }
+  strong { color: #f8fafc; }
+  em { color: #cbd5e1; }
+  .header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+    padding-bottom: 16px; border-bottom: 1px solid #2d3748;
+  }
+  .header-logo { font-size: 1.5em; }
+  .header-title { font-size: 1.4em; color: #a5b4fc; font-weight: 700; }
+  .header-sub { color: #64748b; font-size: 0.8em; margin-top: 4px; }
+  .footer {
+    margin-top: 40px; padding-top: 16px; border-top: 1px solid #2d3748;
+    color: #475569; font-size: 0.8em; text-align: center;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <span class="header-logo">📊</span>
+    <div>
+      <div class="header-title">카야 스탯좀 보여줘</div>
+      <div class="header-sub">DataMaster · 2026. 3. 6. PM 2:40:03</div>
+    </div>
+  </div>
+  <p>데이터가 모두 모였습니다. 카야(스트라이커)의 스탯을 정리해드리겠습니다.</p><hr/></p><h2>🗡️ 카야 (스트라이커) 스탯 정리</h2><h3>📋 기본 정보</h3><table><thead><tr><th>항목</th><th>값</th></tr></thead><tbody><tr><td><strong>ID</strong></td><td>2001</td></tr><tr><td><strong>내부명</strong></td><td>스트라이커 (카야)</td></tr><tr><td><strong>클래스</strong></td><td>Damage (딜러)</td></tr><tr><td><strong>타입</strong></td><td>Player</td></tr></tbody></table>
+<hr/></p><h3>💪 핵심 스탯</h3><table><thead><tr><th>스탯</th><th>값</th><th>설명</th></tr></thead><tbody><tr><td><strong>최대 체력</strong></td><td><strong>150</strong></td><td>전체 캐릭터 중 가장 낮음</td></tr><tr><td><strong>체력 재생</strong></td><td>0</td><td>자연 재생 없음</td></tr><tr><td><strong>최대 에너지</strong></td><td><strong>11,500</strong></td><td>궁극기 게이지</td></tr><tr><td><strong>고유 실드</strong></td><td><strong>150</strong></td></tr><tr><td><strong>실드 재생</strong></td><td><strong>50/s</strong></td></tr><tr><td><strong>이동 속도</strong></td><td><strong>50</strong></td></tr><tr><td><strong>DBNO 체력</strong></td><td>0</td></tr><tr><td><strong>DBNO 재생</strong></td><td>-10/s</td><td>기절 시 체력 감소</td></tr></tbody></table>
+<hr/></p><h3>📊 배율 스탯 (만분율 기준, 10000 = 100%)</h3><table><thead><tr><th>스탯</th><th>값</th><th>실제 의미</th></tr></thead><tbody><tr><td>damage_rate</td><td>10000</td><td>피해량 100%</td></tr><tr><td>bullet_damage_rate</td><td>10000</td><td>총알 피해 100%</td></tr><tr><td>splash_damage_rate</td><td>10000</td><td>스플래시 피해 100%</td></tr><tr><td>heal_rate</td><td>10000</td><td>힐 받는 양 100%</td></tr><tr><td>heal_by_rate</td><td>10000</td><td>힐 주는 양 100%</td></tr><tr><td>energy_gain_modifier</td><td>10000</td><td>에너지 획득 100%</td></tr><tr><td>reload_speed</td><td>10000</td><td>재장전 속도 100%</td></tr><tr><td>skill_speed_rate</td><td>10000</td><td>스킬 속도 100%</td></tr><tr><td>skill_damage_rate</td><td>10000</td><td>스킬 피해 100%</td></tr><tr><td>innate_shield_regen_draw</td><td>10000</td><td>무기 장착 시 실드재생 100%</td></tr><tr><td>innate_shield_regen_sheath</td><td>10000</td><td>무기 수납 시 실드재생 100%</td></tr></tbody></table>
+> 💡 현재 레벨 1~10 모두 동일한 스탯입니다. 레벨별 성장 차이는 설정되어 있지 않습니다.</p><hr/></p><h3>⚔️ 다른 캐릭터와 비교</h3><table><thead><tr><th>캐릭터</th><th>클래스</th><th>체력</th><th>실드</th><th>실드재생</th><th>에너지</th><th>총 EHP</th></tr></thead><tbody><tr><td><strong>프리드웬 (뱅가드)</strong></td><td>탱커</td><td><strong>250</strong></td><td><strong>200</strong></td><td><strong>65/s</strong></td><td>13,000</td><td><strong>450</strong></td></tr><tr><td><strong>카야 (스트라이커)</strong></td><td><strong>딜러</strong></td><td><strong>150</strong></td><td><strong>150</strong></td><td><strong>50/s</strong></td><td>11,500</td><td><strong>300</strong></td></tr><tr><td>엔젤 (에이전트)</td><td>딜러</td><td>200</td><td>125</td><td>50/s</td><td>21,000</td><td>325</td></tr><tr><td>시냅스 (메카닉)</td><td>서포터</td><td>200</td><td>125</td><td>50/s</td><td>21,000</td><td>325</td></tr></tbody></table>
+> 🔍 <strong>특징 요약</strong>
+> - 카야는 <strong>체력 150 + 실드 150 = 총 EHP 300</strong>으로, 전체 캐릭터 중 <strong>가장 낮은 생존력</strong>을 가집니다.
+> - 대신 에너지가 <strong>11,500</strong>으로 가장 낮아 궁극기를 빠르게 충전할 수 있는 구조입니다.
+> - 전형적인 <strong>유리 대포형 딜러</strong> — 낮은 생존력 대신 빠른 딜 사이클이 강점입니다.</p>
+  <div class="footer">Generated by DataMaster</div>
+</body>
+</html>
