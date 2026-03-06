@@ -2960,7 +2960,7 @@ function createGitMiddleware(options: GitPluginOptions) {
       try {
         const url2 = new URL(req.url, 'http://localhost')
 
-        // ── POST /api/web/search ── Brave Search API
+        // ── POST /api/web/search ── DuckDuckGo (무료, API 키 불필요) / Brave (선택)
         if (url2.pathname === '/api/web/search' && req.method === 'POST') {
           const body = await readBody(req)
           const parsed = JSON.parse(body) as { query?: string; count?: number }
@@ -2968,44 +2968,96 @@ function createGitMiddleware(options: GitPluginOptions) {
           if (!query) { sendJson(res, 400, { error: 'query is required' }); return }
 
           const searchApiKey = options.webSearchApiKey || ''
-          if (!searchApiKey) {
-            sendJson(res, 503, { error: 'WEB_SEARCH_API_KEY not set. Get a free API key at https://brave.com/search/api/ and add WEB_SEARCH_API_KEY=your_key to .env' })
-            return
-          }
-
           const count = Math.min(parsed.count ?? 5, 10)
-          const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}&search_lang=ko&text_decorations=false`
 
-          sLog('INFO', `[WebSearch] Brave search: "${query}" (${count}건)`)
-          const braveResp = await fetch(braveUrl, {
-            headers: {
-              'Accept': 'application/json',
-              'Accept-Encoding': 'gzip',
-              'X-Subscription-Token': searchApiKey,
-            },
-          })
-
-          if (!braveResp.ok) {
-            const errText = await braveResp.text()
-            sLog('ERROR', `[WebSearch] Brave API 오류: ${braveResp.status} ${errText}`)
-            sendJson(res, braveResp.status, { error: `Brave Search API error: ${braveResp.status}`, detail: errText })
+          // ── Brave Search API (API 키가 있으면 사용) ──
+          if (searchApiKey) {
+            const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}&search_lang=ko&text_decorations=false`
+            sLog('INFO', `[WebSearch] Brave search: "${query}" (${count}건)`)
+            const braveResp = await fetch(braveUrl, {
+              headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': searchApiKey },
+            })
+            if (!braveResp.ok) {
+              const errText = await braveResp.text()
+              sLog('ERROR', `[WebSearch] Brave API 오류: ${braveResp.status} ${errText}`)
+              sendJson(res, braveResp.status, { error: `Brave Search API error: ${braveResp.status}`, detail: errText })
+              return
+            }
+            const braveData = await braveResp.json() as { web?: { results?: Array<{ title?: string; url?: string; description?: string; age?: string }> } }
+            const results = (braveData.web?.results ?? []).map(r => ({
+              title: r.title ?? '', url: r.url ?? '', snippet: r.description ?? '', age: r.age ?? '',
+            }))
+            sLog('INFO', `[WebSearch] Brave "${query}" → ${results.length}건`)
+            sendJson(res, 200, { query, results, total: results.length })
             return
           }
 
-          const braveData = await braveResp.json() as {
-            web?: { results?: Array<{ title?: string; url?: string; description?: string; age?: string }> }
-            query?: { original?: string }
+          // ── DuckDuckGo HTML 검색 (무료, API 키 불필요) ──
+          sLog('INFO', `[WebSearch] DuckDuckGo search: "${query}" (${count}건)`)
+          try {
+            const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
+            const ddgResp = await fetch(ddgUrl, {
+              method: 'POST',
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html',
+                'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Content-Type': 'application/x-www-form-urlencoded',
+              },
+              body: `q=${encodeURIComponent(query)}`,
+              redirect: 'follow',
+              signal: AbortSignal.timeout(10_000),
+            })
+
+            if (!ddgResp.ok) {
+              sLog('ERROR', `[WebSearch] DuckDuckGo HTTP ${ddgResp.status}`)
+              sendJson(res, ddgResp.status, { error: `DuckDuckGo search failed: ${ddgResp.status}` })
+              return
+            }
+
+            const html = await ddgResp.text()
+
+            // DuckDuckGo HTML 파싱 — 검색 결과 추출
+            const results: Array<{ title: string; url: string; snippet: string; age: string }> = []
+            // 각 결과는 class="result" 또는 class="web-result" 블록
+            const resultBlocks = html.split(/class="result\s/).slice(1) // 첫 번째 split은 헤더
+
+            for (const block of resultBlocks) {
+              if (results.length >= count) break
+
+              // URL 추출 — href="//duckduckgo.com/l/?uddg=ENCODED_URL" 또는 직접 URL
+              let url = ''
+              const uddgMatch = block.match(/uddg=([^&"]+)/)
+              if (uddgMatch) {
+                try { url = decodeURIComponent(uddgMatch[1]) } catch { url = uddgMatch[1] }
+              } else {
+                const hrefMatch = block.match(/href="(https?:\/\/[^"]+)"/)
+                if (hrefMatch) url = hrefMatch[1]
+              }
+
+              // 제목 추출
+              const titleMatch = block.match(/class="result__a"[^>]*>([^<]+)</)
+                ?? block.match(/<a[^>]*class="[^"]*result[^"]*"[^>]*>([^<]+)</)
+              const title = titleMatch ? titleMatch[1].replace(/&#x27;/g, "'").replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').trim() : ''
+
+              // 스니펫 추출
+              const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\//)
+                ?? block.match(/class="[^"]*snippet[^"]*"[^>]*>([\s\S]*?)<\//)
+              let snippet = snippetMatch ? snippetMatch[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&#x27;/g, "'").replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').trim() : ''
+
+              if (url && title) {
+                // 내부 DuckDuckGo URL 필터링
+                if (url.includes('duckduckgo.com') && !url.includes('uddg=')) continue
+                results.push({ title, url, snippet, age: '' })
+              }
+            }
+
+            sLog('INFO', `[WebSearch] DuckDuckGo "${query}" → ${results.length}건`)
+            sendJson(res, 200, { query, results, total: results.length })
+          } catch (ddgErr) {
+            sLog('ERROR', `[WebSearch] DuckDuckGo 오류: ${ddgErr}`)
+            sendJson(res, 500, { error: `DuckDuckGo search error: ${String(ddgErr)}` })
           }
-
-          const results = (braveData.web?.results ?? []).map(r => ({
-            title: r.title ?? '',
-            url: r.url ?? '',
-            snippet: r.description ?? '',
-            age: r.age ?? '',
-          }))
-
-          sLog('INFO', `[WebSearch] "${query}" → ${results.length}건 결과`)
-          sendJson(res, 200, { query, results, total: results.length })
           return
         }
 
