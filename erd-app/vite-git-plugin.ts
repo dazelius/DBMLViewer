@@ -6391,7 +6391,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
 
       loadServerData(options.localDir)
 
-      let body: { message?: string; session_id?: string; stream?: boolean }
+      let body: { message?: string; session_id?: string; stream?: boolean; fast?: boolean }
       try {
         const raw = await readBody(req)
         body = JSON.parse(raw || '{}')
@@ -6402,7 +6402,12 @@ function createChatApiMiddleware(options: GitPluginOptions) {
 
       const session = getOrCreateSession(body.session_id)
       const isStream = body.stream === true
-      const MAX_ITERATIONS = 12
+      // fast 모드: Slack 등 빠른 응답이 필요한 경우 Sonnet 사용, 이터레이션 제한
+      const isFast = body.fast === true
+      const MODEL = isFast ? 'claude-sonnet-4-20250514' : 'claude-opus-4-6'
+      const MAX_TOKENS = isFast ? 4096 : 8192
+      const MAX_ITERATIONS = isFast ? 6 : 12
+      if (isFast) sLog('INFO', `[chatApi] ⚡ Fast 모드 활성 — model=${MODEL}, maxIter=${MAX_ITERATIONS}`)
       const systemPrompt = buildServerSystemPrompt(userMessage) // ← 쿼리 전달로 스마트 주입
 
       // ── 동시 요청 중복 방지 ──
@@ -6446,7 +6451,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
             try {
               data = await serverStreamClaude(
                 apiKey,
-                { model: 'claude-opus-4-6', max_tokens: 8192, system: systemPrompt, tools: API_TOOLS, messages },
+                { model: MODEL, max_tokens: MAX_TOKENS, system: systemPrompt, tools: API_TOOLS, messages },
                 res,
                 () => {}, // tool_use 처리는 아래에서
               )
@@ -6613,8 +6618,8 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       try {
         for (let i = 0; i < MAX_ITERATIONS; i++) {
           const data = await serverCallClaude(apiKey, {
-            model: 'claude-opus-4-6',
-            max_tokens: 8192,
+            model: MODEL,
+            max_tokens: MAX_TOKENS,
             system: systemPrompt,
             tools: API_TOOLS,
             messages,
@@ -6652,7 +6657,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
               session_id: session.id,
               content: finalText,
               tool_calls: allToolCalls,
-              model: 'claude-opus-4-6',
+              model: MODEL,
             })
             return
           }
@@ -6729,7 +6734,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
           session_id: session.id,
           content: finalText || '(응답 생성 완료 — 도구 호출 결과를 tool_calls에서 확인하세요)',
           tool_calls: allToolCalls,
-          model: 'claude-opus-4-6',
+          model: MODEL,
         })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)

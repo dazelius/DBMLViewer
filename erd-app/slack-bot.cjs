@@ -224,6 +224,7 @@ async function callDataMasterStreaming(message, sessionId, onToolStart) {
         message,
         session_id: sessionId,
         stream: true,
+        fast: true,  // Slack은 빠른 응답 우선 → Sonnet 모델 사용
       }),
       signal: controller.signal,
     });
