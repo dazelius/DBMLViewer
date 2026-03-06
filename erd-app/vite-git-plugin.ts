@@ -5909,6 +5909,141 @@ function buildKnowledgeIndex(knDir: string): { name: string; sizeKB: number; pre
   return index
 }
 
+// ── 간단한 마크다운 → HTML 변환 (출판용) ──
+function markdownToHtml(md: string): string {
+  let html = md
+    // 코드블록
+    .replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+      return `<pre><code class="lang-${lang || 'text'}">${code.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`
+    })
+    // 인라인 코드
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    // 볼드
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    // 이탤릭
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    // 헤더
+    .replace(/^#{4}\s+(.+)/gm, '<h4>$1</h4>')
+    .replace(/^#{3}\s+(.+)/gm, '<h3>$1</h3>')
+    .replace(/^#{2}\s+(.+)/gm, '<h2>$1</h2>')
+    .replace(/^#{1}\s+(.+)/gm, '<h1>$1</h1>')
+    // 수평선
+    .replace(/^---+$/gm, '<hr/>')
+    // 링크
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+
+  // 마크다운 테이블 → HTML 테이블
+  html = html.replace(/((?:^\|.+\|$\n?){2,})/gm, (tableBlock) => {
+    const rows = tableBlock.trim().split('\n')
+    let thead = '', tbody = ''
+    for (let i = 0; i < rows.length; i++) {
+      const cells = rows[i].split('|').map(c => c.trim()).filter(Boolean)
+      if (cells.length === 0) continue
+      // 구분선 스킵
+      if (/^[\s:-]+$/.test(cells.join(''))) continue
+      if (!thead) {
+        thead = '<thead><tr>' + cells.map(c => `<th>${c}</th>`).join('') + '</tr></thead>'
+      } else {
+        tbody += '<tr>' + cells.map(c => `<td>${c}</td>`).join('') + '</tr>'
+      }
+    }
+    return `<table>${thead}<tbody>${tbody}</tbody></table>`
+  })
+
+  // 리스트
+  html = html.replace(/^- (.+)/gm, '<li>$1</li>')
+  html = html.replace(/((?:<li>.+<\/li>\n?)+)/g, '<ul>$1</ul>')
+
+  // 남은 줄바꿈 → <br> (빈 줄은 <p>)
+  html = html.replace(/\n\n/g, '</p><p>')
+  html = '<p>' + html + '</p>'
+  // 빈 <p> 제거
+  html = html.replace(/<p>\s*<\/p>/g, '')
+  // 블록 요소 안의 불필요한 <p> 제거
+  html = html.replace(/<p>(<(?:h[1-6]|pre|table|ul|hr))/g, '$1')
+  html = html.replace(/(<\/(?:h[1-6]|pre|table|ul|hr)>)<\/p>/g, '$1')
+
+  return html
+}
+
+// ── 출판 페이지 HTML 템플릿 ──
+function buildPublishedPage(title: string, contentHtml: string): string {
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title} — DataMaster</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0f1117; color: #e2e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.7; padding: 32px 24px; max-width: 960px; margin: 0 auto;
+  }
+  h1 { color: #a5b4fc; font-size: 1.6em; margin-bottom: 24px; padding-bottom: 12px; border-bottom: 1px solid #2d3748; }
+  h2 { color: #93c5fd; font-size: 1.3em; margin: 28px 0 12px; }
+  h3 { color: #86efac; font-size: 1.1em; margin: 20px 0 8px; }
+  h4 { color: #fbbf24; font-size: 1em; margin: 16px 0 6px; }
+  p { margin: 8px 0; }
+  a { color: #818cf8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    background: #1e293b; color: #fbbf24; padding: 2px 6px;
+    border-radius: 4px; font-size: 0.9em; font-family: 'Consolas', 'Monaco', monospace;
+  }
+  pre {
+    background: #1e293b; border: 1px solid #334155; border-radius: 8px;
+    padding: 16px; margin: 12px 0; overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; color: #e2e8f0; }
+  table {
+    width: 100%; border-collapse: collapse; margin: 16px 0;
+    background: #1a1f2e; border-radius: 8px; overflow: hidden;
+  }
+  thead { background: #252d3d; }
+  th {
+    padding: 10px 14px; text-align: left; color: #a5b4fc;
+    font-weight: 600; font-size: 0.85em; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 2px solid #3b4a6b;
+  }
+  td {
+    padding: 8px 14px; border-bottom: 1px solid #2d3748;
+    font-size: 0.9em;
+  }
+  tr:hover td { background: #252d3d; }
+  ul { padding-left: 24px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  hr { border: none; border-top: 1px solid #2d3748; margin: 24px 0; }
+  strong { color: #f8fafc; }
+  em { color: #cbd5e1; }
+  .header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+    padding-bottom: 16px; border-bottom: 1px solid #2d3748;
+  }
+  .header-logo { font-size: 1.5em; }
+  .header-title { font-size: 1.4em; color: #a5b4fc; font-weight: 700; }
+  .header-sub { color: #64748b; font-size: 0.8em; margin-top: 4px; }
+  .footer {
+    margin-top: 40px; padding-top: 16px; border-top: 1px solid #2d3748;
+    color: #475569; font-size: 0.8em; text-align: center;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <span class="header-logo">📊</span>
+    <div>
+      <div class="header-title">${title}</div>
+      <div class="header-sub">DataMaster · ${new Date().toLocaleString('ko-KR')}</div>
+    </div>
+  </div>
+  ${contentHtml}
+  <div class="footer">Generated by DataMaster</div>
+</body>
+</html>`
+}
+
 function buildServerSystemPrompt(_userQuery?: string): string {
   const lines: string[] = []
 
@@ -6192,6 +6327,61 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       const fp = join(SESSIONS_DIR, `${sessionMatch[1]}.json`)
       if (existsSync(fp)) unlinkSync(fp)
       sendJson(res, 200, { deleted: true })
+      return
+    }
+
+    // ── POST /api/v1/publish : 마크다운/HTML 콘텐츠를 출판하고 URL 반환 ──
+    if (path === '/api/v1/publish' && req.method === 'POST') {
+      let body: { title?: string; markdown?: string; html?: string }
+      try {
+        const raw = await readBody(req)
+        body = JSON.parse(raw || '{}')
+      } catch { sendJson(res, 400, { error: 'Invalid JSON body' }); return }
+
+      const title = body.title || 'DataMaster 분석 결과'
+      const markdown = body.markdown || ''
+      const rawHtml = body.html || ''
+
+      // markdown → HTML 변환 (간단한 변환기)
+      let contentHtml = rawHtml
+      if (!contentHtml && markdown) {
+        contentHtml = markdownToHtml(markdown)
+      }
+      if (!contentHtml) { sendJson(res, 400, { error: 'markdown 또는 html이 필요합니다.' }); return }
+
+      // ID 생성 및 저장
+      const id = `pub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+      const publishDir = join(process.cwd(), '.published')
+      if (!existsSync(publishDir)) mkdirSync(publishDir, { recursive: true })
+
+      const fullHtml = buildPublishedPage(title, contentHtml)
+      writeFileSync(join(publishDir, `${id}.html`), fullHtml, 'utf-8')
+
+      // URL 생성 (호스트는 요청 헤더에서 추출)
+      const host = req.headers.host || 'localhost:5173'
+      const protocol = req.headers['x-forwarded-proto'] || 'http'
+      const url = `${protocol}://${host}/api/v1/published/${id}`
+
+      sendJson(res, 200, { id, url, title })
+      return
+    }
+
+    // ── GET /api/v1/published/:id : 출판된 콘텐츠 HTML 서빙 ──
+    const publishMatch = path.match(/^\/api\/v1\/published\/([^/]+)$/)
+    if (publishMatch && req.method === 'GET') {
+      const publishDir = join(process.cwd(), '.published')
+      const fp = join(publishDir, `${publishMatch[1]}.html`)
+      if (!existsSync(fp)) {
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end('<h1>404 — 페이지를 찾을 수 없습니다</h1>')
+        return
+      }
+      const html = readFileSync(fp, 'utf-8')
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'public, max-age=86400',
+      })
+      res.end(html)
       return
     }
 

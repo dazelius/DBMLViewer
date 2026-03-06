@@ -41,6 +41,8 @@ loadEnv();
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN || '';
 const DATAMASTER_URL = process.env.DATAMASTER_URL || 'http://localhost:5173';
+// 외부에서 접근 가능한 URL (Slack 링크용)
+const DATAMASTER_PUBLIC_URL = process.env.DATAMASTER_PUBLIC_URL || DATAMASTER_URL;
 
 if (!SLACK_BOT_TOKEN || !SLACK_APP_TOKEN) {
   console.error(`
@@ -385,6 +387,48 @@ function formatToolSummary(toolCalls) {
   return '\n\n─────────────────\n' + lines.join('\n');
 }
 
+// ── 마크다운에서 Slack용 요약 추출 (테이블/코드 제외, 주요 텍스트만) ──
+function extractSlackSummary(markdown) {
+  if (!markdown) return '📊 분석이 완료되었습니다.';
+  
+  const lines = markdown.split('\n');
+  const summaryLines = [];
+  let inCodeBlock = false;
+  let inTable = false;
+  
+  for (const line of lines) {
+    if (line.startsWith('```')) { inCodeBlock = !inCodeBlock; continue; }
+    if (inCodeBlock) continue;
+    
+    // 테이블 행 스킵
+    if (/^\|.+\|/.test(line)) { inTable = true; continue; }
+    if (inTable && line.trim() === '') { inTable = false; }
+    if (inTable) continue;
+    
+    // 테이블 구분선 스킵
+    if (/^[\s|:-]+$/.test(line)) continue;
+    
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (summaryLines.length > 0) summaryLines.push('');
+      continue;
+    }
+    
+    summaryLines.push(trimmed);
+    
+    // 요약은 최대 600자 정도
+    if (summaryLines.join('\n').length > 600) break;
+  }
+  
+  let summary = summaryLines.join('\n').trim();
+  if (!summary) summary = '📊 분석이 완료되었습니다.';
+  
+  // mdToSlack 변환 적용
+  summary = mdToSlack(summary);
+  
+  return summary;
+}
+
 // ── Slack 메시지 길이 제한 처리 ──
 function truncateForSlack(text, maxLen = 3800) {
   if (text.length <= maxLen) return text;
@@ -468,73 +512,107 @@ async function handleMessage({ message, say, client, event }) {
     };
 
     const result = await callDataMasterStreaming(userText, sessionId, onToolStart);
+    const rawContent = result.content || '';
     
-    // 응답 포맷팅
-    let response = mdToSlack(result.content);
-    const toolSummary = formatToolSummary(result.toolCalls);
+    // ── 복잡한 콘텐츠 감지 (테이블, 긴 응답, 코드블록 등) ──
+    const hasTable = /\|.+\|.+\|/.test(rawContent) && rawContent.split('\n').filter(l => l.includes('|')).length > 2;
+    const hasCodeBlock = /```[\s\S]{200,}```/.test(rawContent);
+    const isLong = rawContent.length > 1200;
+    const hasArtifact = result.toolCalls.some(tc => tc.tool === 'create_artifact' || tc.tool === 'patch_artifact');
+    const needsPublish = (hasTable || hasCodeBlock || isLong) && !hasArtifact;
     
-    // 텍스트가 비어있고 도구 결과가 있으면 → 도구 결과를 포맷팅하여 대체 응답 생성
-    if (!response.trim() && result.toolCalls.length > 0) {
-      const lines = result.toolCalls.map(tc => formatToolResultForSlack(tc));
-      response = '📊 *DataMaster 분석 결과*\n\n' + lines.join('\n');
-      console.log(`[Slack] 텍스트 응답 없음 → 도구 결과 폴백 (${response.length}자)`);
+    // ── 자동 출판: 복잡한 콘텐츠 → HTML 페이지로 변환 후 링크 제공 ──
+    let publishedUrl = null;
+    if (needsPublish) {
+      try {
+        const titleGuess = userText.slice(0, 40) + (userText.length > 40 ? '...' : '');
+        const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: titleGuess, markdown: rawContent }),
+        });
+        if (pubResp.ok) {
+          const pubData = await pubResp.json();
+          // localhost URL을 외부 접근 가능한 URL로 변환
+          publishedUrl = pubData.url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
+          // 추가 안전장치: localhost가 남아있으면 public URL로 교체
+          if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
+            publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
+          }
+          console.log(`[Slack] 자동 출판: ${publishedUrl}`);
+        }
+      } catch (e) {
+        console.warn('[Slack] 자동 출판 실패:', e.message);
+      }
     }
     
-    // 도구 호출 요약 추가 (텍스트 응답이 있을 때만)
-    if (toolSummary && result.content.trim()) {
-      response = truncateForSlack(response, 3400) + toolSummary;
-    } else {
-      response = truncateForSlack(response);
-    }
-
-    // Slack Blocks 형태로 전송 (더 깔끔한 렌더링)
+    // ── Slack 메시지 조립 ──
     const blocks = [];
     
-    // 본문 (section block → mrkdwn)
-    // Slack section text는 3000자 제한 → 분할
-    const bodyChunks = [];
-    for (let i = 0; i < response.length; i += 2900) {
-      bodyChunks.push(response.slice(i, i + 2900));
-    }
-    for (const chunk of bodyChunks.slice(0, 8)) { // blocks 최대 50개 중 8개
+    if (publishedUrl) {
+      // 출판된 경우: 요약 + 링크 버튼
+      const summary = extractSlackSummary(rawContent);
+      
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: chunk },
+        text: { type: 'mrkdwn', text: summary },
       });
+      blocks.push({
+        type: 'actions',
+        elements: [{
+          type: 'button',
+          text: { type: 'plain_text', text: '📊 전체 결과 보기', emoji: true },
+          url: publishedUrl,
+          style: 'primary',
+        }],
+      });
+    } else {
+      // 짧은 응답: Slack mrkdwn으로 직접 표시
+      let slackText = mdToSlack(rawContent);
+      if (!slackText.trim() && result.toolCalls.length > 0) {
+        slackText = result.toolCalls.map(tc => formatToolResultForSlack(tc)).join('\n');
+      }
+      slackText = truncateForSlack(slackText);
+      
+      // section 블록 분할 (3000자 제한)
+      for (let i = 0; i < slackText.length; i += 2900) {
+        blocks.push({
+          type: 'section',
+          text: { type: 'mrkdwn', text: slackText.slice(i, i + 2900) },
+        });
+        if (blocks.length >= 8) break;
+      }
     }
     
-    // 도구 호출이 있으면 context 블록으로 축약 표시
-    if (result.toolCalls.length > 0 && result.content.trim()) {
-      const toolLabels = result.toolCalls.map(tc => {
-        const label = TOOL_LABELS[tc.tool] || tc.tool;
-        return label;
-      });
-      // 중복 제거
-      const unique = [...new Set(toolLabels)];
+    // 도구 호출 context 추가
+    if (result.toolCalls.length > 0) {
+      const unique = [...new Set(result.toolCalls.map(tc => TOOL_LABELS[tc.tool] || tc.tool))];
       blocks.push({ type: 'divider' });
       blocks.push({
         type: 'context',
-        elements: [{ type: 'mrkdwn', text: `${unique.join('  ·  ')}` }],
+        elements: [{ type: 'mrkdwn', text: unique.join('  ·  ') }],
       });
     }
 
     // 로딩 메시지 업데이트 → 실제 응답으로 교체
-    const fallbackText = response.slice(0, 3000); // blocks 미지원 클라이언트용
+    const fallbackText = publishedUrl 
+      ? `${extractSlackSummary(rawContent)}\n\n📊 전체 결과: ${publishedUrl}`
+      : mdToSlack(rawContent).slice(0, 3000);
+    
     if (loadingMsg?.ts) {
       try {
         await client.chat.update({
           channel,
           ts: loadingMsg.ts,
           text: fallbackText,
-          blocks: blocks.slice(0, 50), // Slack 블록 최대 50개
+          blocks: blocks.slice(0, 50),
         });
       } catch (updateErr) {
-        // blocks 실패 시 plaintext fallback
         console.warn('[Slack] blocks 업데이트 실패, plaintext 시도:', updateErr.message);
         await client.chat.update({
           channel,
           ts: loadingMsg.ts,
-          text: response.slice(0, 3800),
+          text: fallbackText.slice(0, 3800),
         });
       }
     } else {
