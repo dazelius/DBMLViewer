@@ -219,17 +219,61 @@ async function callDataMasterStreaming(message, sessionId, onToolStart) {
   }
 }
 
+// ── 마크다운 테이블 → Slack 코드블록 변환 ──
+function mdTableToSlack(tableText) {
+  const lines = tableText.trim().split('\n');
+  if (lines.length < 2) return tableText;
+
+  // 헤더와 구분선 제거 후 데이터 파싱
+  const rows = [];
+  for (const line of lines) {
+    if (/^[\s|:-]+$/.test(line)) continue; // 구분선 스킵
+    const cells = line.split('|').map(c => c.trim()).filter(Boolean);
+    if (cells.length > 0) rows.push(cells);
+  }
+  if (rows.length === 0) return tableText;
+
+  // 각 컬럼의 최대 너비 계산 (최대 20자)
+  const colCount = Math.max(...rows.map(r => r.length));
+  const widths = Array(colCount).fill(0);
+  for (const row of rows) {
+    for (let i = 0; i < row.length; i++) {
+      widths[i] = Math.min(20, Math.max(widths[i], row[i].length));
+    }
+  }
+
+  // 정렬된 텍스트 테이블 생성
+  const formatted = rows.map((row, ri) => {
+    const cells = row.map((cell, ci) => {
+      const w = widths[ci] || 10;
+      return cell.slice(0, w).padEnd(w);
+    });
+    let line = cells.join(' │ ');
+    if (ri === 0) {
+      // 헤더 아래 구분선 추가
+      const sep = widths.map(w => '─'.repeat(w)).join('─┼─');
+      return line + '\n' + sep;
+    }
+    return line;
+  });
+
+  return '```\n' + formatted.join('\n') + '\n```';
+}
+
 // ── 마크다운 → Slack mrkdwn 변환 ──
 function mdToSlack(text) {
   if (!text) return '';
   
+  // 1) 마크다운 테이블을 먼저 변환 (|로 시작하는 연속된 줄)
+  text = text.replace(/((?:^\|.+\|$\n?){2,})/gm, (match) => {
+    return mdTableToSlack(match);
+  });
+  
   return text
     // 볼드: **text** → *text*
     .replace(/\*\*(.+?)\*\*/g, '*$1*')
-    // 이탤릭: *text* (이미 Slack 호환)
     // 코드블록: ```lang\ncode\n``` → ```\ncode\n```
     .replace(/```\w*\n/g, '```\n')
-    // 인라인 코드: `code` (이미 Slack 호환)
     // 링크: [text](url) → <url|text>
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')
     // 헤더: # → *bold* (Slack mrkdwn에는 헤더가 없음)
@@ -242,31 +286,103 @@ function mdToSlack(text) {
     .trim();
 }
 
-// ── 도구 호출 요약 생성 ──
+// ── 도구 → 사용자 친화적 설명 ──
+const TOOL_LABELS = {
+  query_game_data:   '📊 데이터 조회',
+  show_table_schema: '📋 테이블 구조',
+  query_git_history: '📂 Git 이력',
+  create_artifact:   '📄 문서 생성',
+  patch_artifact:    '✏️ 문서 수정',
+  search_code:       '💻 코드 검색',
+  read_code_file:    '💻 코드 읽기',
+  read_guide:        '📖 가이드 참조',
+  search_jira:       '🎫 Jira 검색',
+  get_jira_issue:    '🎫 Jira 이슈',
+  create_jira_issue: '➕ Jira 생성',
+  add_jira_comment:  '✍️ Jira 댓글',
+  update_jira_issue_status: '🔄 Jira 상태변경',
+  search_confluence: '📚 Confluence 검색',
+  get_confluence_page: '📚 Confluence 문서',
+  save_knowledge:    '🧠 지식 저장',
+  read_knowledge:    '🧠 지식 읽기',
+  list_knowledge:    '🧠 지식 목록',
+  delete_knowledge:  '🧠 지식 삭제',
+  web_search:        '🌐 웹 검색',
+  read_url:          '🌐 URL 읽기',
+  search_assets:     '🎨 에셋 검색',
+  build_character_profile: '👤 캐릭터 프로필',
+  preview_prefab:    '🧩 프리팹',
+  preview_fbx_animation: '🎬 애니메이션',
+  find_resource_image: '🖼️ 이미지 찾기',
+};
+
+// ── 도구 결과 요약을 Slack 친화적으로 포맷 ──
+function formatToolResultForSlack(tc) {
+  const label = TOOL_LABELS[tc.tool] || `🔧 ${tc.tool}`;
+  const summary = (tc.summary || '').trim();
+  
+  // 쿼리 결과: "N행 조회됨..." → 깔끔하게
+  if (tc.tool === 'query_game_data') {
+    const rowMatch = summary.match(/(\d+)행 조회/);
+    const colMatch = summary.match(/컬럼:\s*(.+)/);
+    if (rowMatch) {
+      const cols = colMatch ? colMatch[1].split(',').slice(0, 5).map(c => c.trim()).join(', ') : '';
+      const colInfo = cols ? ` (${cols}${colMatch[1].split(',').length > 5 ? ', ...' : ''})` : '';
+      return `${label}: *${rowMatch[1]}행*${colInfo}`;
+    }
+    if (summary.includes('SQL 오류') || summary.includes('오류')) {
+      return `${label}: ⚠️ 쿼리 재시도`;
+    }
+  }
+  
+  if (tc.tool === 'show_table_schema') {
+    const tableMatch = summary.match(/테이블:\s*(\S+)/);
+    const colMatch = summary.match(/컬럼\s*\((\d+)개\)/);
+    if (tableMatch) {
+      return `${label}: \`${tableMatch[1]}\`${colMatch ? ` (${colMatch[1]}개 컬럼)` : ''}`;
+    }
+  }
+  
+  if (tc.tool === 'search_code' || tc.tool === 'read_code_file') {
+    const fileMatch = summary.match(/파일:\s*(\S+)/);
+    if (fileMatch) return `${label}: \`${fileMatch[1]}\``;
+  }
+  
+  // 기본: 80자 요약
+  const short = summary.slice(0, 80).replace(/\n/g, ' ');
+  return short ? `${label}: ${short}` : label;
+}
+
+// ── 도구 호출 요약 생성 (Slack 블록) ──
 function formatToolSummary(toolCalls) {
   if (!toolCalls || toolCalls.length === 0) return '';
-
-  const TOOL_EMOJI = {
-    query_game_data: '📊', show_table_schema: '📋', query_git_history: '📂',
-    create_artifact: '📄', patch_artifact: '✏️',
-    search_code: '💻', read_code_file: '💻', read_guide: '📖',
-    search_jira: '🎫', get_jira_issue: '🎫', create_jira_issue: '➕',
-    add_jira_comment: '✍️', update_jira_issue_status: '🔄',
-    search_confluence: '📚', get_confluence_page: '📚',
-    save_knowledge: '🧠', read_knowledge: '🧠',
-    web_search: '🌐', read_url: '🌐',
-    search_assets: '🎨', build_character_profile: '👤',
-    preview_prefab: '🧩', preview_fbx_animation: '🎬',
-    find_resource_image: '🖼️',
-  };
-
-  const lines = toolCalls.map(tc => {
-    const emoji = TOOL_EMOJI[tc.tool] || '🔧';
-    const summary = tc.summary ? ` — ${tc.summary.slice(0, 80)}` : '';
-    return `${emoji} \`${tc.tool}\`${summary}`;
+  
+  // 같은 도구의 연속 호출은 묶기
+  const groups = [];
+  for (const tc of toolCalls) {
+    const last = groups[groups.length - 1];
+    if (last && last.tool === tc.tool) {
+      last.count++;
+      last.items.push(tc);
+    } else {
+      groups.push({ tool: tc.tool, count: 1, items: [tc] });
+    }
+  }
+  
+  const lines = groups.map(g => {
+    if (g.count === 1) {
+      return formatToolResultForSlack(g.items[0]);
+    }
+    // 같은 도구 여러 번: 성공/실패 구분
+    const ok = g.items.filter(t => !(t.summary || '').includes('오류'));
+    const fail = g.items.length - ok.length;
+    const label = TOOL_LABELS[g.tool] || `🔧 ${g.tool}`;
+    let info = `${label} ×${g.count}`;
+    if (fail > 0) info += ` (${fail}건 재시도)`;
+    return info;
   });
 
-  return `\n\n> *사용한 도구 (${toolCalls.length}개):*\n> ${lines.join('\n> ')}`;
+  return '\n\n─────────────────\n' + lines.join('\n');
 }
 
 // ── Slack 메시지 길이 제한 처리 ──
@@ -327,22 +443,25 @@ async function handleMessage({ message, say, client, event }) {
 
     let lastUpdate = 0;
     const onToolStart = async (toolName) => {
-      const emoji = TOOL_EMOJI[toolName] || '🔧';
-      toolProgress.push(`${emoji} \`${toolName}\``);
+      const label = TOOL_LABELS[toolName] || `🔧 ${toolName}`;
+      toolProgress.push(label);
       
-      // 너무 자주 업데이트하지 않도록 1초 디바운스
+      // 너무 자주 업데이트하지 않도록 1.5초 디바운스
       const now = Date.now();
-      if (now - lastUpdate < 1000 || !loadingMsg?.ts) return;
+      if (now - lastUpdate < 1500 || !loadingMsg?.ts) return;
       lastUpdate = now;
       
       try {
+        // 최근 3개만 표시
+        const recent = toolProgress.slice(-3);
+        const dots = toolProgress.length > 3 ? `외 ${toolProgress.length - 3}개...  ` : '';
         await client.chat.update({
           channel,
           ts: loadingMsg.ts,
-          text: `🔍 분석 중... (${toolProgress.length}개 도구 사용)`,
+          text: `🔍 분석 중... (${toolProgress.length}단계)`,
           blocks: [{
             type: 'context',
-            elements: [{ type: 'mrkdwn', text: `🔍 *DataMaster* 분석 중...\n${toolProgress.join(' → ')}` }],
+            elements: [{ type: 'mrkdwn', text: `🔍 *DataMaster* 분석 중...\n${dots}${recent.join(' → ')}` }],
           }],
         });
       } catch { /* rate limit 무시 */ }
@@ -356,55 +475,70 @@ async function handleMessage({ message, say, client, event }) {
     
     // 텍스트가 비어있고 도구 결과가 있으면 → 도구 결과를 포맷팅하여 대체 응답 생성
     if (!response.trim() && result.toolCalls.length > 0) {
-      const fallbackLines = ['📊 *DataMaster 분석 결과*\n'];
-      for (const tc of result.toolCalls) {
-        const emoji = TOOL_EMOJI[tc.tool] || '🔧';
-        const summary = tc.summary || '(결과 없음)';
-        fallbackLines.push(`${emoji} *\`${tc.tool}\`*`);
-        // 요약을 정리하여 표시 (최대 500자)
-        const cleanSummary = summary
-          .replace(/\n/g, '\n> ')
-          .slice(0, 500);
-        fallbackLines.push(`> ${cleanSummary}`);
-        fallbackLines.push('');
-      }
-      response = fallbackLines.join('\n');
+      const lines = result.toolCalls.map(tc => formatToolResultForSlack(tc));
+      response = '📊 *DataMaster 분석 결과*\n\n' + lines.join('\n');
       console.log(`[Slack] 텍스트 응답 없음 → 도구 결과 폴백 (${response.length}자)`);
     }
     
-    // 도구 호출 요약 추가
+    // 도구 호출 요약 추가 (텍스트 응답이 있을 때만)
     if (toolSummary && result.content.trim()) {
       response = truncateForSlack(response, 3400) + toolSummary;
     } else {
       response = truncateForSlack(response);
     }
 
+    // Slack Blocks 형태로 전송 (더 깔끔한 렌더링)
+    const blocks = [];
+    
+    // 본문 (section block → mrkdwn)
+    // Slack section text는 3000자 제한 → 분할
+    const bodyChunks = [];
+    for (let i = 0; i < response.length; i += 2900) {
+      bodyChunks.push(response.slice(i, i + 2900));
+    }
+    for (const chunk of bodyChunks.slice(0, 8)) { // blocks 최대 50개 중 8개
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: chunk },
+      });
+    }
+    
+    // 도구 호출이 있으면 context 블록으로 축약 표시
+    if (result.toolCalls.length > 0 && result.content.trim()) {
+      const toolLabels = result.toolCalls.map(tc => {
+        const label = TOOL_LABELS[tc.tool] || tc.tool;
+        return label;
+      });
+      // 중복 제거
+      const unique = [...new Set(toolLabels)];
+      blocks.push({ type: 'divider' });
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `${unique.join('  ·  ')}` }],
+      });
+    }
+
     // 로딩 메시지 업데이트 → 실제 응답으로 교체
+    const fallbackText = response.slice(0, 3000); // blocks 미지원 클라이언트용
     if (loadingMsg?.ts) {
-      // Slack 블록은 최대 50개, 텍스트는 3000자 제한 → 긴 응답은 분할
-      if (response.length > 3800) {
-        // 첫 블록 업데이트
+      try {
+        await client.chat.update({
+          channel,
+          ts: loadingMsg.ts,
+          text: fallbackText,
+          blocks: blocks.slice(0, 50), // Slack 블록 최대 50개
+        });
+      } catch (updateErr) {
+        // blocks 실패 시 plaintext fallback
+        console.warn('[Slack] blocks 업데이트 실패, plaintext 시도:', updateErr.message);
         await client.chat.update({
           channel,
           ts: loadingMsg.ts,
           text: response.slice(0, 3800),
         });
-        // 나머지는 별도 메시지로 (3800자씩 분할)
-        for (let i = 3800; i < response.length; i += 3800) {
-          await say({
-            text: response.slice(i, i + 3800),
-            thread_ts: threadTs,
-          });
-        }
-      } else {
-        await client.chat.update({
-          channel,
-          ts: loadingMsg.ts,
-          text: response,
-        });
       }
     } else {
-      await say({ text: response, thread_ts: threadTs });
+      await say({ text: fallbackText, blocks, thread_ts: threadTs });
     }
 
     console.log(`[Slack] 응답 완료: ${result.content.length}자, 도구 ${result.toolCalls.length}개`);
