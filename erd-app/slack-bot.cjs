@@ -186,6 +186,16 @@ async function callDataMasterStreaming(message, sessionId, onToolStart) {
                   toolCalls.push(...data.tool_calls);
                 }
                 break;
+                
+              case 'error':
+                // 서버에서 보낸 에러 이벤트 (msg_too_long 등)
+                const errMsg = data.error || 'Unknown error';
+                console.warn(`[SSE] 서버 에러 이벤트: ${errMsg}`);
+                if (!data.recoverable) {
+                  // 복구 불가능한 에러 → 에러 내용을 content에 포함
+                  if (!doneContent) doneContent = `⚠️ ${errMsg}`;
+                }
+                break;
             }
           } catch (e) {
             console.log(`[SSE] JSON 파싱 실패 (${currentEventType}): ${dataStr.slice(0, 100)}...`);

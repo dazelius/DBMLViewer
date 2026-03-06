@@ -4356,8 +4356,14 @@ function truncateToolResult(content: string): string {
 const MAX_CONTEXT_TOKENS = 120_000  // 여유 있게 200K의 60%
 const MAX_HISTORY_TURNS  = 40       // 히스토리 최대 20쌍(user+assistant)
 
+/** 시스템 프롬프트의 토큰 수를 추정 (applyContextWindow에서 예산 차감용) */
+let _systemPromptTokens = 0
+
 function applyContextWindow(messages: Array<{ role: string; content: unknown }>): Array<{ role: string; content: unknown }> {
   if (messages.length === 0) return messages
+
+  // 시스템 프롬프트 크기를 차감한 메시지용 예산
+  const msgBudget = MAX_CONTEXT_TOKENS - _systemPromptTokens
 
   // 1) 히스토리 턴 수 제한 — 끝에서 MAX_HISTORY_TURNS 개만 유지 (마지막 항목 = 현재 user 메시지 보존)
   let trimmed = messages
@@ -4369,11 +4375,23 @@ function applyContextWindow(messages: Array<{ role: string; content: unknown }>)
   }
 
   // 2) 토큰 수 제한 — 초과하면 앞부분 쌍씩 제거
-  while (trimmed.length > 1 && estimateTokens(trimmed) > MAX_CONTEXT_TOKENS) {
+  while (trimmed.length > 1 && estimateTokens(trimmed) > msgBudget) {
     // 앞에서 2개(user+assistant 쌍) 제거, 마지막 메시지(현재 user)는 보존
     if (trimmed.length <= 2) break
     trimmed = trimmed.slice(2)
     while (trimmed.length > 1 && trimmed[0].role !== 'user') trimmed.shift()
+  }
+
+  // 3) 그래도 초과하면 → 가장 큰 tool_result 내용을 압축
+  if (trimmed.length > 1 && estimateTokens(trimmed) > msgBudget) {
+    for (const m of trimmed) {
+      if (m.role !== 'user' || !Array.isArray(m.content)) continue
+      for (const block of m.content as Array<{ type: string; content?: string }>) {
+        if (block.type === 'tool_result' && typeof block.content === 'string' && block.content.length > 3000) {
+          block.content = block.content.slice(0, 2000) + '\n...(truncated for context limit)'
+        }
+      }
+    }
   }
 
   return trimmed
@@ -4656,6 +4674,23 @@ function serverStreamClaude(
         'Content-Length': Buffer.byteLength(payload),
       },
     }, (proxyRes) => {
+      // API 에러 상태 코드 체크 (400, 413 등 → msg_too_long)
+      if (proxyRes.statusCode && proxyRes.statusCode >= 400) {
+        let errBuf = ''
+        proxyRes.on('data', (chunk: Buffer) => { errBuf += chunk.toString() })
+        proxyRes.on('end', () => {
+          res.socket?.removeListener('close', onClientClose)
+          res.removeListener('close', onClientClose)
+          let errMsg = `API error ${proxyRes.statusCode}`
+          try {
+            const errJson = JSON.parse(errBuf)
+            errMsg = errJson?.error?.message || errJson?.error?.type || errMsg
+          } catch { errMsg = errBuf.slice(0, 500) || errMsg }
+          reject(new Error(`An API error occurred: ${errMsg}`))
+        })
+        return
+      }
+
       proxyRes.on('data', (chunk: Buffer) => {
         if (clientGone) return  // 연결 끊기면 처리 중단
         buf += chunk.toString()
@@ -4669,6 +4704,14 @@ function serverStreamClaude(
           if (!raw || raw === '[DONE]') continue
           let ev: Record<string, unknown>
           try { ev = JSON.parse(raw) } catch { continue }
+
+          // Anthropic 에러 이벤트 처리
+          if (ev.type === 'error') {
+            const errDetail = ev.error as { type?: string; message?: string } | undefined
+            sLog('ERROR', `[serverStreamClaude] API 에러: ${errDetail?.message || JSON.stringify(ev)}`)
+            // 에러 이벤트를 클라이언트에 전달
+            safeWrite(`event: error\ndata: ${JSON.stringify({ error: errDetail?.message || 'API error' })}\n\n`)
+          }
 
           switch (ev.type) {
             case 'content_block_start': {
@@ -6073,7 +6116,10 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   // ── 스키마 정보 ──
   lines.push(_serverSchemaDesc)
 
-  return lines.join('\n')
+  const prompt = lines.join('\n')
+  // 시스템 프롬프트 토큰 크기를 기록 → applyContextWindow에서 예산 차감용
+  _systemPromptTokens = Math.ceil(prompt.length / 2.5)
+  return prompt
 }
 
 // ── Chat API 미들웨어 ──
@@ -6195,12 +6241,38 @@ function createChatApiMiddleware(options: GitPluginOptions) {
           for (let i = 0; i < MAX_ITERATIONS; i++) {
             res.write(`event: thinking\ndata: ${JSON.stringify({ iteration: i + 1, max: MAX_ITERATIONS })}\n\n`)
 
-            const data = await serverStreamClaude(
-              apiKey,
-              { model: 'claude-opus-4-6', max_tokens: 8192, system: systemPrompt, tools: API_TOOLS, messages },
-              res,
-              () => {}, // tool_use 처리는 아래에서
-            )
+            let data: { content: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>; stop_reason: string }
+            try {
+              data = await serverStreamClaude(
+                apiKey,
+                { model: 'claude-opus-4-6', max_tokens: 8192, system: systemPrompt, tools: API_TOOLS, messages },
+                res,
+                () => {}, // tool_use 처리는 아래에서
+              )
+            } catch (apiErr) {
+              const errMsg = apiErr instanceof Error ? apiErr.message : String(apiErr)
+              // msg_too_long → 메시지를 더 줄이고 재시도
+              if (errMsg.includes('msg_too_long') || errMsg.includes('too long') || errMsg.includes('413')) {
+                sLog('WARN', `[chatApi/stream] msg_too_long 감지 — 메시지 추가 트리밍 후 재시도`)
+                // 강제로 앞 4개 메시지 제거 + tool_result 압축
+                if (messages.length > 3) {
+                  messages.splice(0, Math.min(4, messages.length - 2))
+                  while (messages.length > 1 && messages[0].role !== 'user') messages.shift()
+                }
+                for (const m of messages) {
+                  if (m.role !== 'user' || !Array.isArray(m.content)) continue
+                  for (const block of m.content as Array<{ type: string; content?: string }>) {
+                    if (block.type === 'tool_result' && typeof block.content === 'string' && block.content.length > 2000) {
+                      block.content = block.content.slice(0, 1500) + '\n...(truncated)'
+                    }
+                  }
+                }
+                res.write(`event: error\ndata: ${JSON.stringify({ error: '컨텍스트 초과로 이전 대화를 줄여 재시도합니다...', recoverable: true })}\n\n`)
+                continue  // 루프 재시도
+              }
+              // 복구 불가능한 에러 → 전파
+              throw apiErr
+            }
 
             if (data.stop_reason === 'end_turn' || data.stop_reason === 'stop_sequence') {
               // 현재(마지막) 이터레이션의 텍스트
