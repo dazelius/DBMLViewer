@@ -30,7 +30,7 @@ echo ✅ .env 확인 완료
 echo 🚀 Slack Bot 시작...
 echo.
 
-node slack-bot.js
+node slack-bot.cjs
 
 if errorlevel 1 (
     echo.

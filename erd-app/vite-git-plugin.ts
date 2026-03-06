@@ -6063,6 +6063,8 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   // ── 응답 규칙 ──
   lines.push('[응답 규칙]')
   lines.push('- 답변은 반드시 한국어로 작성')
+  lines.push('- ⭐⭐⭐ 중요: 도구를 사용한 후에는 **반드시** 결과를 사용자에게 설명하는 텍스트를 포함하세요. 절대 텍스트 없이 빈 응답으로 끝내지 마세요.')
+  lines.push('- 도구 호출만 하고 텍스트를 생략하면 Slack/API 클라이언트에서 빈 메시지로 표시됩니다. 최소 1~2문장 이상의 요약/설명을 반드시 포함하세요.')
   lines.push('- 단순 나열이 아닌, 의미있는 해석과 함께 친절하게 설명')
   lines.push('- 데이터를 보여줄 때는 테이블 형식(마크다운)으로 정리')
   lines.push('- 쿼리 결과가 많으면 주요 패턴이나 인사이트를 요약')
@@ -6201,14 +6203,38 @@ function createChatApiMiddleware(options: GitPluginOptions) {
             )
 
             if (data.stop_reason === 'end_turn' || data.stop_reason === 'stop_sequence') {
-              const text = data.content.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n')
+              // 현재(마지막) 이터레이션의 텍스트
+              const lastText = data.content.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n').trim()
+
+              // 최종 텍스트가 비어있으면 → 모든 이터레이션의 텍스트를 수집 (Slack/API 호출자를 위해)
+              let finalText = lastText
+              if (!finalText && allToolCalls.length > 0) {
+                const allTexts: string[] = []
+                // 이전 이터레이션의 assistant 메시지에서 텍스트 추출
+                for (const m of messages) {
+                  if (m.role !== 'assistant') continue
+                  if (typeof m.content === 'string') { if (m.content.trim()) allTexts.push(m.content.trim()); continue }
+                  if (Array.isArray(m.content)) {
+                    for (const b of m.content as Array<{ type: string; text?: string }>) {
+                      if (b.type === 'text' && b.text?.trim()) allTexts.push(b.text.trim())
+                    }
+                  }
+                }
+                // 현재 이터레이션의 data.content도 추가
+                for (const b of data.content) {
+                  if (b.type === 'text' && b.text?.trim()) allTexts.push(b.text.trim())
+                }
+                finalText = allTexts.join('\n\n')
+              }
+
+              // 세션에는 마지막 텍스트 저장 (대화 이력용)
               session.messages.push({ role: 'user', content: userMessage })
-              session.messages.push({ role: 'assistant', content: text })
+              session.messages.push({ role: 'assistant', content: finalText || lastText })
               session.messageCount += 2
               session.updated = new Date().toISOString()
               saveSession(session)
 
-              res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: text, tool_calls: allToolCalls })}\n\n`)
+              res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: finalText, tool_calls: allToolCalls })}\n\n`)
               res.end()
               return
             }
@@ -6322,16 +6348,36 @@ function createChatApiMiddleware(options: GitPluginOptions) {
           })
 
           if (data.stop_reason === 'end_turn' || data.stop_reason === 'stop_sequence') {
-            const text = data.content.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n')
+            const lastText = data.content.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n').trim()
+
+            // 최종 텍스트가 비어있으면 모든 이터레이션 텍스트 수집
+            let finalText = lastText
+            if (!finalText && allToolCalls.length > 0) {
+              const allTexts: string[] = []
+              for (const m of messages) {
+                if (m.role !== 'assistant') continue
+                if (typeof m.content === 'string') { if (m.content.trim()) allTexts.push(m.content.trim()); continue }
+                if (Array.isArray(m.content)) {
+                  for (const b of m.content as Array<{ type: string; text?: string }>) {
+                    if (b.type === 'text' && b.text?.trim()) allTexts.push(b.text.trim())
+                  }
+                }
+              }
+              for (const b of data.content) {
+                if (b.type === 'text' && b.text?.trim()) allTexts.push(b.text.trim())
+              }
+              finalText = allTexts.join('\n\n')
+            }
+
             session.messages.push({ role: 'user', content: userMessage })
-            session.messages.push({ role: 'assistant', content: text })
+            session.messages.push({ role: 'assistant', content: finalText || lastText })
             session.messageCount += 2
             session.updated = new Date().toISOString()
             saveSession(session)
 
             sendJson(res, 200, {
               session_id: session.id,
-              content: text,
+              content: finalText,
               tool_calls: allToolCalls,
               model: 'claude-opus-4-6',
             })
