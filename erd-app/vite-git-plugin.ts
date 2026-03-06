@@ -6243,12 +6243,16 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   lines.push('')
 
   // ── 아티팩트 생성 규칙 ──
-  lines.push('[아티팩트 생성 규칙]')
-  lines.push('- "정리해줘", "문서로", "보고서", "시트 만들어줘" 등 시각적 결과물 요청 시 create_artifact 호출')
+  lines.push('[아티팩트 생성 규칙 — ⭐⭐⭐ 최우선]')
+  lines.push('- 도구를 사용하여 데이터/코드/정보를 조사했으면 → **반드시** create_artifact 호출하여 결과물을 시각적으로 정리')
+  lines.push('- 단순 "몇 행 조회됨" 텍스트로 끝내지 말 것! 조사 결과를 아티팩트로 만들어야 사용자가 볼 수 있음')
+  lines.push('- 텍스트 응답만으로 끝내는 것은 금지. 2개 이상의 도구를 사용했거나, 테이블 데이터가 있으면 반드시 아티팩트로!')
+  lines.push('- "정리해줘", "보여줘", "문서로", "보고서", "시트", "정보" 등 요청 시 무조건 create_artifact')
   lines.push('- 데이터 수집이 끝나면 즉시 create_artifact를 호출 (선언 없이)')
   lines.push('- html 파라미터: 완전한 HTML 콘텐츠. 다크 테마(배경 #0f1117, 텍스트 #e2e8f0, 포인트 #6366f1) 스타일 권장')
   lines.push('- CSV 데이터 제공 시: <div data-embed="csv" data-filename="파일명.csv">헤더1,헤더2\\n값1,값2\\n...</div> 사용 → 다운로드+테이블+검색+정렬+복사 자동!')
   lines.push('- 데이터를 표 형태로 제공해야할 때, DB 쿼리가 불가능하면 CSV embed를 사용하여 인터랙티브 테이블로 제공')
+  lines.push('- 아티팩트 생성 후 짧은 요약 텍스트도 함께 보내야 함 (Slack 등 외부 클라이언트에서 미리보기 제공)')
   lines.push('')
 
   // ── 응답 규칙 ──
@@ -6404,8 +6408,6 @@ function createChatApiMiddleware(options: GitPluginOptions) {
 
       const session = getOrCreateSession(body.session_id)
       const isStream = body.stream === true
-      // fast 모드: Slack 등 빠른 응답이 필요한 경우 Sonnet 사용, 이터레이션 제한
-      const isFast = body.fast === true
       const MODEL = 'claude-opus-4-6'
       const MAX_TOKENS = 8192
       const MAX_ITERATIONS = 12

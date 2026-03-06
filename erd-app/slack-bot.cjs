@@ -808,35 +808,62 @@ async function handleMessage({ message, say, client, event }) {
       console.log(`[Slack] 메타 축적: 테이블 ${meta.queriedTables.length}개, 스키마 ${meta.schemas.length}개, Jira ${meta.jiraIssues.length}개, Q#${meta.questionCount}`);
     }
     
-    // ── 복잡한 콘텐츠 감지 (테이블, 긴 응답, 코드블록 등) ──
-    const hasTable = /\|.+\|.+\|/.test(rawContent) && rawContent.split('\n').filter(l => l.includes('|')).length > 2;
-    const hasCodeBlock = /```[\s\S]{200,}```/.test(rawContent);
-    const isLong = rawContent.length > 1200;
-    const hasArtifact = result.toolCalls.some(tc => tc.tool === 'create_artifact' || tc.tool === 'patch_artifact');
-    const needsPublish = (hasTable || hasCodeBlock || isLong) && !hasArtifact;
-    
-    // ── 자동 출판: 복잡한 콘텐츠 → HTML 페이지로 변환 후 링크 제공 ──
+    // ── 아티팩트 감지 + 자동 출판 ──
     let publishedUrl = null;
-    if (needsPublish) {
+    
+    // 1) AI가 create_artifact 도구로 만든 아티팩트 → HTML 직접 출판
+    const artifactTC = result.toolCalls.find(tc => tc.tool === 'create_artifact' && tc.result);
+    if (artifactTC) {
       try {
-        const titleGuess = userText.slice(0, 40) + (userText.length > 40 ? '...' : '');
-        const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: titleGuess, markdown: rawContent }),
-        });
-        if (pubResp.ok) {
-          const pubData = await pubResp.json();
-          // localhost URL을 외부 접근 가능한 URL로 변환
-          publishedUrl = pubData.url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
-          // 추가 안전장치: localhost가 남아있으면 public URL로 교체
-          if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
-            publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
+        const artData = typeof artifactTC.result === 'object' ? artifactTC.result : {};
+        const artHtml = artData.html || '';
+        const artTitle = artData.title || userText.slice(0, 40);
+        
+        if (artHtml.length > 50) {
+          const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: artTitle, html: artHtml }),
+          });
+          if (pubResp.ok) {
+            const pubData = await pubResp.json();
+            publishedUrl = pubData.url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
+            if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
+              publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
+            }
+            console.log(`[Slack] 아티팩트 출판: "${artTitle}" → ${publishedUrl}`);
           }
-          console.log(`[Slack] 자동 출판: ${publishedUrl}`);
         }
       } catch (e) {
-        console.warn('[Slack] 자동 출판 실패:', e.message);
+        console.warn('[Slack] 아티팩트 출판 실패:', e.message);
+      }
+    }
+    
+    // 2) 아티팩트 없지만 복잡한 텍스트 → 마크다운을 HTML로 변환 후 출판
+    if (!publishedUrl) {
+      const hasTable = /\|.+\|.+\|/.test(rawContent) && rawContent.split('\n').filter(l => l.includes('|')).length > 2;
+      const hasCodeBlock = /```[\s\S]{200,}```/.test(rawContent);
+      const isLong = rawContent.length > 1200;
+      
+      if (hasTable || hasCodeBlock || isLong) {
+        try {
+          const titleGuess = userText.slice(0, 40) + (userText.length > 40 ? '...' : '');
+          const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: titleGuess, markdown: rawContent }),
+          });
+          if (pubResp.ok) {
+            const pubData = await pubResp.json();
+            publishedUrl = pubData.url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
+            if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
+              publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
+            }
+            console.log(`[Slack] 텍스트 출판: ${publishedUrl}`);
+          }
+        } catch (e) {
+          console.warn('[Slack] 텍스트 출판 실패:', e.message);
+        }
       }
     }
     
@@ -866,15 +893,57 @@ async function handleMessage({ message, say, client, event }) {
       if (!slackText.trim() && result.toolCalls.length > 0) {
         slackText = result.toolCalls.map(tc => formatToolResultForSlack(tc)).join('\n');
       }
-      slackText = truncateForSlack(slackText);
       
-      // section 블록 분할 (3000자 제한)
-      for (let i = 0; i < slackText.length; i += 2900) {
-        blocks.push({
-          type: 'section',
-          text: { type: 'mrkdwn', text: slackText.slice(i, i + 2900) },
-        });
-        if (blocks.length >= 8) break;
+      // 도구를 많이 썼는데 텍스트만 있고 아티팩트가 없으면 → 자동 출판
+      if (!publishedUrl && result.toolCalls.length >= 2 && rawContent.length > 300) {
+        try {
+          const titleGuess = userText.slice(0, 40) + (userText.length > 40 ? '...' : '');
+          const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: titleGuess, markdown: rawContent }),
+          });
+          if (pubResp.ok) {
+            const pubData = await pubResp.json();
+            publishedUrl = pubData.url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
+            if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
+              publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
+            }
+            console.log(`[Slack] 도구결과 자동출판: ${publishedUrl}`);
+            
+            // 이미 blocks에 뭔가 있었으면 다시 조립
+            blocks.length = 0;
+            const summary = extractSlackSummary(rawContent);
+            blocks.push({
+              type: 'section',
+              text: { type: 'mrkdwn', text: summary },
+            });
+            blocks.push({
+              type: 'actions',
+              elements: [{
+                type: 'button',
+                text: { type: 'plain_text', text: '📊 전체 결과 보기', emoji: true },
+                url: publishedUrl,
+                style: 'primary',
+              }],
+            });
+          }
+        } catch (e) {
+          console.warn('[Slack] 도구결과 자동출판 실패:', e.message);
+        }
+      }
+      
+      // 출판 안 된 경우 텍스트 직접 표시
+      if (!publishedUrl) {
+        slackText = truncateForSlack(slackText);
+        // section 블록 분할 (3000자 제한)
+        for (let i = 0; i < slackText.length; i += 2900) {
+          blocks.push({
+            type: 'section',
+            text: { type: 'mrkdwn', text: slackText.slice(i, i + 2900) },
+          });
+          if (blocks.length >= 8) break;
+        }
       }
     }
     
