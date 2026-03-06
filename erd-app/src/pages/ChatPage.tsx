@@ -6982,94 +6982,153 @@ const MC_COLORS = [
   { bg: 'rgba(59,130,246,', border: '#60a5fa', text: '#dbeafe', accent: '#60a5fa' },
 ];
 
-/** 단일 객관식 그룹 (독립적으로 선택 가능) */
-function MCGroupButtons({ items, onSelect, msgId, groupIdx }: {
-  items: { key: string; label: string; fullLine: string }[];
-  onSelect: (text: string, displayText?: string) => void;
-  msgId: string;
-  groupIdx: number;
-}) {
-  const [selected, setSelected] = React.useState<string | null>(null);
-
-  const handleSelect = (item: { key: string; label: string }) => {
-    if (selected) return;
-    setSelected(item.key);
-    const cleanLabel = item.label.replace(/\*\*/g, '').replace(/\s*—\s*.+$/, '').trim();
-    onSelect(`${item.key}) ${item.label}`, `${item.key}) ${cleanLabel}`);
-  };
-
-  return (
-    <div className="my-3 space-y-2">
-      {items.map((item, idx) => {
-        const color = MC_COLORS[idx % MC_COLORS.length];
-        const isSelected = selected === item.key;
-        const isOther = selected !== null && !isSelected;
-
-        return (
-          <button
-            key={`${msgId}-mc-${groupIdx}-${item.key}`}
-            onClick={() => handleSelect(item)}
-            disabled={selected !== null}
-            className="w-full text-left rounded-xl px-4 py-3 transition-all active:scale-[0.98]"
-            style={{
-              background: isSelected
-                ? `${color.bg}0.2)`
-                : isOther
-                ? 'rgba(255,255,255,0.02)'
-                : `${color.bg}0.06)`,
-              border: `1.5px solid ${isSelected ? color.border : isOther ? 'rgba(255,255,255,0.06)' : `${color.bg}0.2)`}`,
-              cursor: selected ? 'default' : 'pointer',
-              opacity: isOther ? 0.4 : 1,
-              transform: isSelected ? 'scale(1.01)' : 'none',
-            }}
-          >
-            <div className="flex items-start gap-3">
-              <span
-                className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[13px] font-bold"
-                style={{
-                  background: isSelected ? `${color.bg}0.3)` : `${color.bg}0.12)`,
-                  color: isSelected ? color.text : color.accent,
-                  border: `1px solid ${isSelected ? color.border : `${color.bg}0.25)`}`,
-                }}
-              >
-                {isSelected ? '✓' : item.key}
-              </span>
-              <span
-                className="text-[13px] leading-relaxed pt-0.5"
-                style={{
-                  color: isSelected ? color.text : isOther ? 'var(--text-muted)' : 'var(--text-secondary)',
-                  fontWeight: isSelected ? 600 : 400,
-                }}
-              >
-                {inlineMarkdown(item.label)}
-              </span>
-            </div>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-/** 여러 객관식 그룹을 렌더링 (그룹 사이 텍스트 포함) */
+/** 여러 객관식 그룹을 렌더링 — 그룹이 2+개면 모두 선택 후 "답변 제출", 1개면 즉시 전송 */
 function MultipleChoiceGroupsRenderer({ mcData, onSelect, msgId }: {
   mcData: { groups: MCGroup[]; afterText: string };
   onSelect: (text: string, displayText?: string) => void;
   msgId: string;
 }) {
+  const groupCount = mcData.groups.length;
+  const isMulti = groupCount >= 2;
+  // 각 그룹의 선택 상태 (key)
+  const [selections, setSelections] = React.useState<(string | null)[]>(() => new Array(groupCount).fill(null));
+  const [submitted, setSubmitted] = React.useState(false);
+
+  const handleSelect = (groupIdx: number, item: { key: string; label: string }) => {
+    if (submitted) return;
+    // 단일 그룹이면 즉시 전송
+    if (!isMulti) {
+      setSelections([item.key]);
+      setSubmitted(true);
+      const cleanLabel = item.label.replace(/\*\*/g, '').replace(/\s*—\s*.+$/, '').trim();
+      onSelect(`${item.key}) ${item.label}`, `${item.key}) ${cleanLabel}`);
+      return;
+    }
+    // 다중 그룹이면 선택만 토글 (다시 누르면 해제)
+    setSelections(prev => {
+      const next = [...prev];
+      next[groupIdx] = prev[groupIdx] === item.key ? null : item.key;
+      return next;
+    });
+  };
+
+  const allSelected = isMulti && selections.every(s => s !== null);
+
+  const handleSubmit = () => {
+    if (!allSelected || submitted) return;
+    setSubmitted(true);
+    // 각 그룹에서 선택된 아이템 찾기
+    const parts: string[] = [];
+    const displayParts: string[] = [];
+    mcData.groups.forEach((group, gIdx) => {
+      const selectedItem = group.items.find(it => it.key === selections[gIdx]);
+      if (selectedItem) {
+        parts.push(`${selectedItem.key}) ${selectedItem.label}`);
+        const cleanLabel = selectedItem.label.replace(/\*\*/g, '').replace(/\s*—\s*.+$/, '').trim();
+        displayParts.push(`${selectedItem.key}) ${cleanLabel}`);
+      }
+    });
+    onSelect(parts.join('\n'), displayParts.join(' / '));
+  };
+
   return (
     <div>
       {mcData.groups.map((group, gIdx) => (
         <div key={`${msgId}-mcg-${gIdx}`}>
           {group.beforeText && <div className="mb-2">{renderMarkdown(group.beforeText)}</div>}
-          <MCGroupButtons
-            items={group.items}
-            onSelect={onSelect}
-            msgId={msgId}
-            groupIdx={gIdx}
-          />
+          {/* 그룹 번호 표시 (다중 그룹일 때만) */}
+          {isMulti && (
+            <div className="flex items-center gap-2 mt-3 mb-1.5">
+              <span
+                className="text-[11px] font-bold px-2 py-0.5 rounded-md"
+                style={{
+                  background: selections[gIdx] ? 'rgba(34,197,94,0.15)' : 'rgba(99,102,241,0.1)',
+                  color: selections[gIdx] ? '#4ade80' : '#818cf8',
+                  border: `1px solid ${selections[gIdx] ? 'rgba(34,197,94,0.3)' : 'rgba(99,102,241,0.2)'}`,
+                }}
+              >
+                {selections[gIdx] ? '✓' : `Q${gIdx + 1}`}
+              </span>
+              <div className="flex-1 h-px" style={{ background: 'rgba(99,102,241,0.1)' }} />
+            </div>
+          )}
+          <div className="space-y-2 mb-2">
+            {group.items.map((item, idx) => {
+              const color = MC_COLORS[idx % MC_COLORS.length];
+              const isSelected = selections[gIdx] === item.key;
+              const isOther = selections[gIdx] !== null && !isSelected;
+
+              return (
+                <button
+                  key={`${msgId}-mc-${gIdx}-${item.key}`}
+                  onClick={() => handleSelect(gIdx, item)}
+                  disabled={submitted}
+                  className="w-full text-left rounded-xl px-4 py-3 transition-all active:scale-[0.98]"
+                  style={{
+                    background: isSelected
+                      ? `${color.bg}0.2)`
+                      : isOther
+                      ? 'rgba(255,255,255,0.02)'
+                      : `${color.bg}0.06)`,
+                    border: `1.5px solid ${isSelected ? color.border : isOther ? 'rgba(255,255,255,0.06)' : `${color.bg}0.2)`}`,
+                    cursor: submitted ? 'default' : 'pointer',
+                    opacity: isOther && !submitted ? 0.5 : submitted && !isSelected ? 0.3 : 1,
+                    transform: isSelected ? 'scale(1.01)' : 'none',
+                  }}
+                >
+                  <div className="flex items-start gap-3">
+                    <span
+                      className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[13px] font-bold"
+                      style={{
+                        background: isSelected ? `${color.bg}0.3)` : `${color.bg}0.12)`,
+                        color: isSelected ? color.text : color.accent,
+                        border: `1px solid ${isSelected ? color.border : `${color.bg}0.25)`}`,
+                      }}
+                    >
+                      {isSelected && submitted ? '✓' : item.key}
+                    </span>
+                    <span
+                      className="text-[13px] leading-relaxed pt-0.5"
+                      style={{
+                        color: isSelected ? color.text : isOther ? 'var(--text-muted)' : 'var(--text-secondary)',
+                        fontWeight: isSelected ? 600 : 400,
+                      }}
+                    >
+                      {inlineMarkdown(item.label)}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
       ))}
+
+      {/* 다중 그룹: 모두 선택 후 "답변 제출" 버튼 */}
+      {isMulti && !submitted && (
+        <div className="mt-4 flex items-center gap-3">
+          <button
+            onClick={handleSubmit}
+            disabled={!allSelected}
+            className="px-5 py-2.5 rounded-xl text-[13px] font-semibold transition-all"
+            style={{
+              background: allSelected ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.03)',
+              border: `1.5px solid ${allSelected ? '#818cf8' : 'rgba(255,255,255,0.08)'}`,
+              color: allSelected ? '#c7d2fe' : 'var(--text-muted)',
+              cursor: allSelected ? 'pointer' : 'not-allowed',
+              opacity: allSelected ? 1 : 0.5,
+            }}
+          >
+            📨 답변 제출 ({selections.filter(s => s).length}/{groupCount})
+          </button>
+          {!allSelected && (
+            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              모든 질문에 답변해주세요
+            </span>
+          )}
+        </div>
+      )}
+
       {mcData.afterText && <div className="mt-3">{renderMarkdown(mcData.afterText)}</div>}
     </div>
   );
