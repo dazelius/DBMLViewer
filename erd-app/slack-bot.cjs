@@ -435,6 +435,81 @@ function truncateForSlack(text, maxLen = 3800) {
   return text.slice(0, maxLen) + '\n\n... _(응답이 잘렸습니다. DataMaster 웹에서 전체 내용을 확인하세요)_';
 }
 
+// ── Slack 메시지에서 링크 추출 ──
+function extractLinks(text) {
+  const links = [];
+  // Slack 형식 링크: <URL|표시텍스트> 또는 <URL>
+  const slackLinkRegex = /<(https?:\/\/[^|>]+)(?:\|[^>]*)?>|(?<![<])(https?:\/\/[^\s>]+)/g;
+  let m;
+  while ((m = slackLinkRegex.exec(text)) !== null) {
+    links.push(m[1] || m[2]);
+  }
+  return [...new Set(links)];
+}
+
+// ── Slack 메시지 텍스트 정리 (멘션, 채널 참조 등 제거) ──
+function cleanSlackText(text) {
+  return (text || '')
+    .replace(/<@[A-Z0-9]+>/g, '')           // @멘션 제거
+    .replace(/<#[A-Z0-9]+\|([^>]+)>/g, '#$1') // #채널 참조를 텍스트로
+    .replace(/<(https?:\/\/[^|>]+)\|([^>]+)>/g, '$2 ($1)') // 링크 → 텍스트(URL)
+    .replace(/<(https?:\/\/[^>]+)>/g, '$1')   // <URL> → URL
+    .trim();
+}
+
+// ── 쓰레드 컨텍스트 수집 (부모 메시지 + 이전 대화) ──
+async function fetchThreadContext(client, channel, threadTs, currentTs) {
+  if (!threadTs) return null;
+  
+  try {
+    const result = await client.conversations.replies({
+      channel,
+      ts: threadTs,
+      limit: 20, // 최근 20개
+      inclusive: true,
+    });
+    
+    if (!result.ok || !result.messages || result.messages.length === 0) return null;
+    
+    const contextParts = [];
+    const allLinks = [];
+    
+    for (const msg of result.messages) {
+      // 현재 메시지와 봇 자신의 메시지는 스킵
+      if (msg.ts === currentTs) continue;
+      
+      const isBot = !!msg.bot_id || msg.subtype === 'bot_message';
+      const who = isBot ? 'DataMaster' : (msg.user ? `사용자(${msg.user})` : '사용자');
+      const text = cleanSlackText(msg.text);
+      
+      if (!text) continue;
+      
+      // 링크 추출
+      const links = extractLinks(msg.text);
+      allLinks.push(...links);
+      
+      // 부모 메시지 vs 리플라이 구분
+      const isParent = msg.ts === threadTs;
+      if (isParent) {
+        contextParts.unshift(`[쓰레드 원글 — ${who}]\n${text}`);
+      } else {
+        // 최근 5개 리플라이만 포함 (너무 길어지지 않게)
+        if (contextParts.length < 6) {
+          contextParts.push(`[${who}]\n${text.slice(0, 500)}`);
+        }
+      }
+    }
+    
+    return {
+      context: contextParts.join('\n\n---\n\n'),
+      links: [...new Set(allLinks)],
+    };
+  } catch (e) {
+    console.warn('[Slack] 쓰레드 컨텍스트 수집 실패:', e.message);
+    return null;
+  }
+}
+
 // ── 메시지 처리 핸들러 ──
 async function handleMessage({ message, say, client, event }) {
   // 봇 자신의 메시지 무시
@@ -442,7 +517,8 @@ async function handleMessage({ message, say, client, event }) {
 
   const channel = event?.channel || message?.channel;
   const threadTs = event?.thread_ts || message?.thread_ts || message?.ts || event?.ts;
-  const userText = (event?.text || message?.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();
+  const currentTs = message?.ts || event?.ts;
+  const userText = cleanSlackText(event?.text || message?.text || '');
 
   if (!userText) return;
 
@@ -468,6 +544,64 @@ async function handleMessage({ message, say, client, event }) {
 
   try {
     console.log(`[Slack] 메시지 수신: channel=${channel} thread=${threadTs} text="${userText.slice(0, 50)}..."`);
+    
+    // ── 쓰레드 컨텍스트 수집 ──
+    let enrichedMessage = userText;
+    const threadCtx = await fetchThreadContext(client, channel, threadTs, currentTs);
+    
+    if (threadCtx) {
+      const parts = [];
+      
+      // 쓰레드 대화 컨텍스트
+      if (threadCtx.context) {
+        parts.push(`[이 대화는 Slack 쓰레드에서 진행 중입니다. 아래는 쓰레드의 이전 대화입니다]\n\n${threadCtx.context}`);
+      }
+      
+      // 링크 정보 첨부
+      if (threadCtx.links.length > 0) {
+        const jiraLinks = threadCtx.links.filter(l => l.includes('jira') || l.includes('atlassian.net'));
+        const confLinks = threadCtx.links.filter(l => l.includes('confluence') || l.includes('wiki'));
+        const otherLinks = threadCtx.links.filter(l => !jiraLinks.includes(l) && !confLinks.includes(l));
+        
+        const linkDescs = [];
+        for (const link of jiraLinks) {
+          // Jira 이슈 키 추출 (AEGIS-1234 등)
+          const issueMatch = link.match(/\/browse\/([A-Z]+-\d+)/);
+          if (issueMatch) {
+            linkDescs.push(`• Jira 이슈: ${issueMatch[1]} (${link}) — 이 이슈의 내용을 get_jira_issue로 확인하세요`);
+          } else {
+            linkDescs.push(`• Jira 링크: ${link}`);
+          }
+        }
+        for (const link of confLinks) {
+          linkDescs.push(`• Confluence 문서: ${link} — search_confluence 또는 get_confluence_page로 확인하세요`);
+        }
+        for (const link of otherLinks) {
+          linkDescs.push(`• 참고 링크: ${link} — read_url로 내용을 확인할 수 있습니다`);
+        }
+        
+        if (linkDescs.length > 0) {
+          parts.push(`[쓰레드에 언급된 링크]\n${linkDescs.join('\n')}`);
+        }
+      }
+      
+      if (parts.length > 0) {
+        enrichedMessage = parts.join('\n\n') + `\n\n---\n\n[현재 질문]\n${userText}`;
+        console.log(`[Slack] 쓰레드 컨텍스트 추가: ${threadCtx.context?.length || 0}자, 링크 ${threadCtx.links.length}개`);
+      }
+    }
+    
+    // ── 현재 메시지의 링크도 추출 ──
+    const currentLinks = extractLinks(event?.text || message?.text || '');
+    if (currentLinks.length > 0 && !threadCtx?.links?.length) {
+      const linkDescs = currentLinks.map(link => {
+        const jiraMatch = link.match(/\/browse\/([A-Z]+-\d+)/);
+        if (jiraMatch) return `Jira 이슈 ${jiraMatch[1]}의 내용을 get_jira_issue로 확인하세요. URL: ${link}`;
+        if (link.includes('confluence') || link.includes('wiki')) return `Confluence 문서: ${link} — get_confluence_page로 확인하세요`;
+        return `참고: ${link} — read_url로 내용을 확인할 수 있습니다`;
+      });
+      enrichedMessage = userText + `\n\n[메시지에 포함된 링크]\n${linkDescs.join('\n')}`;
+    }
     
     // 실시간 도구 사용 표시 (SSE 스트리밍)
     const toolProgress = [];
@@ -511,7 +645,7 @@ async function handleMessage({ message, say, client, event }) {
       } catch { /* rate limit 무시 */ }
     };
 
-    const result = await callDataMasterStreaming(userText, sessionId, onToolStart);
+    const result = await callDataMasterStreaming(enrichedMessage, sessionId, onToolStart);
     const rawContent = result.content || '';
     
     // ── 복잡한 콘텐츠 감지 (테이블, 긴 응답, 코드블록 등) ──
