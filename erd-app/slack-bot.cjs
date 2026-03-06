@@ -126,7 +126,7 @@ function accumulateToolMeta(channel, threadTs, toolCalls) {
           table: tableMatch?.[1] || '(알 수 없음)',
           rows: rowMatch?.[1] || '?',
           columns: colMatch?.[1]?.slice(0, 80) || '',
-          query: (tc.input || '').slice(0, 100),
+          query: inputStr.slice(0, 100),
           time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
         };
         // 중복 방지
