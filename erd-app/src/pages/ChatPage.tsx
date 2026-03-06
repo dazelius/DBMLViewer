@@ -38,6 +38,8 @@ import {
   type ThinkingStep,
   type TokenUsageSummary,
   type KnowledgeResult,
+  type WebSearchResult,
+  type WebReadResult,
   getKnowledgeEntries,
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
@@ -5095,6 +5097,75 @@ function ConfluencePageCard({ tc }: { tc: ConfluencePageResult }) {
   );
 }
 
+// ── WebSearchCard ─────────────────────────────────────────────────────────────
+function WebSearchCard({ tc }: { tc: WebSearchResult }) {
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(59,130,246,0.25)' }}>
+      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: 'rgba(59,130,246,0.1)', borderBottom: '1px solid rgba(59,130,246,0.18)' }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(59,130,246,0.2)' }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2" strokeLinecap="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </div>
+        <span className="font-semibold text-[13px]" style={{ color: '#60a5fa' }}>🌐 웹 검색</span>
+        <span className="text-[11px] px-2 py-0.5 rounded" style={{ background: 'rgba(96,165,250,0.1)', color: '#60a5fa' }}>"{tc.query}"</span>
+        <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{tc.results.length}건{tc.duration ? ` · ${tc.duration}ms` : ''}</span>
+      </div>
+      {tc.error ? (
+        <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{tc.error}</div>
+      ) : (
+        <div className="px-4 py-2 space-y-1.5" style={{ maxHeight: 300, overflowY: 'auto' }}>
+          {tc.results.map((r, i) => (
+            <div key={i} className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-primary)' }}>
+              <a href={r.url} target="_blank" rel="noopener noreferrer" className="font-medium text-[13px] hover:underline block" style={{ color: '#60a5fa' }}>
+                {i + 1}. {r.title}
+              </a>
+              <div className="text-[11px] mt-0.5 truncate" style={{ color: 'var(--text-muted)' }}>{r.url}</div>
+              <div className="text-[12px] mt-1" style={{ color: 'var(--text-secondary)' }}>{r.snippet}</div>
+              {r.age && <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{r.age}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── WebReadCard ───────────────────────────────────────────────────────────────
+function WebReadCard({ tc }: { tc: WebReadResult }) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = tc.content?.slice(0, 500) ?? '';
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(34,197,94,0.25)' }}>
+      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: 'rgba(34,197,94,0.1)', borderBottom: '1px solid rgba(34,197,94,0.18)' }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(34,197,94,0.2)' }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+          </svg>
+        </div>
+        <span className="font-semibold text-[13px]" style={{ color: '#4ade80' }}>🌐 웹페이지 읽기</span>
+        <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{tc.contentLength ? `${(tc.contentLength / 1000).toFixed(1)}K자` : ''}{tc.duration ? ` · ${tc.duration}ms` : ''}</span>
+      </div>
+      {tc.error ? (
+        <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{tc.error}</div>
+      ) : (
+        <div className="px-4 py-3 space-y-2">
+          <a href={tc.url} target="_blank" rel="noopener noreferrer" className="font-semibold text-[14px] hover:underline block" style={{ color: '#4ade80' }}>{tc.title}</a>
+          <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>{tc.url}</div>
+          <div className="text-[12px] rounded-lg" style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)', maxHeight: expanded ? 400 : 120, overflowY: 'auto', whiteSpace: 'pre-wrap', padding: '12px 16px' }}>
+            {expanded ? tc.content : preview}{!expanded && (tc.content?.length ?? 0) > 500 ? '…' : ''}
+          </div>
+          {(tc.content?.length ?? 0) > 500 && (
+            <button onClick={() => setExpanded(!expanded)} className="text-[11px] px-2 py-1 rounded" style={{ background: 'rgba(74,222,128,0.1)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.3)', cursor: 'pointer' }}>
+              {expanded ? '▲ 접기' : '▼ 전체 보기'}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── AssetSearchCard ────────────────────────────────────────────────────────────
 // ── 씬 YAML 분석 카드 ────────────────────────────────────────────────────────
 function SceneYamlCard({ tc }: { tc: SceneYamlResult }) {
@@ -5725,6 +5796,8 @@ function ToolCallCard({ tc, index, onOpenArtifact }: { tc: ToolCallResult; index
   if (tc.kind === 'confluence_search') return <ConfluenceSearchCard tc={tc} />;
   if (tc.kind === 'confluence_page') return <ConfluencePageCard tc={tc} />;
   if (tc.kind === 'knowledge') return <KnowledgeCard tc={tc} />;
+  if (tc.kind === 'web_search') return <WebSearchCard tc={tc} />;
+  if (tc.kind === 'web_read') return <WebReadCard tc={tc} />;
   if (tc.kind === 'artifact_patch') return null;
   return <DataQueryCard tc={tc as DataQueryResult} index={index} />;
 }
@@ -6579,6 +6652,7 @@ function getLoadingCycle(msg: Message): ExpressionKey[] {
   const hasGitDiff  = toolKinds.some(k => k === 'git_history' || k === 'revision_diff');
   const hasArtifact = toolKinds.some(k => k === 'artifact' || k === 'artifact_patch');
   const hasJiraSearch=toolKinds.some(k => k === 'jira_search' || k === 'jira_issue' || k === 'confluence_search' || k === 'confluence_page');
+  const hasWebSearch =toolKinds.some(k => k === 'web_search' || k === 'web_read');
   const isStreaming  = !!(msg.content || msg.iterations?.some(t => t.trim()));
 
   if (hasError)       return ['worried', 'sad', 'apologetic'];
@@ -6587,6 +6661,7 @@ function getLoadingCycle(msg: Message): ExpressionKey[] {
   if (hasDataQuery)   return ['thinking', 'idea', 'happy', 'thinking'];
   if (hasCodeSearch)  return ['thinking', 'confused', 'idea', 'thinking'];
   if (hasGitDiff)     return ['surprised', 'thinking', 'idea', 'happy'];
+  if (hasWebSearch)   return ['surprised', 'thinking', 'idea', 'happy'];
   if (hasJiraSearch)  return ['surprised', 'thinking', 'happy', 'surprised'];
   if (isStreaming)    return ['happy', 'excited', 'happy', 'neutral'];
   // 대기 (아직 응답 없음) — 초조하게 기다리는 느낌

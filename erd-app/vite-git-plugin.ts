@@ -312,6 +312,8 @@ interface GitPluginOptions {
   jiraDefaultProject?: string
   confluenceUserEmail?: string
   confluenceApiToken?: string
+  // Web Search
+  webSearchApiKey?: string         // Brave Search API Key
 }
 
 function buildAuthUrl(repoUrl: string, token?: string): string {
@@ -2953,6 +2955,152 @@ function createGitMiddleware(options: GitPluginOptions) {
       }
     }
 
+    // ── /api/web/* : 웹 검색 / URL 읽기 ────────────────────────────────────────
+    if (req.url?.startsWith('/api/web/')) {
+      try {
+        const url2 = new URL(req.url, 'http://localhost')
+
+        // ── POST /api/web/search ── Brave Search API
+        if (url2.pathname === '/api/web/search' && req.method === 'POST') {
+          const body = await readBody(req)
+          const parsed = JSON.parse(body) as { query?: string; count?: number }
+          const query = String(parsed.query ?? '').trim()
+          if (!query) { sendJson(res, 400, { error: 'query is required' }); return }
+
+          const searchApiKey = options.webSearchApiKey || ''
+          if (!searchApiKey) {
+            sendJson(res, 503, { error: 'WEB_SEARCH_API_KEY not set. Get a free API key at https://brave.com/search/api/ and add WEB_SEARCH_API_KEY=your_key to .env' })
+            return
+          }
+
+          const count = Math.min(parsed.count ?? 5, 10)
+          const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}&search_lang=ko&text_decorations=false`
+
+          sLog('INFO', `[WebSearch] Brave search: "${query}" (${count}건)`)
+          const braveResp = await fetch(braveUrl, {
+            headers: {
+              'Accept': 'application/json',
+              'Accept-Encoding': 'gzip',
+              'X-Subscription-Token': searchApiKey,
+            },
+          })
+
+          if (!braveResp.ok) {
+            const errText = await braveResp.text()
+            sLog('ERROR', `[WebSearch] Brave API 오류: ${braveResp.status} ${errText}`)
+            sendJson(res, braveResp.status, { error: `Brave Search API error: ${braveResp.status}`, detail: errText })
+            return
+          }
+
+          const braveData = await braveResp.json() as {
+            web?: { results?: Array<{ title?: string; url?: string; description?: string; age?: string }> }
+            query?: { original?: string }
+          }
+
+          const results = (braveData.web?.results ?? []).map(r => ({
+            title: r.title ?? '',
+            url: r.url ?? '',
+            snippet: r.description ?? '',
+            age: r.age ?? '',
+          }))
+
+          sLog('INFO', `[WebSearch] "${query}" → ${results.length}건 결과`)
+          sendJson(res, 200, { query, results, total: results.length })
+          return
+        }
+
+        // ── POST /api/web/read-url ── 외부 URL 내용 읽기
+        if (url2.pathname === '/api/web/read-url' && req.method === 'POST') {
+          const body = await readBody(req)
+          const parsed = JSON.parse(body) as { url?: string; maxLength?: number }
+          const targetUrl = String(parsed.url ?? '').trim()
+          if (!targetUrl) { sendJson(res, 400, { error: 'url is required' }); return }
+
+          // URL 유효성 검사
+          try { new URL(targetUrl) } catch { sendJson(res, 400, { error: 'Invalid URL' }); return }
+
+          sLog('INFO', `[WebRead] Fetching: ${targetUrl}`)
+          const pageResp = await fetch(targetUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/json,text/plain,*/*',
+              'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            },
+            redirect: 'follow',
+            signal: AbortSignal.timeout(15_000),
+          })
+
+          if (!pageResp.ok) {
+            sendJson(res, pageResp.status, { error: `Failed to fetch URL: ${pageResp.status} ${pageResp.statusText}` })
+            return
+          }
+
+          const contentType = pageResp.headers.get('content-type') ?? ''
+          const rawText = await pageResp.text()
+          const maxLen = parsed.maxLength ?? 15_000
+
+          let extractedText = ''
+          let title = ''
+
+          if (contentType.includes('application/json')) {
+            // JSON 응답
+            try {
+              const json = JSON.parse(rawText)
+              extractedText = JSON.stringify(json, null, 2).slice(0, maxLen)
+            } catch {
+              extractedText = rawText.slice(0, maxLen)
+            }
+            title = targetUrl
+          } else if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+            // HTML → 텍스트 추출
+            const titleMatch = rawText.match(/<title[^>]*>([^<]+)<\/title>/i)
+            title = titleMatch?.[1]?.trim() ?? targetUrl
+
+            extractedText = rawText
+              // 불필요한 블록 제거
+              .replace(/<script[\s\S]*?<\/script>/gi, '')
+              .replace(/<style[\s\S]*?<\/style>/gi, '')
+              .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+              .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+              .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+              .replace(/<!--[\s\S]*?-->/g, '')
+              // 블록 태그 → 줄바꿈
+              .replace(/<\/(p|div|h[1-6]|li|tr|br|hr)[^>]*>/gi, '\n')
+              .replace(/<br\s*\/?>/gi, '\n')
+              // 나머지 태그 제거
+              .replace(/<[^>]+>/g, ' ')
+              // HTML 엔티티 디코딩
+              .replace(/&nbsp;/gi, ' ')
+              .replace(/&amp;/gi, '&')
+              .replace(/&lt;/gi, '<')
+              .replace(/&gt;/gi, '>')
+              .replace(/&quot;/gi, '"')
+              .replace(/&#39;/gi, "'")
+              .replace(/&#(\d+);/gi, (_, n) => String.fromCharCode(Number(n)))
+              // 공백 정리
+              .replace(/[ \t]+/g, ' ')
+              .replace(/\n{3,}/g, '\n\n')
+              .trim()
+              .slice(0, maxLen)
+          } else {
+            // 기타 텍스트
+            extractedText = rawText.slice(0, maxLen)
+            title = targetUrl
+          }
+
+          sLog('INFO', `[WebRead] "${title}" → ${extractedText.length}자 추출`)
+          sendJson(res, 200, { url: targetUrl, title, content: extractedText, contentLength: extractedText.length })
+          return
+        }
+
+        sendJson(res, 404, { error: 'Unknown web API endpoint' })
+      } catch (e) {
+        sLog('ERROR', `[WebAPI] 오류: ${e}`)
+        if (!res.headersSent) sendJson(res, 500, { error: String(e) })
+      }
+      return
+    }
+
     // ── /api/jira/* : Jira / Confluence 프록시 ──────────────────────────────────
     if (req.url?.startsWith('/api/jira/') || req.url?.startsWith('/api/confluence/')) {
       try {
@@ -4752,6 +4900,31 @@ const API_TOOLS = [
       required: ['issueKeyOrUrl'],
     },
   },
+  // ── 웹 검색 / URL 읽기 ──
+  {
+    name: 'web_search',
+    description: '웹에서 정보를 검색합니다. 외부 레퍼런스, 기술 문서, 게임 메카니즘 비교, 용어 정의 등을 찾을 때 사용합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '검색할 키워드 또는 질문 (영문/한글 모두 가능)' },
+        count: { type: 'number', description: '검색 결과 수 (기본 5, 최대 10)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'read_url',
+    description: '지정한 URL의 웹페이지 내용을 읽어옵니다. 검색 결과에서 찾은 URL의 상세 내용을 확인하거나, 사용자가 제공한 URL의 내용을 읽을 때 사용합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '읽을 웹페이지 URL (https://...)' },
+        maxLength: { type: 'number', description: '추출할 최대 텍스트 길이 (기본 15000자)' },
+      },
+      required: ['url'],
+    },
+  },
 ]
 
 // ── 서버사이드 Tool 실행 ──
@@ -5523,6 +5696,49 @@ async function serverExecuteToolAsync(
       } catch (e) { return { result: `상태 변경 오류: ${e instanceof Error ? e.message : String(e)}` } }
     }
 
+    // ── web_search ──
+    case 'web_search': {
+      const query = String(input.query ?? '').trim()
+      if (!query) return { result: '검색어를 입력하세요.' }
+      try {
+        const resp = await fetch('http://localhost:5173/api/web/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, count: input.count ?? 5 }),
+        })
+        const data = await resp.json() as { results?: Array<{ title: string; url: string; snippet: string; age: string }>; error?: string }
+        if (!resp.ok || data.error) return { result: `웹 검색 오류: ${data.error ?? resp.status}` }
+        const results = data.results ?? []
+        if (results.length === 0) return { result: `"${query}" 검색 결과가 없습니다.` }
+        let resultText = `🔍 "${query}" 웹 검색 결과 (${results.length}건):\n\n`
+        results.forEach((r, i) => {
+          resultText += `${i + 1}. **${r.title}**\n   ${r.url}\n   ${r.snippet}${r.age ? ` (${r.age})` : ''}\n\n`
+        })
+        resultText += '상세 내용이 필요하면 read_url(url)로 특정 페이지를 읽을 수 있습니다.'
+        return { result: resultText, data: { query, results } }
+      } catch (e) { return { result: `웹 검색 오류: ${e instanceof Error ? e.message : String(e)}` } }
+    }
+
+    // ── read_url ──
+    case 'read_url': {
+      const url = String(input.url ?? '').trim()
+      if (!url) return { result: 'URL을 입력하세요.' }
+      try {
+        const resp = await fetch('http://localhost:5173/api/web/read-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, maxLength: input.maxLength ?? 15000 }),
+        })
+        const data = await resp.json() as { title?: string; content?: string; contentLength?: number; error?: string }
+        if (!resp.ok || data.error) return { result: `URL 읽기 오류: ${data.error ?? resp.status}` }
+        const title = data.title ?? url
+        const content = data.content ?? ''
+        let resultText = `📄 ${title}\n🔗 ${url}\n📏 ${data.contentLength ?? content.length}자 추출\n\n${content}`
+        if (resultText.length > 20_000) resultText = resultText.slice(0, 20_000) + '\n...(잘림)'
+        return { result: resultText, data: { url, title, contentLength: data.contentLength } }
+      } catch (e) { return { result: `URL 읽기 오류: ${e instanceof Error ? e.message : String(e)}` } }
+    }
+
     default:
       return serverExecuteTool(toolName, input, options)
   }
@@ -5634,6 +5850,8 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   lines.push('- update_jira_issue_status: ⭐ Jira 이슈 상태 변경 (In Progress, Done 등)')
   lines.push('- search_confluence: Confluence 문서 CQL 검색 (기획서/스펙/회의록 등)')
   lines.push('- get_confluence_page: Confluence 페이지 전체 내용 조회 (pageId 필요)')
+  lines.push('- web_search: 🌐 웹 검색 (외부 레퍼런스, 기술 문서, 게임 메카니즘 비교, 용어 정의 등)')
+  lines.push('- read_url: 🌐 웹페이지 내용 읽기 (web_search 결과 URL 또는 사용자 제공 URL)')
   lines.push('- search_assets: Unity 에셋 파일 검색 (FBX 3D 모델, PNG 텍스처, WAV/MP3 사운드 등). ext="fbx"로 3D 모델만 검색 가능')
   lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 (아이콘, UI 이미지, 스프라이트)')
   lines.push('- build_character_profile: 캐릭터명 → FK 연결 모든 데이터 자동 수집. 이름 검색 실패 시 전체 목록 반환 → character_id로 재호출')
@@ -5726,6 +5944,16 @@ function buildServerSystemPrompt(_userQuery?: string): string {
     }
     lines.push('')
   }
+
+  // ── 웹 검색 규칙 ──
+  lines.push('[웹 검색 / URL 읽기 규칙]')
+  lines.push('⭐ 당신은 외부 웹 사이트를 검색하고 읽을 수 있습니다!')
+  lines.push('- 사용자가 외부 레퍼런스, 기술 문서, 다른 게임 비교, 용어 정의 등을 요청하면 web_search(query) 호출')
+  lines.push('- web_search 결과에서 특정 URL의 상세 내용이 필요하면 read_url(url) 호출')
+  lines.push('- 사용자가 URL을 직접 제공하면 read_url(url)로 바로 읽기')
+  lines.push('- 검색 키워드: 영문/한글 모두 가능, 구체적일수록 좋음')
+  lines.push('- 검색 결과를 정리하여 출처(URL)를 항상 명시하세요')
+  lines.push('')
 
   // ── Jira / Confluence 규칙 ──
   lines.push('[Jira / Confluence 사용 규칙]')
@@ -6330,6 +6558,8 @@ for line in resp.iter_lines():
   <tr><td><code>find_resource_image</code></td><td>게임 리소스 이미지 검색</td></tr>
   <tr><td><code>build_character_profile</code></td><td>캐릭터 연관 데이터 자동 수집</td></tr>
   <tr><td><code>read_guide</code></td><td>코드/DB 가이드 문서 읽기</td></tr>
+  <tr><td><code>web_search</code></td><td>🌐 웹 검색 (외부 레퍼런스, 기술 문서)</td></tr>
+  <tr><td><code>read_url</code></td><td>🌐 웹페이지 내용 읽기</td></tr>
 </table>
 
 <h2>💡 사용 팁</h2>

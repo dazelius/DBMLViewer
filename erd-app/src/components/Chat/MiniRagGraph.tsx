@@ -12,7 +12,7 @@ import { useSchemaStore } from '../../store/useSchemaStore.ts';
 
 // ── 타입 ──
 
-type NT = 'guide_db' | 'guide_code' | 'table' | 'tool' | 'source' | 'domain' | 'system_prompt' | 'knowledge';
+type NT = 'guide_db' | 'guide_code' | 'table' | 'tool' | 'source' | 'domain' | 'system_prompt' | 'knowledge' | 'web';
 interface N { id: string; name: string; label: string; type: NT; val: number; x?: number; y?: number; z?: number }
 interface L { source: string; target: string; type: string }
 
@@ -20,6 +20,7 @@ const C: Record<NT, string> = {
   system_prompt: '#ef4444', domain: '#c084fc', tool: '#f472b6',
   source: '#22d3ee', guide_db: '#818cf8', guide_code: '#4ade80', table: '#f59e0b',
   knowledge: '#a78bfa',
+  web: '#60a5fa',
 };
 
 // ── tool call → 활성 노드 ──
@@ -35,6 +36,7 @@ const KIND_TO_TOOL: Record<string, string> = {
   jira_search: 'search_jira', jira_issue: 'get_jira_issue',
   confluence_search: 'search_confluence', confluence_page: 'get_confluence_page',
   knowledge: 'read_knowledge',
+  web_search: 'web_search', web_read: 'read_url',
 };
 
 interface TraceResult {
@@ -95,6 +97,11 @@ function extractTrace(calls: ToolCallResult[], allNodes: N[]): TraceResult {
         if (knNode) { allIds.add(knId); stepIds.push(knId); }
       }
       allIds.add('src:knowledge'); stepIds.push('src:knowledge');
+    }
+
+    // web_search / web_read → web 소스 활성화
+    if (tc.kind === 'web_search' || tc.kind === 'web_read') {
+      allIds.add('src:web'); stepIds.push('src:web');
     }
 
     perCall.push({ toolId, nodeIds: stepIds });
@@ -186,6 +193,10 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming, knowledgeName
         }
       }
     }
+
+    // ── 웹 검색 소스 노드 ──
+    add({ id: 'src:web', name: 'web', label: '🌐 웹', type: 'web', val: 2.5 });
+    links.push({ source: 'sys:prompt', target: 'src:web', type: 'prompt_injects' });
 
     nodesRef.current = nodes;
     return { nodes, links };
@@ -545,6 +556,7 @@ export default function MiniRagGraph({ liveToolCalls, isStreaming, knowledgeName
               system_prompt: 'Prompt', domain: '도메인', tool: '도구',
               source: '소스', guide_db: 'DB가이드', guide_code: '코드가이드', table: '테이블',
               knowledge: '널리지',
+              web: '웹검색',
             };
             return (
               <div key={type} className="flex items-center gap-1">

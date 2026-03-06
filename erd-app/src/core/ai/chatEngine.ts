@@ -519,7 +519,25 @@ export interface KnowledgeResult {
   error?: string;
 }
 
-export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult | JiraSearchResult | JiraIssueResult | JiraCreateResult | JiraCommentResult | JiraStatusResult | ConfluenceSearchResult | ConfluencePageResult | SceneYamlResult | PrefabPreviewResult | FbxAnimationResult | KnowledgeResult;
+export interface WebSearchResult {
+  kind: 'web_search';
+  query: string;
+  results: { title: string; url: string; snippet: string; age?: string }[];
+  error?: string;
+  duration?: number;
+}
+
+export interface WebReadResult {
+  kind: 'web_read';
+  url: string;
+  title: string;
+  content: string;
+  contentLength: number;
+  error?: string;
+  duration?: number;
+}
+
+export type ToolCallResult = DataQueryResult | SchemaCardResult | GitHistoryResult | RevisionDiffResult | ImageResult | ArtifactResult | ArtifactPatchResult | CharacterProfileResult | CodeSearchResult | CodeFileResult | CodeGuideResult | AssetSearchResult | JiraSearchResult | JiraIssueResult | JiraCreateResult | JiraCommentResult | JiraStatusResult | ConfluenceSearchResult | ConfluencePageResult | SceneYamlResult | PrefabPreviewResult | FbxAnimationResult | KnowledgeResult | WebSearchResult | WebReadResult;
 
 // ── ChatTurn ─────────────────────────────────────────────────────────────────
 
@@ -567,6 +585,8 @@ export const TOOL_META: ToolMeta[] = [
   { name: 'get_confluence_page',    label: 'Confluence 페이지',   emoji: '📚', dataSources: ['confluence'] },
   { name: 'save_knowledge',         label: '널리지 저장',         emoji: '🧠', dataSources: ['knowledge'] },
   { name: 'read_knowledge',         label: '널리지 읽기',         emoji: '🧠', dataSources: ['knowledge'] },
+  { name: 'web_search',             label: '웹 검색',             emoji: '🌐', dataSources: ['web'] },
+  { name: 'read_url',               label: '웹페이지 읽기',       emoji: '🌐', dataSources: ['web'] },
 ];
 
 export const DATA_SOURCE_META: Array<{ name: string; label: string; emoji: string }> = [
@@ -580,6 +600,7 @@ export const DATA_SOURCE_META: Array<{ name: string; label: string; emoji: strin
   { name: 'jira',       label: 'Jira',           emoji: '🎫' },
   { name: 'confluence',  label: 'Confluence',      emoji: '📚' },
   { name: 'knowledge',  label: '널리지',           emoji: '🧠' },
+  { name: 'web',        label: '웹 검색',          emoji: '🌐' },
 ];
 
 export const DOMAIN_KEYWORDS: Record<string, string[]> = {
@@ -917,6 +938,31 @@ const TOOLS = [
       required: ['issueKey'],
     },
   },
+  // ── 웹 검색 / URL 읽기 ──
+  {
+    name: 'web_search',
+    description: '🌐 웹에서 정보를 검색합니다. 외부 레퍼런스, 기술 문서, 게임 메카니즘 비교, 용어 정의 등을 찾을 때 사용합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '검색할 키워드 또는 질문 (영문/한글 모두 가능)' },
+        count: { type: 'number', description: '검색 결과 수 (기본 5, 최대 10)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'read_url',
+    description: '🌐 지정한 URL의 웹페이지 내용을 읽어옵니다. web_search 결과 URL의 상세 내용을 확인하거나, 사용자가 제공한 URL의 내용을 읽을 때 사용합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '읽을 웹페이지 URL (https://...)' },
+        maxLength: { type: 'number', description: '추출할 최대 텍스트 길이 (기본 15000자)' },
+      },
+      required: ['url'],
+    },
+  },
 ];
 
 // ── 시스템 프롬프트 빌더 ─────────────────────────────────────────────────────
@@ -966,6 +1012,8 @@ function buildSystemPrompt(
   lines.push('- 캐릭터 기획서/프로파일 → build_character_profile 먼저 호출');
   lines.push('- "기억해/저장해/널리지" 요청 → save_knowledge (name=영문_snake_case)');
   lines.push('- 널리지 목록에 있는 파일은 read_knowledge 도구로 언제든 읽을 수 있음');
+  lines.push('- 🌐 외부 레퍼런스/기술문서 필요 → web_search(query) → 상세 내용 필요 시 read_url(url)');
+  lines.push('- 사용자가 URL을 직접 제공하면 read_url(url)로 바로 읽기');
   lines.push('');
   lines.push('## 🔘 인터랙티브 객관식 버튼 (하나를 선택하는 질문 시 필수 사용)');
   lines.push('⭐⭐⭐ 당신의 UI는 객관식 버튼을 **완벽하게 지원**합니다! "지원 안 됨"이라고 절대 말하지 마세요.');
@@ -1852,6 +1900,7 @@ const KIND_TO_TOOL: Record<string, string> = {
   jira_search: 'search_jira', jira_issue: 'get_jira_issue',
   jira_create: 'create_jira_issue', jira_comment: 'add_jira_comment', jira_status: 'update_jira_issue_status',
   confluence_search: 'search_confluence', confluence_page: 'get_confluence_page',
+  web_search: 'web_search', web_read: 'read_url',
 };
 
 function buildRagTrace(query: string, toolCalls: ToolCallResult[], tokenUsage?: TokenUsageSummary): RagTrace {
@@ -2371,6 +2420,8 @@ export async function sendChatMessage(
         get_character_profile: '👤 캐릭터 프로필 조회',
         save_knowledge: '🧠 널리지 저장',
         read_knowledge: '🧠 널리지 읽기',
+        web_search: '🌐 웹 검색',
+        read_url: '🌐 웹페이지 읽기',
       };
 
       await Promise.all(toolBlocks.map(async (tb) => {
@@ -3829,6 +3880,65 @@ function showTab(id){
           } catch (e) {
             resultStr = `널리지 읽기 오류: ${String(e)}`;
             tc = { kind: 'knowledge', action: 'read', name: knName, error: String(e) };
+          }
+        }
+
+        // ── web_search ──
+        else if (tb.name === 'web_search') {
+          const query = String(inp.query ?? '').trim();
+          const count = Number(inp.count ?? 5);
+          const t0 = Date.now();
+          try {
+            const resp = await fetch('/api/web/search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ query, count }),
+            });
+            const data2 = await resp.json() as { query?: string; results?: Array<{ title: string; url: string; snippet: string; age?: string }>; error?: string };
+            const duration = Date.now() - t0;
+            if (!resp.ok || data2.error) {
+              resultStr = `웹 검색 오류: ${data2.error ?? resp.status}`;
+              tc = { kind: 'web_search', query, results: [], error: resultStr, duration };
+            } else {
+              const results = data2.results ?? [];
+              resultStr = `🔍 "${query}" 웹 검색 결과 (${results.length}건):\n\n`;
+              results.forEach((r, idx) => {
+                resultStr += `${idx + 1}. **${r.title}**\n   ${r.url}\n   ${r.snippet}${r.age ? ` (${r.age})` : ''}\n\n`;
+              });
+              resultStr += '상세 내용이 필요하면 read_url(url)로 특정 페이지를 읽을 수 있습니다.';
+              tc = { kind: 'web_search', query, results, duration };
+            }
+          } catch (e) {
+            resultStr = `웹 검색 오류: ${String(e)}`;
+            tc = { kind: 'web_search', query, results: [], error: String(e), duration: Date.now() - t0 };
+          }
+        }
+        // ── read_url ──
+        else if (tb.name === 'read_url') {
+          const url = String(inp.url ?? '').trim();
+          const maxLength = Number(inp.maxLength ?? 15000);
+          const t0 = Date.now();
+          try {
+            const resp = await fetch('/api/web/read-url', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url, maxLength }),
+            });
+            const data2 = await resp.json() as { url?: string; title?: string; content?: string; contentLength?: number; error?: string };
+            const duration = Date.now() - t0;
+            if (!resp.ok || data2.error) {
+              resultStr = `URL 읽기 오류: ${data2.error ?? resp.status}`;
+              tc = { kind: 'web_read', url, title: '', content: '', contentLength: 0, error: resultStr, duration };
+            } else {
+              const title = data2.title ?? url;
+              const content = data2.content ?? '';
+              resultStr = `📄 ${title}\n🔗 ${url}\n📏 ${data2.contentLength ?? content.length}자 추출\n\n${content}`;
+              if (resultStr.length > 20000) resultStr = resultStr.slice(0, 20000) + '\n...(잘림)';
+              tc = { kind: 'web_read', url, title, content, contentLength: data2.contentLength ?? content.length, duration };
+            }
+          } catch (e) {
+            resultStr = `URL 읽기 오류: ${String(e)}`;
+            tc = { kind: 'web_read', url, title: '', content: '', contentLength: 0, error: String(e), duration: Date.now() - t0 };
           }
         }
 
