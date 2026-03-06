@@ -4757,9 +4757,20 @@ function serverStreamClaude(
         const contentArray = Object.entries(blocks)
           .sort(([a], [b]) => Number(a) - Number(b))
           .map(([, b]) => {
-            const { _inputStr, ...clean } = b
+            const { _inputStr, ...raw } = b
             void _inputStr
-            return clean
+            // Claude API 스키마에 맞게 불필요한 필드 제거
+            if (raw.type === 'tool_use') {
+              // tool_use는 {type, id, name, input}만 허용 — text 제거
+              const { text, ...toolClean } = raw
+              void text
+              return toolClean
+            }
+            if (raw.type === 'text') {
+              // text는 {type, text}만 허용 — id, name 제거
+              return { type: raw.type, text: raw.text }
+            }
+            return raw
           })
         if (!clientGone) resolve({ content: contentArray, stop_reason: stopReason })
       })
