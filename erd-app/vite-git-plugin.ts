@@ -6406,7 +6406,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       const isFast = body.fast === true
       const MODEL = isFast ? 'claude-sonnet-4-20250514' : 'claude-opus-4-6'
       const MAX_TOKENS = isFast ? 4096 : 8192
-      const MAX_ITERATIONS = isFast ? 6 : 12
+      const MAX_ITERATIONS = 12  // Slack이든 웹이든 필요한 만큼 이터레이션
       if (isFast) sLog('INFO', `[chatApi] ⚡ Fast 모드 활성 — model=${MODEL}, maxIter=${MAX_ITERATIONS}`)
       const systemPrompt = buildServerSystemPrompt(userMessage) // ← 쿼리 전달로 스마트 주입
 

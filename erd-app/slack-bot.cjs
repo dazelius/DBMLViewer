@@ -120,7 +120,8 @@ function accumulateToolMeta(channel, threadTs, toolCalls) {
         // "17행 조회됨 (표시: 17행)컬럼: id, name, ..." → 테이블 + 행 수 + 컬럼
         const rowMatch = summary.match(/(\d+)행 조회됨/);
         const colMatch = summary.match(/컬럼:\s*(.+)/);
-        const tableMatch = (tc.input || '').match(/FROM\s+[`"]?(\w+)[`"]?/i);
+        const inputStr = typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input || '');
+        const tableMatch = inputStr.match(/FROM\s+[`"]?(\w+)[`"]?/i);
         const entry = {
           table: tableMatch?.[1] || '(알 수 없음)',
           rows: rowMatch?.[1] || '?',
@@ -162,7 +163,8 @@ function accumulateToolMeta(channel, threadTs, toolCalls) {
       }
       case 'search_code':
       case 'read_code_file': {
-        const fileMatch = (tc.input || '').match(/[\w/]+\.\w+/);
+        const inputStr2 = typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input || '');
+        const fileMatch = inputStr2.match(/[\w/]+\.\w+/);
         if (fileMatch && !meta.codeFiles.includes(fileMatch[0])) {
           meta.codeFiles.push(fileMatch[0]);
           if (meta.codeFiles.length > 5) meta.codeFiles.shift();
