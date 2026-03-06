@@ -212,7 +212,7 @@ function buildMetaContext(channel, threadTs) {
 }
 
 // ── DataMaster API 호출 (SSE 스트리밍 — 텍스트 + 도구 진행 상황 수집) ──
-async function callDataMasterStreaming(message, sessionId, onToolStart) {
+async function callDataMasterStreaming(message, sessionId, onToolStart, onIteration) {
   const url = `${DATAMASTER_URL}/api/v1/chat`;
   
   const controller = new AbortController();
@@ -320,6 +320,7 @@ async function callDataMasterStreaming(message, sessionId, onToolStart) {
                 // 새 이터레이션 시작 — 이전 이터레이션 텍스트 저장 후 리셋
                 if (currentIterText.trim()) allStreamedTexts.push(currentIterText.trim());
                 currentIterText = '';
+                if (onIteration) onIteration(allStreamedTexts.length + 1);
                 break;
                 
               case 'done':
@@ -773,32 +774,83 @@ async function handleMessage({ message, say, client, event }) {
     };
 
     let lastUpdate = 0;
-    const onToolStart = async (toolName) => {
-      const label = TOOL_LABELS[toolName] || `🔧 ${toolName}`;
-      toolProgress.push(label);
+    let iterationCount = 0;
+    const onToolStart = async (toolName, toolInput) => {
+      const emoji = TOOL_EMOJI[toolName] || '🔧';
+      const label = TOOL_LABELS[toolName] || toolName;
       
-      // 너무 자주 업데이트하지 않도록 1.5초 디바운스
+      // 도구별 상세 설명 생성
+      let detail = '';
+      const inputStr = typeof toolInput === 'string' ? toolInput : JSON.stringify(toolInput || {});
+      if (toolName === 'query_game_data') {
+        const sqlMatch = inputStr.match(/sql['":\s]*['"]?([^'"}{]+)/i);
+        if (sqlMatch) detail = sqlMatch[1].trim().slice(0, 50);
+      } else if (toolName === 'show_table_schema') {
+        const tblMatch = inputStr.match(/table['":\s]*['"]?([^'"}{,]+)/i);
+        if (tblMatch) detail = tblMatch[1].trim();
+      } else if (toolName === 'search_code' || toolName === 'read_code_file') {
+        const qMatch = inputStr.match(/(?:query|path)['":\s]*['"]?([^'"}{,]+)/i);
+        if (qMatch) detail = qMatch[1].trim().slice(0, 40);
+      } else if (toolName === 'search_jira' || toolName === 'get_jira_issue') {
+        const jMatch = inputStr.match(/(?:query|issue_key)['":\s]*['"]?([^'"}{,]+)/i);
+        if (jMatch) detail = jMatch[1].trim().slice(0, 40);
+      } else if (toolName === 'read_knowledge') {
+        const kMatch = inputStr.match(/name['":\s]*['"]?([^'"}{,]+)/i);
+        if (kMatch) detail = kMatch[1].trim();
+      } else if (toolName === 'create_artifact') {
+        const tMatch = inputStr.match(/title['":\s]*['"]?([^'"}{,]+)/i);
+        if (tMatch) detail = tMatch[1].trim().slice(0, 30);
+      }
+      
+      const stepLine = detail ? `${emoji} ${label}  _${detail}_` : `${emoji} ${label}`;
+      toolProgress.push(stepLine);
+      
+      // 너무 자주 업데이트하지 않도록 1초 디바운스
       const now = Date.now();
-      if (now - lastUpdate < 1500 || !loadingMsg?.ts) return;
+      if (now - lastUpdate < 1000 || !loadingMsg?.ts) return;
       lastUpdate = now;
       
       try {
-        // 최근 3개만 표시
-        const recent = toolProgress.slice(-3);
-        const dots = toolProgress.length > 3 ? `외 ${toolProgress.length - 3}개...  ` : '';
+        // 전체 과정을 줄바꿈으로 표시 (최대 15개, 넘으면 앞부분 생략)
+        const maxShow = 15;
+        let stepLines;
+        if (toolProgress.length <= maxShow) {
+          stepLines = toolProgress.map((s, i) => `\`${String(i + 1).padStart(2)}\` ${s}`);
+        } else {
+          const skip = toolProgress.length - maxShow;
+          stepLines = [
+            `_... ${skip}단계 생략 ..._`,
+            ...toolProgress.slice(skip).map((s, i) => `\`${String(skip + i + 1).padStart(2)}\` ${s}`),
+          ];
+        }
+        
         await client.chat.update({
           channel,
           ts: loadingMsg.ts,
           text: `🔍 분석 중... (${toolProgress.length}단계)`,
-          blocks: [{
-            type: 'context',
-            elements: [{ type: 'mrkdwn', text: `🔍 *DataMaster* 분석 중...\n${dots}${recent.join(' → ')}` }],
-          }],
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: `🔍 *DataMaster* 분석 중... _(${toolProgress.length}단계)_` },
+            },
+            {
+              type: 'context',
+              elements: [{ type: 'mrkdwn', text: stepLines.join('\n') }],
+            },
+          ],
         });
       } catch { /* rate limit 무시 */ }
     };
 
-    const result = await callDataMasterStreaming(enrichedMessage, sessionId, onToolStart);
+    // 이터레이션 구분 콜백
+    const onIteration = async (iterNum) => {
+      if (iterNum <= 1 || !loadingMsg?.ts) return;
+      toolProgress.push(`── *이터레이션 ${iterNum}* ──`);
+      // 즉시 업데이트
+      lastUpdate = 0;
+    };
+    
+    const result = await callDataMasterStreaming(enrichedMessage, sessionId, onToolStart, onIteration);
     const rawContent = result.content || '';
     
     // ── 도구 결과에서 메타정보 축적 ──
