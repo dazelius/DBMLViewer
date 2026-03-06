@@ -1003,8 +1003,19 @@ async function handleMessage({ message, say, client, event }) {
     // ── 아티팩트 감지 + 자동 출판 ──
     let publishedUrl = null;
     
-    // 1) AI가 create_artifact 도구로 만든 아티팩트 → HTML 직접 출판
-    const artifactTC = result.toolCalls.find(tc => tc.tool === 'create_artifact' && tc.result);
+    // 웹에서만 동작하는 비주얼 도구 목록 (Slack에서는 링크가 아닌 텍스트로 떨어짐 → 반드시 출판)
+    const VISUAL_TOOLS = new Set([
+      'preview_fbx_animation', 'preview_prefab', 'find_resource_image',
+      'build_character_profile', 'search_assets', 'create_artifact', 'patch_artifact',
+    ]);
+    const usedTools = new Set(result.toolCalls.map(tc => tc.tool));
+    const hasVisualTool = [...usedTools].some(t => VISUAL_TOOLS.has(t));
+    const shouldForcePublish = hasVisualTool || result.toolCalls.length >= 2;
+    
+    // 1) AI가 create_artifact/patch_artifact 도구로 만든 아티팩트 → HTML 직접 출판
+    const artifactTC = result.toolCalls.find(tc => 
+      (tc.tool === 'create_artifact' || tc.tool === 'patch_artifact') && tc.result
+    );
     if (artifactTC) {
       try {
         const artData = typeof artifactTC.result === 'object' ? artifactTC.result : {};
@@ -1031,7 +1042,30 @@ async function handleMessage({ message, say, client, event }) {
       }
     }
     
-    // 2) 아티팩트 없지만 복잡한 텍스트 → 마크다운을 HTML로 변환 후 출판
+    // 2) 비주얼 도구 사용했는데 아직 출판 안 됨 → 마크다운을 강제 출판
+    //    또는 도구 2개 이상 사용 + 내용이 충분할 때
+    if (!publishedUrl && shouldForcePublish && rawContent.length > 100) {
+      try {
+        const titleGuess = userText.slice(0, 40) + (userText.length > 40 ? '...' : '');
+        const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: titleGuess, markdown: rawContent }),
+        });
+        if (pubResp.ok) {
+          const pubData = await pubResp.json();
+          publishedUrl = pubData.url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
+          if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
+            publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
+          }
+          console.log(`[Slack] 강제 출판 (${hasVisualTool ? '비주얼도구' : `도구${result.toolCalls.length}개`}): ${publishedUrl}`);
+        }
+      } catch (e) {
+        console.warn('[Slack] 강제 출판 실패:', e.message);
+      }
+    }
+    
+    // 3) 나머지: 테이블/코드블록/긴 텍스트가 있으면 출판
     if (!publishedUrl) {
       const hasTable = /\|.+\|.+\|/.test(rawContent) && rawContent.split('\n').filter(l => l.includes('|')).length > 2;
       const hasCodeBlock = /```[\s\S]{200,}```/.test(rawContent);
@@ -1086,56 +1120,14 @@ async function handleMessage({ message, say, client, event }) {
         slackText = result.toolCalls.map(tc => formatToolResultForSlack(tc)).join('\n');
       }
       
-      // 도구를 많이 썼는데 텍스트만 있고 아티팩트가 없으면 → 자동 출판
-      if (!publishedUrl && result.toolCalls.length >= 2 && rawContent.length > 300) {
-        try {
-          const titleGuess = userText.slice(0, 40) + (userText.length > 40 ? '...' : '');
-          const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: titleGuess, markdown: rawContent }),
-          });
-          if (pubResp.ok) {
-            const pubData = await pubResp.json();
-            publishedUrl = pubData.url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
-            if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
-              publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
-            }
-            console.log(`[Slack] 도구결과 자동출판: ${publishedUrl}`);
-            
-            // 이미 blocks에 뭔가 있었으면 다시 조립
-            blocks.length = 0;
-            const summary = extractSlackSummary(rawContent);
-            blocks.push({
-              type: 'section',
-              text: { type: 'mrkdwn', text: summary },
-            });
-            blocks.push({
-              type: 'actions',
-              elements: [{
-                type: 'button',
-                text: { type: 'plain_text', text: '📊 전체 결과 보기', emoji: true },
-                url: publishedUrl,
-                style: 'primary',
-              }],
-            });
-          }
-        } catch (e) {
-          console.warn('[Slack] 도구결과 자동출판 실패:', e.message);
-        }
-      }
-      
-      // 출판 안 된 경우 텍스트 직접 표시
-      if (!publishedUrl) {
-        slackText = truncateForSlack(slackText);
-        // section 블록 분할 (3000자 제한)
-        for (let i = 0; i < slackText.length; i += 2900) {
-          blocks.push({
-            type: 'section',
-            text: { type: 'mrkdwn', text: slackText.slice(i, i + 2900) },
-          });
-          if (blocks.length >= 8) break;
-        }
+      slackText = truncateForSlack(slackText);
+      // section 블록 분할 (3000자 제한)
+      for (let i = 0; i < slackText.length; i += 2900) {
+        blocks.push({
+          type: 'section',
+          text: { type: 'mrkdwn', text: slackText.slice(i, i + 2900) },
+        });
+        if (blocks.length >= 8) break;
       }
     }
     
