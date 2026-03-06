@@ -6478,6 +6478,13 @@ function createChatApiMiddleware(options: GitPluginOptions) {
                 res.write(`event: error\ndata: ${JSON.stringify({ error: '컨텍스트 초과로 이전 대화를 줄여 재시도합니다...', recoverable: true })}\n\n`)
                 continue  // 루프 재시도
               }
+              // upstream 일시 에러 → 2초 대기 후 재시도
+              if (errMsg.includes('upstream') || errMsg.includes('reset before headers') || errMsg.includes('connection termination') || errMsg.includes('overloaded') || errMsg.includes('529')) {
+                sLog('WARN', `[chatApi/stream] 일시적 API 에러 감지 — 2초 후 재시도: ${errMsg.slice(0, 80)}`)
+                res.write(`event: error\ndata: ${JSON.stringify({ error: 'API 서버 일시 오류 — 재시도 중...', recoverable: true })}\n\n`)
+                await new Promise(r => setTimeout(r, 2000))
+                continue  // 루프 재시도
+              }
               // 복구 불가능한 에러 → 전파
               throw apiErr
             }
@@ -6619,13 +6626,24 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       // ── 비스트리밍 모드 ──
       try {
         for (let i = 0; i < MAX_ITERATIONS; i++) {
-          const data = await serverCallClaude(apiKey, {
-            model: MODEL,
-            max_tokens: MAX_TOKENS,
-            system: systemPrompt,
-            tools: API_TOOLS,
-            messages,
-          })
+          let data: { content: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>; stop_reason: string }
+          try {
+            data = await serverCallClaude(apiKey, {
+              model: MODEL,
+              max_tokens: MAX_TOKENS,
+              system: systemPrompt,
+              tools: API_TOOLS,
+              messages,
+            })
+          } catch (apiErr) {
+            const errMsg = apiErr instanceof Error ? apiErr.message : String(apiErr)
+            if (errMsg.includes('upstream') || errMsg.includes('reset before headers') || errMsg.includes('connection termination') || errMsg.includes('overloaded') || errMsg.includes('529')) {
+              sLog('WARN', `[chatApi/non-stream] 일시적 API 에러 — 2초 후 재시도: ${errMsg.slice(0, 80)}`)
+              await new Promise(r => setTimeout(r, 2000))
+              continue
+            }
+            throw apiErr
+          }
 
           if (data.stop_reason === 'end_turn' || data.stop_reason === 'stop_sequence') {
             const lastText = data.content.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n').trim()
