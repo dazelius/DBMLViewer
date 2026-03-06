@@ -4764,6 +4764,8 @@ function serverStreamClaude(
               // tool_use는 {type, id, name, input}만 허용 — text 제거
               const { text, ...toolClean } = raw
               void text
+              // input이 없으면 빈 객체라도 넣어야 Claude API가 수락
+              if (!toolClean.input) toolClean.input = {}
               return toolClean
             }
             if (raw.type === 'text') {
