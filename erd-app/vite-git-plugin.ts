@@ -6200,18 +6200,18 @@ function buildKnowledgeIndex(knDir: string): { name: string; sizeKB: number; pre
 
   try {
     if (!existsSync(knDir)) return index
-    const files = readdirSync(knDir).filter(f => f.endsWith('.md'))
+      const files = readdirSync(knDir).filter(f => f.endsWith('.md'))
     if (files.length === 0) return index
 
-    for (const f of files) {
-      const fPath = join(knDir, f)
-      const stat = statSync(fPath)
+        for (const f of files) {
+          const fPath = join(knDir, f)
+          const stat = statSync(fPath)
       const sizeKB = Math.round(stat.size / 1024 * 10) / 10
-      let content = readFileSync(fPath, 'utf-8')
-      if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
-      if (content.length > 50 * 1024) content = content.slice(0, 50 * 1024) + '\n...(잘림)'
+          let content = readFileSync(fPath, 'utf-8')
+          if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
+          if (content.length > 50 * 1024) content = content.slice(0, 50 * 1024) + '\n...(잘림)'
 
-      const name = f.replace('.md', '')
+          const name = f.replace('.md', '')
 
       // 목차용 요약 생성: 첫 줄(제목) + 헤딩 추출
       const headings: string[] = []
@@ -6684,7 +6684,7 @@ function buildServerSystemPrompt(_userQuery?: string): string {
         lines.push('[📚 널리지 베이스 — 필요 시 read_knowledge 도구로 읽기]')
         lines.push('⚠️ 아래 목록은 저장된 지식 파일의 요약입니다. **전문은 포함되어 있지 않습니다.**')
         lines.push('질문에 관련된 널리지가 있으면 **반드시 read_knowledge 도구로 읽은 후** 답변하세요.')
-        lines.push('')
+          lines.push('')
         for (const item of index) {
           lines.push(`  📌 ${item.name} (${item.sizeKB}KB) — ${item.preview}`)
         }
@@ -6989,6 +6989,20 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       const fullHtml = buildPublishedPage(title, contentHtml)
       writeFileSync(join(PUBLISHED_DIR, `${id}.html`), fullHtml, 'utf-8')
 
+      // Slack 소스일 경우 "Slack" 폴더 자동 생성/할당
+      let slackFolderId: string | null = null
+      if (source === 'slack') {
+        const folders = readFolders()
+        let slackFolder = folders.find(f => f.name === 'Slack' && f.parentId === null)
+        if (!slackFolder) {
+          slackFolder = { id: `folder_slack_${Date.now().toString(36)}`, name: 'Slack', parentId: null, createdAt: new Date().toISOString() }
+          folders.push(slackFolder)
+          writeFolders(folders)
+          sLog('INFO', `[Publish] "Slack" 폴더 자동 생성: ${slackFolder.id}`)
+        }
+        slackFolderId = slackFolder.id
+      }
+
       // index.json에 메타 등록 → Explore 페이지에서 바로 보임
       const list = readPublishedIndex()
       // description: HTML에서 첫 200자 텍스트 추출
@@ -6999,7 +7013,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
         description: descText,
         createdAt: new Date().toISOString(),
         author: source === 'slack' ? 'Slack' : 'API',
-        folderId: null,
+        folderId: slackFolderId,
       })
       writePublishedIndex(list)
 
@@ -7101,11 +7115,11 @@ function createChatApiMiddleware(options: GitPluginOptions) {
             let data: { content: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>; stop_reason: string }
             try {
               data = await serverStreamClaude(
-                apiKey,
+              apiKey,
                 { model: MODEL, max_tokens: MAX_TOKENS, system: systemPrompt, tools: API_TOOLS, messages },
-                res,
-                () => {}, // tool_use 처리는 아래에서
-              )
+              res,
+              () => {}, // tool_use 처리는 아래에서
+            )
             } catch (apiErr) {
               const errMsg = apiErr instanceof Error ? apiErr.message : String(apiErr)
               // msg_too_long → 메시지를 더 줄이고 재시도
@@ -7265,8 +7279,8 @@ function createChatApiMiddleware(options: GitPluginOptions) {
           saveSession(session)
 
           if (!res.writableEnded) {
-            res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: finalText, tool_calls: allToolCalls })}\n\n`)
-            res.end()
+          res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: finalText, tool_calls: allToolCalls })}\n\n`)
+          res.end()
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
@@ -7278,8 +7292,8 @@ function createChatApiMiddleware(options: GitPluginOptions) {
           sLog('ERROR', `[chatApi/stream] ${msg}`)
           try {
             if (!res.writableEnded) {
-              res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`)
-              res.end()
+          res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`)
+          res.end()
             }
           } catch { /* 이미 소켓 닫힘 */ }
         } finally {
@@ -7296,10 +7310,10 @@ function createChatApiMiddleware(options: GitPluginOptions) {
             data = await serverCallClaude(apiKey, {
               model: MODEL,
               max_tokens: MAX_TOKENS,
-              system: systemPrompt,
-              tools: API_TOOLS,
-              messages,
-            })
+            system: systemPrompt,
+            tools: API_TOOLS,
+            messages,
+          })
           } catch (apiErr) {
             const errMsg = apiErr instanceof Error ? apiErr.message : String(apiErr)
             if (errMsg.includes('upstream') || errMsg.includes('reset before headers') || errMsg.includes('connection termination') || errMsg.includes('overloaded') || errMsg.includes('529')) {
