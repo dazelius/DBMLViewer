@@ -40,6 +40,8 @@ import {
   type KnowledgeResult,
   type WebSearchResult,
   type WebReadResult,
+  type BibleTablingEditResult,
+  type BibleTablingAddRowsResult,
   getKnowledgeEntries,
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
@@ -5166,6 +5168,67 @@ function WebReadCard({ tc }: { tc: WebReadResult }) {
   );
 }
 
+// ── BibleTablingCard — 바이블테이블링 편집 결과 ──────────────────────────────
+function BibleTablingCard({ tc }: { tc: BibleTablingEditResult }) {
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(234,179,8,0.3)' }}>
+      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: 'rgba(234,179,8,0.1)', borderBottom: '1px solid rgba(234,179,8,0.18)' }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(234,179,8,0.2)' }}>📝</div>
+        <span className="font-semibold text-[13px]" style={{ color: '#eab308' }}>바이블테이블링 — 데이터 편집</span>
+        <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{tc.duration ? `${(tc.duration / 1000).toFixed(1)}s` : ''}</span>
+      </div>
+      {tc.error ? (
+        <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{tc.error}</div>
+      ) : (
+        <div className="px-4 py-3 space-y-2">
+          <div className="font-semibold text-[14px]" style={{ color: '#eab308' }}>{tc.title}</div>
+          {tc.reason && <div className="text-[12px]" style={{ color: 'var(--text-muted)' }}>사유: {tc.reason}</div>}
+          <div className="flex gap-4 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+            <span>📁 {tc.filesModified}개 파일</span>
+            <span>📊 {tc.totalRowsMatched}행 매치</span>
+            <span>✏️ {tc.totalCellsModified}셀 변경</span>
+          </div>
+          {tc.tables.length > 0 && <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>테이블: {tc.tables.join(', ')}</div>}
+          {tc.downloadUrl && (
+            <a href={tc.downloadUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium" style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308', border: '1px solid rgba(234,179,8,0.3)', textDecoration: 'none', cursor: 'pointer' }}>
+              📥 {tc.downloadFilename || '다운로드'}
+            </a>
+          )}
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>💡 노란색 하이라이트 = AI 편집 셀</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── BibleTablingAddRowsCard — 바이블테이블링 행 추가 결과 ─────────────────────
+function BibleTablingAddRowsCard({ tc }: { tc: BibleTablingAddRowsResult }) {
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(34,197,94,0.3)' }}>
+      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: 'rgba(34,197,94,0.1)', borderBottom: '1px solid rgba(34,197,94,0.18)' }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(34,197,94,0.2)' }}>➕</div>
+        <span className="font-semibold text-[13px]" style={{ color: '#22c55e' }}>바이블테이블링 — 행 추가</span>
+        <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{tc.duration ? `${(tc.duration / 1000).toFixed(1)}s` : ''}</span>
+      </div>
+      {tc.error ? (
+        <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{tc.error}</div>
+      ) : (
+        <div className="px-4 py-3 space-y-2">
+          <div className="font-semibold text-[14px]" style={{ color: '#22c55e' }}>테이블: {tc.table}</div>
+          {tc.file && <div className="text-[12px]" style={{ color: 'var(--text-muted)' }}>파일: {tc.file}</div>}
+          <div className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>➕ {tc.rowsAdded}행 추가됨</div>
+          {tc.downloadUrl && (
+            <a href={tc.downloadUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.3)', textDecoration: 'none', cursor: 'pointer' }}>
+              📥 {tc.downloadFilename || '다운로드'}
+            </a>
+          )}
+          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>💡 노란색 하이라이트 = AI 추가 셀</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── AssetSearchCard ────────────────────────────────────────────────────────────
 // ── 씬 YAML 분석 카드 ────────────────────────────────────────────────────────
 function SceneYamlCard({ tc }: { tc: SceneYamlResult }) {
@@ -5798,6 +5861,8 @@ function ToolCallCard({ tc, index, onOpenArtifact }: { tc: ToolCallResult; index
   if (tc.kind === 'knowledge') return <KnowledgeCard tc={tc} />;
   if (tc.kind === 'web_search') return <WebSearchCard tc={tc} />;
   if (tc.kind === 'web_read') return <WebReadCard tc={tc} />;
+  if (tc.kind === 'bible_tabling_edit') return <BibleTablingCard tc={tc} />;
+  if (tc.kind === 'bible_tabling_add_rows') return <BibleTablingAddRowsCard tc={tc} />;
   if (tc.kind === 'artifact_patch') return null;
   return <DataQueryCard tc={tc as DataQueryResult} index={index} />;
 }
