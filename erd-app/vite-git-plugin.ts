@@ -5956,6 +5956,17 @@ function markdownToHtml(md: string): string {
   html = html.replace(/^- (.+)/gm, '<li>$1</li>')
   html = html.replace(/((?:<li>.+<\/li>\n?)+)/g, '<ul>$1</ul>')
 
+  // 인라인 코드 안의 .fbx 파일명 → 뷰어 링크 (pre 블록 밖에서만)
+  // <code>vanguard_mid.fbx</code> → <a class="fbx-btn" ...>
+  html = html.replace(/<code>([\w\-./]+\.fbx)(?:\s*\([^)]*\))?<\/code>/gi, (_m, fname) => {
+    const cleanName = fname.replace(/^[\s./]+/, '')
+    return `<a class="fbx-btn" href="/prefab-viewer?fbx=${encodeURIComponent('/api/assets/file?path=' + cleanName)}" target="_blank">🎮 <span>${cleanName}</span></a>`
+  })
+  // <code>path/to/file.prefab</code> → 뷰어 링크
+  html = html.replace(/<code>([\w\-./]+\.prefab)<\/code>/gi, (_m, fpath) => {
+    return `<a class="prefab-btn" href="/prefab-viewer?path=${encodeURIComponent(fpath)}" target="_blank">🧩 <span>${fpath.split('/').pop()?.replace('.prefab', '') || fpath}</span></a>`
+  })
+
   // 남은 줄바꿈 → <br> (빈 줄은 <p>)
   html = html.replace(/\n\n/g, '</p><p>')
   html = '<p>' + html + '</p>'
@@ -6187,9 +6198,54 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       });
     });
   }
-  // ── FBX 링크/프리팹 교체 ──
+  // ── FBX/프리팹 파일명을 텍스트에서 자동 감지하여 뷰어 버튼으로 변환 ──
+  var FBX_RE = /([\\w\\-\\.]+\\.fbx)(?:\\s*\\([^)]*\\))?/gi;
+  var PREFAB_RE = /([\\w\\-\\.\\/]+\\.prefab)/gi;
+
+  function replaceTextWithButtons(el) {
+    if (!el || !el.textContent) return;
+    if (el.dataset && el.dataset.btnInit) return;
+    if (el.closest && (el.closest('.fbx-btn') || el.closest('.prefab-btn'))) return;
+    var text = el.textContent;
+    
+    // FBX 파일명 감지
+    var fbxMatches = text.match(FBX_RE);
+    if (fbxMatches && fbxMatches.length > 0) {
+      var fbxName = fbxMatches[0].replace(/\\s*\\([^)]*\\)/, '').trim();
+      var apiUrl = '/api/assets/file?path=' + encodeURIComponent(fbxName);
+      var btn = makeFbxBtn(apiUrl, fbxName);
+      if (el.tagName === 'CODE') {
+        // <code>filename.fbx</code> → 버튼으로 교체
+        try { el.parentNode.replaceChild(btn, el); } catch(e){}
+        return;
+      } else if (el.tagName === 'TD') {
+        // 테이블 셀 안에 있으면 셀 내용을 버튼으로 교체
+        el.innerHTML = '';
+        el.appendChild(btn);
+        el.dataset.btnInit = '1';
+        return;
+      }
+    }
+    
+    // 프리팹 파일명 감지
+    var prefabMatches = text.match(PREFAB_RE);
+    if (prefabMatches && prefabMatches.length > 0) {
+      var prefabPath = prefabMatches[0].trim();
+      var btn = makePrefabBtn(prefabPath, prefabPath.split('/').pop().replace('.prefab',''));
+      if (el.tagName === 'CODE') {
+        try { el.parentNode.replaceChild(btn, el); } catch(e){}
+        return;
+      } else if (el.tagName === 'TD') {
+        el.innerHTML = '';
+        el.appendChild(btn);
+        el.dataset.btnInit = '1';
+        return;
+      }
+    }
+  }
+
   function processEmbeds() {
-    // FBX 링크 → 버튼
+    // 1) <a href="...fbx..."> 링크 → 버튼
     document.querySelectorAll('a').forEach(function(a){
       var href = a.getAttribute('href')||'';
       var apiUrl = toApiUrl(href);
@@ -6197,7 +6253,23 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       var btn = makeFbxBtn(apiUrl, a.textContent.trim());
       try { a.parentNode.replaceChild(btn, a); } catch(e){}
     });
-    // .fbx-viewer → 버튼
+
+    // 2) <code> 안의 .fbx / .prefab 파일명 → 뷰어 버튼
+    document.querySelectorAll('code').forEach(function(code){
+      if (code.closest('pre')) return; // 코드블록 내부는 스킵
+      replaceTextWithButtons(code);
+    });
+
+    // 3) <td> 안의 .fbx / .prefab 파일명 → 뷰어 버튼  
+    document.querySelectorAll('td').forEach(function(td){
+      if (td.dataset.btnInit) return;
+      var text = td.textContent || '';
+      if (/\\.fbx/i.test(text) || /\\.prefab/i.test(text)) {
+        replaceTextWithButtons(td);
+      }
+    });
+
+    // 4) .fbx-viewer → 버튼
     document.querySelectorAll('.fbx-viewer[data-src],[data-fbx]').forEach(function(d){
       var src = d.getAttribute('data-src') || d.getAttribute('data-fbx');
       if (!src) return;
@@ -6207,7 +6279,8 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       wrap.appendChild(makeFbxBtn(apiUrl, d.getAttribute('data-label')||''));
       try { d.parentNode.replaceChild(wrap, d); } catch(e){}
     });
-    // embed-prefab → 버튼
+
+    // 5) embed-prefab → 버튼
     document.querySelectorAll('.embed-prefab[data-prefab-path]').forEach(function(d){
       if (d.dataset.pubInit) return; d.dataset.pubInit='1';
       var pp = d.getAttribute('data-prefab-path')||'';
@@ -6217,7 +6290,8 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       wrap.appendChild(makePrefabBtn(pp, lb));
       try { d.parentNode.replaceChild(wrap, d); } catch(e){}
     });
-    // embed-fbx-anim → iframe
+
+    // 6) embed-fbx-anim → iframe
     document.querySelectorAll('.embed-fbx-anim').forEach(function(d){
       if (d.dataset.pubInit) return; d.dataset.pubInit='1';
       var model = d.getAttribute('data-model-url')||d.getAttribute('data-model')||'';
@@ -6229,7 +6303,8 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       iframe.allow = 'fullscreen';
       try { d.parentNode.insertBefore(iframe, d.nextSibling); } catch(e){}
     });
-    // embed-scene
+
+    // 7) embed-scene
     document.querySelectorAll('.embed-scene[data-scene-path]').forEach(function(d){
       if (d.dataset.pubInit) return; d.dataset.pubInit='1';
       var sp = d.getAttribute('data-scene-path')||'';
