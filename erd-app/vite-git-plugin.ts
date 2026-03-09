@@ -4319,8 +4319,19 @@ function evictStaleSessions() {
 // 5분마다 자동 실행
 setInterval(evictStaleSessions, 5 * 60 * 1000).unref()
 
-/** 진행 중인 요청 세트 — 세션당 1개 요청만 허용 */
-const _activeRequests = new Set<string>()
+/** 진행 중인 요청 — 세션당 1개 요청만 허용. 타임스탬프로 5분 이상 된 요청은 자동 해제 */
+const _activeRequests = new Map<string, number>()
+function isRequestActive(sessionId: string): boolean {
+  const ts = _activeRequests.get(sessionId)
+  if (!ts) return false
+  // 5분 이상 지난 요청은 좀비로 간주 → 자동 해제
+  if (Date.now() - ts > 5 * 60 * 1000) {
+    sLog('WARN', `[chatApi] 좀비 요청 해제: ${sessionId} (${Math.round((Date.now() - ts) / 1000)}초 경과)`)
+    _activeRequests.delete(sessionId)
+    return false
+  }
+  return true
+}
 
 /**
  * 대략적인 토큰 수 추정 — 영문 4자/토큰, 한글 2자/토큰 근사치
@@ -7051,11 +7062,11 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       const systemPrompt = buildServerSystemPrompt(userMessage) // ← 쿼리 전달로 스마트 주입
 
       // ── 동시 요청 중복 방지 ──
-      if (_activeRequests.has(session.id)) {
+      if (isRequestActive(session.id)) {
         sendJson(res, 429, { error: '이미 처리 중인 요청이 있습니다. 잠시 후 다시 시도해주세요.' })
         return
       }
-      _activeRequests.add(session.id)
+      _activeRequests.set(session.id, Date.now())
 
       // Claude messages 빌드 (히스토리 + 새 메시지) → 슬라이딩 윈도우 적용
       const rawMessages: Array<{ role: string; content: unknown }> = [

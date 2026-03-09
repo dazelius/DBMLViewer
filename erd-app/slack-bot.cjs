@@ -1005,7 +1005,7 @@ async function handleMessage({ message, say, client, event }) {
           || errMsg.includes('SSE read timeout');
         
         if (isRetryable && attempt < MAX_RETRIES) {
-          const waitSec = (attempt + 1) * 3; // 3초, 6초
+          const waitSec = errMsg.includes('429') ? (attempt + 1) * 5 : (attempt + 1) * 3; // 429: 5초/10초, 기타: 3초/6초
           console.warn(`[Slack] 재시도 ${attempt + 1}/${MAX_RETRIES}: ${errMsg.slice(0, 80)} — ${waitSec}초 대기`);
           if (loadingMsg?.ts) {
             try {
