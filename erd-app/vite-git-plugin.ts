@@ -6008,7 +6008,9 @@ function buildPublishedPage(title: string, contentHtml: string): string {
     padding: 10px 14px; text-align: left; color: #a5b4fc;
     font-weight: 600; font-size: 0.85em; text-transform: uppercase;
     letter-spacing: 0.5px; border-bottom: 2px solid #3b4a6b;
+    cursor: pointer; user-select: none;
   }
+  th:hover { background: #2d3d5e; }
   td {
     padding: 8px 14px; border-bottom: 1px solid #2d3748;
     font-size: 0.9em;
@@ -6030,6 +6032,63 @@ function buildPublishedPage(title: string, contentHtml: string): string {
     margin-top: 40px; padding-top: 16px; border-top: 1px solid #2d3748;
     color: #475569; font-size: 0.8em; text-align: center;
   }
+  /* ── 임베드 카드 ── */
+  .embed-card { background:#1a2035; border:1px solid #2d3f5e; border-radius:8px; padding:12px 14px; margin:10px 0; overflow:hidden; }
+  .embed-header { display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+  .embed-icon { font-size:14px; }
+  .embed-title { font-weight:700; color:#e2e8f0; font-size:13px; }
+  .embed-meta { color:#64748b; font-size:11px; }
+  .embed-subtitle { font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase; letter-spacing:.06em; margin:8px 0 4px; }
+  .embed-sql { font-size:10px; color:#818cf8; background:rgba(99,102,241,.12); border-radius:4px; padding:2px 6px; font-family:monospace; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .embed-table { width:100%; border-collapse:collapse; font-size:11px; }
+  .embed-table th { background:#0f1a2e; color:#94a3b8; font-weight:600; padding:5px 8px; text-align:left; border-bottom:1px solid #2d3f5e; text-transform:none; letter-spacing:normal; font-size:11px; }
+  .embed-table td { padding:4px 8px; border-bottom:1px solid rgba(45,63,94,.5); color:#cbd5e1; font-size:11px; }
+  .embed-table tr:last-child td { border-bottom:none; }
+  .embed-error { background:rgba(239,68,68,.1); border:1px solid rgba(239,68,68,.3); border-radius:6px; padding:8px 12px; color:#ef4444; font-size:12px; margin:6px 0; }
+  .badge-pk { display:inline-block; padding:1px 5px; border-radius:3px; font-size:10px; font-weight:700; background:rgba(99,102,241,.25); color:#818cf8; margin-right:2px; }
+  .badge-fk { display:inline-block; padding:1px 5px; border-radius:3px; font-size:10px; font-weight:700; background:rgba(234,179,8,.15); color:#fbbf24; margin-right:2px; }
+  .badge-nn { display:inline-block; padding:1px 5px; border-radius:3px; font-size:10px; font-weight:700; background:rgba(100,116,139,.2); color:#94a3b8; margin-right:2px; }
+  /* ── 탭 시스템 ── */
+  .tabs { display:flex; gap:4px; flex-wrap:wrap; margin-bottom:12px; }
+  .tab { padding:6px 14px; border-radius:6px; border:1px solid #334155; background:#1e293b; color:#94a3b8; cursor:pointer; font-size:12px; transition:all .15s; }
+  .tab:hover { border-color:#6366f1; color:#a5b4fc; }
+  .tab.active { background:#6366f1; color:#fff; border-color:#6366f1; }
+  .tab-panel { display:none; } .tab-panel.active { display:block; }
+  /* ── 그리드 ── */
+  .grid { display:grid; gap:12px; } .grid-2 { grid-template-columns:repeat(2,1fr); } .grid-3 { grid-template-columns:repeat(3,1fr); }
+  .card { background:#1e293b; border:1px solid #334155; border-radius:8px; padding:12px 16px; margin-bottom:12px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600; }
+  .tag { background:rgba(99,102,241,0.15); color:#818cf8; padding:2px 6px; border-radius:4px; font-size:11px; }
+  /* ── 테이블 참조 ── */
+  .table-ref { display:inline-flex; align-items:center; gap:4px; padding:1px 7px 1px 5px; border-radius:4px; background:rgba(99,102,241,.12); color:#818cf8; font-weight:600; font-size:0.92em; cursor:pointer; border:1px solid rgba(99,102,241,.25); transition:background .15s; vertical-align:middle; }
+  .table-ref:hover { background:rgba(99,102,241,.22); }
+  /* ── ERD 관계선 ── */
+  .embed-erd-svg { margin:10px 0; overflow:auto; }
+  .embed-erd-svg svg { max-width:100%; height:auto; }
+  /* ── diff 임베드 ── */
+  .embed-diff { background:#0d1117; border:1px solid #2d3f5e; border-radius:8px; overflow:hidden; margin:10px 0; font-family:monospace; font-size:11px; }
+  .embed-diff-header { background:#1a2035; padding:8px 14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; border-bottom:1px solid #2d3f5e; }
+  .embed-diff-file { font-weight:700; color:#e2e8f0; font-size:12px; }
+  .embed-diff-stat { color:#64748b; font-size:11px; }
+  .embed-diff-line { display:flex; white-space:pre-wrap; word-break:break-all; }
+  .embed-diff-line.add { background:rgba(46,160,67,.15); color:#4ade80; }
+  .embed-diff-line.del { background:rgba(220,38,38,.12); color:#f87171; }
+  .embed-diff-line.ctx { color:#64748b; }
+  .embed-diff-line-num { min-width:44px; text-align:right; padding:1px 8px 1px 4px; border-right:1px solid #2d3f5e; color:#475569; user-select:none; flex-shrink:0; }
+  .embed-diff-line-sign { width:16px; text-align:center; flex-shrink:0; }
+  .embed-diff-line-text { padding-left:4px; flex:1; }
+  /* ── FBX 뷰어 버튼 ── */
+  .fbx-btn { display:inline-flex; align-items:center; gap:6px; background:#3730a3; color:#e0e7ff; border:1px solid #4f46e5; border-radius:6px; padding:6px 14px; font-size:12px; cursor:pointer; font-family:monospace; margin:4px 0; text-decoration:none; }
+  .fbx-btn:hover { background:#4338ca; text-decoration:none; }
+  .prefab-btn { display:inline-flex; align-items:center; gap:6px; background:#065f46; color:#d1fae5; border:1px solid #059669; border-radius:6px; padding:6px 14px; font-size:12px; cursor:pointer; margin:4px 0; text-decoration:none; }
+  .prefab-btn:hover { background:#047857; text-decoration:none; }
+  /* 검색 입력 */
+  .table-search { width:100%; padding:8px 12px; margin-bottom:12px; background:#1e293b; border:1px solid #334155; border-radius:6px; color:#e2e8f0; font-size:13px; outline:none; }
+  .table-search:focus { border-color:#6366f1; }
+  .table-search::placeholder { color:#475569; }
+  /* 블록인용 */
+  blockquote { border-left:3px solid #6366f1; margin:8px 0; padding:10px 18px; background:rgba(99,102,241,.05); color:#94a3b8; border-radius:0 8px 8px 0; }
+  img { max-width:100%; height:auto; border-radius:4px; }
 </style>
 </head>
 <body>
@@ -6042,6 +6101,173 @@ function buildPublishedPage(title: string, contentHtml: string): string {
   </div>
   ${contentHtml}
   <div class="footer">Generated by DataMaster</div>
+<script>
+(function(){
+  // ── FBX 링크 → 3D 뷰어 버튼 ──
+  function toApiUrl(href) {
+    if (!href) return null;
+    if (/\\/api\\/assets\\//.test(href)) return href;
+    if (/\\.fbx/i.test(href)) {
+      var clean = href.replace(/^[\\./ ]+/, '');
+      return '/api/assets/file?path=' + encodeURIComponent(clean);
+    }
+    return null;
+  }
+  function makeFbxBtn(url, label) {
+    var a = document.createElement('a');
+    a.className = 'fbx-btn';
+    a.href = '/prefab-viewer?fbx=' + encodeURIComponent(url);
+    a.target = '_blank';
+    var name = label || url.split('/').pop().split('?')[0] || 'Model';
+    a.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>'
+      + '<span>🎮 3D 뷰어 열기</span><span style="opacity:.6;font-size:10px;">' + name + '</span>';
+    return a;
+  }
+  // ── 프리팹 뷰어 버튼 ──
+  function makePrefabBtn(path, label) {
+    var a = document.createElement('a');
+    a.className = 'prefab-btn';
+    a.href = '/prefab-viewer?path=' + encodeURIComponent(path);
+    a.target = '_blank';
+    a.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>'
+      + '<span>🧩 프리팹 뷰어 열기</span><span style="opacity:.6;font-size:10px;">' + (label || path.split('/').pop()) + '</span>';
+    return a;
+  }
+  // ── 탭 시스템 활성화 ──
+  function initTabs() {
+    document.querySelectorAll('.tabs').forEach(function(tabBar){
+      tabBar.querySelectorAll('.tab').forEach(function(tab){
+        tab.addEventListener('click', function(){
+          tabBar.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('active'); });
+          tab.classList.add('active');
+          var target = tab.getAttribute('data-tab');
+          if (!target) return;
+          var container = tabBar.parentElement;
+          if (!container) return;
+          container.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active'); });
+          var panel = container.querySelector('[data-panel="'+target+'"]') || document.getElementById(target);
+          if (panel) panel.classList.add('active');
+        });
+      });
+    });
+  }
+  // ── 테이블 검색/정렬 ──
+  function initTableInteractions() {
+    document.querySelectorAll('table').forEach(function(tbl, idx) {
+      if (tbl.classList.contains('embed-table')) return;
+      var rows = tbl.querySelectorAll('tbody tr');
+      if (rows.length < 3) return;
+      // 검색 입력
+      var search = document.createElement('input');
+      search.type = 'text'; search.className = 'table-search';
+      search.placeholder = '🔍 테이블 검색...';
+      search.addEventListener('input', function() {
+        var q = this.value.toLowerCase();
+        rows.forEach(function(r) {
+          r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none';
+        });
+      });
+      tbl.parentNode.insertBefore(search, tbl);
+      // 컬럼 정렬
+      tbl.querySelectorAll('thead th').forEach(function(th, ci) {
+        th.addEventListener('click', function() {
+          var asc = th.dataset.sort !== 'asc';
+          th.dataset.sort = asc ? 'asc' : 'desc';
+          var arr = Array.from(rows);
+          arr.sort(function(a, b) {
+            var va = (a.cells[ci]||{}).textContent||'';
+            var vb = (b.cells[ci]||{}).textContent||'';
+            var na = parseFloat(va), nb = parseFloat(vb);
+            if (!isNaN(na) && !isNaN(nb)) return asc ? na-nb : nb-na;
+            return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+          });
+          var tbody = tbl.querySelector('tbody');
+          arr.forEach(function(r){ tbody.appendChild(r); });
+        });
+      });
+    });
+  }
+  // ── FBX 링크/프리팹 교체 ──
+  function processEmbeds() {
+    // FBX 링크 → 버튼
+    document.querySelectorAll('a').forEach(function(a){
+      var href = a.getAttribute('href')||'';
+      var apiUrl = toApiUrl(href);
+      if (!apiUrl) return;
+      var btn = makeFbxBtn(apiUrl, a.textContent.trim());
+      try { a.parentNode.replaceChild(btn, a); } catch(e){}
+    });
+    // .fbx-viewer → 버튼
+    document.querySelectorAll('.fbx-viewer[data-src],[data-fbx]').forEach(function(d){
+      var src = d.getAttribute('data-src') || d.getAttribute('data-fbx');
+      if (!src) return;
+      var apiUrl = toApiUrl(src) || src;
+      var wrap = document.createElement('div');
+      wrap.style.cssText = 'margin:8px 0;';
+      wrap.appendChild(makeFbxBtn(apiUrl, d.getAttribute('data-label')||''));
+      try { d.parentNode.replaceChild(wrap, d); } catch(e){}
+    });
+    // embed-prefab → 버튼
+    document.querySelectorAll('.embed-prefab[data-prefab-path]').forEach(function(d){
+      if (d.dataset.pubInit) return; d.dataset.pubInit='1';
+      var pp = d.getAttribute('data-prefab-path')||'';
+      var lb = d.getAttribute('data-prefab-label')||pp.split('/').pop().replace('.prefab','')||'Prefab';
+      var wrap = document.createElement('div');
+      wrap.style.cssText = 'margin:8px 0;';
+      wrap.appendChild(makePrefabBtn(pp, lb));
+      try { d.parentNode.replaceChild(wrap, d); } catch(e){}
+    });
+    // embed-fbx-anim → iframe
+    document.querySelectorAll('.embed-fbx-anim').forEach(function(d){
+      if (d.dataset.pubInit) return; d.dataset.pubInit='1';
+      var model = d.getAttribute('data-model-url')||d.getAttribute('data-model')||'';
+      if (!model) return;
+      var apiUrl = toApiUrl(model) || model;
+      var iframe = document.createElement('iframe');
+      iframe.src = '/prefab-viewer?fbx=' + encodeURIComponent(apiUrl);
+      iframe.style.cssText = 'width:100%;height:400px;border:1px solid #334155;border-radius:8px;margin:8px 0;background:#0a0a0a;';
+      iframe.allow = 'fullscreen';
+      try { d.parentNode.insertBefore(iframe, d.nextSibling); } catch(e){}
+    });
+    // embed-scene
+    document.querySelectorAll('.embed-scene[data-scene-path]').forEach(function(d){
+      if (d.dataset.pubInit) return; d.dataset.pubInit='1';
+      var sp = d.getAttribute('data-scene-path')||'';
+      var lb = d.getAttribute('data-scene-label')||sp.split('/').pop().replace('.unity','')||'Scene';
+      d.style.cursor = 'pointer';
+      d.addEventListener('click', function(){ window.open('/prefab-viewer?path='+encodeURIComponent(sp),'_blank'); });
+    });
+    // data-embed="diff" data-commit="..." → commit diff 로드
+    document.querySelectorAll('[data-embed="diff"][data-commit]').forEach(function(d){
+      if (d.dataset.pubInit) return; d.dataset.pubInit='1';
+      var hash = d.getAttribute('data-commit');
+      if (!hash) return;
+      d.innerHTML = '<div style="color:#64748b;padding:12px;">🔀 커밋 ' + hash + ' 변경 내용 로딩 중...</div>';
+      fetch('/api/git/commit-diff?hash=' + encodeURIComponent(hash))
+        .then(function(r){ return r.json(); })
+        .then(function(data){
+          if (!data.diff) { d.innerHTML = '<div class="embed-error">diff를 불러올 수 없습니다.</div>'; return; }
+          var lines = data.diff.split('\\n');
+          var html = '<div class="embed-diff"><div class="embed-diff-header"><span class="embed-diff-file">'+hash.slice(0,7)+'</span></div>';
+          lines.forEach(function(line){
+            var cls = line.startsWith('+')?'add':line.startsWith('-')?'del':'ctx';
+            var sign = line.startsWith('+')?'+':line.startsWith('-')?'-':' ';
+            html += '<div class="embed-diff-line '+cls+'"><span class="embed-diff-line-sign">'+sign+'</span><span class="embed-diff-line-text">'+line.replace(/</g,'&lt;')+'</span></div>';
+          });
+          html += '</div>';
+          d.innerHTML = html;
+        })
+        .catch(function(){ d.innerHTML = '<div class="embed-error">diff 로드 실패</div>'; });
+    });
+  }
+  // 실행
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function(){ processEmbeds(); initTabs(); initTableInteractions(); });
+  } else {
+    processEmbeds(); initTabs(); initTableInteractions();
+  }
+})();
+</script>
 </body>
 </html>`
 }
