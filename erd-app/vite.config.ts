@@ -3,6 +3,7 @@ import { resolve } from 'path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import gitPlugin from './vite-git-plugin'
+import fs from 'fs'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -36,10 +37,18 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       // /api/claude 프록시는 vite-git-plugin 미들웨어에서 SSE 스트리밍 지원으로 직접 처리
       // Vite 내장 http-proxy는 SSE 응답을 버퍼링하므로 사용하지 않음
+      https: fs.existsSync(resolve(process.cwd(), 'certs/100.70.0.223+2.pem')) ? {
+        cert: fs.readFileSync(resolve(process.cwd(), 'certs/100.70.0.223+2.pem')),
+        key: fs.readFileSync(resolve(process.cwd(), 'certs/100.70.0.223+2-key.pem')),
+      } : undefined,
     },
     preview: {
       host: '0.0.0.0',
       port: 5173,
+      https: fs.existsSync(resolve(process.cwd(), 'certs/100.70.0.223+2.pem')) ? {
+        cert: fs.readFileSync(resolve(process.cwd(), 'certs/100.70.0.223+2.pem')),
+        key: fs.readFileSync(resolve(process.cwd(), 'certs/100.70.0.223+2-key.pem')),
+      } : undefined,
     },
   }
 })
