@@ -576,6 +576,8 @@ export const TOOL_META: ToolMeta[] = [
   { name: 'read_code_file',         label: '코드 읽기',           emoji: '💻', dataSources: ['csharp'] },
   { name: 'create_artifact',        label: '아티팩트 생성',       emoji: '📄', dataSources: [] },
   { name: 'patch_artifact',         label: '아티팩트 수정',       emoji: '✏️', dataSources: [] },
+  { name: 'search_published_artifacts', label: '기존 문서 검색', emoji: '🔍', dataSources: [] },
+  { name: 'get_published_artifact', label: '기존 문서 가져오기',  emoji: '📄', dataSources: [] },
   { name: 'search_jira',            label: 'Jira 검색',          emoji: '🎫', dataSources: ['jira'] },
   { name: 'get_jira_issue',         label: 'Jira 이슈',          emoji: '🎫', dataSources: ['jira'] },
   { name: 'create_jira_issue',      label: 'Jira 일감 생성',     emoji: '➕', dataSources: ['jira'] },
@@ -2424,6 +2426,8 @@ export async function sendChatMessage(
         read_url: '🌐 웹페이지 읽기',
         edit_game_data: '📝 바이블테이블링',
         add_game_data_rows: '➕ 데이터 행 추가',
+        search_published_artifacts: '🔍 기존 문서 검색',
+        get_published_artifact: '📄 기존 문서 가져오기',
       };
 
       await Promise.all(toolBlocks.map(async (tb) => {

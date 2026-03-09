@@ -5168,6 +5168,33 @@ const API_TOOLS = [
     },
   },
   {
+    name: 'search_published_artifacts',
+    description: `기존에 출판된 아티팩트(문서/보고서)를 검색합니다.
+아티팩트 생성 전에 반드시 호출하여 유사한 기존 문서가 있는지 확인하세요.
+비슷한 문서가 있으면 사용자에게 링크를 제안하고, 수정/갱신 여부를 물어보세요.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '검색 키워드 (제목/설명에서 검색). 비워두면 최근 문서 목록 반환.' },
+        limit: { type: 'number', description: '최대 결과 수 (기본 10)' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'get_published_artifact',
+    description: `기존 출판된 아티팩트의 HTML 전체 내용을 가져옵니다.
+기존 문서를 수정/갱신하거나, 내용을 참고하여 새 문서를 만들 때 사용하세요.
+가져온 HTML을 기반으로 patch_artifact 또는 create_artifact로 수정본을 만들 수 있습니다.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        artifact_id: { type: 'string', description: '아티팩트 ID (search_published_artifacts 결과에서 확인)' },
+      },
+      required: ['artifact_id'],
+    },
+  },
+  {
     name: 'edit_game_data',
     description: `게임 데이터 Excel 파일을 편집합니다 (바이블테이블링).
 ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편집하세요.
@@ -5794,6 +5821,94 @@ function serverExecuteTool(
       }
     }
 
+    // ── search_published_artifacts ──
+    case 'search_published_artifacts': {
+      try {
+        const query = String(input.query ?? '').trim().toLowerCase()
+        const limit = Number(input.limit ?? 10)
+        const list = readPublishedIndex()
+
+        if (list.length === 0) return { result: '출판된 아티팩트가 없습니다.' }
+
+        let results: typeof list
+        if (!query) {
+          // 검색어 없으면 최신순
+          results = list.slice(0, limit)
+        } else {
+          // 제목/설명에서 키워드 검색 (공백으로 AND 분리)
+          const keywords = query.split(/\s+/).filter(Boolean)
+          results = list.filter(m => {
+            const text = `${m.title} ${m.description}`.toLowerCase()
+            return keywords.every(kw => text.includes(kw))
+          }).slice(0, limit)
+        }
+
+        if (results.length === 0) {
+          return { result: `"${query}" 관련 기존 아티팩트를 찾을 수 없습니다. (전체 ${list.length}개 중)`, data: { total: list.length, matched: 0, artifacts: [] } }
+        }
+
+        // URL 생성
+        const artifacts = results.map(m => ({
+          id: m.id,
+          title: m.title,
+          description: m.description.slice(0, 100),
+          createdAt: m.createdAt,
+          author: m.author || '',
+          url: `/api/p/${m.id}`,
+        }))
+
+        let resultText = `📚 기존 아티팩트 ${results.length}개 발견 (전체 ${list.length}개):\n\n`
+        for (const a of artifacts) {
+          resultText += `• "${a.title}" (${a.createdAt.slice(0, 10)})\n  ID: ${a.id}\n  ${a.description}...\n\n`
+        }
+        resultText += `\n기존 문서를 수정하려면 get_published_artifact(artifact_id)로 HTML을 가져온 후 patch_artifact로 수정하세요.`
+
+        return { result: resultText, data: { total: list.length, matched: results.length, artifacts } }
+      } catch (e) {
+        return { result: `아티팩트 검색 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
+    // ── get_published_artifact ──
+    case 'get_published_artifact': {
+      const artifactId = String(input.artifact_id ?? '').trim()
+      if (!artifactId) return { result: 'artifact_id가 필요합니다.' }
+      try {
+        const htmlPath = join(PUBLISHED_DIR, `${artifactId}.html`)
+        if (!existsSync(htmlPath)) return { result: `아티팩트 "${artifactId}"를 찾을 수 없습니다.` }
+
+        const html = readFileSync(htmlPath, 'utf-8')
+        const list = readPublishedIndex()
+        const meta = list.find(m => m.id === artifactId)
+
+        // HTML에서 <body> 내용만 추출 (전체 페이지 래퍼 제거)
+        let bodyHtml = html
+        const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
+        if (bodyMatch) bodyHtml = bodyMatch[1].trim()
+
+        // 너무 크면 잘라서 반환
+        const MAX_HTML = 50000
+        let truncated = false
+        if (bodyHtml.length > MAX_HTML) {
+          bodyHtml = bodyHtml.slice(0, MAX_HTML)
+          truncated = true
+        }
+
+        let resultText = `📄 아티팩트: "${meta?.title || artifactId}"\n`
+        resultText += `ID: ${artifactId}\n`
+        resultText += `생성일: ${meta?.createdAt || '알 수 없음'}\n`
+        resultText += `HTML 크기: ${html.length}자${truncated ? ` (${MAX_HTML}자까지만 반환)` : ''}\n\n`
+        resultText += `이 HTML을 기반으로:\n`
+        resultText += `- 내용 수정: create_artifact로 수정된 HTML을 새로 생성\n`
+        resultText += `- 참고용: 기존 스타일/구조를 유지하면서 새 데이터로 갱신\n\n`
+        resultText += `--- HTML 내용 ---\n${bodyHtml}`
+
+        return { result: resultText, data: { id: artifactId, title: meta?.title, html: bodyHtml, truncated } }
+      } catch (e) {
+        return { result: `아티팩트 조회 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
     default:
       return { result: `알 수 없는 도구: ${toolName}` }
   }
@@ -5809,7 +5924,8 @@ async function serverExecuteToolAsync(
   const syncTools = ['query_game_data', 'show_table_schema', 'query_git_history', 'create_artifact',
     'search_code', 'read_code_file', 'search_assets', 'preview_fbx_animation', 'find_resource_image',
     'build_character_profile', 'read_guide', 'show_revision_diff', 'preview_prefab',
-    'patch_artifact', 'save_knowledge', 'read_knowledge', 'list_knowledge', 'delete_knowledge']
+    'patch_artifact', 'save_knowledge', 'read_knowledge', 'list_knowledge', 'delete_knowledge',
+    'search_published_artifacts', 'get_published_artifact']
   if (syncTools.includes(toolName)) return serverExecuteTool(toolName, input, options)
 
   // ── 바이블테이블링 (Python 백엔드 호출) ──
@@ -7037,6 +7153,11 @@ function buildServerSystemPrompt(_userQuery?: string): string {
 
   // ── 아티팩트 생성 규칙 ──
   lines.push('[아티팩트 생성 규칙 — ⭐⭐⭐ 최우선]')
+  lines.push('⭐ 아티팩트 생성 전에 **반드시** search_published_artifacts로 유사한 기존 문서를 먼저 검색하세요!')
+  lines.push('- 유사한 기존 아티팩트가 있으면 → 사용자에게 링크와 함께 "기존 문서를 갱신할까요, 새로 만들까요?" 제안')
+  lines.push('- 사용자가 "갱신", "수정", "업데이트" 등 요청 시 → get_published_artifact로 기존 HTML 가져와서 수정본 create_artifact')
+  lines.push('- 사용자가 기존 아티팩트를 언급/링크하면 → get_published_artifact로 가져와서 수정')
+  lines.push('')
   lines.push('- 도구를 사용하여 데이터/코드/정보를 조사했으면 → **반드시** create_artifact 호출하여 결과물을 시각적으로 정리')
   lines.push('- 단순 "몇 행 조회됨" 텍스트로 끝내지 말 것! 조사 결과를 아티팩트로 만들어야 사용자가 볼 수 있음')
   lines.push('- 텍스트 응답만으로 끝내는 것은 금지. 2개 이상의 도구를 사용했거나, 테이블 데이터가 있으면 반드시 아티팩트로!')

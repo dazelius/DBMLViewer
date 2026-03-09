@@ -481,6 +481,8 @@ const TOOL_LABELS = {
   find_resource_image: '🖼️ 이미지 찾기',
   edit_game_data:      '📝 바이블테이블링',
   add_game_data_rows:  '➕ 데이터 행 추가',
+  search_published_artifacts: '🔍 기존 문서 검색',
+  get_published_artifact:     '📄 기존 문서 가져오기',
 };
 
 // ── 도구 결과 요약을 Slack 친화적으로 포맷 ──
@@ -534,6 +536,18 @@ function formatToolResultForSlack(tc) {
     if (addMatch) text += `: *${addMatch[1]}행* 추가`;
     if (downloadMatch) text += ` 📥 <${downloadMatch[1]}|다운로드>`;
     return text;
+  }
+  
+  // 기존 아티팩트 검색: 결과 개수
+  if (tc.tool === 'search_published_artifacts') {
+    const matchCount = summary.match(/(\d+)개 발견/);
+    if (matchCount) return `${label}: *${matchCount[1]}개* 기존 문서 발견`;
+    if (summary.includes('찾을 수 없습니다')) return `${label}: 유사 문서 없음`;
+  }
+  
+  if (tc.tool === 'get_published_artifact') {
+    const titleMatch = summary.match(/아티팩트:\s*"([^"]+)"/);
+    if (titleMatch) return `${label}: _${titleMatch[1]}_`;
   }
   
   // 기본: 80자 요약
@@ -1004,6 +1018,13 @@ async function handleMessage({ message, say, client, event }) {
       } else if (toolName === 'edit_game_data' || toolName === 'add_game_data_rows') {
         const titleMatch = inputStr.match(/title['":\s]*['"]?([^'"}{,]+)/i);
         if (titleMatch) detail = titleMatch[1].trim().slice(0, 40);
+      } else if (toolName === 'search_published_artifacts') {
+        const qMatch = inputStr.match(/query['":\s]*['"]?([^'"}{,]+)/i);
+        if (qMatch) detail = qMatch[1].trim().slice(0, 40);
+        else detail = '최근 문서';
+      } else if (toolName === 'get_published_artifact') {
+        const idMatch = inputStr.match(/artifact_id['":\s]*['"]?([^'"}{,]+)/i);
+        if (idMatch) detail = idMatch[1].trim().slice(0, 20);
       }
       
       const stepLine = detail ? `${label}  _${detail}_` : label;
