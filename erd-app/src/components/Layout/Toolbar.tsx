@@ -41,6 +41,7 @@ export default function Toolbar() {
   const isQuery      = location.pathname.startsWith('/query');
   const isChat       = location.pathname.startsWith('/chat');
   const isExplore    = location.pathname.startsWith('/explore');
+  const isUnity      = location.pathname.startsWith('/unity');
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -83,9 +84,9 @@ export default function Toolbar() {
                 DataMaster
               </span>
               {/* 현재 활성 페이지 표시 */}
-              {(isEditor || isDocs || isDiff || isValidation || isQuery) && (
+              {(isEditor || isDocs || isDiff || isValidation || isQuery || isUnity) && (
                 <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded-md" style={{ background: 'rgba(var(--accent-rgb),0.15)', color: 'var(--accent)' }}>
-                  {isEditor ? 'ERD' : isDocs ? 'Data' : isDiff ? 'Diff' : isValidation ? 'Validation' : 'Query'}
+                  {isEditor ? 'ERD' : isDocs ? 'Data' : isDiff ? 'Diff' : isValidation ? 'Validation' : isUnity ? 'Unity' : 'Query'}
                 </span>
               )}
               <svg
@@ -113,6 +114,7 @@ export default function Toolbar() {
                   { label: 'Diff', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>, path: '/diff', active: isDiff },
                   { label: 'Validation', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>, path: '/validation', active: isValidation },
                   { label: 'Query', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>, path: '/query', active: isQuery },
+                  { label: 'Unity', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/><line x1="12" y1="22" x2="12" y2="15.5"/><polyline points="22 8.5 12 15.5 2 8.5"/></svg>, path: '/unity', active: isUnity },
                 ].map(({ label, icon, path, active }) => (
                   <button
                     key={path}

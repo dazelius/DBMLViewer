@@ -8,6 +8,7 @@ import QueryPage from './pages/QueryPage.tsx';
 import ChatPage from './pages/ChatPage.tsx';
 import ExplorePage from './pages/ExplorePage.tsx';
 import PrefabViewerPage from './pages/PrefabViewerPage.tsx';
+import UnityPage from './pages/UnityPage.tsx';
 import { SyncToast } from './components/Sync/SyncToast.tsx';
 import { useAutoLoad } from './hooks/useAutoLoad.ts';
 import { useDebouncedParse } from './hooks/useDebouncedParse.ts';
@@ -33,6 +34,7 @@ export default function App() {
                 <Route path="/chat" element={<ChatPage />} />
                 <Route path="/explore" element={<ExplorePage />} />
                 <Route path="/viewer/prefab" element={<PrefabViewerPage />} />
+                <Route path="/unity" element={<UnityPage />} />
       </Routes>
     </BrowserRouter>
   );
