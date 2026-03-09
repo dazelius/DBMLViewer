@@ -191,6 +191,41 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
   const moveMenuRef = useRef<HTMLDivElement>(null);
   const confirmRef = useRef(false);
 
+  // ── 우클릭 컨텍스트 메뉴 ──
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const [ctxMoveOpen, setCtxMoveOpen] = useState(false);
+  const [ctxDeleteConfirm, setCtxDeleteConfirm] = useState(false);
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // 화면 경계 고려하여 위치 조정
+    const x = Math.min(e.clientX, window.innerWidth - 200);
+    const y = Math.min(e.clientY, window.innerHeight - 280);
+    setCtxMenu({ x, y });
+    setCtxMoveOpen(false);
+    setCtxDeleteConfirm(false);
+  };
+
+  // 외부 클릭 시 컨텍스트 메뉴 닫기
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (ctxMenuRef.current && !ctxMenuRef.current.contains(e.target as Node)) {
+        setCtxMenu(null);
+        setCtxMoveOpen(false);
+        setCtxDeleteConfirm(false);
+      }
+    };
+    const escHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setCtxMenu(null); setCtxMoveOpen(false); setCtxDeleteConfirm(false); }
+    };
+    document.addEventListener('mousedown', handler);
+    document.addEventListener('keydown', escHandler);
+    return () => { document.removeEventListener('mousedown', handler); document.removeEventListener('keydown', escHandler); };
+  }, [ctxMenu]);
+
   // 외부 클릭 시 move 메뉴 닫기
   useEffect(() => {
     if (!showMoveMenu) return;
@@ -296,14 +331,168 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
     </div>
   );
 
+  // ── 우클릭 컨텍스트 메뉴 포탈 ──
+  const contextMenuPortal = ctxMenu && (
+    <div
+      ref={ctxMenuRef}
+      className="fixed z-[9999]"
+      style={{
+        left: ctxMenu.x,
+        top: ctxMenu.y,
+      }}
+    >
+      <div
+        className="py-1.5 rounded-xl min-w-[180px] overflow-hidden"
+        style={{
+          background: '#1a2035',
+          border: '1px solid rgba(99,102,241,0.25)',
+          boxShadow: '0 12px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04)',
+          backdropFilter: 'blur(16px)',
+        }}
+      >
+        {/* 문서 제목 (비활성 헤더) */}
+        <div className="px-3 py-1.5 flex items-center gap-2" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2" strokeLinecap="round">
+            <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+          <span className="text-[10px] truncate font-medium" style={{ color: 'var(--text-muted)', maxWidth: 140 }}>{meta.title}</span>
+        </div>
+
+        {/* 열기 */}
+        <button
+          className="w-full px-3 py-2 text-left flex items-center gap-2.5 text-[11px] hover:bg-white/[0.06] transition-colors"
+          style={{ color: 'var(--text-secondary)' }}
+          onClick={(e) => { e.stopPropagation(); setCtxMenu(null); onSelect(); }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+          열기 / 편집
+        </button>
+
+        {/* URL 복사 */}
+        <button
+          className="w-full px-3 py-2 text-left flex items-center gap-2.5 text-[11px] hover:bg-white/[0.06] transition-colors"
+          style={{ color: 'var(--text-secondary)' }}
+          onClick={(e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(`${window.location.origin}/api/p/${meta.id}`);
+            setCtxMenu(null);
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+          </svg>
+          URL 복사
+        </button>
+
+        {/* 새 탭에서 열기 */}
+        <button
+          className="w-full px-3 py-2 text-left flex items-center gap-2.5 text-[11px] hover:bg-white/[0.06] transition-colors"
+          style={{ color: 'var(--text-secondary)' }}
+          onClick={(e) => {
+            e.stopPropagation();
+            window.open(`/api/p/${meta.id}`, '_blank');
+            setCtxMenu(null);
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+            <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+          </svg>
+          새 탭에서 열기
+        </button>
+
+        {/* 폴더 이동 (서브메뉴) */}
+        {folders.length > 0 && (
+          <>
+            <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', margin: '2px 0' }} />
+            <button
+              className="w-full px-3 py-2 text-left flex items-center gap-2.5 text-[11px] hover:bg-white/[0.06] transition-colors"
+              style={{ color: 'var(--text-secondary)' }}
+              onClick={(e) => { e.stopPropagation(); setCtxMoveOpen(v => !v); }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              <span className="flex-1">폴더로 이동</span>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                style={{ transform: ctxMoveOpen ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            </button>
+            {ctxMoveOpen && (
+              <div className="mx-2 mb-1 rounded-lg overflow-hidden max-h-[160px] overflow-y-auto"
+                style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.04)' }}>
+                <button
+                  className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-[10px] hover:bg-white/[0.06] transition-colors"
+                  style={{ color: meta.folderId == null ? '#818cf8' : 'var(--text-muted)' }}
+                  onClick={(e) => { e.stopPropagation(); onMove(meta.id, null); setCtxMenu(null); }}
+                >
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                  루트 (미분류)
+                </button>
+                {folders.map(f => (
+                  <button
+                    key={f.id}
+                    className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-[10px] hover:bg-white/[0.06] transition-colors"
+                    style={{ color: meta.folderId === f.id ? '#818cf8' : 'var(--text-muted)' }}
+                    onClick={(e) => { e.stopPropagation(); onMove(meta.id, f.id); setCtxMenu(null); }}
+                  >
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                    {f.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* 구분선 + 삭제 */}
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', margin: '2px 0' }} />
+        {!ctxDeleteConfirm ? (
+          <button
+            className="w-full px-3 py-2 text-left flex items-center gap-2.5 text-[11px] hover:bg-red-500/10 transition-colors"
+            style={{ color: '#f87171' }}
+            onClick={(e) => { e.stopPropagation(); setCtxDeleteConfirm(true); }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+              <path d="M10 11v6m4-6v6"/><path d="M9 6V4h6v2"/>
+            </svg>
+            삭제
+          </button>
+        ) : (
+          <button
+            className="w-full px-3 py-2 text-left flex items-center gap-2.5 text-[11px] transition-colors"
+            style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', fontWeight: 600 }}
+            onClick={(e) => { e.stopPropagation(); onDelete(meta.id); setCtxMenu(null); }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+              <path d="M10 11v6m4-6v6"/><path d="M9 6V4h6v2"/>
+            </svg>
+            ⚠️ 정말 삭제하시겠습니까?
+          </button>
+        )}
+      </div>
+    </div>
+  );
+
   // ══════════════ 리스트 뷰 ══════════════
   if (viewMode === 'list') {
     return (
+      <>
+      {contextMenuPortal}
       <div
         draggable
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
         onClick={onSelect}
+        onContextMenu={handleContextMenu}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         className="flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all"
@@ -332,16 +521,20 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
           {actionButtons}
         </div>
       </div>
+      </>
     );
   }
 
   // ══════════════ 그리드 뷰 (썸네일 전용) ══════════════
   return (
+    <>
+    {contextMenuPortal}
     <div
       draggable
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onClick={onSelect}
+      onContextMenu={handleContextMenu}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       className="relative rounded-xl overflow-hidden cursor-pointer transition-all group"
@@ -400,6 +593,7 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
         </div>
       )}
     </div>
+    </>
   );
 }
 
