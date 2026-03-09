@@ -773,6 +773,23 @@ async function getUserDisplayName(client, userId) {
   return userId; // fallback
 }
 
+// ── 중복 메시지 / 동시 처리 방지 ──
+const _processedMessages = new Set();   // 이미 처리한 메시지 ts
+const _activeThreads = new Map();       // 현재 처리 중인 thread → 시작시각
+
+// 오래된 항목 정리 (10분)
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const ts of _processedMessages) {
+    // ts는 slack 타임스탬프 → 초 단위, *1000 해서 비교
+    const msgTime = parseFloat(ts) * 1000;
+    if (msgTime < cutoff) _processedMessages.delete(ts);
+  }
+  for (const [key, startTime] of _activeThreads) {
+    if (startTime < cutoff) _activeThreads.delete(key);
+  }
+}, 5 * 60 * 1000);
+
 // ── 메시지 처리 핸들러 ──
 async function handleMessage({ message, say, client, event }) {
   // 봇 자신의 메시지 무시
@@ -786,6 +803,20 @@ async function handleMessage({ message, say, client, event }) {
 
   if (!userText) return;
 
+  // ── 중복 이벤트 방지 (같은 메시지 ts를 두 번 처리 안 함) ──
+  if (currentTs && _processedMessages.has(currentTs)) {
+    console.log(`[Slack] 중복 메시지 무시: ts=${currentTs}`);
+    return;
+  }
+  if (currentTs) _processedMessages.add(currentTs);
+
+  // ── 같은 쓰레드에서 이미 처리 중이면 안내 메시지만 ──
+  const threadKey = `${channel}:${threadTs || 'main'}`;
+  if (_activeThreads.has(threadKey)) {
+    console.log(`[Slack] 쓰레드 처리 중 — 대기 안내: ${threadKey}`);
+    await say({ text: '⏳ 이전 질문을 처리 중입니다. 완료 후 다시 질문해주세요.', thread_ts: threadTs });
+    return;
+  }
   // ── help 커맨드 ──
   if (isHelpCommand(userText)) {
     await say({ blocks: HELP_BLOCKS, text: 'DataMaster 사용 가이드', thread_ts: threadTs });
@@ -798,9 +829,13 @@ async function handleMessage({ message, say, client, event }) {
     threadSessions.delete(key);
     threadMeta.delete(key);
     sessionLastUsed.delete(key);
+    _activeThreads.delete(threadKey);
     await say({ text: '🔄 세션이 초기화되었습니다. 새로운 대화를 시작합니다!', thread_ts: threadTs });
     return;
   }
+
+  // ── 동시 처리 중 방지 (help/reset 이후에 설정) ──
+  _activeThreads.set(threadKey, Date.now());
 
   const sessionId = getSessionId(channel, threadTs);
   touchSession(`${channel}:${threadTs || 'main'}`);
@@ -1259,6 +1294,7 @@ async function handleMessage({ message, say, client, event }) {
     }
   } finally {
     clearTimeout(globalTimeout);
+    _activeThreads.delete(threadKey);
   }
 }
 
