@@ -102,9 +102,9 @@ export default function Toolbar() {
                 className="absolute top-full left-0 mt-1.5 rounded-xl overflow-hidden z-50"
                 style={{
                   minWidth: 180,
-                  background: 'var(--bg-elevated)',
-                  border: '1px solid var(--border-color)',
-                  boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
+                  background: '#1a1d23',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  boxShadow: '0 12px 40px rgba(0,0,0,0.7)',
                 }}
               >
                 {[
@@ -124,7 +124,7 @@ export default function Toolbar() {
                       borderLeft: active ? '2px solid var(--accent)' : '2px solid transparent',
                       transition: 'background 0.1s, color 0.1s',
                     }}
-                    onMouseEnter={(e) => { if (!active) { e.currentTarget.style.background = 'var(--bg-hover)'; e.currentTarget.style.color = 'var(--text-primary)'; } }}
+                    onMouseEnter={(e) => { if (!active) { e.currentTarget.style.background = 'rgba(255,255,255,0.07)'; e.currentTarget.style.color = '#ffffff'; } }}
                     onMouseLeave={(e) => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; } }}
                   >
                     <span style={{ opacity: 0.7, flexShrink: 0 }}>{icon}</span>
