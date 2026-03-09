@@ -8,7 +8,7 @@ interface FbxViewerProps {
   /** /api/assets/file?path=… 또는 /api/assets/smart?name=… URL */
   url: string;
   filename?: string;
-  height?: number;
+  height?: number | string;
   className?: string;
   /** 애니메이션 FBX URL 목록 (직접 전달) */
   animationUrls?: AnimationEntry[];
@@ -197,7 +197,7 @@ export function FbxViewer({
 
     // ── Three.js 씬 셋업 ─────────────────────────────────────────────────────
     const w = el.clientWidth || 700;
-    const h = height;
+    const h = typeof height === 'string' ? (el.clientHeight || 600) : height;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -264,9 +264,11 @@ export function FbxViewer({
     // 리사이즈 대응
     const onResize = () => {
       const nw = el.clientWidth;
-      camera.aspect = nw / h;
+      const nh = typeof height === 'string' ? el.clientHeight : h;
+      if (nw <= 0 || nh <= 0) return;
+      camera.aspect = nw / nh;
       camera.updateProjectionMatrix();
-      renderer.setSize(nw, h);
+      renderer.setSize(nw, nh);
     };
     const ro = new ResizeObserver(onResize);
     ro.observe(el);
@@ -472,8 +474,8 @@ export function FbxViewer({
 
   return (
     <div
-      className={`relative rounded-xl overflow-hidden ${className}`}
-      style={{ background: '#0f1117', border: '1px solid #334155' }}
+      className={`relative overflow-hidden ${typeof height === 'string' ? '' : 'rounded-xl'} ${className}`}
+      style={{ background: '#0f1117', border: typeof height === 'string' ? 'none' : '1px solid #334155', height: typeof height === 'string' ? height : undefined, display: 'flex', flexDirection: 'column' }}
     >
       {/* 헤더 */}
       <div
@@ -510,9 +512,9 @@ export function FbxViewer({
       </div>
 
       {/* 뷰포트 + 애니메이션 패널 */}
-      <div style={{ display: 'flex', position: 'relative' }}>
+      <div style={{ display: 'flex', position: 'relative', flex: 1, minHeight: 0 }}>
         {/* 3D 뷰포트 */}
-        <div ref={mountRef} style={{ flex: 1, width: '100%', height }} />
+        <div ref={mountRef} style={{ flex: 1, width: '100%', height: typeof height === 'string' ? '100%' : height }} />
 
         {/* 애니메이션 목록 사이드 패널 */}
         {showAnimPanel && animations.length > 0 && status === 'ok' && (
@@ -522,7 +524,7 @@ export function FbxViewer({
               right: 0,
               top: 0,
               width: 240,
-              height,
+              height: '100%',
               background: 'rgba(15,17,23,0.95)',
               borderLeft: '1px solid #334155',
               display: 'flex',

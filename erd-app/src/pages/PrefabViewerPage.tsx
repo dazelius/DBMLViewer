@@ -161,7 +161,7 @@ export default function PrefabViewerPage() {
           </div>
         }>
           {isFbxMode ? (
-            <FbxViewer url={fbxUrl} filename={viewerName + '.fbx'} />
+            <FbxViewer url={fbxUrl} filename={viewerName + '.fbx'} height="100%" />
           ) : (
             <SceneViewer scenePath={apiUrl} height={window.innerHeight - 44} />
           )}
