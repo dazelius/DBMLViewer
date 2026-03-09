@@ -823,6 +823,27 @@ async function handleMessage({ message, say, client, event }) {
     console.error('[Slack] 로딩 메시지 전송 실패:', e.message);
   }
 
+  // ── 글로벌 타임아웃: 5분 초과 시 강제 응답 ──
+  const GLOBAL_TIMEOUT_MS = 5 * 60 * 1000;
+  let globalTimeoutFired = false;
+  const globalTimeout = setTimeout(async () => {
+    globalTimeoutFired = true;
+    console.warn('[Slack] 글로벌 타임아웃 (5분) — 강제 응답');
+    if (loadingMsg?.ts) {
+      try {
+        await client.chat.update({
+          channel,
+          ts: loadingMsg.ts,
+          text: '⏱️ 처리 시간이 너무 길어 중단되었습니다.',
+          blocks: [
+            { type: 'section', text: { type: 'mrkdwn', text: '⏱️ 처리 시간이 5분을 초과하여 중단되었습니다.\n질문을 더 구체적으로 해보시거나 잠시 후 다시 시도해주세요.' } },
+            { type: 'context', elements: [{ type: 'mrkdwn', text: `_${new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' })} · 시간 초과_` }] },
+          ],
+        });
+      } catch { /* ignore */ }
+    }
+  }, GLOBAL_TIMEOUT_MS);
+
   try {
     // ── 사용자 이름 조회 ──
     const userName = await getUserDisplayName(client, userId);
@@ -1211,21 +1232,47 @@ async function handleMessage({ message, say, client, event }) {
     }
 
   } catch (error) {
+    if (globalTimeoutFired) return; // 글로벌 타임아웃이 이미 응답함
     console.error('[Slack] 처리 오류:', error);
     
-    const errText = `❌ 오류가 발생했습니다: ${error.message}\n\n_DataMaster 서버(${DATAMASTER_URL})가 실행 중인지 확인해주세요._`;
+    // 사용자 친화적 에러 메시지 (원인별 분류)
+    const errMsg = error.message || '알 수 없는 오류';
+    let userMsg;
+    if (errMsg.includes('SSE read timeout')) {
+      userMsg = '⏱️ 응답 시간이 초과되었습니다. 질문을 좀 더 구체적으로 해보세요.';
+    } else if (errMsg.includes('429') || errMsg.includes('처리 중인 요청')) {
+      userMsg = '🚦 서버가 바쁩니다. 잠시 후 다시 시도해주세요.';
+    } else if (errMsg.includes('ECONNREFUSED') || errMsg.includes('fetch failed')) {
+      userMsg = '🔌 DataMaster 서버에 연결할 수 없습니다. 서버 상태를 확인해주세요.';
+    } else if (errMsg.includes('upstream connect') || errMsg.includes('connection termination')) {
+      userMsg = '🌐 AI 서버 연결이 불안정합니다. 잠시 후 다시 시도해주세요.';
+    } else if (errMsg.includes('재시도 횟수 초과')) {
+      userMsg = '🔄 여러 번 시도했지만 실패했습니다. 잠시 후 다시 시도해주세요.';
+    } else {
+      userMsg = `❌ 오류: ${errMsg.slice(0, 200)}`;
+    }
+    
+    const blocks = [
+      { type: 'section', text: { type: 'mrkdwn', text: userMsg } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: `_${new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' })} · 다시 질문하시면 재시도합니다_` }] },
+    ];
     
     if (loadingMsg?.ts) {
       try {
         await client.chat.update({
           channel,
           ts: loadingMsg.ts,
-          text: errText,
+          text: userMsg,
+          blocks,
         });
       } catch { /* ignore */ }
     } else {
-      await say({ text: errText, thread_ts: threadTs });
+      try {
+        await say({ text: userMsg, blocks, thread_ts: threadTs });
+      } catch { /* ignore */ }
     }
+  } finally {
+    clearTimeout(globalTimeout);
   }
 }
 
