@@ -150,7 +150,7 @@ interface ApiFile { name: string; path: string; size?: number; modified?: string
 interface ApiListResponse { path: string; dirs: Array<{ name: string; path: string; count?: number }>; files: ApiFile[] }
 
 async function fetchDir(path: string): Promise<{ dirs: Array<{ name: string; path: string; count?: number }>; files: ApiFile[] }> {
-  const url = `/api/git/files?path=${encodeURIComponent(path)}`;
+  const url = `/api/assets/browse?path=${encodeURIComponent(path)}`;
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`API error ${resp.status}`);
   const data: ApiListResponse = await resp.json();
@@ -158,7 +158,7 @@ async function fetchDir(path: string): Promise<{ dirs: Array<{ name: string; pat
 }
 
 async function fetchFileContent(path: string): Promise<string> {
-  const resp = await fetch(`/api/git/file?path=${encodeURIComponent(path)}`);
+  const resp = await fetch(`/api/assets/file?path=${encodeURIComponent(path)}`);
   if (!resp.ok) throw new Error(`파일 로드 실패: ${resp.status}`);
   return resp.text();
 }

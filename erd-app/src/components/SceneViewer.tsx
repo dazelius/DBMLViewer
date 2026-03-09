@@ -47,6 +47,38 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 interface Vec3  { x: number; y: number; z: number }
 interface Quat  { x: number; y: number; z: number; w: number }
 
+// ── 컴포넌트 상세 데이터 타입 ─────────────────────────────────────────────────
+interface LightInfo {
+  lightType: number  // 0=Spot, 1=Directional, 2=Point, 3=Area
+  color: { r: number; g: number; b: number }
+  intensity: number
+  range: number
+  spotAngle: number
+  innerSpotAngle: number
+  shadowType: number  // 0=None, 1=Hard, 2=Soft
+}
+interface ColliderInfo {
+  type: 'box' | 'sphere' | 'capsule' | 'mesh'
+  isTrigger: boolean
+  center: Vec3
+  size?: Vec3
+  radius?: number
+  height?: number
+  direction?: number  // capsule: 0=X, 1=Y, 2=Z
+}
+interface CameraInfo {
+  fov: number; near: number; far: number
+  ortho: boolean; orthoSize: number; clearFlags: number
+}
+interface ComponentData {
+  Light?: LightInfo
+  colliders?: ColliderInfo[]
+  Camera?: CameraInfo
+  Rigidbody?: { mass: number; isKinematic: boolean; useGravity: boolean }
+  AudioSource?: { volume: number; loop: boolean; spatialBlend: number }
+  scripts?: string[]
+}
+
 interface SceneObject {
   id: string
   name: string
@@ -59,6 +91,7 @@ interface SceneObject {
   rot: Quat
   scale: Vec3
   components?: string[]
+  componentData?: ComponentData
 }
 
 interface HierarchyNode {
@@ -343,10 +376,21 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set())
   const [selectedNode, setSelectedNode] = useState<HierarchyNode | null>(null)
 
+  // ── 뷰포트 토글 상태 ──────────────────────────────────────────────────────────
+  const [showColliders, setShowColliders]       = useState(false)
+  const [showLightHelpers, setShowLightHelpers] = useState(true)
+  const [wireframeMode, setWireframeMode]       = useState(false)
+
   // Three.js 객체 참조 (hierarchy → camera focus용)
   const cameraRef   = useRef<THREE.PerspectiveCamera | null>(null)
   const controlsRef = useRef<OrbitControls | null>(null)
   const sceneObjMap = useRef<Map<number, THREE.Object3D>>(new Map())
+
+  // 토글 그룹 참조
+  const colliderGroupRef    = useRef<THREE.Group | null>(null)
+  const lightHelperGroupRef = useRef<THREE.Group | null>(null)
+  const lightsGroupRef      = useRef<THREE.Group | null>(null)
+  const sceneRef            = useRef<THREE.Scene | null>(null)
 
   useEffect(() => {
     const el = mountRef.current
@@ -413,6 +457,10 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
     cameraRef.current = camera
     controlsRef.current = controls
     sceneObjMap.current.clear()
+    sceneRef.current = scene
+    colliderGroupRef.current = null
+    lightHelperGroupRef.current = null
+    lightsGroupRef.current = null
 
     // 조명 (쉐도우맵 크기 축소: 2048→1024)
     scene.add(new THREE.AmbientLight(0xffffff, 1.8))
@@ -508,6 +556,105 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
         if (data.objects.length === 0) {
           setStatus('ok')
           return
+        }
+
+        // ── Phase 0: Unity 조명 + 콜라이더 그룹 생성 ──────────────────────────────
+        // Unity Light 컴포넌트에서 실제 Three.js 조명 생성
+        const lightsGroup = new THREE.Group(); lightsGroup.name = '__unityLights__'
+        scene.add(lightsGroup); lightsGroupRef.current = lightsGroup
+
+        const lightHelperGroup = new THREE.Group(); lightHelperGroup.name = '__lightHelpers__'
+        lightHelperGroup.visible = showLightHelpers
+        scene.add(lightHelperGroup); lightHelperGroupRef.current = lightHelperGroup
+
+        const colliderGroup = new THREE.Group(); colliderGroup.name = '__colliders__'
+        colliderGroup.visible = showColliders
+        scene.add(colliderGroup); colliderGroupRef.current = colliderGroup
+
+        const colGreenMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, wireframe: true, transparent: true, opacity: 0.65 })
+        const colOrangeMat = new THREE.MeshBasicMaterial({ color: 0xf97316, wireframe: true, transparent: true, opacity: 0.65 })
+        loadedMaterials.push(colGreenMat, colOrangeMat)
+
+        let sceneLightCount = 0
+        for (const obj of data.objects) {
+          const ld = obj.componentData?.Light
+          const worldPos = unityToThreePos(obj.pos)
+          const worldQuat = unityToThreeQuat(obj.rot)
+          const worldScale = unityToThreeScale(obj.scale)
+
+          if (ld) {
+            // Unity 색상은 Linear, Three.js는 sRGB → 그대로 전달 (renderer가 ACES 톤맵 적용)
+            const color = new THREE.Color(ld.color.r, ld.color.g, ld.color.b)
+            // Unity intensity 보정: Unity HDRP/URP와 Three.js 스케일이 다름
+            const ti = ld.intensity * 2.5
+
+            if (ld.lightType === 2) {  // Point Light
+              const light = new THREE.PointLight(color, ti, ld.range)
+              light.position.copy(worldPos)
+              lightsGroup.add(light)
+              const helperSize = Math.max(0.2, ld.range * 0.04)
+              lightHelperGroup.add(new THREE.PointLightHelper(light, helperSize))
+            } else if (ld.lightType === 1) {  // Directional Light
+              const light = new THREE.DirectionalLight(color, ti)
+              light.position.copy(worldPos)
+              const dir = new THREE.Vector3(0, -1, 0).applyQuaternion(worldQuat)
+              light.target.position.copy(worldPos.clone().add(dir.multiplyScalar(15)))
+              lightsGroup.add(light); lightsGroup.add(light.target)
+              lightHelperGroup.add(new THREE.DirectionalLightHelper(light, 1.5))
+            } else if (ld.lightType === 0) {  // Spot Light
+              const angle = Math.min((ld.spotAngle * Math.PI) / 360, Math.PI / 2 - 0.01)
+              const light = new THREE.SpotLight(color, ti, ld.range, angle, 0.15)
+              light.position.copy(worldPos)
+              const dir = new THREE.Vector3(0, -1, 0).applyQuaternion(worldQuat)
+              light.target.position.copy(worldPos.clone().add(dir.multiplyScalar(10)))
+              lightsGroup.add(light); lightsGroup.add(light.target)
+              try { lightHelperGroup.add(new THREE.SpotLightHelper(light)) } catch { /**/ }
+            } else {  // Area Light (3) → PointLight 근사
+              const light = new THREE.PointLight(color, ti * 0.6, ld.range * 0.8)
+              light.position.copy(worldPos)
+              lightsGroup.add(light)
+              lightHelperGroup.add(new THREE.PointLightHelper(light, 0.3))
+            }
+            sceneLightCount++
+          }
+
+          // 콜라이더 와이어프레임 생성
+          const colliders = obj.componentData?.colliders
+          if (colliders) {
+            for (const col of colliders) {
+              const mat = col.isTrigger ? colOrangeMat : colGreenMat
+              let colGeo: THREE.BufferGeometry | null = null
+              if (col.type === 'box' && col.size) {
+                colGeo = new THREE.BoxGeometry(
+                  col.size.x * worldScale.x, col.size.y * worldScale.y, col.size.z * worldScale.z)
+              } else if (col.type === 'sphere' && col.radius !== undefined) {
+                const maxS = Math.max(worldScale.x, worldScale.y, worldScale.z)
+                colGeo = new THREE.SphereGeometry(col.radius * maxS, 12, 8)
+              } else if (col.type === 'capsule' && col.radius !== undefined) {
+                const r = col.radius * Math.max(worldScale.x, worldScale.z)
+                const h = (col.height ?? 2) * worldScale.y
+                try { colGeo = new THREE.CapsuleGeometry(r, Math.max(0.01, h - r * 2), 4, 8) }
+                catch { colGeo = new THREE.CylinderGeometry(r, r, h, 12) }
+              }
+              if (colGeo) {
+                loadedGeometries.push(colGeo)
+                const mesh = new THREE.Mesh(colGeo, mat)
+                const centerOff = new THREE.Vector3(col.center.x, col.center.y, -col.center.z)
+                centerOff.applyQuaternion(worldQuat)
+                mesh.position.copy(worldPos).add(centerOff)
+                mesh.quaternion.copy(worldQuat)
+                colliderGroup.add(mesh)
+              }
+            }
+          }
+        }
+        if (sceneLightCount > 0) {
+          // Unity 조명이 있으면 환경광을 줄여서 씬 분위기 살림
+          scene.traverse(o => {
+            if (o instanceof THREE.AmbientLight) o.intensity = Math.max(0.4, o.intensity * 0.5)
+            if (o instanceof THREE.DirectionalLight && o.parent === scene) o.intensity *= 0.4
+          })
+          console.log(`[SceneViewer] ${sceneLightCount}개 Unity 조명 생성 완료`)
         }
 
         // ── 커스텀 LoadingManager ──
@@ -937,6 +1084,34 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scenePath, height])
 
+  // ── 토글 effects (Three.js 그룹 가시성 제어) ─────────────────────────────────
+  useEffect(() => {
+    if (colliderGroupRef.current) colliderGroupRef.current.visible = showColliders
+  }, [showColliders])
+
+  useEffect(() => {
+    if (lightHelperGroupRef.current) lightHelperGroupRef.current.visible = showLightHelpers
+  }, [showLightHelpers])
+
+  useEffect(() => {
+    const sc = sceneRef.current
+    if (!sc) return
+    sc.traverse(obj => {
+      const mesh = obj as THREE.Mesh
+      if (!mesh.isMesh) return
+      // 콜라이더/헬퍼 그룹은 제외
+      let cur: THREE.Object3D | null = mesh.parent
+      while (cur) {
+        if (cur.name?.startsWith('__')) return
+        cur = cur.parent
+      }
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+      mats.forEach(m => {
+        if (m && 'wireframe' in m) (m as THREE.MeshStandardMaterial).wireframe = wireframeMode
+      })
+    })
+  }, [wireframeMode])
+
   const sceneName = scenePath.split('/').pop()?.replace('.unity', '') ?? 'Scene'
 
   // ── 노드 선택 + 카메라 포커스 ──
@@ -1021,9 +1196,31 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
           </span>
         )}
 
+        {/* 뷰포트 토글 버튼 (Colliders / Light Helpers / Wireframe) */}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 3, alignItems: 'center' }}>
+          {[
+            { key: 'colliders', icon: '🟢', label: 'Colliders', active: showColliders, onClick: () => setShowColliders(v => !v), title: '콜라이더 와이어프레임 표시/숨기기 (초록=Collider, 주황=Trigger)' },
+            { key: 'lights', icon: '💡', label: 'Lights', active: showLightHelpers, onClick: () => setShowLightHelpers(v => !v), title: '조명 헬퍼 기즈모 표시/숨기기' },
+            { key: 'wire', icon: '◻', label: 'Wireframe', active: wireframeMode, onClick: () => setWireframeMode(v => !v), title: '와이어프레임 모드' },
+          ].map(({ key, icon, label, active, onClick, title }) => (
+            <button key={key} onClick={onClick} title={title}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 3,
+                background: active ? 'rgba(99,102,241,0.2)' : 'rgba(100,116,139,0.1)',
+                color: active ? '#818cf8' : '#64748b',
+                border: `1px solid ${active ? 'rgba(99,102,241,0.4)' : 'rgba(100,116,139,0.15)'}`,
+                borderRadius: 4, padding: '2px 6px', fontSize: 10, cursor: 'pointer',
+              }}
+            >
+              <span style={{ fontSize: 9 }}>{icon}</span>
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
+
         {/* 하이어라키 / 인스펙터 토글 버튼 */}
         {hierarchyData.length > 0 && (
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+          <div style={{ display: 'flex', gap: 4 }}>
             <button
               onClick={() => setShowHierarchy(!showHierarchy)}
               title={showHierarchy ? '하이어라키 숨기기' : '하이어라키 보기'}
@@ -1234,9 +1431,9 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
                     )
                   })()}
 
-                  {/* Components */}
+                  {/* Components 목록 */}
                   {(selectedNode.components?.length ?? 0) > 0 && (
-                    <div>
+                    <div style={{ marginBottom: 6 }}>
                       <div style={{
                         color: '#475569', fontSize: 9, fontWeight: 600,
                         letterSpacing: 0.5, marginBottom: 4, paddingBottom: 2,
@@ -1251,17 +1448,134 @@ export function SceneViewer({ scenePath, height = 560, className = '' }: SceneVi
                             background: '#0f172a', borderRadius: 4,
                             padding: '3px 6px', border: '1px solid #1e293b',
                           }}>
-                            <span style={{ fontSize: 10, flexShrink: 0 }}>
-                              {COMP_ICONS[comp] || '•'}
-                            </span>
-                            <span style={{ fontSize: 10, color: '#cbd5e1', wordBreak: 'break-word' }}>
-                              {comp}
-                            </span>
+                            <span style={{ fontSize: 10, flexShrink: 0 }}>{COMP_ICONS[comp] || '•'}</span>
+                            <span style={{ fontSize: 10, color: '#cbd5e1', wordBreak: 'break-word' }}>{comp}</span>
                           </div>
                         ))}
                       </div>
                     </div>
                   )}
+
+                  {/* 컴포넌트 상세 데이터 (서버에서 추출된 프로퍼티) */}
+                  {selectedNode.objIdx >= 0 && sceneObjects[selectedNode.objIdx]?.componentData && (() => {
+                    const cd = sceneObjects[selectedNode.objIdx].componentData!
+                    const SectionHeader = ({ title, icon }: { title: string; icon: string }) => (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, margin: '8px 0 4px', paddingBottom: 2, borderBottom: '1px solid #1e293b' }}>
+                        <span style={{ fontSize: 10 }}>{icon}</span>
+                        <span style={{ color: '#475569', fontSize: 9, fontWeight: 600, letterSpacing: 0.5 }}>{title}</span>
+                      </div>
+                    )
+                    const Row = ({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) => (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2, gap: 4 }}>
+                        <span style={{ color: '#475569', fontSize: 9, flexShrink: 0 }}>{label}</span>
+                        <span style={{ color: valueColor ?? '#94a3b8', fontSize: 9, wordBreak: 'break-all', textAlign: 'right' }}>{value}</span>
+                      </div>
+                    )
+                    return (
+                      <div>
+                        {/* Light */}
+                        {cd.Light && (() => {
+                          const ld = cd.Light!
+                          const typeNames = ['Spot', 'Directional', 'Point', 'Area']
+                          const shadowNames = ['None', 'Hard', 'Soft']
+                          const r = Math.round(ld.color.r * 255), g = Math.round(ld.color.g * 255), b = Math.round(ld.color.b * 255)
+                          return (
+                            <>
+                              <SectionHeader title="LIGHT" icon="💡" />
+                              <div style={{ background: '#0f172a', borderRadius: 4, padding: '4px 6px', marginBottom: 4 }}>
+                                <Row label="Type" value={typeNames[ld.lightType] ?? 'Unknown'} valueColor="#fbbf24" />
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                                  <span style={{ color: '#475569', fontSize: 9 }}>Color</span>
+                                  <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 3 }}>
+                                    <div style={{ width: 12, height: 12, borderRadius: 2, background: `rgb(${r},${g},${b})`, border: '1px solid #334155' }} />
+                                    <span style={{ color: '#94a3b8', fontSize: 9 }}>({r},{g},{b})</span>
+                                  </div>
+                                </div>
+                                <Row label="Intensity" value={ld.intensity.toFixed(2)} valueColor="#fde68a" />
+                                <Row label="Range" value={ld.range.toFixed(1)} />
+                                {ld.lightType === 0 && <Row label="Spot Angle" value={`${ld.spotAngle.toFixed(1)}°`} />}
+                                <Row label="Shadows" value={shadowNames[ld.shadowType] ?? 'None'} />
+                              </div>
+                            </>
+                          )
+                        })()}
+
+                        {/* Colliders */}
+                        {cd.colliders && cd.colliders.length > 0 && (
+                          <>
+                            <SectionHeader title={`COLLIDERS (${cd.colliders.length})`} icon="🟢" />
+                            {cd.colliders.map((col, ci) => (
+                              <div key={ci} style={{ background: col.isTrigger ? 'rgba(249,115,22,0.08)' : 'rgba(34,197,94,0.08)', borderRadius: 4, padding: '4px 6px', marginBottom: 4, border: `1px solid ${col.isTrigger ? 'rgba(249,115,22,0.2)' : 'rgba(34,197,94,0.2)'}` }}>
+                                <div style={{ color: col.isTrigger ? '#f97316' : '#22c55e', fontSize: 9, fontWeight: 600, marginBottom: 3 }}>
+                                  {col.type.charAt(0).toUpperCase() + col.type.slice(1)}{col.isTrigger ? ' (Trigger)' : ''}
+                                </div>
+                                {col.type === 'box' && col.size && <Row label="Size" value={`${col.size.x.toFixed(2)}, ${col.size.y.toFixed(2)}, ${col.size.z.toFixed(2)}`} />}
+                                {col.type === 'sphere' && col.radius !== undefined && <Row label="Radius" value={col.radius.toFixed(2)} />}
+                                {col.type === 'capsule' && <>
+                                  <Row label="Radius" value={(col.radius ?? 0).toFixed(2)} />
+                                  <Row label="Height" value={(col.height ?? 0).toFixed(2)} />
+                                  <Row label="Axis" value={['X', 'Y', 'Z'][col.direction ?? 1]} />
+                                </>}
+                                <Row label="Center" value={`${col.center.x.toFixed(2)}, ${col.center.y.toFixed(2)}, ${col.center.z.toFixed(2)}`} />
+                              </div>
+                            ))}
+                          </>
+                        )}
+
+                        {/* Camera */}
+                        {cd.Camera && (() => {
+                          const cam = cd.Camera!
+                          return (
+                            <>
+                              <SectionHeader title="CAMERA" icon="🎥" />
+                              <div style={{ background: '#0f172a', borderRadius: 4, padding: '4px 6px', marginBottom: 4 }}>
+                                <Row label="FOV" value={`${cam.fov.toFixed(1)}°`} valueColor="#60a5fa" />
+                                <Row label="Near" value={cam.near.toFixed(3)} />
+                                <Row label="Far" value={cam.far.toFixed(0)} />
+                                <Row label="Projection" value={cam.ortho ? `Ortho (${cam.orthoSize.toFixed(1)})` : 'Perspective'} />
+                              </div>
+                            </>
+                          )
+                        })()}
+
+                        {/* Rigidbody */}
+                        {cd.Rigidbody && (
+                          <>
+                            <SectionHeader title="RIGIDBODY" icon="⚙️" />
+                            <div style={{ background: '#0f172a', borderRadius: 4, padding: '4px 6px', marginBottom: 4 }}>
+                              <Row label="Mass" value={cd.Rigidbody.mass.toFixed(1)} />
+                              <Row label="Kinematic" value={cd.Rigidbody.isKinematic ? 'Yes' : 'No'} valueColor={cd.Rigidbody.isKinematic ? '#f97316' : '#94a3b8'} />
+                              <Row label="Gravity" value={cd.Rigidbody.useGravity ? 'Yes' : 'No'} />
+                            </div>
+                          </>
+                        )}
+
+                        {/* AudioSource */}
+                        {cd.AudioSource && (
+                          <>
+                            <SectionHeader title="AUDIOSOURCE" icon="🔊" />
+                            <div style={{ background: '#0f172a', borderRadius: 4, padding: '4px 6px', marginBottom: 4 }}>
+                              <Row label="Volume" value={(cd.AudioSource.volume * 100).toFixed(0) + '%'} />
+                              <Row label="Loop" value={cd.AudioSource.loop ? 'Yes' : 'No'} />
+                              <Row label="Spatial" value={cd.AudioSource.spatialBlend.toFixed(2)} />
+                            </div>
+                          </>
+                        )}
+
+                        {/* Scripts (MonoBehaviour) */}
+                        {cd.scripts && cd.scripts.length > 0 && (
+                          <>
+                            <SectionHeader title={`SCRIPTS (${cd.scripts.length})`} icon="📜" />
+                            <div style={{ background: '#0f172a', borderRadius: 4, padding: '4px 6px', marginBottom: 4 }}>
+                              {cd.scripts.map((s, i) => (
+                                <div key={i} style={{ color: '#a78bfa', fontSize: 9, marginBottom: 1 }}>• {s}</div>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )
+                  })()}
 
                   {/* 렌더링 없는 empty 노드 안내 */}
                   {selectedNode.objIdx < 0 && (selectedNode.components?.length ?? 0) === 0 && (

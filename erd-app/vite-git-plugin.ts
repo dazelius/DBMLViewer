@@ -2014,6 +2014,49 @@ function createGitMiddleware(options: GitPluginOptions) {
           return
         }
 
+        // ── /api/assets/browse : Unity 에셋 디렉토리 탐색 ─────────────────────
+        // ?path= : UNITY_ASSETS_DIR 기준 상대 경로 (예: GameContents, GameContents/Character)
+        if (req.url.startsWith('/api/assets/browse')) {
+          const url2      = new URL(req.url, 'http://localhost')
+          const pathParam = (url2.searchParams.get('path') || 'GameContents').replace(/\\/g, '/')
+          const normPath  = pathParam.replace(/^\/+/, '').replace(/\/+$/, '')
+          const targetDir = normPath
+            ? join(UNITY_ASSETS_DIR, ...normPath.split('/'))
+            : UNITY_ASSETS_DIR
+
+          if (!existsSync(targetDir)) {
+            sendJson(res, 404, { error: `Directory not found: ${pathParam}` })
+            return
+          }
+
+          const entries = readdirSync(targetDir, { withFileTypes: true })
+          const dirs: Array<{ name: string; path: string; count?: number }> = []
+          const files: Array<{ name: string; path: string; size?: number; modified?: string }> = []
+
+          for (const entry of entries) {
+            const entryRelPath = normPath ? `${normPath}/${entry.name}` : entry.name
+            if (entry.isDirectory()) {
+              try {
+                const sub = readdirSync(join(targetDir, entry.name))
+                const count = sub.filter(n => !n.endsWith('.meta')).length
+                dirs.push({ name: entry.name, path: entryRelPath, count })
+              } catch {
+                dirs.push({ name: entry.name, path: entryRelPath })
+              }
+            } else if (entry.isFile() && !entry.name.endsWith('.meta')) {
+              try {
+                const st = statSync(join(targetDir, entry.name))
+                files.push({ name: entry.name, path: entryRelPath, size: st.size, modified: st.mtime.toISOString() })
+              } catch {
+                files.push({ name: entry.name, path: entryRelPath })
+              }
+            }
+          }
+
+          sendJson(res, 200, { path: pathParam, dirs, files })
+          return
+        }
+
       } catch (assetErr) {
         console.error('[assets endpoint error]', assetErr)
         if (!res.headersSent) {
@@ -2167,6 +2210,100 @@ function createGitMiddleware(options: GitPluginOptions) {
           '224': 'RectTransform', '222': 'Canvas', '223': 'CanvasRenderer',
         }
 
+        // ── 컴포넌트 상세 데이터 타입 ────────────────────────────────────────────
+        interface LightInfo { lightType: number; color: {r:number;g:number;b:number}; intensity: number; range: number; spotAngle: number; innerSpotAngle: number; shadowType: number }
+        interface ColliderInfo { type: 'box'|'sphere'|'capsule'|'mesh'; isTrigger: boolean; center: V3; size?: V3; radius?: number; height?: number; direction?: number }
+        interface CameraInfo { fov: number; near: number; far: number; ortho: boolean; orthoSize: number; clearFlags: number }
+        interface ComponentDataResult { Light?: LightInfo; colliders?: ColliderInfo[]; Camera?: CameraInfo; Rigidbody?: { mass: number; isKinematic: boolean; useGravity: boolean }; AudioSource?: { volume: number; loop: boolean; spatialBlend: number }; scripts?: string[] }
+
+        // ── 컴포넌트 데이터 맵 ──────────────────────────────────────────────────
+        const goLightData: Record<string, LightInfo> = {}
+        const goColliderData: Record<string, ColliderInfo[]> = {}
+        const goCameraData: Record<string, CameraInfo> = {}
+        const goRigidbodyData: Record<string, { mass: number; isKinematic: boolean; useGravity: boolean }> = {}
+        const goAudioData: Record<string, { volume: number; loop: boolean; spatialBlend: number }> = {}
+        const goScriptNames: Record<string, string[]> = {}
+
+        const parseVec3S = (s: string, k: string): V3 | null => {
+          const re = new RegExp(k + ':\\s*\\{x:\\s*([\\d.eE+\\-]+),\\s*y:\\s*([\\d.eE+\\-]+),\\s*z:\\s*([\\d.eE+\\-]+)')
+          const m = s.match(re)
+          return m ? { x: parseVal(m[1]), y: parseVal(m[2]), z: parseVal(m[3]) } : null
+        }
+
+        const buildComponentData = (goId: string): ComponentDataResult | undefined => {
+          if (!goId || goId === '0') return undefined
+          const cd: ComponentDataResult = {}
+          if (goLightData[goId]) cd.Light = goLightData[goId]
+          if (goColliderData[goId]?.length) cd.colliders = goColliderData[goId]
+          if (goCameraData[goId]) cd.Camera = goCameraData[goId]
+          if (goRigidbodyData[goId]) cd.Rigidbody = goRigidbodyData[goId]
+          if (goAudioData[goId]) cd.AudioSource = goAudioData[goId]
+          if (goScriptNames[goId]?.length) cd.scripts = goScriptNames[goId]
+          return Object.keys(cd).length > 0 ? cd : undefined
+        }
+
+        // ── 프리팹 컴포넌트 데이터 캐시 ──────────────────────────────────────────
+        interface PrefabCompResult { lights: LightInfo[]; colliders: ColliderInfo[]; scripts: string[] }
+        const prefabCompCache: Record<string, PrefabCompResult | null> = {}
+        const resolvePrefabComponentData = (prefabGuid: string, depth = 0): PrefabCompResult | null => {
+          if (depth > 2) return null
+          if (prefabGuid in prefabCompCache) return prefabCompCache[prefabGuid]
+          const absPath = guidToAbs(prefabGuid)
+          if (!absPath || !existsSync(absPath) || !/\.(prefab)$/i.test(absPath)) return (prefabCompCache[prefabGuid] = null)
+          try {
+            const pc = readFileSync(absPath, 'utf-8')
+            const result: PrefabCompResult = { lights: [], colliders: [], scripts: [] }
+            for (const sec of pc.split(/\n---/)) {
+              if (sec.includes('!u!108 &')) {
+                const typeM = sec.match(/m_Type:\s*(\d+)/)
+                const colorM = sec.match(/m_Color:\s*\{r:\s*([\d.]+),\s*g:\s*([\d.]+),\s*b:\s*([\d.]+)/)
+                const intM = sec.match(/m_Intensity:\s*([\d.eE+\-]+)/)
+                const rangeM = sec.match(/m_Range:\s*([\d.eE+\-]+)/)
+                const spotM = sec.match(/m_SpotAngle:\s*([\d.eE+\-]+)/)
+                const innerM = sec.match(/m_InnerSpotAngle:\s*([\d.eE+\-]+)/)
+                const shadowM = sec.match(/m_Shadows:\s*(\d+)/)
+                result.lights.push({
+                  lightType: typeM ? parseInt(typeM[1]) : 2,
+                  color: colorM ? { r: parseFloat(colorM[1]), g: parseFloat(colorM[2]), b: parseFloat(colorM[3]) } : { r: 1, g: 1, b: 1 },
+                  intensity: intM ? parseFloat(intM[1]) : 1,
+                  range: rangeM ? parseFloat(rangeM[1]) : 10,
+                  spotAngle: spotM ? parseFloat(spotM[1]) : 30,
+                  innerSpotAngle: innerM ? parseFloat(innerM[1]) : 0,
+                  shadowType: shadowM ? parseInt(shadowM[1]) : 0,
+                })
+              }
+              if (sec.includes('!u!65 &')) {
+                const trigM = sec.match(/m_IsTrigger:\s*(\d+)/)
+                const cen = parseVec3S(sec, 'm_Center')
+                const siz = parseVec3S(sec, 'm_Size')
+                result.colliders.push({ type: 'box', isTrigger: trigM?.[1] === '1', center: cen ?? { x:0,y:0,z:0 }, size: siz ?? { x:1,y:1,z:1 } })
+              }
+              if (sec.includes('!u!135 &')) {
+                const trigM = sec.match(/m_IsTrigger:\s*(\d+)/)
+                const radM = sec.match(/m_Radius:\s*([\d.eE+\-]+)/)
+                const cen = parseVec3S(sec, 'm_Center')
+                result.colliders.push({ type: 'sphere', isTrigger: trigM?.[1] === '1', center: cen ?? { x:0,y:0,z:0 }, radius: radM ? parseFloat(radM[1]) : 0.5 })
+              }
+              if (sec.includes('!u!136 &')) {
+                const trigM = sec.match(/m_IsTrigger:\s*(\d+)/)
+                const radM = sec.match(/m_Radius:\s*([\d.eE+\-]+)/)
+                const htM = sec.match(/m_Height:\s*([\d.eE+\-]+)/)
+                const dirM = sec.match(/m_Direction:\s*(\d+)/)
+                const cen = parseVec3S(sec, 'm_Center')
+                result.colliders.push({ type: 'capsule', isTrigger: trigM?.[1] === '1', center: cen ?? { x:0,y:0,z:0 }, radius: radM ? parseFloat(radM[1]) : 0.5, height: htM ? parseFloat(htM[1]) : 2, direction: dirM ? parseInt(dirM[1]) : 1 })
+              }
+              if (sec.includes('!u!114 &')) {
+                const scriptM = sec.match(/m_Script:\s*\{fileID:\s*-?\d+,\s*guid:\s*([a-f0-9]+)/)
+                if (scriptM && guidToRelPath[scriptM[1]]) {
+                  const sname = guidToRelPath[scriptM[1]].split('/').pop()?.replace(/\.(cs|js)$/i, '') ?? 'Script'
+                  if (!result.scripts.includes(sname)) result.scripts.push(sname)
+                }
+              }
+            }
+            return (prefabCompCache[prefabGuid] = (result.lights.length || result.colliders.length || result.scripts.length) ? result : null)
+          } catch { return (prefabCompCache[prefabGuid] = null) }
+        }
+
         const sections = sceneContent.split(/\n---/)
         for (const section of sections) {
           // ─── GameObject (!u!1) ─────────────────────────────────────
@@ -2220,6 +2357,134 @@ function createGitMiddleware(options: GitPluginOptions) {
               meshFilters[idM[1]] = { meshGuid: meshM[1], goId: goM[1] }
             }
             if (goM) addComponent(goM[1], 'MeshFilter')
+          }
+          // ─── Light (!u!108) ──────────────────────────────────────────
+          else if (section.includes('!u!108 &')) {
+            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            if (goM) {
+              addComponent(goM[1], 'Light')
+              const typeM = section.match(/m_Type:\s*(\d+)/)
+              const colorM = section.match(/m_Color:\s*\{r:\s*([\d.]+),\s*g:\s*([\d.]+),\s*b:\s*([\d.]+)/)
+              const intM = section.match(/m_Intensity:\s*([\d.eE+\-]+)/)
+              const rangeM = section.match(/m_Range:\s*([\d.eE+\-]+)/)
+              const spotM = section.match(/m_SpotAngle:\s*([\d.eE+\-]+)/)
+              const innerM = section.match(/m_InnerSpotAngle:\s*([\d.eE+\-]+)/)
+              const shadowM = section.match(/m_Shadows:\s*(\d+)/)
+              goLightData[goM[1]] = {
+                lightType: typeM ? parseInt(typeM[1]) : 2,
+                color: colorM ? { r: parseFloat(colorM[1]), g: parseFloat(colorM[2]), b: parseFloat(colorM[3]) } : { r: 1, g: 1, b: 1 },
+                intensity: intM ? parseFloat(intM[1]) : 1,
+                range: rangeM ? parseFloat(rangeM[1]) : 10,
+                spotAngle: spotM ? parseFloat(spotM[1]) : 30,
+                innerSpotAngle: innerM ? parseFloat(innerM[1]) : 0,
+                shadowType: shadowM ? parseInt(shadowM[1]) : 0,
+              }
+            }
+          }
+          // ─── BoxCollider (!u!65) ──────────────────────────────────────
+          else if (section.includes('!u!65 &')) {
+            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            if (goM) {
+              addComponent(goM[1], 'BoxCollider')
+              const trigM = section.match(/m_IsTrigger:\s*(\d+)/)
+              const cen = parseVec3S(section, 'm_Center')
+              const siz = parseVec3S(section, 'm_Size')
+              if (!goColliderData[goM[1]]) goColliderData[goM[1]] = []
+              goColliderData[goM[1]].push({ type: 'box', isTrigger: trigM?.[1] === '1', center: cen ?? { x:0,y:0,z:0 }, size: siz ?? { x:1,y:1,z:1 } })
+            }
+          }
+          // ─── SphereCollider (!u!135) ──────────────────────────────────
+          else if (section.includes('!u!135 &')) {
+            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            if (goM) {
+              addComponent(goM[1], 'SphereCollider')
+              const trigM = section.match(/m_IsTrigger:\s*(\d+)/)
+              const radM = section.match(/m_Radius:\s*([\d.eE+\-]+)/)
+              const cen = parseVec3S(section, 'm_Center')
+              if (!goColliderData[goM[1]]) goColliderData[goM[1]] = []
+              goColliderData[goM[1]].push({ type: 'sphere', isTrigger: trigM?.[1] === '1', center: cen ?? { x:0,y:0,z:0 }, radius: radM ? parseFloat(radM[1]) : 0.5 })
+            }
+          }
+          // ─── CapsuleCollider (!u!136) ─────────────────────────────────
+          else if (section.includes('!u!136 &')) {
+            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            if (goM) {
+              addComponent(goM[1], 'CapsuleCollider')
+              const trigM = section.match(/m_IsTrigger:\s*(\d+)/)
+              const radM = section.match(/m_Radius:\s*([\d.eE+\-]+)/)
+              const htM = section.match(/m_Height:\s*([\d.eE+\-]+)/)
+              const dirM = section.match(/m_Direction:\s*(\d+)/)
+              const cen = parseVec3S(section, 'm_Center')
+              if (!goColliderData[goM[1]]) goColliderData[goM[1]] = []
+              goColliderData[goM[1]].push({ type: 'capsule', isTrigger: trigM?.[1] === '1', center: cen ?? { x:0,y:0,z:0 }, radius: radM ? parseFloat(radM[1]) : 0.5, height: htM ? parseFloat(htM[1]) : 2, direction: dirM ? parseInt(dirM[1]) : 1 })
+            }
+          }
+          // ─── MeshCollider (!u!64) ─────────────────────────────────────
+          else if (section.includes('!u!64 &')) {
+            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            if (goM) {
+              addComponent(goM[1], 'MeshCollider')
+              const trigM = section.match(/m_IsTrigger:\s*(\d+)/)
+              if (!goColliderData[goM[1]]) goColliderData[goM[1]] = []
+              goColliderData[goM[1]].push({ type: 'mesh', isTrigger: trigM?.[1] === '1', center: { x:0,y:0,z:0 } })
+            }
+          }
+          // ─── Camera (!u!20) ───────────────────────────────────────────
+          else if (section.includes('!u!20 &')) {
+            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            if (goM) {
+              addComponent(goM[1], 'Camera')
+              const fovM = section.match(/m_FieldOfView:\s*([\d.eE+\-]+)/)
+              const nearM = section.match(/m_NearClip(?:Plane)?:\s*([\d.eE+\-]+)/)
+              const farM = section.match(/m_FarClip(?:Plane)?:\s*([\d.eE+\-]+)/)
+              const orthoM = section.match(/m_Orthographic(?:tic)?:\s*(\d+)/)
+              const orthoSzM = section.match(/m_OrthographicSize:\s*([\d.eE+\-]+)/)
+              const clearM = section.match(/m_ClearFlags:\s*(\d+)/)
+              goCameraData[goM[1]] = {
+                fov: fovM ? parseFloat(fovM[1]) : 60,
+                near: nearM ? parseFloat(nearM[1]) : 0.3,
+                far: farM ? parseFloat(farM[1]) : 1000,
+                ortho: orthoM?.[1] === '1',
+                orthoSize: orthoSzM ? parseFloat(orthoSzM[1]) : 5,
+                clearFlags: clearM ? parseInt(clearM[1]) : 1,
+              }
+            }
+          }
+          // ─── Rigidbody (!u!54) ────────────────────────────────────────
+          else if (section.includes('!u!54 &') && !section.includes('!u!54000') && !section.includes('!u!5400')) {
+            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            if (goM) {
+              addComponent(goM[1], 'Rigidbody')
+              const massM = section.match(/m_Mass:\s*([\d.eE+\-]+)/)
+              const kinM = section.match(/m_IsKinematic:\s*(\d+)/)
+              const gravM = section.match(/m_UseGravity:\s*(\d+)/)
+              goRigidbodyData[goM[1]] = { mass: massM ? parseFloat(massM[1]) : 1, isKinematic: kinM?.[1] === '1', useGravity: gravM?.[1] !== '0' }
+            }
+          }
+          // ─── AudioSource (!u!82) ──────────────────────────────────────
+          else if (section.includes('!u!82 &')) {
+            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            if (goM) {
+              addComponent(goM[1], 'AudioSource')
+              const volM = section.match(/m_Volume:\s*([\d.eE+\-]+)/)
+              const loopM = section.match(/m_Loop:\s*(\d+)/)
+              const spatM = section.match(/m_SpatialBlend:\s*([\d.eE+\-]+)/)
+              goAudioData[goM[1]] = { volume: volM ? parseFloat(volM[1]) : 1, loop: loopM?.[1] === '1', spatialBlend: spatM ? parseFloat(spatM[1]) : 0 }
+            }
+          }
+          // ─── MonoBehaviour (!u!114) - 스크립트 이름 추출 ─────────────
+          else if (section.includes('!u!114 &')) {
+            const goM = section.match(/m_GameObject:\s*\{fileID:\s*(\d+)/)
+            const scriptM = section.match(/m_Script:\s*\{fileID:\s*-?\d+,\s*guid:\s*([a-f0-9]+)/)
+            if (goM) {
+              let scriptName = 'MonoBehaviour'
+              if (scriptM && guidToRelPath[scriptM[1]]) {
+                scriptName = guidToRelPath[scriptM[1]].split('/').pop()?.replace(/\.(cs|js)$/i, '') ?? 'MonoBehaviour'
+              }
+              addComponent(goM[1], scriptName)
+              if (!goScriptNames[goM[1]]) goScriptNames[goM[1]] = []
+              if (!goScriptNames[goM[1]].includes(scriptName)) goScriptNames[goM[1]].push(scriptName)
+            }
           }
           // ─── 기타 컴포넌트 파싱 (GO별 컴포넌트 목록 구축) ────────────
           else {
@@ -2415,6 +2680,7 @@ function createGitMiddleware(options: GitPluginOptions) {
         interface DirectObject {
           name: string
           meshGuid: string
+          goId: string
           pos: V3; rot: Q4; scale: V3  // 월드 좌표
         }
         const directObjects: DirectObject[] = []
@@ -2430,12 +2696,14 @@ function createGitMiddleware(options: GitPluginOptions) {
           directObjects.push({
             name: goName,
             meshGuid: mf.meshGuid,
+            goId: mf.goId,
               pos: world.pos, rot: world.rot, scale: world.scale,
             })
           } else {
             directObjects.push({
               name: goName,
               meshGuid: mf.meshGuid,
+              goId: mf.goId,
               pos: { x: 0, y: 0, z: 0 }, rot: { x: 0, y: 0, z: 0, w: 1 }, scale: { x: 1, y: 1, z: 1 },
             })
           }
@@ -2566,6 +2834,7 @@ function createGitMiddleware(options: GitPluginOptions) {
           rot: { x: number; y: number; z: number; w: number }
           scale: { x: number; y: number; z: number }
           components?: string[]  // 해당 GO의 컴포넌트 목록
+          componentData?: ComponentDataResult  // 컴포넌트 상세 데이터
         }
 
         const sceneObjects: SceneObj[] = []
@@ -2582,6 +2851,8 @@ function createGitMiddleware(options: GitPluginOptions) {
             fbxPath: rel,
             fbxUrl: `/api/assets/file?path=${encodeURIComponent(rel)}`,
             pos: d.pos, rot: d.rot, scale: d.scale,
+            components: goComponents[d.goId]?.length ? goComponents[d.goId] : undefined,
+            componentData: buildComponentData(d.goId),
           })
         }
 
@@ -2591,6 +2862,14 @@ function createGitMiddleware(options: GitPluginOptions) {
           const fbxRel = resolvePrefabFbx(p.sourcePrefabGuid)
           if (fbxRel) {
             resolvedIds.add(p.id)
+            const pcd = resolvePrefabComponentData(p.sourcePrefabGuid)
+            const prefabCd: ComponentDataResult | undefined = pcd ? (() => {
+              const cd: ComponentDataResult = {}
+              if (pcd.lights.length > 0) cd.Light = pcd.lights[0]
+              if (pcd.colliders.length > 0) cd.colliders = pcd.colliders
+              if (pcd.scripts.length > 0) cd.scripts = pcd.scripts
+              return Object.keys(cd).length > 0 ? cd : undefined
+            })() : undefined
           sceneObjects.push({
             id: p.id,
             name: p.prefabName,
@@ -2598,6 +2877,7 @@ function createGitMiddleware(options: GitPluginOptions) {
             fbxPath: fbxRel,
             fbxUrl: `/api/assets/file?path=${encodeURIComponent(fbxRel)}`,
             pos: p.pos, rot: p.rot, scale: p.scale,
+            componentData: prefabCd,
           })
         }
         }
@@ -2666,6 +2946,7 @@ function createGitMiddleware(options: GitPluginOptions) {
               fbxUrl: '',
               pos: world.pos, rot: world.rot, scale: world.scale,
               components: comps.length > 0 ? comps : undefined,
+              componentData: buildComponentData(tf.goId),
             })
             emptyCount++
           }
