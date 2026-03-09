@@ -642,7 +642,7 @@ async function fetchThreadContext(client, channel, threadTs, currentTs) {
       if (msg.ts === currentTs) continue;
       
       const isBot = !!msg.bot_id || msg.subtype === 'bot_message';
-      const who = isBot ? 'DataMaster' : (msg.user ? `사용자(${msg.user})` : '사용자');
+      const who = isBot ? 'DataMaster' : (msg.user ? await getUserDisplayName(client, msg.user) : '사용자');
       const text = cleanSlackText(msg.text);
       
       if (!text) continue;
@@ -745,6 +745,34 @@ function isResetCommand(text) {
   return ['reset', '새 대화', '새대화', '리셋', '초기화', 'new', 'clear'].includes(lower);
 }
 
+// ── 사용자 이름 캐시 (Slack user ID → 표시 이름) ──
+const userNameCache = new Map(); // userId → { name, fetchedAt }
+
+async function getUserDisplayName(client, userId) {
+  if (!userId) return '사용자';
+  
+  // 캐시 확인 (1시간 유효)
+  const cached = userNameCache.get(userId);
+  if (cached && Date.now() - cached.fetchedAt < 3600_000) {
+    return cached.name;
+  }
+  
+  try {
+    const result = await client.users.info({ user: userId });
+    if (result.ok && result.user) {
+      const profile = result.user.profile || {};
+      // 우선순위: display_name > real_name > name
+      const name = profile.display_name || profile.real_name || result.user.name || userId;
+      userNameCache.set(userId, { name, fetchedAt: Date.now() });
+      return name;
+    }
+  } catch (e) {
+    console.warn(`[Slack] 사용자 정보 조회 실패 (${userId}):`, e.message);
+  }
+  
+  return userId; // fallback
+}
+
 // ── 메시지 처리 핸들러 ──
 async function handleMessage({ message, say, client, event }) {
   // 봇 자신의 메시지 무시
@@ -753,6 +781,7 @@ async function handleMessage({ message, say, client, event }) {
   const channel = event?.channel || message?.channel;
   const threadTs = event?.thread_ts || message?.thread_ts || message?.ts || event?.ts;
   const currentTs = message?.ts || event?.ts;
+  const userId = event?.user || message?.user || '';
   const userText = cleanSlackText(event?.text || message?.text || '');
 
   if (!userText) return;
@@ -795,10 +824,12 @@ async function handleMessage({ message, say, client, event }) {
   }
 
   try {
-    console.log(`[Slack] 메시지 수신: channel=${channel} thread=${threadTs} text="${userText.slice(0, 50)}..."`);
+    // ── 사용자 이름 조회 ──
+    const userName = await getUserDisplayName(client, userId);
+    console.log(`[Slack] 메시지 수신: user=${userName}(${userId}) channel=${channel} thread=${threadTs} text="${userText.slice(0, 50)}..."`);
     
     // ── 쓰레드 컨텍스트 수집 ──
-    let enrichedMessage = userText;
+    let enrichedMessage = `[Slack 사용자: ${userName}]\n${userText}`;
     const threadCtx = await fetchThreadContext(client, channel, threadTs, currentTs);
     
     if (threadCtx) {
