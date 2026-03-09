@@ -978,12 +978,9 @@ async function handleMessage({ message, say, client, event }) {
       } catch { /* rate limit 무시 */ }
     };
 
-    // 이터레이션 구분 콜백
-    const onIteration = async (iterNum) => {
-      if (iterNum <= 1 || !loadingMsg?.ts) return;
-      toolProgress.push(`── *이터레이션 ${iterNum}* ──`);
-      // 즉시 업데이트
-      lastUpdate = 0;
+    // 이터레이션 구분 콜백 (슬랙에서는 표시하지 않음 — 사용자에게 유용한 정보가 아님)
+    const onIteration = async (_iterNum) => {
+      // no-op: 이터레이션 번호는 슬랙 진행상황에 표시하지 않음
     };
     
     // 에러 시 자동 재시도 (최대 2회)
