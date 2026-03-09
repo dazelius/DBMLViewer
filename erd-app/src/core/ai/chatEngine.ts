@@ -4133,17 +4133,22 @@ function showTab(id){
               const downloadUrl = `${BIBLE_TABLING_URL}${data.download_url}`;
               const downloadFilename = String(data.download_filename ?? '');
 
-              // 개별 파일 목록 (파일명 중복 제거 후 각각의 다운로드 URL 생성)
+              // 개별 파일 목록:
+              // downloadUrl이 .zip이면 여러 Excel → 각 파일 개별 링크 제공
+              // downloadUrl이 .xlsx이면 하나의 Excel (시트가 여러 개여도) → 개별 링크 없음
+              const isZip = downloadUrl.endsWith('.zip');
               const seenFiles = new Set<string>();
               const files: Array<{ filename: string; url: string }> = [];
-              for (const d of details) {
-                const fname = String(d.file ?? '');
-                if (fname && !seenFiles.has(fname)) {
-                  seenFiles.add(fname);
-                  files.push({
-                    filename: fname,
-                    url: `${BIBLE_TABLING_URL}/api/bible-tabling/download/${jobId}/${fname}`,
-                  });
+              if (isZip) {
+                for (const d of details) {
+                  const fname = String(d.file ?? '');
+                  if (fname && !seenFiles.has(fname)) {
+                    seenFiles.add(fname);
+                    files.push({
+                      filename: fname,
+                      url: `${BIBLE_TABLING_URL}/api/bible-tabling/download/${jobId}/${fname}`,
+                    });
+                  }
                 }
               }
 

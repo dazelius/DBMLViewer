@@ -5973,17 +5973,19 @@ async function serverExecuteToolAsync(
         if (changes.length > 10) resultText += `  ... 외 ${changes.length - 10}건\n`
       }
 
-      // 개별 파일 링크 (여러 파일인 경우)
-      const seenFiles = new Set<string>()
-      const fileLinks: string[] = []
-      for (const d of details) {
-        const fname = String(d.file ?? '')
-        if (fname && !seenFiles.has(fname)) {
-          seenFiles.add(fname)
-          fileLinks.push(`• ${fname}: ${BIBLE_TABLING_LINK_BASE}/api/bible-tabling/download/${jobId}/${fname}`)
+      // download_url이 .zip이면 여러 Excel → 개별 링크 + ZIP
+      // download_url이 .xlsx이면 단일 Excel (시트 여러 개여도) → 링크 하나만
+      const isZip = String(data.download_url).endsWith('.zip')
+      if (isZip) {
+        const seenFiles = new Set<string>()
+        const fileLinks: string[] = []
+        for (const d of details) {
+          const fname = String(d.file ?? '')
+          if (fname && !seenFiles.has(fname)) {
+            seenFiles.add(fname)
+            fileLinks.push(`• ${fname}: ${BIBLE_TABLING_LINK_BASE}/api/bible-tabling/download/${jobId}/${fname}`)
+          }
         }
-      }
-      if (fileLinks.length > 1) {
         resultText += `\n📥 개별 다운로드:\n${fileLinks.join('\n')}\n`
         resultText += `📦 모두 받기(ZIP): ${BIBLE_TABLING_LINK_BASE}${data.download_url}\n`
       } else {
