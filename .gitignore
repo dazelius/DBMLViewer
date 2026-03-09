@@ -39,3 +39,5 @@ pnpm-debug.log*
 
 # OS files
 Thumbs.db
+
+erd-app/bible-tabling/downloads/

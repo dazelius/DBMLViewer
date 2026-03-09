@@ -16,13 +16,14 @@ import os
 import uuid
 import shutil
 import time
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import uvicorn
 
 from excel_editor import BibleTablingEditor
@@ -93,6 +94,19 @@ class AddRowRequest(BaseModel):
     file: Optional[str] = None
     sheet: Optional[str] = None
     rows: list[dict]  # [{column: value}, ...]
+
+    @field_validator('rows', mode='before')
+    @classmethod
+    def parse_rows(cls, v: Any) -> list:
+        """rows가 JSON 문자열로 넘어오는 경우 파싱 (AI 직렬화 오류 대응)"""
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                pass
+        return v
 
 
 # ── FastAPI 앱 ─────────────────────────────────────────────────────────────────
@@ -249,6 +263,55 @@ async def download_file(path: str):
         media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
     return FileResponse(file_path, media_type=media_type, filename=file_path.name)
+
+
+# ── POST /api/bible-tabling/zip-jobs ─ 여러 job 합쳐서 ZIP ──────────────────
+
+class ZipJobsRequest(BaseModel):
+    job_ids: list[str]
+
+@app.post("/api/bible-tabling/zip-jobs")
+async def zip_jobs(req: ZipJobsRequest):
+    """
+    여러 job의 파일을 하나의 ZIP으로 묶어서 반환.
+    같은 파일명이 여러 job에 있으면 가장 최신 job(목록 뒤쪽)의 파일을 사용.
+    """
+    if not req.job_ids:
+        raise HTTPException(400, "job_ids가 비어있습니다.")
+
+    # 각 job에서 파일 수집 (뒤쪽 job이 최신이므로 나중에 덮어씀)
+    merged: dict[str, Path] = {}
+    for job_id in req.job_ids:
+        job_dir = DOWNLOADS_DIR / job_id
+        if not job_dir.exists() or not job_dir.is_dir():
+            continue
+        for f in job_dir.glob("*.xlsx"):
+            merged[f.name] = f
+
+    if not merged:
+        raise HTTPException(404, "유효한 job 파일을 찾을 수 없습니다. (만료되었을 수 있음)")
+
+    # 임시 디렉토리에 합쳐서 ZIP 생성
+    session_id = str(uuid.uuid4())[:8]
+    session_dir = DOWNLOADS_DIR / f"session_{session_id}"
+    session_dir.mkdir(exist_ok=True)
+
+    try:
+        for fname, fpath in merged.items():
+            shutil.copy2(fpath, session_dir / fname)
+
+        zip_base = str(DOWNLOADS_DIR / f"session_{session_id}")
+        shutil.make_archive(zip_base, 'zip', session_dir)
+        zip_path = Path(f"{zip_base}.zip")
+
+        return FileResponse(
+            zip_path,
+            media_type="application/zip",
+            filename=f"vibe_tabling_session_{session_id}.zip"
+        )
+    finally:
+        if session_dir.exists():
+            shutil.rmtree(session_dir, ignore_errors=True)
 
 
 # ── GET /api/bible-tabling/tables ─ 테이블 목록 ─────────────────────────────

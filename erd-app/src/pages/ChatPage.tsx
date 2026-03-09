@@ -8795,6 +8795,47 @@ export default function ChatPage() {
               </div>
             )}
 
+            {/* ── 바이브테이블링 세션 전체 다운로드 버튼 ── */}
+            {(() => {
+              const btJobIds: string[] = [];
+              for (const msg of messages) {
+                for (const tc of (msg.toolCalls ?? [])) {
+                  if ((tc.kind === 'bible_tabling_edit' || tc.kind === 'bible_tabling_add_rows') && (tc as BibleTablingEditResult | BibleTablingAddRowsResult).jobId) {
+                    const jid = (tc as BibleTablingEditResult | BibleTablingAddRowsResult).jobId;
+                    if (jid && !btJobIds.includes(jid)) btJobIds.push(jid);
+                  }
+                }
+              }
+              if (btJobIds.length < 2) return null;
+              return (
+                <div className="flex justify-center my-2">
+                  <button
+                    onClick={async () => {
+                      try {
+                        const resp = await fetch('/api/bible-tabling/zip-jobs', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ job_ids: btJobIds }),
+                        });
+                        if (!resp.ok) throw new Error(`서버 오류 ${resp.status}`);
+                        const blob = await resp.blob();
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url; a.download = `vibe_tabling_all.zip`;
+                        document.body.appendChild(a); a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                      } catch (e) { alert(`다운로드 실패: ${String(e)}`); }
+                    }}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-semibold"
+                    style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308', border: '1px solid rgba(234,179,8,0.4)', cursor: 'pointer' }}
+                  >
+                    📦 바이브테이블링 전체 파일 받기 ({btJobIds.length}개 작업)
+                  </button>
+                </div>
+              );
+            })()}
+
             {messages.map((msg, idx) => {
               // ── 타임라인 구분선: 이전 메시지와 시간 차이가 5분 이상이거나 첫 메시지 ──
               const prev = messages[idx - 1];

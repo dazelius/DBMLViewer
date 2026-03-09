@@ -4199,6 +4199,18 @@ function showTab(id){
           const reason = inp.reason ? String(inp.reason) : '';
           const table = String(inp.table ?? '');
           const file = inp.file ? String(inp.file) : undefined;
+          // rows가 문자열로 직렬화된 경우 파싱 (AI가 JSON string으로 넘기는 케이스 대응)
+          let rows: unknown[] = [];
+          try {
+            const rawRows = inp.rows;
+            if (typeof rawRows === 'string') {
+              rows = JSON.parse(rawRows);
+            } else if (Array.isArray(rawRows)) {
+              rows = rawRows;
+            }
+          } catch {
+            rows = [];
+          }
           const t0 = Date.now();
           try {
             const resp = await fetch(`${BIBLE_TABLING_URL}/api/bible-tabling/add-rows`, {
@@ -4209,7 +4221,7 @@ function showTab(id){
                 reason,
                 table,
                 file,
-                rows: inp.rows as unknown[],
+                rows,
               }),
             });
             const duration = Date.now() - t0;
