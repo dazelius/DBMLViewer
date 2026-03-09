@@ -5960,11 +5960,11 @@ function markdownToHtml(md: string): string {
   // <code>vanguard_mid.fbx</code> → <a class="fbx-btn" ...>
   html = html.replace(/<code>([\w\-./]+\.fbx)(?:\s*\([^)]*\))?<\/code>/gi, (_m, fname) => {
     const cleanName = fname.replace(/^[\s./]+/, '')
-    return `<a class="fbx-btn" href="/prefab-viewer?fbx=${encodeURIComponent('/api/assets/file?path=' + cleanName)}" target="_blank">🎮 <span>${cleanName}</span></a>`
+    return `<a class="fbx-btn" href="/TableMaster/viewer/prefab?fbx=${encodeURIComponent('/api/assets/file?path=' + cleanName)}" target="_blank">🎮 <span>${cleanName}</span></a>`
   })
   // <code>path/to/file.prefab</code> → 뷰어 링크
   html = html.replace(/<code>([\w\-./]+\.prefab)<\/code>/gi, (_m, fpath) => {
-    return `<a class="prefab-btn" href="/prefab-viewer?path=${encodeURIComponent(fpath)}" target="_blank">🧩 <span>${fpath.split('/').pop()?.replace('.prefab', '') || fpath}</span></a>`
+    return `<a class="prefab-btn" href="/TableMaster/viewer/prefab?path=${encodeURIComponent(fpath)}" target="_blank">🧩 <span>${fpath.split('/').pop()?.replace('.prefab', '') || fpath}</span></a>`
   })
 
   // 남은 줄바꿈 → <br> (빈 줄은 <p>)
@@ -6127,7 +6127,7 @@ function buildPublishedPage(title: string, contentHtml: string): string {
   function makeFbxBtn(url, label) {
     var a = document.createElement('a');
     a.className = 'fbx-btn';
-    a.href = '/prefab-viewer?fbx=' + encodeURIComponent(url);
+    a.href = '/TableMaster/viewer/prefab?fbx=' + encodeURIComponent(url);
     a.target = '_blank';
     var name = label || url.split('/').pop().split('?')[0] || 'Model';
     a.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>'
@@ -6138,7 +6138,7 @@ function buildPublishedPage(title: string, contentHtml: string): string {
   function makePrefabBtn(path, label) {
     var a = document.createElement('a');
     a.className = 'prefab-btn';
-    a.href = '/prefab-viewer?path=' + encodeURIComponent(path);
+    a.href = '/TableMaster/viewer/prefab?path=' + encodeURIComponent(path);
     a.target = '_blank';
     a.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>'
       + '<span>🧩 프리팹 뷰어 열기</span><span style="opacity:.6;font-size:10px;">' + (label || path.split('/').pop()) + '</span>';
@@ -6298,7 +6298,7 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       if (!model) return;
       var apiUrl = toApiUrl(model) || model;
       var iframe = document.createElement('iframe');
-      iframe.src = '/prefab-viewer?fbx=' + encodeURIComponent(apiUrl);
+      iframe.src = '/TableMaster/viewer/prefab?fbx=' + encodeURIComponent(apiUrl);
       iframe.style.cssText = 'width:100%;height:400px;border:1px solid #334155;border-radius:8px;margin:8px 0;background:#0a0a0a;';
       iframe.allow = 'fullscreen';
       try { d.parentNode.insertBefore(iframe, d.nextSibling); } catch(e){}
@@ -6310,7 +6310,7 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       var sp = d.getAttribute('data-scene-path')||'';
       var lb = d.getAttribute('data-scene-label')||sp.split('/').pop().replace('.unity','')||'Scene';
       d.style.cursor = 'pointer';
-      d.addEventListener('click', function(){ window.open('/prefab-viewer?path='+encodeURIComponent(sp),'_blank'); });
+      d.addEventListener('click', function(){ window.open('/TableMaster/viewer/prefab?path='+encodeURIComponent(sp),'_blank'); });
     });
     // data-embed="diff" data-commit="..." → commit diff 로드
     document.querySelectorAll('[data-embed="diff"][data-commit]').forEach(function(d){
