@@ -5033,6 +5033,129 @@ const API_TOOLS = [
       required: ['url'],
     },
   },
+  // ── Git Diff ──
+  {
+    name: 'show_revision_diff',
+    description: '특정 커밋의 실제 변경 내용(DIFF)을 조회합니다. query_git_history로 커밋 hash를 먼저 확인하세요.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        commit_hash: { type: 'string', description: '커밋 hash (7자 이상)' },
+        file_path: { type: 'string', description: '특정 파일 경로만 보기 (생략 시 전체)' },
+        repo: { type: 'string', enum: ['data', 'aegis'], description: '"data" 또는 "aegis"' },
+      },
+      required: ['commit_hash'],
+    },
+  },
+  // ── 프리팹 뷰 ──
+  {
+    name: 'preview_prefab',
+    description: 'Unity 프리팹 파일을 3D 뷰어로 미리봅니다. 경로를 지정하면 뷰어 URL을 반환합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '프리팹 경로 (예: "GameContents/Character/Player/PC_01.prefab")' },
+      },
+      required: ['path'],
+    },
+  },
+  // ── 씬 데이터 ──
+  {
+    name: 'read_scene_yaml',
+    description: 'Unity 씬 파일(.unity)의 YAML 데이터를 읽어 게임오브젝트 구조를 파악합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '씬 파일 경로' },
+        max: { type: 'number', description: '최대 오브젝트 수 (기본 60)' },
+      },
+      required: ['path'],
+    },
+  },
+  // ── 아티팩트 수정 ──
+  {
+    name: 'patch_artifact',
+    description: '기존 아티팩트(HTML 문서)를 수정합니다. find로 변경 부분을 찾고 replace로 교체합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        patches: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              find: { type: 'string', description: '찾을 HTML 문자열 (15자 이상)' },
+              replace: { type: 'string', description: '교체할 HTML 문자열' },
+            },
+            required: ['find', 'replace'],
+          },
+          description: '패치 배열',
+        },
+      },
+      required: ['patches'],
+    },
+  },
+  // ── Jira 일감 생성 ──
+  {
+    name: 'create_jira_issue',
+    description: '새 Jira 이슈를 생성합니다. 프로젝트 키 기본값: AEGIS.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: '이슈 제목' },
+        description: { type: 'string', description: '이슈 설명 (마크다운 지원)' },
+        issueType: { type: 'string', description: '이슈 유형 (기본: Task). Bug, Story, Task, Sub-task 등.' },
+        projectKey: { type: 'string', description: '프로젝트 키 (기본: AEGIS)' },
+        priority: { type: 'string', description: '우선순위 (Medium, High, Low 등)' },
+        labels: { type: 'array', items: { type: 'string' }, description: '레이블 배열' },
+      },
+      required: ['summary'],
+    },
+  },
+  // ── 널리지 CRUD ──
+  {
+    name: 'save_knowledge',
+    description: '지식을 널리지 베이스에 저장합니다. 규칙, 스타일, 참고사항 등을 영구 저장하여 이후 대화에서 활용합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '지식 파일명 (영문 snake_case, 예: "jira_comment_style")' },
+        content: { type: 'string', description: '저장할 지식 내용 (마크다운)' },
+      },
+      required: ['name', 'content'],
+    },
+  },
+  {
+    name: 'read_knowledge',
+    description: '널리지 베이스에서 특정 지식 파일을 읽어옵니다. name이 비어있으면 전체 목록을 반환합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '읽을 지식 파일명 (비워두면 전체 목록)' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'list_knowledge',
+    description: '널리지 베이스의 전체 파일 목록을 조회합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'delete_knowledge',
+    description: '널리지 베이스에서 지식 파일을 삭제합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '삭제할 지식 파일명' },
+      },
+      required: ['name'],
+    },
+  },
 ]
 
 // ── 서버사이드 Tool 실행 ──
@@ -5439,6 +5562,140 @@ function serverExecuteTool(
       }
     }
 
+    // ── show_revision_diff ──
+    case 'show_revision_diff': {
+      const commitHash = String(input.commit_hash ?? '')
+      if (!commitHash) return { result: 'commit_hash가 필요합니다.' }
+      const filePath = input.file_path ? String(input.file_path) : ''
+      const repo = String(input.repo ?? 'data')
+      try {
+        const dir = repo === 'aegis' && options.repo2LocalDir ? options.repo2LocalDir : options.localDir
+        if (!existsSync(join(dir, '.git'))) return { result: 'Git 저장소가 없습니다.' }
+        let cmd = `git diff ${commitHash}^..${commitHash} --stat`
+        const stats = runGit(cmd, dir)
+        let diffCmd = filePath
+          ? `git diff ${commitHash}^..${commitHash} -- "${filePath}"`
+          : `git diff ${commitHash}^..${commitHash}`
+        let diff = ''
+        try { diff = runGit(diffCmd, dir) } catch { diff = '(diff 조회 실패)' }
+        // 너무 길면 잘라냄
+        if (diff.length > 6000) diff = diff.slice(0, 6000) + '\n...(잘림, 특정 파일로 좁혀 조회하세요)'
+        const resultText = `커밋 ${commitHash} 변경 내용 (repo: ${repo}):\n\n${stats}\n\n${diff}`
+        return { result: resultText, data: { commitHash, repo, statsLength: stats.length, diffLength: diff.length } }
+      } catch (e) {
+        return { result: `Diff 조회 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
+    // ── preview_prefab ──
+    case 'preview_prefab': {
+      const prefabPath = String(input.path ?? '')
+      if (!prefabPath) return { result: 'path가 필요합니다.' }
+      const viewerUrl = `/TableMaster/viewer/prefab?path=${encodeURIComponent(prefabPath)}`
+      return {
+        result: `프리팹 뷰어: ${prefabPath}\n뷰어 URL: ${viewerUrl}\n\n아티팩트에 임베드하려면: <div class="embed-prefab" data-prefab-path="${prefabPath}" data-prefab-label="${prefabPath.split('/').pop()?.replace('.prefab', '') ?? 'Prefab'}"></div>`,
+        data: { path: prefabPath, viewerUrl },
+      }
+    }
+
+    // ── patch_artifact ──
+    case 'patch_artifact': {
+      const patches = Array.isArray(input.patches) ? input.patches : []
+      if (patches.length === 0) return { result: '패치 데이터가 없습니다.' }
+      // 서버사이드에서는 아티팩트 HTML이 세션에 없으므로, 패치 내용만 요약 반환
+      // 슬랙봇에서 최종 HTML 조합 시 활용
+      const patchSummary = patches.map((p: Record<string, unknown>, i: number) => {
+        const find = String(p.find ?? '').slice(0, 50)
+        const replace = String(p.replace ?? '').slice(0, 50)
+        return `  ${i + 1}. find: "${find}..." → replace: "${replace}..."`
+      }).join('\n')
+      return {
+        result: `아티팩트 패치 ${patches.length}개 적용 요청:\n${patchSummary}\n\n(서버사이드에서는 create_artifact로 전체 HTML을 다시 생성하는 것을 권장합니다)`,
+        data: { patches },
+      }
+    }
+
+    // ── save_knowledge ──
+    case 'save_knowledge': {
+      const name = String(input.name ?? '').trim()
+      const content = String(input.content ?? '')
+      if (!name) return { result: 'name이 필요합니다 (영문 snake_case).' }
+      if (!content) return { result: 'content가 필요합니다.' }
+      try {
+        const KNOWLEDGE_DIR = join(process.cwd(), 'knowledge')
+        if (!existsSync(KNOWLEDGE_DIR)) mkdirSync(KNOWLEDGE_DIR, { recursive: true })
+        const safeName = name.replace(/[^a-zA-Z0-9_\-]/g, '')
+        const filePath = join(KNOWLEDGE_DIR, `${safeName}.md`)
+        const existed = existsSync(filePath)
+        writeFileSync(filePath, content, 'utf-8')
+        return {
+          result: `✅ 널리지 ${existed ? '업데이트' : '저장'} 완료: ${safeName}.md (${content.length}자)`,
+          data: { name: safeName, action: existed ? 'update' : 'create', size: content.length },
+        }
+      } catch (e) {
+        return { result: `널리지 저장 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
+    // ── read_knowledge ──
+    case 'read_knowledge': {
+      const name = String(input.name ?? '').trim()
+      try {
+        const KNOWLEDGE_DIR = join(process.cwd(), 'knowledge')
+        if (!existsSync(KNOWLEDGE_DIR)) return { result: '널리지 폴더가 없습니다.' }
+        if (!name) {
+          // 전체 목록
+          const files = readdirSync(KNOWLEDGE_DIR).filter(f => f.endsWith('.md')).map(f => {
+            const s = statSync(join(KNOWLEDGE_DIR, f))
+            return { name: f.replace('.md', ''), sizeKB: Math.round(s.size / 1024 * 10) / 10 }
+          })
+          return { result: `널리지 목록 (${files.length}개):\n${files.map(f => `- ${f.name} (${f.sizeKB}KB)`).join('\n')}`, data: { files } }
+        }
+        const safeName = name.replace(/[^a-zA-Z0-9_\-]/g, '')
+        const filePath = join(KNOWLEDGE_DIR, `${safeName}.md`)
+        if (!existsSync(filePath)) {
+          const available = readdirSync(KNOWLEDGE_DIR).filter(f => f.endsWith('.md')).map(f => f.replace('.md', ''))
+          return { result: `"${safeName}" 널리지를 찾을 수 없습니다. 사용 가능: ${available.join(', ')}` }
+        }
+        let content = readFileSync(filePath, 'utf-8')
+        if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1)
+        return { result: `# 널리지: ${safeName}\n\n${content}`, data: { name: safeName, content, size: content.length } }
+      } catch (e) {
+        return { result: `널리지 읽기 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
+    // ── list_knowledge ──
+    case 'list_knowledge': {
+      try {
+        const KNOWLEDGE_DIR = join(process.cwd(), 'knowledge')
+        if (!existsSync(KNOWLEDGE_DIR)) return { result: '널리지 폴더가 없습니다.' }
+        const files = readdirSync(KNOWLEDGE_DIR).filter(f => f.endsWith('.md')).map(f => {
+          const s = statSync(join(KNOWLEDGE_DIR, f))
+          return { name: f.replace('.md', ''), sizeKB: Math.round(s.size / 1024 * 10) / 10 }
+        })
+        return { result: `널리지 목록 (${files.length}개):\n${files.map(f => `- ${f.name} (${f.sizeKB}KB)`).join('\n')}`, data: { files } }
+      } catch (e) {
+        return { result: `널리지 목록 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
+    // ── delete_knowledge ──
+    case 'delete_knowledge': {
+      const name = String(input.name ?? '').trim()
+      if (!name) return { result: 'name이 필요합니다.' }
+      try {
+        const KNOWLEDGE_DIR = join(process.cwd(), 'knowledge')
+        const safeName = name.replace(/[^a-zA-Z0-9_\-]/g, '')
+        const filePath = join(KNOWLEDGE_DIR, `${safeName}.md`)
+        if (!existsSync(filePath)) return { result: `"${safeName}" 널리지를 찾을 수 없습니다.` }
+        unlinkSync(filePath)
+        return { result: `✅ 널리지 삭제 완료: ${safeName}.md`, data: { name: safeName, action: 'delete' } }
+      } catch (e) {
+        return { result: `널리지 삭제 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
     default:
       return { result: `알 수 없는 도구: ${toolName}` }
   }
@@ -5453,7 +5710,8 @@ async function serverExecuteToolAsync(
   // 동기 도구는 기존 함수 위임
   const syncTools = ['query_game_data', 'show_table_schema', 'query_git_history', 'create_artifact',
     'search_code', 'read_code_file', 'search_assets', 'preview_fbx_animation', 'find_resource_image',
-    'build_character_profile', 'read_guide']
+    'build_character_profile', 'read_guide', 'show_revision_diff', 'preview_prefab',
+    'patch_artifact', 'save_knowledge', 'read_knowledge', 'list_knowledge', 'delete_knowledge']
   if (syncTools.includes(toolName)) return serverExecuteTool(toolName, input, options)
 
   // ── Jira 이슈 키 파싱 헬퍼 (URL or 키 모두 허용) ──
@@ -5802,6 +6060,62 @@ async function serverExecuteToolAsync(
           data: { issueKey, newStatus: target.name, transitionId: target.id },
         }
       } catch (e) { return { result: `상태 변경 오류: ${e instanceof Error ? e.message : String(e)}` } }
+    }
+
+    // ── create_jira_issue ──
+    case 'create_jira_issue': {
+      const project = String(input.project ?? options.jiraDefaultProject?.split(',')[0]?.trim() ?? '').toUpperCase()
+      const summary = String(input.summary ?? '').trim()
+      if (!project) return { result: 'project 키가 필요합니다 (예: AEGIS).' }
+      if (!summary) return { result: 'summary(요약)가 필요합니다.' }
+      if (!jiraToken || !jiraBase) return { result: 'Jira 연결 정보가 설정되지 않았습니다.' }
+      try {
+        const issueType = String(input.issueType ?? 'Task')
+        const desc = input.description ? markdownToAdf(String(input.description)) : undefined
+        const fields: Record<string, unknown> = {
+          project: { key: project },
+          summary,
+          issuetype: { name: issueType },
+        }
+        if (desc) fields.description = desc
+        if (input.assignee) fields.assignee = { accountId: String(input.assignee) }
+        if (input.parentKey) fields.parent = { key: String(input.parentKey).toUpperCase() }
+        const apiUrl = `${jiraBase}/rest/api/3/issue`
+        const resp = await fetch(apiUrl, {
+          method: 'POST',
+          headers: { Authorization: authHeader, Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fields }),
+        })
+        const data = await resp.json() as Record<string, unknown>
+        if (!resp.ok) {
+          const errMsg = (data?.errorMessages as string[])?.[0]
+            ?? JSON.stringify(data?.errors ?? data).slice(0, 300)
+          return { result: `Jira 이슈 생성 실패 (${resp.status}): ${errMsg}` }
+        }
+        const createdKey = String(data.key ?? '')
+        const browseUrl = `${jiraBase}/browse/${createdKey}`
+        return {
+          result: `✅ Jira 이슈 생성 완료!\n키: ${createdKey}\nURL: ${browseUrl}\n제목: ${summary}\n유형: ${issueType}`,
+          data: { key: createdKey, url: browseUrl, summary, issueType },
+        }
+      } catch (e) { return { result: `Jira 이슈 생성 오류: ${e instanceof Error ? e.message : String(e)}` } }
+    }
+
+    // ── read_scene_yaml ──
+    case 'read_scene_yaml': {
+      const scenePath = String(input.path ?? '')
+      if (!scenePath) return { result: 'path가 필요합니다.' }
+      const maxObj = Number(input.maxObjects ?? 60)
+      try {
+        const apiUrl = `http://localhost:5173/api/assets/scene-yaml?path=${encodeURIComponent(scenePath)}&max=${maxObj}`
+        const resp = await fetch(apiUrl)
+        if (!resp.ok) return { result: `씬 데이터 조회 실패: ${resp.status}` }
+        const data = await resp.json() as Record<string, unknown>
+        const yaml = String(data.yaml ?? JSON.stringify(data).slice(0, 4000))
+        return { result: `씬 데이터: ${scenePath}\n\n${yaml.slice(0, 5000)}`, data }
+      } catch (e) {
+        return { result: `씬 데이터 조회 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
     }
 
     // ── web_search ──
@@ -6730,8 +7044,10 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       const session = getOrCreateSession(body.session_id)
       const isStream = body.stream === true
       const MODEL = 'claude-opus-4-6'
-      const MAX_TOKENS = 8192
       const MAX_ITERATIONS = 12
+      // ── 동적 max_tokens: 아티팩트 요청이면 16384, 일반 대화면 8192 ──
+      const ARTIFACT_KEYWORDS = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|캐릭터.*시트|릴리즈.*노트|분석|작성해줘|보여줘|프로필|비교/
+      const MAX_TOKENS = ARTIFACT_KEYWORDS.test(userMessage) ? 16384 : 8192
       const systemPrompt = buildServerSystemPrompt(userMessage) // ← 쿼리 전달로 스마트 주입
 
       // ── 동시 요청 중복 방지 ──
