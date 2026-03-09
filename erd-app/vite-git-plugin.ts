@@ -7070,9 +7070,10 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       const isStream = body.stream === true
       const MODEL = 'claude-opus-4-6'
       const MAX_ITERATIONS = 12
-      // ── 동적 max_tokens: 아티팩트 요청이면 16384, 일반 대화면 8192 ──
-      const ARTIFACT_KEYWORDS = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|캐릭터.*시트|릴리즈.*노트|분석|작성해줘|보여줘|프로필|비교/
-      const MAX_TOKENS = ARTIFACT_KEYWORDS.test(userMessage) ? 16384 : 8192
+      // ── 동적 max_tokens: 슬랙/아티팩트 요청이면 16384, 일반 대화면 8192 ──
+      const ARTIFACT_KEYWORDS = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|캐릭터.*시트|릴리즈.*노트|분석|작성해줘|보여줘|프로필|비교|현황|리스트|목록|전체/
+      const isSlackSource = userMessage.includes('[Slack 사용자:') || (body as Record<string, unknown>).source === 'slack'
+      const MAX_TOKENS = (isSlackSource || ARTIFACT_KEYWORDS.test(userMessage)) ? 16384 : 8192
       const systemPrompt = buildServerSystemPrompt(userMessage) // ← 쿼리 전달로 스마트 주입
 
       // ── 동시 요청 중복 방지 ──

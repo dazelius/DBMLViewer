@@ -991,25 +991,33 @@ async function handleMessage({ message, say, client, event }) {
       try {
         // 전체 과정을 줄바꿈으로 표시 (최대 15개, 넘으면 앞부분 생략)
         const maxShow = 15;
+        const total = toolProgress.length;
         let stepLines;
-        if (toolProgress.length <= maxShow) {
-          stepLines = toolProgress.map((s, i) => `\`${String(i + 1).padStart(2)}\` ${s}`);
+        if (total <= maxShow) {
+          stepLines = toolProgress.map((s, i) => {
+            const num = `\`${String(i + 1).padStart(2)}\``;
+            // 마지막 항목 = 현재 진행 중 → :loading2:, 나머지 = 완료 → ✅
+            return i < total - 1 ? `${num} ✅ ${s}` : `${num} :loading2: ${s}`;
+          });
         } else {
-          const skip = toolProgress.length - maxShow;
+          const skip = total - maxShow;
           stepLines = [
-            `_... ${skip}단계 생략 ..._`,
-            ...toolProgress.slice(skip).map((s, i) => `\`${String(skip + i + 1).padStart(2)}\` ${s}`),
+            `_... ${skip}단계 완료 ..._`,
+            ...toolProgress.slice(skip).map((s, i) => {
+              const num = `\`${String(skip + i + 1).padStart(2)}\``;
+              return (skip + i) < total - 1 ? `${num} ✅ ${s}` : `${num} :loading2: ${s}`;
+            }),
           ];
         }
         
         await client.chat.update({
           channel,
           ts: loadingMsg.ts,
-          text: `🔍 분석 중... (${toolProgress.length}단계)`,
+          text: `🔍 분석 중... (${total}단계)`,
           blocks: [
             {
               type: 'section',
-              text: { type: 'mrkdwn', text: `🔍 *DataMaster* 분석 중... _(${toolProgress.length}단계)_` },
+              text: { type: 'mrkdwn', text: `:loading2: *DataMaster* 분석 중... _(${total}단계)_` },
             },
             {
               type: 'context',
@@ -1080,7 +1088,7 @@ async function handleMessage({ message, say, client, event }) {
     ]);
     const usedTools = new Set(result.toolCalls.map(tc => tc.tool));
     const hasVisualTool = [...usedTools].some(t => VISUAL_TOOLS.has(t));
-    const shouldForcePublish = hasVisualTool || result.toolCalls.length >= 2;
+    const shouldForcePublish = hasVisualTool || result.toolCalls.length >= 2 || rawContent.length > 800;
     
     // 1) AI가 create_artifact/patch_artifact 도구로 만든 아티팩트 → HTML 직접 출판
     const artifactTC = result.toolCalls.find(tc => 
@@ -1096,7 +1104,7 @@ async function handleMessage({ message, say, client, event }) {
           const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: artTitle, html: artHtml }),
+            body: JSON.stringify({ title: artTitle, html: artHtml, source: 'slack' }),
           });
           if (pubResp.ok) {
             const pubData = await pubResp.json();
@@ -1120,7 +1128,7 @@ async function handleMessage({ message, say, client, event }) {
         const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: titleGuess, markdown: rawContent }),
+          body: JSON.stringify({ title: titleGuess, markdown: rawContent, source: 'slack' }),
         });
         if (pubResp.ok) {
           const pubData = await pubResp.json();
@@ -1147,7 +1155,7 @@ async function handleMessage({ message, say, client, event }) {
           const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: titleGuess, markdown: rawContent }),
+            body: JSON.stringify({ title: titleGuess, markdown: rawContent, source: 'slack' }),
           });
           if (pubResp.ok) {
             const pubData = await pubResp.json();
