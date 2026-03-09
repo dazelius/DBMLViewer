@@ -199,18 +199,26 @@ class BibleTablingEditor:
 
     # ── 단일 테이블 편집 ─────────────────────────────────────────────────────
 
-    def apply_edit(self, edit, output_dir: Path) -> dict:
+    def apply_edit(self, edit, output_dir: Path, prev_job_dir: Path = None) -> dict:
         """
         단일 테이블 편집 실행.
         같은 job 내에서 같은 파일이 여러 번 편집되면 이어서 수정.
+        prev_job_dir가 있으면 이전 job의 출력 파일을 기반으로 편집 (변경사항 누적).
         """
         xlsx_path = self._find_xlsx_file(edit.table, edit.file)
         sheet_name = edit.sheet or edit.table
 
-        # 출력 파일 (기존에 이미 복사된 게 있으면 이어서 편집)
+        # 출력 파일 결정 순서:
+        # 1) 이미 현재 job에서 편집된 파일 (같은 job 내 연속 편집)
+        # 2) 이전 job의 출력 파일 (prev_job_dir)
+        # 3) 원본 git repo 파일
         output_path = output_dir / xlsx_path.name
         if not output_path.exists():
-            shutil.copy2(xlsx_path, output_path)
+            prev_path = prev_job_dir / xlsx_path.name if prev_job_dir else None
+            if prev_path and prev_path.exists():
+                shutil.copy2(prev_path, output_path)
+            else:
+                shutil.copy2(xlsx_path, output_path)
 
         wb = load_workbook(output_path)
 
@@ -293,14 +301,18 @@ class BibleTablingEditor:
     # ── 행 추가 ──────────────────────────────────────────────────────────────
 
     def add_rows(self, table: str, file_hint: str, sheet_hint: str,
-                 rows: list[dict], output_dir: Path) -> dict:
+                 rows: list[dict], output_dir: Path, prev_job_dir: Path = None) -> dict:
         """테이블에 새 행 추가 (노란색 하이라이트)"""
         xlsx_path = self._find_xlsx_file(table, file_hint)
         sheet_name = sheet_hint or table
 
         output_path = output_dir / xlsx_path.name
         if not output_path.exists():
-            shutil.copy2(xlsx_path, output_path)
+            prev_path = prev_job_dir / xlsx_path.name if prev_job_dir else None
+            if prev_path and prev_path.exists():
+                shutil.copy2(prev_path, output_path)
+            else:
+                shutil.copy2(xlsx_path, output_path)
 
         wb = load_workbook(output_path)
         ws = None

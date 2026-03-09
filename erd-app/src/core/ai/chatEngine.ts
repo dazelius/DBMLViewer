@@ -2391,6 +2391,9 @@ export async function sendChatMessage(
     tools: cachedTools,
   };
 
+  // 바이브테이블링 job 체이닝: 이전 job의 출력 파일을 다음 job의 기반으로 사용
+  let lastBibleTablingJobId: string | undefined = undefined;
+
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     accumulatedText = '';
     console.log(`[Chat] 이터레이션 ${i + 1}/${MAX_ITERATIONS} 시작, messages: ${messages.length}`);
@@ -4118,6 +4121,7 @@ function showTab(id){
                 title,
                 reason,
                 edit_plan: inp.edit_plan as unknown[],
+                prev_job_id: lastBibleTablingJobId,  // 이전 job 파일 이어받기
               }),
             });
             const duration = Date.now() - t0;
@@ -4171,6 +4175,7 @@ function showTab(id){
               resultText += `(노란색 하이라이트 = AI 편집 셀)`;
 
               resultStr = resultText;
+              lastBibleTablingJobId = jobId; // 다음 job의 prev_job_id로 사용
               tc = {
                 kind: 'bible_tabling_edit',
                 title,
@@ -4222,6 +4227,7 @@ function showTab(id){
                 table,
                 file,
                 rows,
+                prev_job_id: lastBibleTablingJobId,  // 이전 job 파일 이어받기
               }),
             });
             const duration = Date.now() - t0;
@@ -4243,6 +4249,7 @@ function showTab(id){
               resultText += `(노란색 하이라이트 = AI 추가 셀)`;
 
               resultStr = resultText;
+              lastBibleTablingJobId = jobId; // 다음 job의 prev_job_id로 사용
               tc = {
                 kind: 'bible_tabling_add_rows',
                 table,

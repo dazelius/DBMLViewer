@@ -81,6 +81,7 @@ class TableEdit(BaseModel):
 
 class EditRequest(BaseModel):
     session_id: Optional[str] = None
+    prev_job_id: Optional[str] = None  # 이전 job 출력 파일을 이어서 편집
     title: str = "바이블테이블링"
     reason: str = ""
     edit_plan: list[TableEdit]
@@ -88,6 +89,7 @@ class EditRequest(BaseModel):
 
 class AddRowRequest(BaseModel):
     session_id: Optional[str] = None
+    prev_job_id: Optional[str] = None  # 이전 job 출력 파일을 이어서 편집
     title: str = "바이블테이블링 — 행 추가"
     reason: str = ""
     table: str
@@ -165,12 +167,17 @@ async def edit_data(req: EditRequest):
     job_dir.mkdir(exist_ok=True)
 
     try:
+        # 이전 job 디렉토리 (변경사항 누적용)
+        prev_job_dir = DOWNLOADS_DIR / req.prev_job_id if req.prev_job_id else None
+        if prev_job_dir and not prev_job_dir.is_dir():
+            prev_job_dir = None  # 만료된 경우 무시
+
         # order 순서로 정렬 (부모 테이블 먼저)
         sorted_edits = sorted(req.edit_plan, key=lambda e: e.order)
 
         results = []
         for edit in sorted_edits:
-            result = editor.apply_edit(edit, job_dir)
+            result = editor.apply_edit(edit, job_dir, prev_job_dir)
             results.append(result)
 
         # 다운로드 URL 결정
@@ -224,8 +231,12 @@ async def add_rows(req: AddRowRequest):
     job_dir.mkdir(exist_ok=True)
 
     try:
+        prev_job_dir = DOWNLOADS_DIR / req.prev_job_id if req.prev_job_id else None
+        if prev_job_dir and not prev_job_dir.is_dir():
+            prev_job_dir = None
+
         result = editor.add_rows(
-            req.table, req.file, req.sheet, req.rows, job_dir
+            req.table, req.file, req.sheet, req.rows, job_dir, prev_job_dir
         )
         edited_files = list(job_dir.glob("*.xlsx"))
         if not edited_files:
