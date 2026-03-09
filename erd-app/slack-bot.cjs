@@ -916,25 +916,11 @@ async function handleMessage({ message, say, client, event }) {
     
     // 실시간 도구 사용 표시 (SSE 스트리밍)
     const toolProgress = [];
-    const TOOL_EMOJI = {
-      query_game_data: '📊', show_table_schema: '📋', query_git_history: '📂',
-      create_artifact: '📄', patch_artifact: '✏️',
-      search_code: '💻', read_code_file: '💻', read_guide: '📖',
-      search_jira: '🎫', get_jira_issue: '🎫', create_jira_issue: '➕',
-      add_jira_comment: '✍️', update_jira_issue_status: '🔄',
-      search_confluence: '📚', get_confluence_page: '📚',
-      save_knowledge: '🧠', read_knowledge: '🧠',
-      web_search: '🌐', read_url: '🌐',
-      search_assets: '🎨', build_character_profile: '👤',
-      preview_prefab: '🧩', preview_fbx_animation: '🎬',
-      find_resource_image: '🖼️',
-    };
 
     let lastUpdate = 0;
     let iterationCount = 0;
     const onToolStart = async (toolName, toolInput) => {
-      const emoji = TOOL_EMOJI[toolName] || '🔧';
-      const label = TOOL_LABELS[toolName] || toolName;
+      const label = TOOL_LABELS[toolName] || `🔧 ${toolName}`;
       
       // 도구별 상세 설명 생성
       let detail = '';
@@ -959,7 +945,7 @@ async function handleMessage({ message, say, client, event }) {
         if (tMatch) detail = tMatch[1].trim().slice(0, 30);
       }
       
-      const stepLine = detail ? `${emoji} ${label}  _${detail}_` : `${emoji} ${label}`;
+      const stepLine = detail ? `${label}  _${detail}_` : label;
       toolProgress.push(stepLine);
       
       // 너무 자주 업데이트하지 않도록 1초 디바운스
