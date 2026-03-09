@@ -544,6 +544,7 @@ export interface BibleTablingEditResult {
   jobId: string;
   downloadUrl: string;
   downloadFilename: string;
+  files: Array<{ filename: string; url: string }>;  // 개별 파일 목록
   filesModified: number;
   totalRowsMatched: number;
   totalCellsModified: number;
@@ -4123,7 +4124,7 @@ function showTab(id){
             if (!resp.ok) {
               const errText = await resp.text();
               resultStr = `바이블테이블링 오류 (${resp.status}): ${errText}`;
-              tc = { kind: 'bible_tabling_edit', title, reason, jobId: '', downloadUrl: '', downloadFilename: '', filesModified: 0, totalRowsMatched: 0, totalCellsModified: 0, tables: [], error: resultStr, duration };
+              tc = { kind: 'bible_tabling_edit', title, reason, jobId: '', downloadUrl: '', downloadFilename: '', files: [], filesModified: 0, totalRowsMatched: 0, totalCellsModified: 0, tables: [], error: resultStr, duration };
             } else {
               const data = await resp.json() as Record<string, unknown>;
               const summary = data.summary as Record<string, unknown>;
@@ -4131,6 +4132,20 @@ function showTab(id){
               const jobId = String(data.job_id ?? '');
               const downloadUrl = `${BIBLE_TABLING_URL}${data.download_url}`;
               const downloadFilename = String(data.download_filename ?? '');
+
+              // 개별 파일 목록 (파일명 중복 제거 후 각각의 다운로드 URL 생성)
+              const seenFiles = new Set<string>();
+              const files: Array<{ filename: string; url: string }> = [];
+              for (const d of details) {
+                const fname = String(d.file ?? '');
+                if (fname && !seenFiles.has(fname)) {
+                  seenFiles.add(fname);
+                  files.push({
+                    filename: fname,
+                    url: `${BIBLE_TABLING_URL}/api/bible-tabling/download/${jobId}/${fname}`,
+                  });
+                }
+              }
 
               let resultText = `✅ 바이블테이블링 편집 완료\n`;
               resultText += `제목: ${summary.title}\n`;
@@ -4158,6 +4173,7 @@ function showTab(id){
                 jobId,
                 downloadUrl,
                 downloadFilename,
+                files,
                 filesModified: Number(summary.files_modified ?? 0),
                 totalRowsMatched: Number(summary.total_rows_matched ?? 0),
                 totalCellsModified: Number(summary.total_cells_modified ?? 0),
@@ -4168,7 +4184,7 @@ function showTab(id){
           } catch (e) {
             const duration = Date.now() - t0;
             resultStr = `바이블테이블링 연결 실패: ${String(e)}\nstart.bat을 실행하여 바이블테이블링 서버를 시작하세요.`;
-            tc = { kind: 'bible_tabling_edit', title, reason, jobId: '', downloadUrl: '', downloadFilename: '', filesModified: 0, totalRowsMatched: 0, totalCellsModified: 0, tables: [], error: resultStr, duration };
+            tc = { kind: 'bible_tabling_edit', title, reason, jobId: '', downloadUrl: '', downloadFilename: '', files: [], filesModified: 0, totalRowsMatched: 0, totalCellsModified: 0, tables: [], error: resultStr, duration };
           }
         }
         // ── add_game_data_rows (바이블테이블링 — 행 추가) ──

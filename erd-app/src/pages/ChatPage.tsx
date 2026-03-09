@@ -5209,13 +5209,27 @@ function BibleTablingCard({ tc }: { tc: BibleTablingEditResult }) {
           </div>
           {tc.tables.length > 0 && <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>테이블: {tc.tables.join(', ')}</div>}
           {tc.downloadUrl && (
-            <button
-              onClick={() => bibleTablingDownload(tc.downloadUrl, tc.downloadFilename)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
-              style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308', border: '1px solid rgba(234,179,8,0.3)', cursor: 'pointer' }}
-            >
-              📥 {tc.downloadFilename || '다운로드'}
-            </button>
+            <div className="flex flex-wrap gap-2 pt-0.5">
+              {/* 개별 파일 버튼 (여러 파일인 경우) */}
+              {tc.files && tc.files.length > 1 && tc.files.map((f) => (
+                <button
+                  key={f.filename}
+                  onClick={() => bibleTablingDownload(f.url, f.filename)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium"
+                  style={{ background: 'rgba(234,179,8,0.08)', color: '#ca8a04', border: '1px solid rgba(234,179,8,0.25)', cursor: 'pointer' }}
+                >
+                  📄 {f.filename}
+                </button>
+              ))}
+              {/* 단일 파일이면 기본 버튼 / 여러 파일이면 모두 받기(ZIP) 버튼 */}
+              <button
+                onClick={() => bibleTablingDownload(tc.downloadUrl, tc.downloadFilename)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
+                style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308', border: '1px solid rgba(234,179,8,0.3)', cursor: 'pointer' }}
+              >
+                {tc.files && tc.files.length > 1 ? '📦 모두 받기 (ZIP)' : `📥 ${tc.downloadFilename || '다운로드'}`}
+              </button>
+            </div>
           )}
           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>💡 노란색 하이라이트 = AI 편집 셀</div>
         </div>
