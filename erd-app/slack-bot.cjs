@@ -1088,7 +1088,15 @@ async function handleMessage({ message, say, client, event }) {
     ]);
     const usedTools = new Set(result.toolCalls.map(tc => tc.tool));
     const hasVisualTool = [...usedTools].some(t => VISUAL_TOOLS.has(t));
-    const shouldForcePublish = hasVisualTool || result.toolCalls.length >= 2 || rawContent.length > 800;
+    
+    // 구조화된 내용 판별 (대화형 텍스트가 아닌 실제 데이터/문서 내용인지)
+    const hasTable = /\|.+\|.+\|/.test(rawContent) && rawContent.split('\n').filter(l => l.includes('|')).length > 2;
+    const hasCodeBlock = /```[\s\S]{200,}```/.test(rawContent);
+    const hasHeaders = (rawContent.match(/^#{1,3}\s+.+/gm) || []).length >= 2;
+    const hasList = (rawContent.match(/^[-*]\s+.+/gm) || []).length >= 5;
+    const hasStructuredContent = hasTable || hasCodeBlock || hasHeaders || hasList;
+    
+    const shouldForcePublish = hasVisualTool || (result.toolCalls.length >= 2 && hasStructuredContent);
     
     // 1) AI가 create_artifact/patch_artifact 도구로 만든 아티팩트 → HTML 직접 출판
     const artifactTC = result.toolCalls.find(tc => 
@@ -1120,9 +1128,8 @@ async function handleMessage({ message, say, client, event }) {
       }
     }
     
-    // 2) 비주얼 도구 사용했는데 아직 출판 안 됨 → 마크다운을 강제 출판
-    //    또는 도구 2개 이상 사용 + 내용이 충분할 때
-    if (!publishedUrl && shouldForcePublish && rawContent.length > 100) {
+    // 2) 비주얼 도구 사용 or 구조화된 데이터가 충분할 때 → 강제 출판
+    if (!publishedUrl && shouldForcePublish && rawContent.length > 200) {
       try {
         const titleGuess = userText.slice(0, 40) + (userText.length > 40 ? '...' : '');
         const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
@@ -1136,38 +1143,32 @@ async function handleMessage({ message, say, client, event }) {
           if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
             publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
           }
-          console.log(`[Slack] 강제 출판 (${hasVisualTool ? '비주얼도구' : `도구${result.toolCalls.length}개`}): ${publishedUrl}`);
+          console.log(`[Slack] 강제 출판 (${hasVisualTool ? '비주얼도구' : `구조화${result.toolCalls.length}도구`}): ${publishedUrl}`);
         }
       } catch (e) {
         console.warn('[Slack] 강제 출판 실패:', e.message);
       }
     }
     
-    // 3) 나머지: 테이블/코드블록/긴 텍스트가 있으면 출판
-    if (!publishedUrl) {
-      const hasTable = /\|.+\|.+\|/.test(rawContent) && rawContent.split('\n').filter(l => l.includes('|')).length > 2;
-      const hasCodeBlock = /```[\s\S]{200,}```/.test(rawContent);
-      const isLong = rawContent.length > 1200;
-      
-      if (hasTable || hasCodeBlock || isLong) {
-        try {
-          const titleGuess = userText.slice(0, 40) + (userText.length > 40 ? '...' : '');
-          const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: titleGuess, markdown: rawContent, source: 'slack' }),
-          });
-          if (pubResp.ok) {
-            const pubData = await pubResp.json();
-            publishedUrl = pubData.url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
-            if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
-              publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
-            }
-            console.log(`[Slack] 텍스트 출판: ${publishedUrl}`);
+    // 3) 나머지: 테이블/코드블록/긴 구조화 텍스트가 있으면 출판
+    if (!publishedUrl && hasStructuredContent && rawContent.length > 600) {
+      try {
+        const titleGuess = userText.slice(0, 40) + (userText.length > 40 ? '...' : '');
+        const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: titleGuess, markdown: rawContent, source: 'slack' }),
+        });
+        if (pubResp.ok) {
+          const pubData = await pubResp.json();
+          publishedUrl = pubData.url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
+          if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
+            publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
           }
-        } catch (e) {
-          console.warn('[Slack] 텍스트 출판 실패:', e.message);
+          console.log(`[Slack] 텍스트 출판: ${publishedUrl}`);
         }
+      } catch (e) {
+        console.warn('[Slack] 텍스트 출판 실패:', e.message);
       }
     }
     
