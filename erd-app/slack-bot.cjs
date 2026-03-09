@@ -1098,7 +1098,12 @@ async function handleMessage({ message, say, client, event }) {
         const trimmed = line.trim();
         if (!trimmed) return true; // 빈 줄 유지
         // 진행 알림성 문장 패턴 (단독 문장으로 끝나는 것만 제거)
-        if (/^.{5,80}(하겠습니다|할게요|올게요|겠습니다|보겠습니다|드리겠습니다|니다나닝|니다데스|시작합니다|살펴보겠|확인하겠|분석하겠|수집하겠|검색하겠|조회하겠|정리하겠|가져오겠|만들어보겠|작성하겠|준비하겠|진행하겠)[.!~]*$/.test(trimmed)) {
+        // 미래형: "~하겠습니다", "~할게요" 등
+        if (/^.{5,300}(하겠습니다|할게요|올게요|겠습니다|보겠습니다|드리겠습니다|니다나닝|니다데스|시작합니다|살펴보겠|확인하겠|분석하겠|수집하겠|검색하겠|조회하겠|정리하겠|가져오겠|만들어보겠|작성하겠|준비하겠|진행하겠|생성합니다|만들겠습니다)[.!~…]*$/.test(trimmed)) {
+          return false;
+        }
+        // 과거형 상태 보고: "~확보했습니다", "~읽었습니다" 등 (실질적 내용 없이 상태만 보고)
+        if (/^.{5,300}(확보했습니다|가져왔습니다|완료했습니다|읽었습니다|확인했습니다|수집했습니다|시작했습니다|마쳤습니다|받았습니다|찾았습니다|모았습니다)[.!~…]*$/.test(trimmed)) {
           return false;
         }
         return true;
@@ -1215,8 +1220,8 @@ async function handleMessage({ message, say, client, event }) {
     const blocks = [];
     
     if (publishedUrl) {
-      // 출판된 경우: 요약 + 링크 버튼
-      const summary = extractSlackSummary(rawContent);
+      // 출판된 경우: 요약 + 링크 버튼 (진행 텍스트 제거된 버전 사용)
+      const summary = extractSlackSummary(publishContent);
       
       blocks.push({
         type: 'section',
@@ -1232,10 +1237,16 @@ async function handleMessage({ message, say, client, event }) {
         }],
       });
     } else {
-      // 짧은 응답: Slack mrkdwn으로 직접 표시
-      let slackText = mdToSlack(rawContent);
-      if (!slackText.trim() && result.toolCalls.length > 0) {
-        slackText = result.toolCalls.map(tc => formatToolResultForSlack(tc)).join('\n');
+      // 짧은 응답: 진행 텍스트("~하겠습니다" 등) 제거 후 Slack mrkdwn으로 표시
+      let slackText = mdToSlack(publishContent);
+      
+      // 필터링 후 실질적 내용이 없으면 → 도구 결과 요약으로 대체
+      if ((!slackText.trim() || isConversationalOnly(publishContent)) && result.toolCalls.length > 0) {
+        const toolSummary = result.toolCalls.map(tc => formatToolResultForSlack(tc)).join('\n');
+        slackText = toolSummary || mdToSlack(rawContent);
+      } else if (!slackText.trim()) {
+        // 도구도 없고 필터 후 빈 경우 → 원본 fallback
+        slackText = mdToSlack(rawContent);
       }
       
       slackText = truncateForSlack(slackText);
@@ -1261,8 +1272,8 @@ async function handleMessage({ message, say, client, event }) {
 
     // 로딩 메시지 업데이트 → 실제 응답으로 교체
     const fallbackText = publishedUrl 
-      ? `${extractSlackSummary(rawContent)}\n\n📊 전체 결과: ${publishedUrl}`
-      : mdToSlack(rawContent).slice(0, 3000);
+      ? `${extractSlackSummary(publishContent)}\n\n📊 전체 결과: ${publishedUrl}`
+      : mdToSlack(publishContent || rawContent).slice(0, 3000);
     
     if (loadingMsg?.ts) {
       try {
