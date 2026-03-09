@@ -16,7 +16,7 @@
  */
 
 const { App } = require('@slack/bolt');
-const { readFileSync, existsSync } = require('fs');
+const { readFileSync, writeFileSync, existsSync, mkdirSync } = require('fs');
 const path = require('path');
 
 // ── .env 로드 ──
@@ -1082,21 +1082,54 @@ async function handleMessage({ message, say, client, event }) {
     let publishedUrl = null;
     
     // 웹에서만 동작하는 비주얼 도구 목록 (Slack에서는 링크가 아닌 텍스트로 떨어짐 → 반드시 출판)
+    // ※ create_artifact/patch_artifact는 여기 넣지 않음 — 조건1에서 HTML로 직접 처리
     const VISUAL_TOOLS = new Set([
       'preview_fbx_animation', 'preview_prefab', 'find_resource_image',
-      'build_character_profile', 'search_assets', 'create_artifact', 'patch_artifact',
+      'build_character_profile', 'search_assets',
     ]);
     const usedTools = new Set(result.toolCalls.map(tc => tc.tool));
     const hasVisualTool = [...usedTools].some(t => VISUAL_TOOLS.has(t));
+    const usedArtifactTool = usedTools.has('create_artifact') || usedTools.has('patch_artifact');
+    
+    // 대화형 진행 텍스트 필터링: "~하겠습니다", "~가져올게요" 같은 중간 진행 텍스트 제거
+    function stripProgressText(text) {
+      const lines = text.split('\n');
+      const filtered = lines.filter(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return true; // 빈 줄 유지
+        // 진행 알림성 문장 패턴 (단독 문장으로 끝나는 것만 제거)
+        if (/^.{5,80}(하겠습니다|할게요|올게요|겠습니다|보겠습니다|드리겠습니다|니다나닝|니다데스|시작합니다|살펴보겠|확인하겠|분석하겠|수집하겠|검색하겠|조회하겠|정리하겠|가져오겠|만들어보겠|작성하겠|준비하겠|진행하겠)[.!~]*$/.test(trimmed)) {
+          return false;
+        }
+        return true;
+      });
+      return filtered.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    }
+    
+    // 대화형 텍스트인지 판별 (실질적 데이터 없이 진행 안내만 있는 경우)
+    function isConversationalOnly(text) {
+      const stripped = stripProgressText(text);
+      // 진행 텍스트 제거 후 실질적 내용이 100자 미만이면 대화형
+      if (stripped.length < 100) return true;
+      // 남은 줄이 3줄 미만이면 대화형
+      const meaningfulLines = stripped.split('\n').filter(l => l.trim().length > 10);
+      if (meaningfulLines.length < 3) return true;
+      return false;
+    }
+    
+    // 출판용 콘텐츠: 진행 텍스트 필터링 적용
+    const publishContent = stripProgressText(rawContent);
     
     // 구조화된 내용 판별 (대화형 텍스트가 아닌 실제 데이터/문서 내용인지)
-    const hasTable = /\|.+\|.+\|/.test(rawContent) && rawContent.split('\n').filter(l => l.includes('|')).length > 2;
-    const hasCodeBlock = /```[\s\S]{200,}```/.test(rawContent);
-    const hasHeaders = (rawContent.match(/^#{1,3}\s+.+/gm) || []).length >= 2;
-    const hasList = (rawContent.match(/^[-*]\s+.+/gm) || []).length >= 5;
+    const hasTable = /\|.+\|.+\|/.test(publishContent) && publishContent.split('\n').filter(l => l.includes('|')).length > 2;
+    const hasCodeBlock = /```[\s\S]{200,}```/.test(publishContent);
+    const hasHeaders = (publishContent.match(/^#{1,3}\s+.+/gm) || []).length >= 2;
+    const hasList = (publishContent.match(/^[-*]\s+.+/gm) || []).length >= 5;
     const hasStructuredContent = hasTable || hasCodeBlock || hasHeaders || hasList;
     
-    const shouldForcePublish = hasVisualTool || (result.toolCalls.length >= 2 && hasStructuredContent);
+    // 강제 출판 조건: 비주얼 도구 + 대화형이 아닌 경우만
+    const shouldForcePublish = (hasVisualTool && !isConversationalOnly(publishContent)) 
+      || (result.toolCalls.length >= 2 && hasStructuredContent);
     
     // 1) AI가 create_artifact/patch_artifact 도구로 만든 아티팩트 → HTML 직접 출판
     const artifactTC = result.toolCalls.find(tc => 
@@ -1122,20 +1155,26 @@ async function handleMessage({ message, say, client, event }) {
             }
             console.log(`[Slack] 아티팩트 출판: "${artTitle}" → ${publishedUrl}`);
           }
+        } else {
+          // HTML이 비어있거나 너무 짧으면 → 아티팩트 도구는 사용했지만 출판 불가
+          // 이 경우 rawContent(진행 텍스트)를 아티팩트로 출판하면 안 됨!
+          console.warn(`[Slack] create_artifact 결과 HTML 부족 (${artHtml.length}자) — 출판 건너뜀`);
         }
       } catch (e) {
         console.warn('[Slack] 아티팩트 출판 실패:', e.message);
       }
     }
     
+    // ※ 아티팩트 도구를 사용했으면 조건 2, 3으로 빠지지 않음 (진행 텍스트 출판 방지)
+    
     // 2) 비주얼 도구 사용 or 구조화된 데이터가 충분할 때 → 강제 출판
-    if (!publishedUrl && shouldForcePublish && rawContent.length > 200) {
+    if (!publishedUrl && !usedArtifactTool && shouldForcePublish && publishContent.length > 200) {
       try {
         const titleGuess = userText.slice(0, 40) + (userText.length > 40 ? '...' : '');
         const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: titleGuess, markdown: rawContent, source: 'slack' }),
+          body: JSON.stringify({ title: titleGuess, markdown: publishContent, source: 'slack' }),
         });
         if (pubResp.ok) {
           const pubData = await pubResp.json();
@@ -1150,14 +1189,14 @@ async function handleMessage({ message, say, client, event }) {
       }
     }
     
-    // 3) 나머지: 테이블/코드블록/긴 구조화 텍스트가 있으면 출판
-    if (!publishedUrl && hasStructuredContent && rawContent.length > 600) {
+    // 3) 나머지: 테이블/코드블록/긴 구조화 텍스트가 있으면 출판 (아티팩트 도구 미사용 시만)
+    if (!publishedUrl && !usedArtifactTool && hasStructuredContent && publishContent.length > 600) {
       try {
         const titleGuess = userText.slice(0, 40) + (userText.length > 40 ? '...' : '');
         const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: titleGuess, markdown: rawContent, source: 'slack' }),
+          body: JSON.stringify({ title: titleGuess, markdown: publishContent, source: 'slack' }),
         });
         if (pubResp.ok) {
           const pubData = await pubResp.json();
