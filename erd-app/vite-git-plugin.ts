@@ -2057,6 +2057,107 @@ function createGitMiddleware(options: GitPluginOptions) {
           return
         }
 
+        // ── /api/assets/map-list : AegisLevel 사전 익스포트 맵 목록 ────────────
+        if (req.url.startsWith('/api/assets/map-list')) {
+          const AEGIS_MAP_DIR = join('C:', 'AegisLevel', 'Map')
+          if (!existsSync(AEGIS_MAP_DIR)) {
+            sendJson(res, 404, { error: 'AegisLevel map directory not found', maps: [] })
+            return
+          }
+          const mapEntries = readdirSync(AEGIS_MAP_DIR, { withFileTypes: true })
+            .filter(e => e.isDirectory() && existsSync(join(AEGIS_MAP_DIR, e.name, 'meshes.json')))
+            .map(e => {
+              let meshCount = 0
+              let sceneName = e.name
+              try {
+                const info = JSON.parse(readFileSync(join(AEGIS_MAP_DIR, e.name, 'scene_info.json'), 'utf-8').replace(/^\uFEFF/, ''))
+                meshCount = info.meshCount || 0
+                sceneName = info.sceneName || e.name
+              } catch {}
+              const thumbPath = join(AEGIS_MAP_DIR, e.name, 'thumbnail.jpg')
+              return {
+                folder: e.name,
+                sceneName,
+                meshCount,
+                hasThumbnail: existsSync(thumbPath),
+                thumbUrl: `/api/assets/map-thumb?map=${encodeURIComponent(e.name)}`,
+              }
+            })
+          sendJson(res, 200, { maps: mapEntries })
+          return
+        }
+
+        // ── /api/assets/map-scene-info : scene_info.json 서빙 ────────────────
+        if (req.url.startsWith('/api/assets/map-scene-info')) {
+          const url2  = new URL(req.url, 'http://localhost')
+          const mapName = url2.searchParams.get('map') || ''
+          const AEGIS_MAP_DIR = join('C:', 'AegisLevel', 'Map')
+          const infoPath = join(AEGIS_MAP_DIR, mapName, 'scene_info.json')
+          if (!mapName || !existsSync(infoPath)) {
+            sendJson(res, 404, { error: `scene_info.json not found for map: ${mapName}` }); return
+          }
+          const content = readFileSync(infoPath).toString('utf-8').replace(/^\uFEFF/, '')
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+          res.end(content)
+          return
+        }
+
+        // ── /api/assets/map-thumb : thumbnail.jpg 서빙 ───────────────────────
+        if (req.url.startsWith('/api/assets/map-thumb')) {
+          const url2 = new URL(req.url, 'http://localhost')
+          const mapName = url2.searchParams.get('map') || ''
+          const AEGIS_MAP_DIR = join('C:', 'AegisLevel', 'Map')
+          const thumbPath = join(AEGIS_MAP_DIR, mapName, 'thumbnail.jpg')
+          if (!mapName || !existsSync(thumbPath)) {
+            sendJson(res, 404, { error: 'thumbnail not found' }); return
+          }
+          const buf = readFileSync(thumbPath)
+          res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Access-Control-Allow-Origin': '*' })
+          res.end(buf)
+          return
+        }
+
+        // ── /api/assets/map-texture : 맵 텍스처 파일 서빙 ────────────────────
+        if (req.url.startsWith('/api/assets/map-texture')) {
+          const url2    = new URL(req.url, 'http://localhost')
+          const mapName = url2.searchParams.get('map') || ''
+          const file    = url2.searchParams.get('file') || ''
+          const AEGIS_MAP_DIR = join('C:', 'AegisLevel', 'Map')
+          // 경로 탈출 방지
+          const safeName = file.replace(/[/\\]/g, '')
+          const texPath  = join(AEGIS_MAP_DIR, mapName, 'textures', safeName)
+          if (!mapName || !safeName || !existsSync(texPath)) {
+            sendJson(res, 404, { error: `texture not found: ${mapName}/${safeName}` }); return
+          }
+          const ext = safeName.split('.').pop()?.toLowerCase() || 'jpg'
+          const mime = ext === 'png' ? 'image/png' : 'image/jpeg'
+          const buf = readFileSync(texPath)
+          res.writeHead(200, { 'Content-Type': mime, 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=3600' })
+          res.end(buf)
+          return
+        }
+
+        // ── /api/assets/map-meshes : meshes.json 스트림 서빙 ─────────────────
+        if (req.url.startsWith('/api/assets/map-meshes')) {
+          const url2    = new URL(req.url, 'http://localhost')
+          const mapName = url2.searchParams.get('map') || ''
+          const AEGIS_MAP_DIR = join('C:', 'AegisLevel', 'Map')
+          const meshPath = join(AEGIS_MAP_DIR, mapName, 'meshes.json')
+          if (!mapName || !existsSync(meshPath)) {
+            sendJson(res, 404, { error: `meshes.json not found for map: ${mapName}` }); return
+          }
+          const stat = statSync(meshPath)
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Content-Length': stat.size,
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'public, max-age=300',
+          })
+          const { createReadStream } = await import('fs')
+          createReadStream(meshPath).pipe(res)
+          return
+        }
+
       } catch (assetErr) {
         console.error('[assets endpoint error]', assetErr)
         if (!res.headersSent) {

@@ -1,1678 +1,795 @@
 /**
- * SceneViewer.tsx
- * Unity .unity 씬 파일을 파싱해서 여러 FBX 모델을 트랜스폼과 함께 Three.js로 렌더링
+ * SceneViewer.tsx  (v3 – BufferGeometry 방식)
  *
- * Unity(LH, Y-up) → Three.js(RH, Y-up) 좌표 변환:
- *   position:   (x,  y, -z)
- *   quaternion: (-x, -y, z, w)
- *   scale:      (x,  y,  z)   ← 변경 없음
+ * C:\AegisLevel\Map\<MapFolder>\meshes.json 사전 익스포트 데이터를
+ * BufferGeometry로 직접 로드 (collaborative_map_viewer 방식).
  *
- * ── 안정성 개선 ──
- * - WebGL context lost/restored 핸들링
- * - 텍스처 사이즈 제한 (GPU 메모리 보호)
- * - 순차 로딩 + 지연 (GPU 부하 분산)
- * - 애니메이션 루프 에러 보호
- * - 쉐도우맵 축소 (메모리 절약)
+ * 버텍스는 이미 월드 스페이스로 베이크되어 있으므로 Transform 계산 불필요.
+ * → FBXLoader 완전 제거, 텍스처·UV·노멀 완전 지원.
  */
-import { useEffect, useRef, useState } from 'react';
-import * as THREE from 'three';
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
-import { TGALoader } from 'three/examples/jsm/loaders/TGALoader.js';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { useEffect, useRef, useState, useCallback } from 'react'
+import * as THREE from 'three'
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 
-// ── FBXLoader 노이즈 경고 억제 ────────────────────────────────────────────────
-// 아래 경고들은 양성(benign)이며 실제 렌더링에 영향 없음:
-//  - TGA loader not found : 서버에서 TGA→PNG 변환으로 해결, 구버전 캐시 잔류 경고
-//  - Polygons with more than four sides : FBXLoader 내부적으로 earcut으로 삼각화
-//  - Vertex has more than 4 skinning weights : 초과 가중치 삭제, 모델 동작에 무해
-{
-  const _origWarn = console.warn.bind(console);
-  const SUPPRESS = [
-    'FBXLoader: TGA loader not found',
-    'THREE.FBXLoader: Polygons with more than four sides',
-    'THREE.FBXLoader: Vertex has more than 4 skinning weights',
-    // 구버전 메시지 variants
-    'FBXLoader: TGA loader not found, creating placeholder',
-    'Make sure to triangulate the geometry',
-  ];
-  console.warn = (...args: unknown[]) => {
-    const msg = String(args[0] ?? '');
-    if (SUPPRESS.some(s => msg.includes(s))) return;
-    _origWarn(...args);
-  };
-}
-
-// ── 타입 ──────────────────────────────────────────────────────────────────────
-
+// ── 타입 ─────────────────────────────────────────────────────────────────────
 interface Vec3  { x: number; y: number; z: number }
-interface Quat  { x: number; y: number; z: number; w: number }
+interface Col3  { r: number; g: number; b: number }
 
-// ── 컴포넌트 상세 데이터 타입 ─────────────────────────────────────────────────
-interface LightInfo {
-  lightType: number  // 0=Spot, 1=Directional, 2=Point, 3=Area
-  color: { r: number; g: number; b: number }
-  intensity: number
-  range: number
-  spotAngle: number
-  innerSpotAngle: number
-  shadowType: number  // 0=None, 1=Hard, 2=Soft
-}
-interface ColliderInfo {
-  type: 'box' | 'sphere' | 'capsule' | 'mesh'
-  isTrigger: boolean
-  center: Vec3
-  size?: Vec3
-  radius?: number
-  height?: number
-  direction?: number  // capsule: 0=X, 1=Y, 2=Z
-}
-interface CameraInfo {
-  fov: number; near: number; far: number
-  ortho: boolean; orthoSize: number; clearFlags: number
-}
-interface ComponentData {
-  Light?: LightInfo
-  colliders?: ColliderInfo[]
-  Camera?: CameraInfo
-  Rigidbody?: { mass: number; isKinematic: boolean; useGravity: boolean }
-  AudioSource?: { volume: number; loop: boolean; spatialBlend: number }
-  scripts?: string[]
+interface MeshMaterial {
+  color?:               Col3
+  mainTextureId?:       string
+  mainTextureTiling?:   { x: number; y: number }
+  mainTextureOffset?:   { x: number; y: number }
+  lightmapIndex?:       number
+  lightmapScaleOffset?: { x: number; y: number; z: number; w: number }
 }
 
-interface SceneObject {
-  id: string
-  name: string
-  type?: 'fbx' | 'probuilder' | 'box' | 'empty'
-  fbxPath: string
-  fbxUrl: string
-  vertices?: number[]
-  indices?: number[]
-  pos: Vec3
-  rot: Quat
-  scale: Vec3
-  components?: string[]
-  componentData?: ComponentData
+interface MeshGeometry {
+  vertices:  Vec3[]
+  normals?:  Vec3[]
+  uvs?:      { x: number; y: number }[]
+  uv2s?:     { x: number; y: number }[]
+  triangles?: number[]
+  bounds?:   { center: Vec3; size: Vec3 }
 }
 
-interface HierarchyNode {
-  id: string
-  name: string
-  type: 'fbx' | 'probuilder' | 'box' | 'empty'
-  objIdx: number      // index in objects[], -1 if no rendered object
-  children: HierarchyNode[]
-  components?: string[]  // 해당 GO의 컴포넌트 목록
+interface MeshJsonObject {
+  name:      string
+  path:      string
+  layer?:    string
+  tag?:      string
+  transform: { position: Vec3; rotation: Vec3; scale: Vec3 }
+  geometry:  MeshGeometry
+  material?: MeshMaterial
 }
 
-interface SceneData {
-  scenePath: string
-  totalPrefabs: number
-  totalDirect: number
-  resolvedCount: number
-  resolvedFbx?: number
-  resolvedProBuilder?: number
-  resolvedBox?: number
-  resolvedEmpty?: number
-  objects: SceneObject[]
-  hierarchy?: HierarchyNode[]
+interface SceneInfo {
+  sceneName:  string
+  meshCount:  number
+  bounds?:    { min: Vec3; max: Vec3 }
+  spawnPoints?: unknown[]
+  neutralPointCaptures?: unknown[]
 }
 
-// ── 상수 ──────────────────────────────────────────────────────────────────────
-const MAX_TEXTURE_SIZE = 1024       // 텍스처 최대 해상도 제한
-const MAX_SCENE_OBJECTS = 400       // 한 씬에 로드할 최대 오브젝트 수 (ProBuilder/Box는 경량)
-const FBX_CONCURRENCY = 6           // FBX 동시 로드 수 (병렬 배치)
-// Unity FBX Import Scale: Unity는 .meta 파일에서 항상 FileScale=0.01 적용
-// FBXLoader는 UnitScaleFactor를 저장만 하고 스케일 변환하지 않으므로 우리가 직접 적용
-// 주의: 일부 FBX가 UnitScaleFactor=100(m)으로 설정되어도 Unity는 항상 0.01 적용
-const UNITY_FBX_IMPORT_SCALE = 0.01
-
-// ── ProBuilder 머터리얼 색상 팔레트 ─────────────────────────────────────────────
-const PB_COLORS: Record<string, number> = {
-  wall:    0x6b7280,
-  floor:   0x4b5563,
-  stair:   0x7c6f64,
-  window:  0x64748b,
-  box:     0x9ca3af,
-  door:    0x78716c,
-  default: 0x6b7280,
+interface MapEntry {
+  folder:    string
+  sceneName: string
+  meshCount: number
+  thumbUrl:  string
 }
-function pbColorForName(name: string): number {
-  const n = name.toLowerCase()
-  for (const [k, c] of Object.entries(PB_COLORS)) {
-    if (k !== 'default' && n.includes(k)) return c
+
+// ── 상수 ────────────────────────────────────────────────────────────────────
+const CHUNK_SIZE  = 80   // 한 번에 처리할 메시 수
+const TEX_CONCURRENCY = 6 // 병렬 텍스처 로드 수
+
+// ── SceneViewer 컴포넌트 props ───────────────────────────────────────────────
+interface SceneViewerProps {
+  scenePath: string   // /api/assets/scene?path=... 또는 /api/assets/prefab?path=...
+  height?:   number
+}
+
+// ── 텍스처 로딩 ──────────────────────────────────────────────────────────────
+function loadTextureFromUrl(url: string): Promise<THREE.Texture | null> {
+  return new Promise(resolve => {
+    new THREE.TextureLoader().load(
+      url,
+      tex => {
+        tex.flipY    = false
+        tex.wrapS    = THREE.RepeatWrapping
+        tex.wrapT    = THREE.RepeatWrapping
+        tex.needsUpdate = true
+        resolve(tex)
+      },
+      undefined,
+      () => resolve(null),
+    )
+  })
+}
+
+// ── BufferGeometry 생성 (app.js createMesh 포팅) ──────────────────────────────
+function createGeometry(geo: MeshGeometry): THREE.BufferGeometry {
+  const bg = new THREE.BufferGeometry()
+
+  // 버텍스 (이미 월드스페이스)
+  const verts = new Float32Array(geo.vertices.length * 3)
+  geo.vertices.forEach((v, i) => {
+    verts[i * 3]     = v.x
+    verts[i * 3 + 1] = v.y
+    verts[i * 3 + 2] = v.z
+  })
+  bg.setAttribute('position', new THREE.BufferAttribute(verts, 3))
+
+  // 인덱스
+  if (geo.triangles?.length) bg.setIndex(geo.triangles)
+
+  // 노멀
+  if (geo.normals?.length) {
+    const norms = new Float32Array(geo.normals.length * 3)
+    geo.normals.forEach((n, i) => {
+      norms[i * 3]     = n.x
+      norms[i * 3 + 1] = n.y
+      norms[i * 3 + 2] = n.z
+    })
+    bg.setAttribute('normal', new THREE.BufferAttribute(norms, 3))
+  } else {
+    bg.computeVertexNormals()
   }
-  return PB_COLORS.default
-}
 
-/** ProBuilder 정점+인덱스 데이터에서 Three.js BufferGeometry 생성
- *  Unity LHS → Three.js RHS 변환: Z 좌표를 반전
- *  Z 반전 시 삼각형 와인딩 순서가 뒤집히므로 인덱스도 역순으로 보정 */
-function createProBuilderGeometry(vertices: number[], indices: number[]): THREE.BufferGeometry {
-  const geo = new THREE.BufferGeometry()
-  // Z 좌표 반전 (Unity LHS → Three.js RHS)
-  const positions = new Float32Array(vertices.length)
-  for (let i = 0; i < vertices.length; i += 3) {
-    positions[i]     = vertices[i]      // x
-    positions[i + 1] = vertices[i + 1]  // y
-    positions[i + 2] = -vertices[i + 2] // z 반전
+  // UV
+  if (geo.uvs?.length) {
+    const uvs = new Float32Array(geo.uvs.length * 2)
+    geo.uvs.forEach((u, i) => { uvs[i * 2] = u.x; uvs[i * 2 + 1] = u.y })
+    bg.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
   }
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  if (indices.length > 0) {
-    // Z 반전으로 인해 삼각형 와인딩이 뒤집히므로 인덱스 순서 역전
-    const flippedIndices = new Array(indices.length)
-    for (let i = 0; i < indices.length; i += 3) {
-      flippedIndices[i]     = indices[i]
-      flippedIndices[i + 1] = indices[i + 2]  // 2번과 3번 스왑
-      flippedIndices[i + 2] = indices[i + 1]
-    }
-    geo.setIndex(flippedIndices)
+
+  // UV2 (라이트맵)
+  if (geo.uv2s?.length) {
+    const uv2s = new Float32Array(geo.uv2s.length * 2)
+    const so   = undefined as undefined // lightmapScaleOffset handled per-material
+    geo.uv2s.forEach((u, i) => {
+      void so
+      uv2s[i * 2]     = u.x
+      uv2s[i * 2 + 1] = u.y
+    })
+    bg.setAttribute('uv2', new THREE.BufferAttribute(uv2s, 2))
   }
-  geo.computeVertexNormals()
-  return geo
+
+  return bg
 }
 
-// ── 좌표 변환 (Unity LH → Three.js RH) ───────────────────────────────────────
-function unityToThreePos(v: Vec3): THREE.Vector3 {
-  return new THREE.Vector3(v.x, v.y, -v.z)
-}
-function unityToThreeQuat(q: Quat): THREE.Quaternion {
-  return new THREE.Quaternion(-q.x, -q.y, q.z, q.w)
-}
-function unityToThreeScale(v: Vec3): THREE.Vector3 {
-  return new THREE.Vector3(v.x, v.y, v.z)
-}
+// ── 메시 생성 ─────────────────────────────────────────────────────────────────
+function createThreeMesh(
+  obj:     MeshJsonObject,
+  texCache: Map<string, THREE.Texture>,
+): THREE.Mesh | null {
+  if (!obj.geometry?.vertices?.length) return null
 
-/** 텍스처 다운스케일 (GPU 메모리 보호) */
-function limitTextureSize(tex: THREE.Texture): void {
-  if (!tex.image) return
-  const img = tex.image
+  const geo = createGeometry(obj.geometry)
+  const mat = obj.material
 
-  // drawImage에 사용 가능한 타입인지 체크 (TGA 등은 ImageData/DataTexture로 들어옴)
-  const isDrawable =
-    img instanceof HTMLImageElement ||
-    img instanceof HTMLCanvasElement ||
-    img instanceof HTMLVideoElement ||
-    img instanceof ImageBitmap ||
-    (typeof OffscreenCanvas !== 'undefined' && img instanceof OffscreenCanvas) ||
-    (typeof SVGImageElement !== 'undefined' && img instanceof SVGImageElement)
+  // 색상
+  const baseColor = mat?.color
+    ? new THREE.Color(mat.color.r, mat.color.g, mat.color.b)
+    : new THREE.Color(0x888888)
 
-  if (!isDrawable) return // drawImage 불가능한 타입은 스킵
+  const params: THREE.MeshStandardMaterialParameters & THREE.MeshPhongMaterialParameters = {
+    side:  THREE.DoubleSide,
+    color: baseColor,
+  }
 
-  const w = (img as HTMLImageElement).width ?? 0
-  const h = (img as HTMLImageElement).height ?? 0
-  if (w <= MAX_TEXTURE_SIZE && h <= MAX_TEXTURE_SIZE) return
-
-  const scale = MAX_TEXTURE_SIZE / Math.max(w, h)
-  const nw = Math.floor(w * scale)
-  const nh = Math.floor(h * scale)
-  const canvas = document.createElement('canvas')
-  canvas.width = nw
-  canvas.height = nh
-  const ctx = canvas.getContext('2d')
-  if (ctx) {
-    try {
-      ctx.drawImage(img as CanvasImageSource, 0, 0, nw, nh)
-      tex.image = canvas
+  // 메인 텍스처
+  const texId = mat?.mainTextureId
+  if (texId && texCache.has(texId)) {
+    const tex = texCache.get(texId)!.clone()
       tex.needsUpdate = true
-    } catch {
-      // drawImage 실패 시 원본 텍스처 유지
+    const tiling = mat?.mainTextureTiling
+    if (tiling) { tex.repeat.set(tiling.x || 1, tiling.y || 1) }
+    const offset = mat?.mainTextureOffset
+    if (offset) { tex.offset.set(offset.x || 0, offset.y || 0) }
+    params.map   = tex
+    params.color = new THREE.Color(0xffffff)
+  }
+
+  const threeMesh = new THREE.Mesh(
+    geo,
+    params.map
+      ? new THREE.MeshStandardMaterial({ ...params, roughness: 0.85, metalness: 0 } as THREE.MeshStandardMaterialParameters)
+      : new THREE.MeshPhongMaterial({ ...params, transparent: false, flatShading: true } as THREE.MeshPhongMaterialParameters),
+  )
+  threeMesh.userData = { name: obj.name, path: obj.path, transform: obj.transform }
+  return threeMesh
+}
+
+// ── 경로 → 트리 노드 ──────────────────────────────────────────────────────────
+interface HierarchyNode {
+  name:     string
+  path:     string
+  children: HierarchyNode[]
+  meshIdx?: number   // -1 = folder only
+}
+
+function buildTree(objects: MeshJsonObject[]): HierarchyNode {
+  const root: HierarchyNode = { name: 'Scene', path: '', children: [] }
+
+  objects.forEach((obj, idx) => {
+    const parts = (obj.path || obj.name).split('/')
+    let node = root
+    parts.forEach((part, depth) => {
+      const isLeaf = depth === parts.length - 1
+      let child = node.children.find(c => c.name === part)
+      if (!child) {
+        child = { name: part, path: parts.slice(0, depth + 1).join('/'), children: [] }
+        node.children.push(child)
+      }
+      if (isLeaf) child.meshIdx = idx
+      node = child
+    })
+  })
+
+  return root
+}
+
+// ── 씬 이름으로 맵 폴더 추론 ──────────────────────────────────────────────────
+function detectMapFolder(scenePath: string, maps: MapEntry[]): MapEntry | null {
+  try {
+    const params = new URL(scenePath, 'http://localhost').searchParams
+    const pathParam = params.get('path') || ''
+    const sceneName = (pathParam.split('/').pop() || '').toLowerCase().replace(/[._-]/g, '')
+
+    // 긴 이름 우선 (village_01 > village)
+    const sorted = [...maps].sort((a, b) => b.folder.length - a.folder.length)
+    for (const m of sorted) {
+      const folder = m.folder.toLowerCase().replace(/[_-]/g, '')
+      if (sceneName.includes(folder) || folder.includes(sceneName)) return m
     }
-  }
+  } catch {}
+  return null
 }
 
-// ── 하이어라키 타입 아이콘 ─────────────────────────────────────────────────────
-const HIERARCHY_ICONS: Record<string, string> = {
-  fbx: '🔷',
-  probuilder: '🟩',
-  box: '📦',
-  empty: '📁',
-}
-// 컴포넌트별 아이콘
-const COMP_ICONS: Record<string, string> = {
-  BoxCollider: '🟢', CapsuleCollider: '🟢', SphereCollider: '🟢', MeshCollider: '🟢',
-  Animator: '🎬', SkinnedMeshRenderer: '🦴',
-  Light: '💡', ParticleSystem: '✨', ParticleSystemRenderer: '✨',
-  AudioSource: '🔊', MonoBehaviour: '📜', Rigidbody: '⚙️',
-  MeshRenderer: '🔷', MeshFilter: '🔷',
-  Canvas: '🖥️', SpriteRenderer: '🖼️', LineRenderer: '〰️',
-}
-
-/** Unity Quaternion → Three.js Euler (degrees) */
-function quatToEulerDeg(q: Quat): { x: number; y: number; z: number } {
-  const e = new THREE.Euler().setFromQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w))
-  return {
-    x: THREE.MathUtils.radToDeg(e.x),
-    y: THREE.MathUtils.radToDeg(e.y),
-    z: THREE.MathUtils.radToDeg(e.z),
-  }
-}
-
-// ── 하이어라키 트리 노드 컴포넌트 ─────────────────────────────────────────────
-interface HierarchyTreeNodeProps {
-  node: HierarchyNode
-  depth: number
-  expandedNodes: Set<string>
-  selectedNodeId: string | null
-  onToggle: (id: string) => void
-  onSelect: (node: HierarchyNode) => void
-}
-
-function HierarchyTreeNode({ node, depth, expandedNodes, selectedNodeId, onToggle, onSelect }: HierarchyTreeNodeProps) {
+// ── HierarchyItem 재귀 렌더 ───────────────────────────────────────────────────
+function HierarchyItem({
+  node,
+  selected,
+  onSelect,
+  depth = 0,
+}: {
+  node:     HierarchyNode
+  selected: number | null
+  onSelect: (idx: number) => void
+  depth?:   number
+}) {
+  const [open, setOpen] = useState(depth < 2)
   const hasChildren = node.children.length > 0
-  const isExpanded  = expandedNodes.has(node.id)
-  const isSelected  = node.id === selectedNodeId
-
-  const icon = HIERARCHY_ICONS[node.type] || HIERARCHY_ICONS.empty
+  const isLeaf = node.meshIdx !== undefined
+  const isSelected = isLeaf && node.meshIdx === selected
 
   return (
-    <>
+    <div>
       <div
-        onClick={(e) => {
-          e.stopPropagation()
-          if (hasChildren) onToggle(node.id)
-          onSelect(node)
-        }}
         style={{
-          display: 'flex', alignItems: 'center', gap: 2,
-          paddingLeft: 8 + depth * 14, paddingRight: 6,
-          paddingTop: 2, paddingBottom: 2,
-          cursor: 'pointer',
-          background: isSelected ? 'rgba(99,102,241,0.2)' : 'transparent',
-          borderLeft: isSelected ? '2px solid #818cf8' : '2px solid transparent',
-          color: '#e2e8f0',
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-          transition: 'background 0.1s',
+          display:     'flex',
+          alignItems:  'center',
+          gap:         4,
+          padding:     '2px 4px 2px ' + (8 + depth * 12) + 'px',
+          cursor:      'pointer',
+          background:  isSelected ? '#2563eb33' : 'transparent',
+          borderLeft:  isSelected ? '2px solid #3b82f6' : '2px solid transparent',
+          borderRadius: 3,
+          fontSize:    11,
+          color:       isLeaf ? '#e2e8f0' : '#94a3b8',
+          userSelect:  'none',
         }}
-        onMouseEnter={(e) => {
-          if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = 'rgba(99,102,241,0.08)'
+        onClick={() => {
+          if (hasChildren) setOpen(o => !o)
+          if (isLeaf && node.meshIdx !== undefined) onSelect(node.meshIdx)
         }}
-        onMouseLeave={(e) => {
-          if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = 'transparent'
-        }}
-        title={`${node.name} (${node.type}${node.objIdx >= 0 ? `, idx=${node.objIdx}` : ''}${node.components?.length ? `\n컴포넌트: ${node.components.join(', ')}` : ''})`}
       >
-        {/* 펼침/접힘 화살표 */}
-        <span style={{
-          width: 12, textAlign: 'center', fontSize: 8,
-          color: '#475569', flexShrink: 0,
-          transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-          transition: 'transform 0.15s',
-          visibility: hasChildren ? 'visible' : 'hidden',
-        }}>
-          ▶
-        </span>
-
-        {/* 타입 아이콘 */}
-        <span style={{ fontSize: 10, flexShrink: 0 }}>{icon}</span>
-
-        {/* 이름 */}
-        <span style={{
-          overflow: 'hidden', textOverflow: 'ellipsis',
-          fontSize: 11, lineHeight: '16px',
-          fontWeight: isSelected ? 600 : 400,
-        }}>
-          {node.name || '[unnamed]'}
-        </span>
-
-        {/* 컴포넌트 뱃지 (empty 노드에만 표시) */}
-        {node.components && node.components.length > 0 && (
-          <span style={{ display: 'flex', gap: 1, marginLeft: 4, flexShrink: 0 }}>
-            {node.components.slice(0, 3).map((c, i) => (
-              <span key={i} style={{ fontSize: 8 }} title={c}>
-                {COMP_ICONS[c] || '•'}
-              </span>
-            ))}
-            {node.components.length > 3 && (
-              <span style={{ fontSize: 8, color: '#64748b' }}>+{node.components.length - 3}</span>
-            )}
-          </span>
-        )}
-
-        {/* 자식 수 */}
         {hasChildren && (
-          <span style={{ color: '#475569', fontSize: 9, marginLeft: 'auto', flexShrink: 0 }}>
-            {node.children.length}
-          </span>
+          <span style={{ width: 12, textAlign: 'center', fontSize: 9, color: '#64748b' }}>
+            {open ? '▼' : '▶'}
+        </span>
         )}
+        {!hasChildren && <span style={{ width: 12 }} />}
+        <span style={{ fontSize: 10, marginRight: 3 }}>
+          {isLeaf ? '◆' : '📁'}
+          </span>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+          {node.name}
+          </span>
       </div>
-
-      {/* 자식 노드 (재귀) */}
-      {hasChildren && isExpanded && node.children.map(child => (
-        <HierarchyTreeNode
-          key={child.id}
-          node={child}
-          depth={depth + 1}
-          expandedNodes={expandedNodes}
-          selectedNodeId={selectedNodeId}
-          onToggle={onToggle}
-          onSelect={onSelect}
-        />
+      {hasChildren && open && node.children.map((child, i) => (
+        <HierarchyItem key={i} node={child} selected={selected} onSelect={onSelect} depth={depth + 1} />
       ))}
-    </>
+    </div>
   )
 }
 
-// ── SceneViewer コンポーネント ─────────────────────────────────────────────────
-
-export interface SceneViewerProps {
-  /** asset index の相対パス（例: "GameContents/Map/..." 또는 완전한 경로）*/
-  scenePath: string
-  height?: number
-  className?: string
+// ── MapSelector : 사전 익스포트 맵 없을 때 안내 ──────────────────────────────
+function MapSelector({ maps, onSelect }: { maps: MapEntry[]; onSelect: (m: MapEntry) => void }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 20, color: '#94a3b8', fontSize: 13 }}>
+      <div style={{ fontSize: 36 }}>🗺️</div>
+      <div style={{ fontWeight: 600, color: '#e2e8f0' }}>사전 익스포트된 맵 선택</div>
+      <div style={{ color: '#64748b', fontSize: 11 }}>이 씬에 매칭되는 맵 데이터가 없습니다.</div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+        {maps.map(m => (
+          <button
+            key={m.folder}
+            onClick={() => onSelect(m)}
+            style={{ padding: '8px 16px', background: '#1e293b', border: '1px solid #334155', borderRadius: 8, color: '#e2e8f0', cursor: 'pointer', fontSize: 12 }}
+          >
+            {m.sceneName} ({m.meshCount.toLocaleString()} 메시)
+          </button>
+        ))}
+      </div>
+    </div>
+  )
 }
 
-export function SceneViewer({ scenePath, height = 560, className = '' }: SceneViewerProps) {
-  const mountRef   = useRef<HTMLDivElement>(null)
-  const [status, setStatus]     = useState<'idle' | 'loading-scene' | 'loading-fbx' | 'ok' | 'error' | 'context-lost'>('idle')
-  const [progress, setProgress] = useState({ loaded: 0, total: 0 })
-  const [errMsg, setErrMsg]     = useState('')
-  const [sceneInfo, setSceneInfo] = useState<Omit<SceneData, 'objects'> | null>(null)
-  const cleanupRef = useRef<() => void>(() => {})
+// ── 메인 컴포넌트 ────────────────────────────────────────────────────────────
+export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
+  const mountRef    = useRef<HTMLDivElement>(null)
+  const sceneRef    = useRef<THREE.Scene | undefined>(undefined)
+  const rendererRef = useRef<THREE.WebGLRenderer | undefined>(undefined)
+  const cameraRef   = useRef<THREE.PerspectiveCamera | undefined>(undefined)
+  const controlsRef = useRef<OrbitControls | undefined>(undefined)
+  const meshGroupRef = useRef<THREE.Group | undefined>(undefined)
+  const animFrameRef = useRef<number | undefined>(undefined)
+  const texCacheRef  = useRef<Map<string, THREE.Texture>>(new Map())
 
-  // ── Hierarchy / Inspector 패널 상태 ──
-  const [hierarchyData, setHierarchyData] = useState<HierarchyNode[]>([])
-  const [sceneObjects, setSceneObjects] = useState<SceneObject[]>([])
-  const [showHierarchy, setShowHierarchy] = useState(true)
+  const [status,        setStatus]   = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [progress,      setProgress] = useState(0)
+  const [progressMsg,   setProgressMsg] = useState('')
+  const [loadedMap,     setLoadedMap]   = useState<MapEntry | null>(null)
+  const [availMaps,     setAvailMaps]   = useState<MapEntry[]>([])
+  const [meshObjects,   setMeshObjects] = useState<MeshJsonObject[]>([])
+  const [hierarchy,     setHierarchy]   = useState<HierarchyNode | null>(null)
+  const [selected,      setSelected]    = useState<number | null>(null)
+  const [showHier,      setShowHier]    = useState(true)
   const [showInspector, setShowInspector] = useState(true)
-  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set())
-  const [selectedNode, setSelectedNode] = useState<HierarchyNode | null>(null)
+  const [showWireframe, setShowWireframe] = useState(false)
+  const [meshCount,     setMeshCount]    = useState({ total: 0, loaded: 0 })
+  const [sceneInfo,     setSceneInfo]    = useState<SceneInfo | null>(null)
+  const [manualMap,     setManualMap]    = useState<MapEntry | null>(null)
 
-  // ── 뷰포트 토글 상태 ──────────────────────────────────────────────────────────
-  const [showColliders, setShowColliders]       = useState(false)
-  const [showLightHelpers, setShowLightHelpers] = useState(true)
-  const [wireframeMode, setWireframeMode]       = useState(false)
-
-  // Three.js 객체 참조 (hierarchy → camera focus용)
-  const cameraRef   = useRef<THREE.PerspectiveCamera | null>(null)
-  const controlsRef = useRef<OrbitControls | null>(null)
-  const sceneObjMap = useRef<Map<number, THREE.Object3D>>(new Map())
-
-  // 토글 그룹 참조
-  const colliderGroupRef    = useRef<THREE.Group | null>(null)
-  const lightHelperGroupRef = useRef<THREE.Group | null>(null)
-  const lightsGroupRef      = useRef<THREE.Group | null>(null)
-  const sceneRef            = useRef<THREE.Scene | null>(null)
-
+  // ── Three.js 초기화 ─────────────────────────────────────────────────────────
   useEffect(() => {
     const el = mountRef.current
     if (!el) return
-    let cancelled = false
-    let contextLost = false
 
-    setStatus('loading-scene')
-    setErrMsg('')
-    setProgress({ loaded: 0, total: 0 })
+    // Scene
+    const scene = new THREE.Scene()
+    scene.background = new THREE.Color(0x1a1d23)
+    scene.fog = new THREE.FogExp2(0x1a1d23, 0.0008)
+    sceneRef.current = scene
 
-    // ── Three.js 씬 셋업 ─────────────────────────────────────────────────────
-    const w = el.clientWidth || 800
-    const h = height
+    // Camera
+    const camera = new THREE.PerspectiveCamera(60, el.clientWidth / (height || el.clientHeight), 0.1, 5000)
+    camera.position.set(50, 50, 50)
+    cameraRef.current = camera
 
-    const renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      powerPreference: 'high-performance',
-      // WebGL context 속성
-    })
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)) // DPR 제한 (메모리 절약)
-    renderer.setSize(w, h)
-    renderer.shadowMap.enabled = true
-    renderer.shadowMap.type    = THREE.PCFShadowMap
-    renderer.outputColorSpace  = THREE.SRGBColorSpace
-    renderer.toneMapping       = THREE.ACESFilmicToneMapping
-    renderer.toneMappingExposure = 1.2
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true })
+    renderer.setSize(el.clientWidth, height || el.clientHeight)
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.shadowMap.enabled = false
     el.appendChild(renderer.domElement)
+    rendererRef.current = renderer
 
-    // ── WebGL Context Lost / Restored 핸들링 ──────────────────────────────────
-    const canvas = renderer.domElement
-    const onContextLost = (e: Event) => {
-      e.preventDefault() // 브라우저에게 복구 시도 허용
-      contextLost = true
-      cancelAnimationFrame(animId)
-      console.warn('[SceneViewer] WebGL context lost!')
-      if (!cancelled) setStatus('context-lost')
-    }
-    const onContextRestored = () => {
-      console.log('[SceneViewer] WebGL context restored')
-      contextLost = false
-      // 렌더링 루프 재시작
-      animate()
-      if (!cancelled) setStatus('ok')
-    }
-    canvas.addEventListener('webglcontextlost', onContextLost)
-    canvas.addEventListener('webglcontextrestored', onContextRestored)
-
-    const scene  = new THREE.Scene()
-    scene.background = new THREE.Color(0x0d1117)
-    // fog는 씬 크기에 따라 동적으로 설정 (초기값: 비활성)
-    scene.fog        = null
-
-    const camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 50000)
-    camera.position.set(0, 150, 400)
-
+    // Controls
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping  = true
-    controls.dampingFactor  = 0.07
-    controls.minDistance    = 5
-    controls.maxDistance    = 40000
+    controls.dampingFactor  = 0.08
+    controlsRef.current     = controls
 
-    // ref에 저장 (hierarchy 패널 → 카메라 포커스용)
-    cameraRef.current = camera
-    controlsRef.current = controls
-    sceneObjMap.current.clear()
-    sceneRef.current = scene
-    colliderGroupRef.current = null
-    lightHelperGroupRef.current = null
-    lightsGroupRef.current = null
+    // Lights
+    scene.add(new THREE.AmbientLight(0xffffff, 0.7))
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8)
+    dir.position.set(100, 200, 100)
+    scene.add(dir)
 
-    // 조명 (쉐도우맵 크기 축소: 2048→1024)
-    scene.add(new THREE.AmbientLight(0xffffff, 1.8))
-    const sun = new THREE.DirectionalLight(0xfff4e0, 2.0)
-    sun.position.set(500, 800, 300)
-    sun.castShadow = true
-    sun.shadow.mapSize.set(1024, 1024) // 축소: GPU 메모리 절약
-    sun.shadow.camera.near = 1
-    sun.shadow.camera.far  = 3000
-    sun.shadow.camera.left = -500
-    sun.shadow.camera.right = 500
-    sun.shadow.camera.top   = 500
-    sun.shadow.camera.bottom = -500
-    scene.add(sun)
-    scene.add(new THREE.DirectionalLight(0x8899ff, 0.6).translateX(-300).translateY(200).translateZ(-200))
-    scene.add(new THREE.HemisphereLight(0x99aaff, 0x334155, 0.5))
-
-    // 그리드
-    const grid = new THREE.GridHelper(1000, 50, 0x1e293b, 0x1e293b)
+    // Grid
+    const grid = new THREE.GridHelper(1000, 50, 0x2d3748, 0x2d3748)
     scene.add(grid)
 
-    // 애니메이션 루프 (에러 보호 + context lost 체크)
-    let animId = 0
+    // Mesh group
+    const meshGroup = new THREE.Group()
+    scene.add(meshGroup)
+    meshGroupRef.current = meshGroup
+
+    // WebGL context lost
+    renderer.domElement.addEventListener('webglcontextlost', e => {
+      e.preventDefault()
+      cancelAnimationFrame(animFrameRef.current!)
+    })
+
+    // Resize
+    const onResize = () => {
+      if (!el) return
+      camera.aspect = el.clientWidth / (height || el.clientHeight)
+      camera.updateProjectionMatrix()
+      renderer.setSize(el.clientWidth, height || el.clientHeight)
+    }
+    window.addEventListener('resize', onResize)
+
+    // Animate
     const animate = () => {
-      if (cancelled || contextLost) return
-      animId = requestAnimationFrame(animate)
+      animFrameRef.current = requestAnimationFrame(animate)
       try {
         controls.update()
         renderer.render(scene, camera)
-      } catch (err) {
-        console.error('[SceneViewer] Render error:', err)
-        // 렌더 에러 시 루프 중단하지 않고 다음 프레임에서 재시도
-      }
+      } catch {}
     }
     animate()
 
-    // 리사이즈 대응
-    const onResize = () => {
-      if (contextLost) return
-      const nw = el.clientWidth
-      if (nw <= 0) return
-      camera.aspect = nw / h
-      camera.updateProjectionMatrix()
-      renderer.setSize(nw, h)
+    return () => {
+      cancelAnimationFrame(animFrameRef.current!)
+      window.removeEventListener('resize', onResize)
+      renderer.dispose()
+      el.removeChild(renderer.domElement)
     }
-    const ro = new ResizeObserver(onResize)
-    ro.observe(el)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [height])
 
-    // 리소스 추적 (cleanup 시 GPU 메모리 해제)
-    const loadedGeometries: THREE.BufferGeometry[] = []
-    const loadedMaterials: THREE.Material[] = []
-    const loadedTextures: THREE.Texture[] = []
+  // ── 맵 목록 로드 ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    fetch('/api/assets/map-list')
+      .then(r => r.json())
+      .then((data: { maps: MapEntry[] }) => setAvailMaps(data.maps || []))
+      .catch(() => setAvailMaps([]))
+  }, [])
 
-    // ── 씬 데이터 로드 ───────────────────────────────────────────────────────
-    ;(async () => {
-      try {
-        // scenePath가 이미 API URL이면 그대로 사용, 아니면 scene API로 래핑
-        const fetchUrl = scenePath.startsWith('/api/')
-          ? scenePath
-          : `/api/assets/scene?path=${encodeURIComponent(scenePath)}&max=${MAX_SCENE_OBJECTS}`
-        const resp = await fetch(fetchUrl)
-        if (!resp.ok) {
-          const err = await resp.json().catch(() => ({ error: resp.statusText }))
-          throw new Error(err.error ?? resp.statusText)
+  // ── 씬 경로 → 맵 감지 후 로드 ─────────────────────────────────────────────
+  useEffect(() => {
+    if (!scenePath || !availMaps.length) return
+    const detected = detectMapFolder(scenePath, availMaps)
+    if (detected) loadMap(detected)
+    else setStatus('idle') // MapSelector 표시
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scenePath, availMaps])
+
+  // ── 수동 맵 선택 ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (manualMap) loadMap(manualMap)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manualMap])
+
+  // ── 와이어프레임 토글 ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!meshGroupRef.current) return
+    meshGroupRef.current.traverse(obj => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const mat = (obj as THREE.Mesh).material
+        if (Array.isArray(mat)) mat.forEach(m => { (m as THREE.MeshStandardMaterial).wireframe = showWireframe })
+        else (mat as THREE.MeshStandardMaterial).wireframe = showWireframe
+      }
+    })
+  }, [showWireframe])
+
+  // ── 맵 로드 메인 함수 ───────────────────────────────────────────────────
+  const loadMap = useCallback(async (map: MapEntry) => {
+    const scene     = sceneRef.current
+    const meshGroup = meshGroupRef.current
+    const texCache  = texCacheRef.current
+    if (!scene || !meshGroup) return
+
+    setStatus('loading')
+    setProgress(0)
+    setLoadedMap(map)
+    setSelected(null)
+
+    // 이전 메시 정리
+    meshGroup.clear()
+    texCache.forEach(t => t.dispose())
+    texCache.clear()
+
+    try {
+      // ① scene_info 로드
+      setProgressMsg('씬 정보 로드 중...')
+      const infoRes = await fetch(`/api/assets/map-scene-info?map=${encodeURIComponent(map.folder)}`)
+      if (!infoRes.ok) throw new Error('scene_info 로드 실패')
+      const info: SceneInfo = await infoRes.json()
+      setSceneInfo(info)
+
+      // 카메라 초기 위치 (bounds 기반)
+      if (info.bounds) {
+        const { min, max } = info.bounds
+        const cx = (min.x + max.x) / 2
+        const cy = (min.y + max.y) / 2
+        const cz = (min.z + max.z) / 2
+        const sz = Math.max(Math.abs(max.x - min.x), Math.abs(max.y - min.y), Math.abs(max.z - min.z)) || 200
+        cameraRef.current?.position.set(cx + sz * 0.5, cy + sz * 0.3, cz + sz * 0.5)
+        controlsRef.current?.target.set(cx, cy, cz)
+        controlsRef.current?.update()
+      }
+
+      // ② meshes.json 로드
+      setProgressMsg(`meshes.json 다운로드 중... (${info.meshCount?.toLocaleString() ?? '?'} 메시)`)
+      setProgress(5)
+      const meshRes = await fetch(`/api/assets/map-meshes?map=${encodeURIComponent(map.folder)}`)
+      if (!meshRes.ok) throw new Error('meshes.json 로드 실패')
+
+      const meshesJson: { meshObjects: MeshJsonObject[] } = await meshRes.json()
+      const objs = meshesJson.meshObjects || []
+      setMeshObjects(objs)
+      setProgress(20)
+      setMeshCount({ total: objs.length, loaded: 0 })
+
+      // ③ 텍스처 ID 수집
+      setProgressMsg('텍스처 로드 중...')
+      const texIds = new Set<string>()
+      objs.forEach(o => { if (o.material?.mainTextureId) texIds.add(o.material.mainTextureId) })
+
+      // ④ 텍스처 병렬 로드
+      const texArr  = Array.from(texIds)
+      let   texDone = 0
+      const chunks: string[][] = []
+      for (let i = 0; i < texArr.length; i += TEX_CONCURRENCY)
+        chunks.push(texArr.slice(i, i + TEX_CONCURRENCY))
+
+      for (const chunk of chunks) {
+        await Promise.all(chunk.map(async id => {
+          const url = `/api/assets/map-texture?map=${encodeURIComponent(map.folder)}&file=${encodeURIComponent(id)}`
+          const tex = await loadTextureFromUrl(url)
+          if (tex) texCache.set(id, tex)
+          texDone++
+        }))
+        setProgress(20 + (texDone / Math.max(texArr.length, 1)) * 20)
+        setProgressMsg(`텍스처 ${texDone} / ${texArr.length}`)
+        await new Promise(r => setTimeout(r, 0))
+      }
+
+      setProgress(40)
+
+      // ⑤ 메시 생성 (청크 단위)
+      setProgressMsg('메시 생성 중...')
+      let builtCount = 0
+      for (let i = 0; i < objs.length; i += CHUNK_SIZE) {
+        const chunk = objs.slice(i, i + CHUNK_SIZE)
+        for (const obj of chunk) {
+          const m = createThreeMesh(obj, texCache)
+          if (m) meshGroup.add(m)
         }
-        const data: SceneData = await resp.json()
-        if (cancelled) return
+        builtCount += chunk.length
+        setProgress(40 + (builtCount / objs.length) * 55)
+        setMeshCount({ total: objs.length, loaded: builtCount })
+        setProgressMsg(`메시 생성 ${builtCount.toLocaleString()} / ${objs.length.toLocaleString()}`)
+        await new Promise(r => setTimeout(r, 0))
+      }
 
-        setSceneInfo({
-          scenePath: data.scenePath,
-          totalPrefabs: data.totalPrefabs,
-          totalDirect: data.totalDirect,
-          resolvedCount: data.resolvedCount,
-          resolvedFbx: data.resolvedFbx,
-          resolvedProBuilder: data.resolvedProBuilder,
-          resolvedBox: data.resolvedBox,
-        })
-        // 오브젝트 배열 저장 (Inspector에서 Transform 표시용)
-        setSceneObjects(data.objects)
-        // 하이어라키 트리 데이터 저장
-        if (data.hierarchy) {
-          setHierarchyData(data.hierarchy)
-          // 최상위 노드는 기본 펼침
-          const defaultExpanded = new Set<string>()
-          for (const node of data.hierarchy) {
-            if (node.children.length > 0) defaultExpanded.add(node.id)
-          }
-          setExpandedNodes(defaultExpanded)
-        }
-        setStatus('loading-fbx')
-        setProgress({ loaded: 0, total: data.objects.length })
+      // ⑥ 하이어라키 빌드
+      const tree = buildTree(objs)
+      setHierarchy(tree)
 
-        if (data.objects.length === 0) {
-          setStatus('ok')
-          return
-        }
-
-        // ── Phase 0: Unity 조명 + 콜라이더 그룹 생성 ──────────────────────────────
-        // Unity Light 컴포넌트에서 실제 Three.js 조명 생성
-        const lightsGroup = new THREE.Group(); lightsGroup.name = '__unityLights__'
-        scene.add(lightsGroup); lightsGroupRef.current = lightsGroup
-
-        const lightHelperGroup = new THREE.Group(); lightHelperGroup.name = '__lightHelpers__'
-        lightHelperGroup.visible = showLightHelpers
-        scene.add(lightHelperGroup); lightHelperGroupRef.current = lightHelperGroup
-
-        const colliderGroup = new THREE.Group(); colliderGroup.name = '__colliders__'
-        colliderGroup.visible = showColliders
-        scene.add(colliderGroup); colliderGroupRef.current = colliderGroup
-
-        const colGreenMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, wireframe: true, transparent: true, opacity: 0.65 })
-        const colOrangeMat = new THREE.MeshBasicMaterial({ color: 0xf97316, wireframe: true, transparent: true, opacity: 0.65 })
-        loadedMaterials.push(colGreenMat, colOrangeMat)
-
-        let sceneLightCount = 0
-        for (const obj of data.objects) {
-          const ld = obj.componentData?.Light
-          const worldPos = unityToThreePos(obj.pos)
-          const worldQuat = unityToThreeQuat(obj.rot)
-          const worldScale = unityToThreeScale(obj.scale)
-
-          if (ld) {
-            // Unity 색상은 Linear, Three.js는 sRGB → 그대로 전달 (renderer가 ACES 톤맵 적용)
-            const color = new THREE.Color(ld.color.r, ld.color.g, ld.color.b)
-            // Unity intensity 보정: Unity HDRP/URP와 Three.js 스케일이 다름
-            const ti = ld.intensity * 2.5
-
-            if (ld.lightType === 2) {  // Point Light
-              const light = new THREE.PointLight(color, ti, ld.range)
-              light.position.copy(worldPos)
-              lightsGroup.add(light)
-              const helperSize = Math.max(0.2, ld.range * 0.04)
-              lightHelperGroup.add(new THREE.PointLightHelper(light, helperSize))
-            } else if (ld.lightType === 1) {  // Directional Light
-              const light = new THREE.DirectionalLight(color, ti)
-              light.position.copy(worldPos)
-              const dir = new THREE.Vector3(0, -1, 0).applyQuaternion(worldQuat)
-              light.target.position.copy(worldPos.clone().add(dir.multiplyScalar(15)))
-              lightsGroup.add(light); lightsGroup.add(light.target)
-              lightHelperGroup.add(new THREE.DirectionalLightHelper(light, 1.5))
-            } else if (ld.lightType === 0) {  // Spot Light
-              const angle = Math.min((ld.spotAngle * Math.PI) / 360, Math.PI / 2 - 0.01)
-              const light = new THREE.SpotLight(color, ti, ld.range, angle, 0.15)
-              light.position.copy(worldPos)
-              const dir = new THREE.Vector3(0, -1, 0).applyQuaternion(worldQuat)
-              light.target.position.copy(worldPos.clone().add(dir.multiplyScalar(10)))
-              lightsGroup.add(light); lightsGroup.add(light.target)
-              try { lightHelperGroup.add(new THREE.SpotLightHelper(light)) } catch { /**/ }
-            } else {  // Area Light (3) → PointLight 근사
-              const light = new THREE.PointLight(color, ti * 0.6, ld.range * 0.8)
-              light.position.copy(worldPos)
-              lightsGroup.add(light)
-              lightHelperGroup.add(new THREE.PointLightHelper(light, 0.3))
-            }
-            sceneLightCount++
-          }
-
-          // 콜라이더 와이어프레임 생성
-          const colliders = obj.componentData?.colliders
-          if (colliders) {
-            for (const col of colliders) {
-              const mat = col.isTrigger ? colOrangeMat : colGreenMat
-              let colGeo: THREE.BufferGeometry | null = null
-              if (col.type === 'box' && col.size) {
-                colGeo = new THREE.BoxGeometry(
-                  col.size.x * worldScale.x, col.size.y * worldScale.y, col.size.z * worldScale.z)
-              } else if (col.type === 'sphere' && col.radius !== undefined) {
-                const maxS = Math.max(worldScale.x, worldScale.y, worldScale.z)
-                colGeo = new THREE.SphereGeometry(col.radius * maxS, 12, 8)
-              } else if (col.type === 'capsule' && col.radius !== undefined) {
-                const r = col.radius * Math.max(worldScale.x, worldScale.z)
-                const h = (col.height ?? 2) * worldScale.y
-                try { colGeo = new THREE.CapsuleGeometry(r, Math.max(0.01, h - r * 2), 4, 8) }
-                catch { colGeo = new THREE.CylinderGeometry(r, r, h, 12) }
-              }
-              if (colGeo) {
-                loadedGeometries.push(colGeo)
-                const mesh = new THREE.Mesh(colGeo, mat)
-                const centerOff = new THREE.Vector3(col.center.x, col.center.y, -col.center.z)
-                centerOff.applyQuaternion(worldQuat)
-                mesh.position.copy(worldPos).add(centerOff)
-                mesh.quaternion.copy(worldQuat)
-                colliderGroup.add(mesh)
-              }
-            }
-          }
-        }
-        if (sceneLightCount > 0) {
-          // Unity 조명이 있으면 환경광을 줄여서 씬 분위기 살림
-          scene.traverse(o => {
-            if (o instanceof THREE.AmbientLight) o.intensity = Math.max(0.4, o.intensity * 0.5)
-            if (o instanceof THREE.DirectionalLight && o.parent === scene) o.intensity *= 0.4
-          })
-          console.log(`[SceneViewer] ${sceneLightCount}개 Unity 조명 생성 완료`)
-        }
-
-        // ── 커스텀 LoadingManager ──
-        const loadingManager = new THREE.LoadingManager()
-        loadingManager.setURLModifier((url: string) => {
-          if (
-            url.startsWith('/api/assets/file?') ||
-            url.startsWith('/api/assets/smart?') ||
-            url.startsWith('/api/assets/scene?') ||
-            url.startsWith('/api/assets/index') ||
-            url.startsWith('/api/git/') ||
-            url.startsWith('http://') ||
-            url.startsWith('https://') ||
-            url.startsWith('data:') ||
-            url.startsWith('blob:')
-          ) return url
-          const filename = url.split(/[/?\\]/).filter(Boolean).pop() ?? url
-          return `/api/assets/smart?name=${encodeURIComponent(filename)}`
-        })
-        const tgaLoaderManaged = new TGALoader(loadingManager)
-        loadingManager.addHandler(/\.tga$/i, tgaLoaderManaged)
-
-        // ── FBX 공유 캐시 ────
-        const fbxCache: Record<string, THREE.Group> = {}
-        const fbxLoader = new FBXLoader(loadingManager)
-        const texLoader  = new THREE.TextureLoader(loadingManager)
-
-        const loadFbx = (url: string): Promise<THREE.Group> => {
-          if (fbxCache[url]) return Promise.resolve(fbxCache[url].clone())
-          return new Promise((resolve, reject) => {
-            fbxLoader.load(url, (fbx) => {
-              // geometry/material 추적
-              fbx.traverse(child => {
-                const mesh = child as THREE.Mesh
-                if (mesh.isMesh) {
-                  if (mesh.geometry) loadedGeometries.push(mesh.geometry)
-                  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-                  mats.forEach(m => { if (m) loadedMaterials.push(m) })
-                }
-              })
-              fbxCache[url] = fbx
-              resolve(fbx.clone())
-            }, undefined, reject)
-          })
-        }
-
-        const TEX_LOAD_TIMEOUT = 10_000 // 텍스처 로드 타임아웃 (10초)
-        const loadTex = (apiUrl: string): Promise<THREE.Texture | null> => {
-          if (!apiUrl) return Promise.resolve(null)
-          return new Promise((resolve) => {
-            const timer = setTimeout(() => {
-              resolve(null) // 타임아웃 시 null 반환
-            }, TEX_LOAD_TIMEOUT)
-
-            const isTga = /\.tga$/i.test(apiUrl)
-            const ldr: THREE.Loader = isTga ? tgaLoaderManaged : texLoader
-            ;(ldr as TGALoader).load(apiUrl, (tex: THREE.Texture) => {
-              clearTimeout(timer)
-              tex.colorSpace = THREE.SRGBColorSpace
-              tex.flipY = !isTga
-              limitTextureSize(tex)  // GPU 메모리 보호
-              loadedTextures.push(tex)
-              resolve(tex)
-            }, undefined, () => { clearTimeout(timer); resolve(null) })
-          })
-        }
-
-        // 텍스처 캐시
-        const texCache: Record<string, THREE.Texture | null> = {}
-        const cachedLoadTex = async (url: string) => {
-          if (url in texCache) return texCache[url]
-          const t = await loadTex(url)
-          texCache[url] = t
-          return t
-        }
-
-        // 머터리얼 인덱스 캐시
-        const matCache: Record<string, { albedo: string; normal: string; emission: string }[]> = {}
-        const fetchMats = async (fbxPath: string) => {
-          if (fbxPath in matCache) return matCache[fbxPath]
-          try {
-            const r = await fetch(`/api/assets/materials?fbxPath=${encodeURIComponent(fbxPath)}`)
-            if (!r.ok) { matCache[fbxPath] = []; return [] }
-            const d = await r.json() as { materials: { name: string; albedo: string; normal: string; emission: string }[] }
-            matCache[fbxPath] = d.materials ?? []
-            return matCache[fbxPath]
-          } catch { matCache[fbxPath] = []; return [] }
-        }
-
-        // ── 공유 박스 지오메트리 (메모리 절약) ──────────────────────────────
-        const sharedBoxGeo = new THREE.BoxGeometry(2, 2, 2)
-        loadedGeometries.push(sharedBoxGeo)
-
-        // ── Phase 1: 경량 오브젝트 즉시 배치 (ProBuilder / Box) ──────────
-        const sceneBounds = new THREE.Box3()
-        let loadedCount = 0
-        const fbxObjects: SceneObject[] = []
-
-        const objIdxCounter = { idx: 0 }
-        for (const obj of data.objects) {
-          const currentIdx = objIdxCounter.idx++
-          const objType = obj.type || 'fbx'
-
-          if (objType === 'probuilder' && obj.vertices && obj.vertices.length >= 9) {
-            const geo = createProBuilderGeometry(obj.vertices, obj.indices ?? [])
-            loadedGeometries.push(geo)
-            const mat = new THREE.MeshStandardMaterial({
-              color: pbColorForName(obj.name),
-              roughness: 0.85, metalness: 0.05, side: THREE.DoubleSide,
-            })
-            loadedMaterials.push(mat)
-            const mesh = new THREE.Mesh(geo, mat)
-            mesh.castShadow = false; mesh.receiveShadow = true
-            mesh.position.copy(unityToThreePos(obj.pos))
-            mesh.quaternion.copy(unityToThreeQuat(obj.rot))
-            mesh.scale.copy(unityToThreeScale(obj.scale))
-            scene.add(mesh)
-            sceneBounds.expandByObject(mesh)
-            sceneObjMap.current.set(currentIdx, mesh)
-            loadedCount++
-          } else if (objType === 'box') {
-            const mat = new THREE.MeshStandardMaterial({
-              color: 0x475569, roughness: 0.9, metalness: 0.05,
-              transparent: true, opacity: 0.35, side: THREE.DoubleSide,
-            })
-            loadedMaterials.push(mat)
-            const mesh = new THREE.Mesh(sharedBoxGeo, mat)
-            mesh.position.copy(unityToThreePos(obj.pos))
-            mesh.quaternion.copy(unityToThreeQuat(obj.rot))
-            mesh.scale.copy(unityToThreeScale(obj.scale))
-            scene.add(mesh)
-            sceneBounds.expandByObject(mesh)
-            sceneObjMap.current.set(currentIdx, mesh)
-            loadedCount++
-          } else if (objType === 'empty') {
-            // 비렌더링 오브젝트: 컴포넌트에 따라 다른 마커로 표시
-            const comps = obj.components ?? []
-            const hasCollider = comps.some(c => c.includes('Collider'))
-            const hasAnimator = comps.includes('Animator') || comps.includes('SkinnedMeshRenderer')
-            const hasLight = comps.includes('Light')
-            const hasParticle = comps.includes('ParticleSystem')
-
-            // 컴포넌트에 따라 다른 색상
-            const color = hasCollider ? 0x22c55e : hasAnimator ? 0xf59e0b : hasLight ? 0xfbbf24 : hasParticle ? 0xec4899 : 0x6366f1
-
-            // AxesHelper + 작은 표시 구체
-            const group = new THREE.Group()
-            const axes = new THREE.AxesHelper(0.3)
-            group.add(axes)
-            // 작은 wireframe 아이콘
-            if (hasCollider) {
-              // Collider: 작은 wireframe 구/캡슐
-              const wireGeo = new THREE.SphereGeometry(0.15, 8, 6)
-              loadedGeometries.push(wireGeo)
-              const wireMat = new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.6 })
-              loadedMaterials.push(wireMat)
-              group.add(new THREE.Mesh(wireGeo, wireMat))
-            } else {
-              // 기본: 작은 다이아몬드(팔면체)
-              const diaGeo = new THREE.OctahedronGeometry(0.12, 0)
-              loadedGeometries.push(diaGeo)
-              const diaMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7 })
-              loadedMaterials.push(diaMat)
-              group.add(new THREE.Mesh(diaGeo, diaMat))
-            }
-
-            group.position.copy(unityToThreePos(obj.pos))
-            group.quaternion.copy(unityToThreeQuat(obj.rot))
-            scene.add(group)
-            sceneObjMap.current.set(currentIdx, group)
-            loadedCount++
-          } else {
-            fbxObjects.push({ ...obj, _origIdx: currentIdx } as SceneObject & { _origIdx: number })
-          }
-        }
-        if (!cancelled) setProgress({ loaded: loadedCount, total: data.objects.length })
-
-        // ── Phase 2: FBX 병렬 배치 로딩 (텍스처 없이 먼저 배치) ──────────
-        // 텍스처 적용 작업을 모아두었다가 Phase 3에서 백그라운드 처리
-        interface TexTask { group: THREE.Group; fbxPath: string }
-        const texTasks: TexTask[] = []
-
-        // 고유 FBX URL 기준으로 중복 제거하여 사전 로드 큐 생성
-        const uniqueUrls = [...new Set(fbxObjects.map(o => o.fbxUrl))]
-        const FBX_LOAD_TIMEOUT = 20_000 // 개별 FBX 로드 타임아웃 (20초)
-
-        // 사전에 FBX 파일 병렬 프리로드 (캐시에 저장, 타임아웃 포함)
-        let preloadedCount = 0
-        const preloadBatch = async (urls: string[]) => {
-          await Promise.allSettled(urls.map(url => {
-            if (fbxCache[url]) {
-              preloadedCount++
-              if (!cancelled) setProgress({ loaded: loadedCount + preloadedCount, total: data.objects.length })
-              return Promise.resolve()
-            }
-            return new Promise<void>((resolve) => {
-              // 타임아웃: FBX 로드가 멈추는 경우 대비
-              const timer = setTimeout(() => {
-                console.warn(`[SceneViewer] FBX load timeout (${FBX_LOAD_TIMEOUT / 1000}s): ${url.split('path=')[1]?.slice(0, 60) ?? url}`)
-                preloadedCount++
-                if (!cancelled) setProgress({ loaded: loadedCount + preloadedCount, total: data.objects.length })
-                resolve()
-              }, FBX_LOAD_TIMEOUT)
-
-              fbxLoader.load(url, (fbx) => {
-                clearTimeout(timer)
-                fbx.traverse(child => {
-                  const mesh = child as THREE.Mesh
-                  if (mesh.isMesh) {
-                    if (mesh.geometry) loadedGeometries.push(mesh.geometry)
-                    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-                    mats.forEach(m => { if (m) loadedMaterials.push(m) })
-                  }
-                })
-                fbxCache[url] = fbx
-                preloadedCount++
-                if (!cancelled) setProgress({ loaded: loadedCount + preloadedCount, total: data.objects.length })
-                resolve()
-              }, undefined, (err) => {
-                clearTimeout(timer)
-                console.warn(`[SceneViewer] FBX load failed: ${url.split('path=')[1]?.slice(0, 60) ?? url}`, err)
-                preloadedCount++
-                if (!cancelled) setProgress({ loaded: loadedCount + preloadedCount, total: data.objects.length })
-                resolve() // 실패해도 계속 진행
-              })
-            })
-          }))
-        }
-
-        // FBX를 배치 단위로 프리로드 (동시 로드 수 제한)
-        console.log(`[SceneViewer] Preloading ${uniqueUrls.length} unique FBX files (${fbxObjects.length} objects)...`)
-        for (let i = 0; i < uniqueUrls.length; i += FBX_CONCURRENCY) {
-          if (cancelled || contextLost) break
-          const batch = uniqueUrls.slice(i, i + FBX_CONCURRENCY)
-          await preloadBatch(batch)
-          console.log(`[SceneViewer] Preload batch ${Math.floor(i / FBX_CONCURRENCY) + 1}/${Math.ceil(uniqueUrls.length / FBX_CONCURRENCY)} done (${Object.keys(fbxCache).length} cached)`)
-        }
-
-        // 프리로드 완료된 FBX를 즉시 배치 (clone만 하므로 빠름)
-        let placedCount = 0
-        let skippedCount = 0
-        for (const obj of fbxObjects) {
-          if (cancelled || contextLost) break
-          const origIdx = (obj as SceneObject & { _origIdx: number })._origIdx
-          try {
-            const cached = fbxCache[obj.fbxUrl]
-            if (!cached) { skippedCount++; continue }
-            const fbxGroup = cached.clone()
-
-            // 기본 머터리얼로 빠르게 배치 (텍스처 없이)
-            fbxGroup.traverse(child => {
-              const mesh = child as THREE.Mesh
-              if (!mesh.isMesh) return
-              mesh.castShadow = false
-              mesh.receiveShadow = true
-            })
-
-            // ── Unity 좌표 적용 + FBX Import Scale (동적) ──
-            // FBXLoader가 Z-up→Y-up 변환을 루트 그룹에 적용할 수 있으므로
-            // 기존 rotation을 덮어쓰지 않고, Unity rotation과 합성한다.
-            const origQuat  = fbxGroup.quaternion.clone()
-            const origScale = fbxGroup.scale.clone()
-            const uPos   = unityToThreePos(obj.pos)
-            const uRot   = unityToThreeQuat(obj.rot)
-            const uScale = unityToThreeScale(obj.scale)
-
-            // Unity는 항상 FileScale=0.01 적용 (cm→m 변환)
-            const importScale = UNITY_FBX_IMPORT_SCALE
-
-            // Position: Unity 월드 좌표 (FBXLoader 루트 pos는 보통 (0,0,0))
-            fbxGroup.position.copy(uPos)
-            // Rotation: Unity 회전 × FBXLoader 원본 회전 (좌표계 변환 보존)
-            fbxGroup.quaternion.copy(uRot.clone().multiply(origQuat))
-            // Scale: FBXLoader 스케일 × Unity 스케일 × 단위 변환
-            fbxGroup.scale.set(
-              origScale.x * uScale.x * importScale,
-              origScale.y * uScale.y * importScale,
-              origScale.z * uScale.z * importScale,
-            )
-
-            scene.add(fbxGroup)
-            sceneBounds.expandByObject(fbxGroup)
-            sceneObjMap.current.set(origIdx, fbxGroup)
-            texTasks.push({ group: fbxGroup, fbxPath: obj.fbxPath })
-            placedCount++
-          } catch (e) {
-            console.warn(`[SceneViewer] Failed to place ${obj.name}:`, e)
-            skippedCount++
-          }
-        }
-        loadedCount += placedCount + skippedCount
-        if (!cancelled) setProgress({ loaded: loadedCount, total: data.objects.length })
-        console.log(`[SceneViewer] Placement done: ${placedCount} placed, ${skippedCount} skipped`)
-
-        // ── 디버그: 처음 5개 오브젝트의 좌표 정보 로깅 ──
-        if (fbxObjects.length > 0) {
-          const debugObjs = fbxObjects.slice(0, 5)
-          for (const obj of debugObjs) {
-            const c = fbxCache[obj.fbxUrl]
-            const q = c?.quaternion
-            const s = c?.scale
-            const usf = c?.userData?.unitScaleFactor
-            console.log(
-              `[SceneViewer] 🔍 ${obj.name}:` +
-              ` unityPos=(${obj.pos.x.toFixed(1)},${obj.pos.y.toFixed(1)},${obj.pos.z.toFixed(1)})` +
-              ` unityRot=(${obj.rot.x.toFixed(3)},${obj.rot.y.toFixed(3)},${obj.rot.z.toFixed(3)},${obj.rot.w.toFixed(3)})` +
-              ` unityScale=(${obj.scale.x.toFixed(3)},${obj.scale.y.toFixed(3)},${obj.scale.z.toFixed(3)})` +
-              ` fbxOrigQuat=(${q ? `${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)}` : 'N/A'})` +
-              ` fbxOrigScale=(${s ? `${s.x.toFixed(4)},${s.y.toFixed(4)},${s.z.toFixed(4)}` : 'N/A'})` +
-              ` unitScaleFactor=${usf ?? 'N/A'} importScale=${UNITY_FBX_IMPORT_SCALE}`,
-            )
-          }
-        }
-
-        if (cancelled || contextLost) return
-
-        // ── 카메라 자동 맞춤 (FOV 기반 + 동적 fog/far) ──────────────────────
-        if (!sceneBounds.isEmpty()) {
-          const center = sceneBounds.getCenter(new THREE.Vector3())
-          const size   = sceneBounds.getSize(new THREE.Vector3())
-          const maxDim = Math.max(size.x, size.y, size.z)
-
-          // FOV 기반 적절 거리: 전체 씬이 화면에 들어오도록
-          const fovRad = camera.fov * Math.PI / 180
-          const fitDist = Math.max(10, (maxDim / 2) / Math.tan(fovRad / 2) * 1.1)
-
-          // 45도 각도에서 바라보기
-          camera.position.set(
-            center.x + fitDist * 0.35,
-            center.y + fitDist * 0.25,
-            center.z + fitDist * 0.85,
-          )
-          camera.lookAt(center)
-          controls.target.copy(center)
-
-          // 동적 far/near plane (씬 크기에 비례)
-          camera.near = Math.max(0.1, maxDim * 0.001)
-          camera.far  = Math.max(5000, maxDim * 20)
-          camera.updateProjectionMatrix()
-
-          controls.maxDistance = fitDist * 5
-          controls.minDistance = Math.max(1, maxDim * 0.01)
-
-          // 동적 fog: 씬 크기에 비례 (먼 거리에서도 보이도록)
-          const fogDensity = Math.min(0.003, 1.0 / Math.max(maxDim, 200))
-          scene.fog = new THREE.FogExp2(0x0d1117, fogDensity)
-
-          // 그리드 위치 & 크기 조정
-          scene.remove(grid)
-          const gridSize = Math.max(1000, maxDim * 1.5)
-          const newGrid = new THREE.GridHelper(gridSize, 50, 0x1e293b, 0x1e293b)
-          newGrid.position.set(center.x, sceneBounds.min.y, center.z)
-          scene.add(newGrid)
-
-          controls.update()
-          console.log('[SceneViewer] Camera fit:', { center: center.toArray().map(v => +v.toFixed(1)), size: size.toArray().map(v => +v.toFixed(1)), maxDim: +maxDim.toFixed(1), fitDist: +fitDist.toFixed(1) })
-        }
-
-        setStatus('ok')
-
-        // ── Phase 3: 텍스처 백그라운드 적용 (UI 차단 없이) ────────────────
-        // 이미 모든 오브젝트가 배치된 상태에서 텍스처만 비동기로 적용
-        if (texTasks.length > 0 && !cancelled && !contextLost) {
-          // 유니크 fbxPath 기준으로 머터리얼 한꺼번에 프리페치
-          const uniquePaths = [...new Set(texTasks.map(t => t.fbxPath))]
-          await Promise.allSettled(uniquePaths.map(p => fetchMats(p)))
-
-          for (const task of texTasks) {
-            if (cancelled || contextLost) break
-            try {
-              const mats = await fetchMats(task.fbxPath)
-              if (!mats.length) continue
-              const findMat = (meshName: string) => {
-                const mn = meshName.toLowerCase()
-                return mats.find(e => e.albedo && (mn.includes(e.albedo.split('/').pop()?.split('_')[0]?.toLowerCase() ?? '') ?? false)) ?? mats[0]
-              }
-              const ps: Promise<void>[] = []
-              task.group.traverse(child => {
-                const mesh = child as THREE.Mesh
-                if (!mesh.isMesh) return
-                ps.push((async () => {
-                  const m = findMat(mesh.name)
-                  if (!m) return
-                  // albedo만 로드 (normal/emission은 생략하여 속도 향상)
-                  const alb = m.albedo ? await cachedLoadTex(m.albedo) : null
-                  const mat = new THREE.MeshStandardMaterial({
-                    side: THREE.DoubleSide, roughness: 0.8, metalness: 0.1
-                  })
-                  if (alb) { mat.map = alb } else { mat.color.set(0x8899aa) }
-                  mat.needsUpdate = true
-                  loadedMaterials.push(mat)
-                  mesh.material = mat
-                })())
-              })
-              await Promise.allSettled(ps)
-            } catch {
-              // 텍스처 적용 실패는 무시
-            }
-          }
-        }
+      // ⑦ 완료
+      setProgress(100)
+      setStatus('ready')
+      fitToScene()
       } catch (err) {
-        if (!cancelled) {
-          setErrMsg(err instanceof Error ? err.message : String(err))
+      console.error('[SceneViewer] 로드 실패:', err)
+      setProgressMsg(String(err))
           setStatus('error')
         }
-      }
-    })()
+  }, [])
 
-    cleanupRef.current = () => {
-      cancelled = true
-      cancelAnimationFrame(animId)
-      canvas.removeEventListener('webglcontextlost', onContextLost)
-      canvas.removeEventListener('webglcontextrestored', onContextRestored)
-      ro.disconnect()
-      controls.dispose()
+  // ── 씬 전체 보기 ────────────────────────────────────────────────────────
+  const fitToScene = useCallback(() => {
+    const cam      = cameraRef.current
+    const ctrl     = controlsRef.current
+    const group    = meshGroupRef.current
+    if (!cam || !ctrl || !group || group.children.length === 0) return
 
-      // GPU 메모리 해제
-      loadedTextures.forEach(t => t.dispose())
-      loadedMaterials.forEach(m => m.dispose())
-      loadedGeometries.forEach(g => g.dispose())
+    const box = new THREE.Box3().setFromObject(group)
+    const ctr = box.getCenter(new THREE.Vector3())
+    const sz  = box.getSize(new THREE.Vector3()).length()
+    cam.position.set(ctr.x + sz * 0.5, ctr.y + sz * 0.3, ctr.z + sz * 0.5)
+    ctrl.target.copy(ctr)
+    cam.near = sz * 0.0001
+    cam.far  = sz * 4
+    cam.updateProjectionMatrix()
+    ctrl.update()
+  }, [])
 
-      renderer.dispose()
-      renderer.forceContextLoss() // 명시적 context 해제
-      if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement)
+  // ── 메시 선택 ──────────────────────────────────────────────────────────
+  const handleSelect = useCallback((idx: number) => {
+    setSelected(idx)
+    // 선택된 메시로 카메라 이동
+    const group = meshGroupRef.current
+    if (!group || !cameraRef.current || !controlsRef.current) return
+    const mesh = group.children[idx] as THREE.Mesh | undefined
+    if (!mesh) return
+    const box = new THREE.Box3().setFromObject(mesh)
+    const ctr = box.getCenter(new THREE.Vector3())
+    const sz  = box.getSize(new THREE.Vector3()).length()
+    controlsRef.current.target.copy(ctr)
+    if (sz > 0.1) {
+      const dir = cameraRef.current.position.clone().sub(ctr).normalize()
+      cameraRef.current.position.copy(ctr.clone().add(dir.multiplyScalar(sz * 2 + 5)))
     }
-    return cleanupRef.current
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenePath, height])
+    controlsRef.current.update()
+  }, [])
 
-  // ── 토글 effects (Three.js 그룹 가시성 제어) ─────────────────────────────────
-  useEffect(() => {
-    if (colliderGroupRef.current) colliderGroupRef.current.visible = showColliders
-  }, [showColliders])
+  // ── 캔버스 클릭 → Raycasting ──────────────────────────────────────────
+  const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const el  = mountRef.current
+    const cam = cameraRef.current
+    const grp = meshGroupRef.current
+    if (!el || !cam || !grp) return
 
-  useEffect(() => {
-    if (lightHelperGroupRef.current) lightHelperGroupRef.current.visible = showLightHelpers
-  }, [showLightHelpers])
-
-  useEffect(() => {
-    const sc = sceneRef.current
-    if (!sc) return
-    sc.traverse(obj => {
-      const mesh = obj as THREE.Mesh
-      if (!mesh.isMesh) return
-      // 콜라이더/헬퍼 그룹은 제외
-      let cur: THREE.Object3D | null = mesh.parent
-      while (cur) {
-        if (cur.name?.startsWith('__')) return
-        cur = cur.parent
-      }
-      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-      mats.forEach(m => {
-        if (m && 'wireframe' in m) (m as THREE.MeshStandardMaterial).wireframe = wireframeMode
-      })
-    })
-  }, [wireframeMode])
-
-  const sceneName = scenePath.split('/').pop()?.replace('.unity', '') ?? 'Scene'
-
-  // ── 노드 선택 + 카메라 포커스 ──
-  const selectAndFocus = (node: HierarchyNode) => {
-    setSelectedNode(node)
-    if (node.objIdx < 0) return
-    const obj = sceneObjMap.current.get(node.objIdx)
-    const camera = cameraRef.current
-    const controls = controlsRef.current
-    if (!obj || !camera || !controls) return
-
-    const box = new THREE.Box3().setFromObject(obj)
-    if (box.isEmpty()) return
-    const center = box.getCenter(new THREE.Vector3())
-    const size   = box.getSize(new THREE.Vector3())
-    const maxDim = Math.max(size.x, size.y, size.z, 1)
-    const fovRad = camera.fov * Math.PI / 180
-    const dist   = Math.max(5, (maxDim / 2) / Math.tan(fovRad / 2) * 1.5)
-
-    camera.position.set(
-      center.x + dist * 0.5,
-      center.y + dist * 0.35,
-      center.z + dist * 0.7,
+    const rect   = el.getBoundingClientRect()
+    const mouse  = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width)  *  2 - 1,
+      ((e.clientY - rect.top)  / rect.height) * -2 + 1,
     )
-    camera.lookAt(center)
-    controls.target.copy(center)
-    controls.update()
-  }
+    const ray    = new THREE.Raycaster()
+    ray.setFromCamera(mouse, cam)
+    const hits   = ray.intersectObjects(grp.children, true)
+    if (!hits.length) return
 
-  // ── 하이어라키 토글 ──
-  const toggleExpand = (id: string) => {
-    setExpandedNodes(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
+    const hit = hits[0].object
+    const idx = grp.children.indexOf(hit)
+    if (idx >= 0) setSelected(idx)
+  }, [])
 
-  // 전체 펼치기 / 접기
-  const expandAll = () => {
-    const all = new Set<string>()
-    const collect = (nodes: HierarchyNode[]) => {
-      for (const n of nodes) {
-        if (n.children.length > 0) { all.add(n.id); collect(n.children) }
-      }
-    }
-    collect(hierarchyData)
-    setExpandedNodes(all)
-  }
-  const collapseAll = () => setExpandedNodes(new Set())
+  // ── Inspector 패널 ──────────────────────────────────────────────────────
+  const selectedObj = selected !== null ? meshObjects[selected] : null
 
-  // ── 총 노드 수 계산 (가시 영역용) ──
-  const countNodes = (nodes: HierarchyNode[]): number =>
-    nodes.reduce((s, n) => s + 1 + (expandedNodes.has(n.id) ? countNodes(n.children) : 0), 0)
+  // ── 렌더 ────────────────────────────────────────────────────────────────
+  const panelBg   = '#1a1d23'
+  const borderCol = '#2d3748'
 
   return (
-    <div
-      className={`relative rounded-xl overflow-hidden ${className}`}
-      style={{ background: '#0d1117', border: '1px solid #334155' }}
-    >
-      {/* 헤더 */}
-      <div
-        className="flex items-center gap-2 px-4 py-2 text-[12px] flex-wrap"
-        style={{ background: '#1e293b', borderBottom: '1px solid #334155' }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2">
-          <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/>
-          <line x1="12" y1="22" x2="12" y2="15.5"/>
-          <polyline points="22 8.5 12 15.5 2 8.5"/>
-        </svg>
-        <span style={{ color: '#e2e8f0', fontWeight: 700 }}>{sceneName}</span>
-        <span style={{ color: '#64748b' }}>.unity</span>
+    <div style={{ display: 'flex', flexDirection: 'column', height, background: panelBg, border: `1px solid ${borderCol}`, borderRadius: 8, overflow: 'hidden', position: 'relative' }}>
 
-        {sceneInfo && (
-          <span className="ml-2 text-[10px]" style={{ color: '#64748b' }}>
-            프리팹 {sceneInfo.totalPrefabs}개
-            {(sceneInfo as SceneData).resolvedFbx != null && ` → FBX ${(sceneInfo as SceneData).resolvedFbx}`}
-            {(sceneInfo as SceneData).resolvedProBuilder != null && (sceneInfo as SceneData).resolvedProBuilder! > 0 && ` · ProBuilder ${(sceneInfo as SceneData).resolvedProBuilder}`}
-            {(sceneInfo as SceneData).resolvedBox != null && (sceneInfo as SceneData).resolvedBox! > 0 && ` · 박스 ${(sceneInfo as SceneData).resolvedBox}`}
-            {` (총 ${sceneInfo.resolvedCount}개 해석)`}
-          </span>
+      {/* ── 툴바 ──────────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: '#151820', borderBottom: `1px solid ${borderCol}`, fontSize: 11, flexShrink: 0 }}>
+        <span style={{ fontWeight: 700, color: '#60a5fa', marginRight: 6 }}>🎮 Scene Viewer</span>
+        {loadedMap && <span style={{ color: '#94a3b8' }}>{loadedMap.sceneName}</span>}
+        {status === 'ready' && (
+          <span style={{ color: '#64748b' }}>· {meshCount.total.toLocaleString()} 메시 / 텍스처 {texCacheRef.current.size}개</span>
         )}
-
-        {/* 뷰포트 토글 버튼 (Colliders / Light Helpers / Wireframe) */}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 3, alignItems: 'center' }}>
-          {[
-            { key: 'colliders', icon: '🟢', label: 'Colliders', active: showColliders, onClick: () => setShowColliders(v => !v), title: '콜라이더 와이어프레임 표시/숨기기 (초록=Collider, 주황=Trigger)' },
-            { key: 'lights', icon: '💡', label: 'Lights', active: showLightHelpers, onClick: () => setShowLightHelpers(v => !v), title: '조명 헬퍼 기즈모 표시/숨기기' },
-            { key: 'wire', icon: '◻', label: 'Wireframe', active: wireframeMode, onClick: () => setWireframeMode(v => !v), title: '와이어프레임 모드' },
-          ].map(({ key, icon, label, active, onClick, title }) => (
-            <button key={key} onClick={onClick} title={title}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 3,
-                background: active ? 'rgba(99,102,241,0.2)' : 'rgba(100,116,139,0.1)',
-                color: active ? '#818cf8' : '#64748b',
-                border: `1px solid ${active ? 'rgba(99,102,241,0.4)' : 'rgba(100,116,139,0.15)'}`,
-                borderRadius: 4, padding: '2px 6px', fontSize: 10, cursor: 'pointer',
-              }}
-            >
-              <span style={{ fontSize: 9 }}>{icon}</span>
-              <span>{label}</span>
+        <div style={{ flex: 1 }} />
+        {/* 토글 버튼 */}
+        <button onClick={() => setShowHier(v => !v)}
+          style={{ padding: '3px 8px', background: showHier ? '#2563eb' : '#1e293b', border: `1px solid ${borderCol}`, borderRadius: 4, color: '#e2e8f0', cursor: 'pointer', fontSize: 10 }}>
+          ☰ Hierarchy
             </button>
-          ))}
-        </div>
+        <button onClick={() => setShowInspector(v => !v)}
+          style={{ padding: '3px 8px', background: showInspector ? '#2563eb' : '#1e293b', border: `1px solid ${borderCol}`, borderRadius: 4, color: '#e2e8f0', cursor: 'pointer', fontSize: 10 }}>
+          🔍 Inspector
+            </button>
+        <button onClick={() => setShowWireframe(v => !v)}
+          style={{ padding: '3px 8px', background: showWireframe ? '#7c3aed' : '#1e293b', border: `1px solid ${borderCol}`, borderRadius: 4, color: '#e2e8f0', cursor: 'pointer', fontSize: 10 }}>
+          ⬡ Wire
+              </button>
+        <button onClick={fitToScene}
+          style={{ padding: '3px 8px', background: '#1e293b', border: `1px solid ${borderCol}`, borderRadius: 4, color: '#e2e8f0', cursor: 'pointer', fontSize: 10 }}>
+          ⊞ Fit
+              </button>
+            </div>
 
-        {/* 하이어라키 / 인스펙터 토글 버튼 */}
-        {hierarchyData.length > 0 && (
-          <div style={{ display: 'flex', gap: 4 }}>
-            <button
-              onClick={() => setShowHierarchy(!showHierarchy)}
-              title={showHierarchy ? '하이어라키 숨기기' : '하이어라키 보기'}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 4,
-                background: showHierarchy ? 'rgba(99,102,241,0.2)' : 'rgba(100,116,139,0.15)',
-                color: showHierarchy ? '#818cf8' : '#94a3b8',
-                border: `1px solid ${showHierarchy ? 'rgba(99,102,241,0.3)' : 'rgba(100,116,139,0.2)'}`,
-                borderRadius: 5, padding: '2px 8px', fontSize: 11, cursor: 'pointer',
-              }}
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/>
-              </svg>
+      {/* ── 본문 ──────────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+
+        {/* Hierarchy */}
+        {showHier && (
+          <div style={{ width: 220, minWidth: 160, background: '#151820', borderRight: `1px solid ${borderCol}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0 }}>
+            <div style={{ padding: '6px 10px', fontSize: 10, fontWeight: 700, color: '#475569', borderBottom: `1px solid ${borderCol}`, letterSpacing: 1, textTransform: 'uppercase' }}>
               Hierarchy
-            </button>
-            <button
-              onClick={() => setShowInspector(!showInspector)}
-              title={showInspector ? '인스펙터 숨기기' : '인스펙터 보기'}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 4,
-                background: showInspector ? 'rgba(52,211,153,0.2)' : 'rgba(100,116,139,0.15)',
-                color: showInspector ? '#34d399' : '#94a3b8',
-                border: `1px solid ${showInspector ? 'rgba(52,211,153,0.3)' : 'rgba(100,116,139,0.2)'}`,
-                borderRadius: 5, padding: '2px 8px', fontSize: 11, cursor: 'pointer',
-              }}
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
-              </svg>
-              Inspector
-            </button>
-          </div>
-        )}
-
-        {status === 'loading-fbx' && !hierarchyData.length && (
-          <span className="ml-auto text-[10px]" style={{ color: '#818cf8' }}>
-            로딩 {progress.loaded} / {progress.total}
-          </span>
-        )}
-        {status === 'ok' && !hierarchyData.length && (
-          <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8' }}>
-            {progress.loaded}개 오브젝트 · 드래그 회전 · 휠 줌
-          </span>
-        )}
-      </div>
-
-      {/* 메인 콘텐츠: 하이어라키 + 뷰포트 */}
-      <div style={{ display: 'flex', height }}>
-        {/* ── 하이어라키 패널 ── */}
-        {showHierarchy && hierarchyData.length > 0 && (
-          <div style={{
-            width: 240, minWidth: 200, maxWidth: 320,
-            borderRight: '1px solid #1e293b',
-            background: '#111827',
-            display: 'flex', flexDirection: 'column',
-            fontSize: 11, fontFamily: 'monospace',
-          }}>
-            {/* 하이어라키 헤더 */}
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 4,
-              padding: '5px 8px',
-              borderBottom: '1px solid #1e293b',
-              background: '#0f172a',
-            }}>
-              <span style={{ color: '#64748b', fontSize: 10, fontWeight: 600, letterSpacing: 0.5 }}>
-                HIERARCHY
-              </span>
-              <span style={{ color: '#475569', fontSize: 9, marginLeft: 'auto' }}>
-                {countNodes(hierarchyData)} items
-              </span>
-              <button onClick={expandAll} title="전체 펼치기"
-                style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', padding: '1px 3px', fontSize: 10 }}>
-                ⊞
-              </button>
-              <button onClick={collapseAll} title="전체 접기"
-                style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', padding: '1px 3px', fontSize: 10 }}>
-                ⊟
-              </button>
-            </div>
-
-            {/* 트리 목록 */}
-            <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '2px 0' }}>
-              {hierarchyData.map(node => (
-                <HierarchyTreeNode
-                  key={node.id}
-                  node={node}
-                  depth={0}
-                  expandedNodes={expandedNodes}
-                  selectedNodeId={selectedNode?.id ?? null}
-                  onToggle={toggleExpand}
-                  onSelect={selectAndFocus}
-                />
-              ))}
-            </div>
-
-            {/* 상태 바 */}
-            {status === 'loading-fbx' && (
-              <div style={{ padding: '4px 8px', borderTop: '1px solid #1e293b', background: '#0f172a' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ color: '#818cf8', fontSize: 10 }}>로딩 {progress.loaded}/{progress.total}</span>
                 </div>
-                <div style={{ width: '100%', height: 2, background: '#1e293b', borderRadius: 1, marginTop: 3 }}>
-                  <div style={{
-                    width: `${progress.total > 0 ? (progress.loaded / progress.total) * 100 : 0}%`,
-                    height: '100%', background: '#818cf8', borderRadius: 1, transition: 'width 0.3s',
-                  }} />
+            <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
+              {hierarchy
+                ? hierarchy.children.map((n, i) => (
+                    <HierarchyItem key={i} node={n} selected={selected} onSelect={handleSelect} />
+                  ))
+                : <div style={{ padding: 16, color: '#475569', fontSize: 11 }}>씬을 로드하면<br/>하이어라키가 표시됩니다</div>
+              }
                 </div>
-              </div>
-            )}
-            {status === 'ok' && (
-              <div style={{ padding: '3px 8px', borderTop: '1px solid #1e293b', background: '#0f172a' }}>
-                <span style={{ color: '#475569', fontSize: 9 }}>{progress.loaded}개 오브젝트</span>
+            {status === 'ready' && (
+              <div style={{ padding: '6px 10px', fontSize: 10, color: '#475569', borderTop: `1px solid ${borderCol}` }}>
+                {meshCount.total.toLocaleString()} 오브젝트
               </div>
             )}
           </div>
         )}
 
-        {/* ── 3D 뷰포트 ── */}
-        <div ref={mountRef} style={{ flex: 1, height: '100%', position: 'relative' }} />
+        {/* Canvas */}
+        <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+          <div ref={mountRef} style={{ width: '100%', height: '100%' }} onClick={handleCanvasClick} />
 
-        {/* ── Inspector 패널 ── */}
-        {showInspector && hierarchyData.length > 0 && (
-          <div style={{
-            width: 220, minWidth: 180, maxWidth: 280,
-            borderLeft: '1px solid #1e293b',
-            background: '#111827',
-            display: 'flex', flexDirection: 'column',
-            fontSize: 11, fontFamily: 'monospace',
-            overflowX: 'hidden',
-          }}>
-            {/* 인스펙터 헤더 */}
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 4,
-              padding: '5px 8px',
-              borderBottom: '1px solid #1e293b',
-              background: '#0f172a',
-            }}>
-              <span style={{ color: '#64748b', fontSize: 10, fontWeight: 600, letterSpacing: 0.5 }}>
-                INSPECTOR
-              </span>
-              {selectedNode && (
-                <span style={{
-                  marginLeft: 'auto', fontSize: 9,
-                  color: selectedNode.type === 'fbx' ? '#60a5fa'
-                    : selectedNode.type === 'probuilder' ? '#a78bfa'
-                    : selectedNode.type === 'box' ? '#fb923c' : '#94a3b8',
-                }}>
-                  {selectedNode.type}
-                </span>
-              )}
+          {/* 로딩 오버레이 */}
+          {status === 'loading' && (
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(15,20,30,0.85)', gap: 14 }}>
+              <div style={{ fontSize: 24 }}>⚙️</div>
+              <div style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 14 }}>{progressMsg}</div>
+              <div style={{ width: 280, height: 6, background: '#1e293b', borderRadius: 3, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${progress}%`, background: 'linear-gradient(90deg, #3b82f6, #60a5fa)', transition: 'width 0.2s', borderRadius: 3 }} />
             </div>
-
-            {/* 인스펙터 본문 */}
-            <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
-              {selectedNode ? (
-                <div style={{ padding: '8px' }}>
-                  {/* 오브젝트 이름 */}
-                  <div style={{
-                    fontWeight: 600, color: '#e2e8f0', fontSize: 12,
-                    marginBottom: 10, wordBreak: 'break-all', lineHeight: 1.4,
-                  }}>
-                    {selectedNode.name || '[unnamed]'}
+              <div style={{ color: '#64748b', fontSize: 12 }}>{progress.toFixed(0)}%</div>
                   </div>
+          )}
 
-                  {/* Transform (objIdx >= 0 인 오브젝트만) */}
-                  {selectedNode.objIdx >= 0 && sceneObjects[selectedNode.objIdx] && (() => {
-                    const obj = sceneObjects[selectedNode.objIdx]
-                    const euler = quatToEulerDeg(obj.rot)
-                    const rows: Array<{ label: string; v: { x: number; y: number; z: number } }> = [
-                      { label: 'Position', v: obj.pos },
-                      { label: 'Rotation', v: euler },
-                      { label: 'Scale',    v: obj.scale },
-                    ]
-                    return (
-                      <div style={{ marginBottom: 10 }}>
-                        <div style={{
-                          color: '#475569', fontSize: 9, fontWeight: 600,
-                          letterSpacing: 0.5, marginBottom: 4, paddingBottom: 2,
-                          borderBottom: '1px solid #1e293b',
-                        }}>
-                          TRANSFORM
+          {/* 오류 */}
+          {status === 'error' && (
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(15,20,30,0.85)', gap: 10 }}>
+              <div style={{ fontSize: 32 }}>❌</div>
+              <div style={{ color: '#f87171', fontWeight: 600 }}>로드 실패</div>
+              <div style={{ color: '#94a3b8', fontSize: 11, maxWidth: 300, textAlign: 'center' }}>{progressMsg}</div>
                         </div>
-                        {rows.map(({ label, v }) => (
-                          <div key={label} style={{ marginBottom: 4 }}>
-                            <div style={{ color: '#64748b', fontSize: 9, marginBottom: 1 }}>{label}</div>
-                            <div style={{
-                              display: 'grid', gridTemplateColumns: '1fr 1fr 1fr',
-                              gap: 2,
-                            }}>
-                              {(['x', 'y', 'z'] as const).map(axis => (
-                                <div key={axis} style={{
-                                  background: '#0f172a', borderRadius: 3,
-                                  padding: '2px 4px', fontSize: 9,
-                                }}>
-                                  <span style={{ color: axis === 'x' ? '#f87171' : axis === 'y' ? '#4ade80' : '#60a5fa', marginRight: 2 }}>
-                                    {axis.toUpperCase()}
-                                  </span>
-                                  <span style={{ color: '#cbd5e1' }}>
-                                    {(v[axis] as number).toFixed(2)}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )
-                  })()}
+          )}
 
-                  {/* Components 목록 */}
-                  {(selectedNode.components?.length ?? 0) > 0 && (
-                    <div style={{ marginBottom: 6 }}>
-                      <div style={{
-                        color: '#475569', fontSize: 9, fontWeight: 600,
-                        letterSpacing: 0.5, marginBottom: 4, paddingBottom: 2,
-                        borderBottom: '1px solid #1e293b',
-                      }}>
-                        COMPONENTS ({selectedNode.components!.length})
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        {selectedNode.components!.map((comp, i) => (
-                          <div key={i} style={{
-                            display: 'flex', alignItems: 'center', gap: 5,
-                            background: '#0f172a', borderRadius: 4,
-                            padding: '3px 6px', border: '1px solid #1e293b',
-                          }}>
-                            <span style={{ fontSize: 10, flexShrink: 0 }}>{COMP_ICONS[comp] || '•'}</span>
-                            <span style={{ fontSize: 10, color: '#cbd5e1', wordBreak: 'break-word' }}>{comp}</span>
-                          </div>
-                        ))}
-                      </div>
+          {/* 맵 선택 */}
+          {status === 'idle' && availMaps.length > 0 && (
+            <div style={{ position: 'absolute', inset: 0, background: '#0f1420' }}>
+              <MapSelector maps={availMaps} onSelect={setManualMap} />
                     </div>
                   )}
+        </div>
 
-                  {/* 컴포넌트 상세 데이터 (서버에서 추출된 프로퍼티) */}
-                  {selectedNode.objIdx >= 0 && sceneObjects[selectedNode.objIdx]?.componentData && (() => {
-                    const cd = sceneObjects[selectedNode.objIdx].componentData!
-                    const SectionHeader = ({ title, icon }: { title: string; icon: string }) => (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, margin: '8px 0 4px', paddingBottom: 2, borderBottom: '1px solid #1e293b' }}>
-                        <span style={{ fontSize: 10 }}>{icon}</span>
-                        <span style={{ color: '#475569', fontSize: 9, fontWeight: 600, letterSpacing: 0.5 }}>{title}</span>
-                      </div>
-                    )
-                    const Row = ({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) => (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2, gap: 4 }}>
-                        <span style={{ color: '#475569', fontSize: 9, flexShrink: 0 }}>{label}</span>
-                        <span style={{ color: valueColor ?? '#94a3b8', fontSize: 9, wordBreak: 'break-all', textAlign: 'right' }}>{value}</span>
-                      </div>
-                    )
-                    return (
-                      <div>
-                        {/* Light */}
-                        {cd.Light && (() => {
-                          const ld = cd.Light!
-                          const typeNames = ['Spot', 'Directional', 'Point', 'Area']
-                          const shadowNames = ['None', 'Hard', 'Soft']
-                          const r = Math.round(ld.color.r * 255), g = Math.round(ld.color.g * 255), b = Math.round(ld.color.b * 255)
-                          return (
-                            <>
-                              <SectionHeader title="LIGHT" icon="💡" />
-                              <div style={{ background: '#0f172a', borderRadius: 4, padding: '4px 6px', marginBottom: 4 }}>
-                                <Row label="Type" value={typeNames[ld.lightType] ?? 'Unknown'} valueColor="#fbbf24" />
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-                                  <span style={{ color: '#475569', fontSize: 9 }}>Color</span>
-                                  <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 3 }}>
-                                    <div style={{ width: 12, height: 12, borderRadius: 2, background: `rgb(${r},${g},${b})`, border: '1px solid #334155' }} />
-                                    <span style={{ color: '#94a3b8', fontSize: 9 }}>({r},{g},{b})</span>
-                                  </div>
-                                </div>
-                                <Row label="Intensity" value={ld.intensity.toFixed(2)} valueColor="#fde68a" />
-                                <Row label="Range" value={ld.range.toFixed(1)} />
-                                {ld.lightType === 0 && <Row label="Spot Angle" value={`${ld.spotAngle.toFixed(1)}°`} />}
-                                <Row label="Shadows" value={shadowNames[ld.shadowType] ?? 'None'} />
-                              </div>
-                            </>
-                          )
-                        })()}
-
-                        {/* Colliders */}
-                        {cd.colliders && cd.colliders.length > 0 && (
-                          <>
-                            <SectionHeader title={`COLLIDERS (${cd.colliders.length})`} icon="🟢" />
-                            {cd.colliders.map((col, ci) => (
-                              <div key={ci} style={{ background: col.isTrigger ? 'rgba(249,115,22,0.08)' : 'rgba(34,197,94,0.08)', borderRadius: 4, padding: '4px 6px', marginBottom: 4, border: `1px solid ${col.isTrigger ? 'rgba(249,115,22,0.2)' : 'rgba(34,197,94,0.2)'}` }}>
-                                <div style={{ color: col.isTrigger ? '#f97316' : '#22c55e', fontSize: 9, fontWeight: 600, marginBottom: 3 }}>
-                                  {col.type.charAt(0).toUpperCase() + col.type.slice(1)}{col.isTrigger ? ' (Trigger)' : ''}
-                                </div>
-                                {col.type === 'box' && col.size && <Row label="Size" value={`${col.size.x.toFixed(2)}, ${col.size.y.toFixed(2)}, ${col.size.z.toFixed(2)}`} />}
-                                {col.type === 'sphere' && col.radius !== undefined && <Row label="Radius" value={col.radius.toFixed(2)} />}
-                                {col.type === 'capsule' && <>
-                                  <Row label="Radius" value={(col.radius ?? 0).toFixed(2)} />
-                                  <Row label="Height" value={(col.height ?? 0).toFixed(2)} />
-                                  <Row label="Axis" value={['X', 'Y', 'Z'][col.direction ?? 1]} />
-                                </>}
-                                <Row label="Center" value={`${col.center.x.toFixed(2)}, ${col.center.y.toFixed(2)}, ${col.center.z.toFixed(2)}`} />
-                              </div>
-                            ))}
-                          </>
-                        )}
-
-                        {/* Camera */}
-                        {cd.Camera && (() => {
-                          const cam = cd.Camera!
-                          return (
-                            <>
-                              <SectionHeader title="CAMERA" icon="🎥" />
-                              <div style={{ background: '#0f172a', borderRadius: 4, padding: '4px 6px', marginBottom: 4 }}>
-                                <Row label="FOV" value={`${cam.fov.toFixed(1)}°`} valueColor="#60a5fa" />
-                                <Row label="Near" value={cam.near.toFixed(3)} />
-                                <Row label="Far" value={cam.far.toFixed(0)} />
-                                <Row label="Projection" value={cam.ortho ? `Ortho (${cam.orthoSize.toFixed(1)})` : 'Perspective'} />
-                              </div>
-                            </>
-                          )
-                        })()}
-
-                        {/* Rigidbody */}
-                        {cd.Rigidbody && (
-                          <>
-                            <SectionHeader title="RIGIDBODY" icon="⚙️" />
-                            <div style={{ background: '#0f172a', borderRadius: 4, padding: '4px 6px', marginBottom: 4 }}>
-                              <Row label="Mass" value={cd.Rigidbody.mass.toFixed(1)} />
-                              <Row label="Kinematic" value={cd.Rigidbody.isKinematic ? 'Yes' : 'No'} valueColor={cd.Rigidbody.isKinematic ? '#f97316' : '#94a3b8'} />
-                              <Row label="Gravity" value={cd.Rigidbody.useGravity ? 'Yes' : 'No'} />
-                            </div>
-                          </>
-                        )}
-
-                        {/* AudioSource */}
-                        {cd.AudioSource && (
-                          <>
-                            <SectionHeader title="AUDIOSOURCE" icon="🔊" />
-                            <div style={{ background: '#0f172a', borderRadius: 4, padding: '4px 6px', marginBottom: 4 }}>
-                              <Row label="Volume" value={(cd.AudioSource.volume * 100).toFixed(0) + '%'} />
-                              <Row label="Loop" value={cd.AudioSource.loop ? 'Yes' : 'No'} />
-                              <Row label="Spatial" value={cd.AudioSource.spatialBlend.toFixed(2)} />
-                            </div>
-                          </>
-                        )}
-
-                        {/* Scripts (MonoBehaviour) */}
-                        {cd.scripts && cd.scripts.length > 0 && (
-                          <>
-                            <SectionHeader title={`SCRIPTS (${cd.scripts.length})`} icon="📜" />
-                            <div style={{ background: '#0f172a', borderRadius: 4, padding: '4px 6px', marginBottom: 4 }}>
-                              {cd.scripts.map((s, i) => (
-                                <div key={i} style={{ color: '#a78bfa', fontSize: 9, marginBottom: 1 }}>• {s}</div>
-                              ))}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    )
-                  })()}
-
-                  {/* 렌더링 없는 empty 노드 안내 */}
-                  {selectedNode.objIdx < 0 && (selectedNode.components?.length ?? 0) === 0 && (
-                    <div style={{ color: '#475569', fontSize: 10, lineHeight: 1.5 }}>
-                      렌더링 없는 오브젝트
+        {/* Inspector */}
+        {showInspector && (
+          <div style={{ width: 230, minWidth: 180, background: '#151820', borderLeft: `1px solid ${borderCol}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0 }}>
+            <div style={{ padding: '6px 10px', fontSize: 10, fontWeight: 700, color: '#475569', borderBottom: `1px solid ${borderCol}`, letterSpacing: 1, textTransform: 'uppercase' }}>
+              Inspector
                     </div>
+            <div style={{ flex: 1, overflowY: 'auto', padding: 10, fontSize: 11 }}>
+              {selectedObj ? (
+                <InspectorPanel obj={selectedObj} />
+              ) : (
+                <div style={{ color: '#475569', fontSize: 11 }}>오브젝트를 선택하면<br/>속성이 표시됩니다</div>
                   )}
                 </div>
-              ) : (
-                <div style={{
-                  color: '#475569', fontSize: 10, padding: '20px 8px',
-                  textAlign: 'center', lineHeight: 1.8,
-                }}>
-                  Hierarchy에서<br/>오브젝트를 선택하세요
                 </div>
               )}
             </div>
           </div>
-        )}
+  )
+}
+
+// ── Inspector 패널 내용 ──────────────────────────────────────────────────────
+function InspectorPanel({ obj }: { obj: MeshJsonObject }) {
+  const row = (label: string, value: string | number, color?: string) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, gap: 6 }}>
+      <span style={{ color: '#64748b', flexShrink: 0 }}>{label}</span>
+      <span style={{ color: color || '#e2e8f0', textAlign: 'right', wordBreak: 'break-all', fontSize: 10 }}>{value}</span>
       </div>
+  )
+  const section = (title: string) => (
+    <div style={{ color: '#3b82f6', fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, marginTop: 10, marginBottom: 4, borderBottom: '1px solid #1e293b', paddingBottom: 3 }}>
+      {title}
+    </div>
+  )
+  const v3 = (v: { x: number; y: number; z: number }) =>
+    `${v.x.toFixed(2)}, ${v.y.toFixed(2)}, ${v.z.toFixed(2)}`
 
-      {/* 오버레이: 씬 로딩 */}
-      {(status === 'loading-scene' || status === 'loading-fbx') && (
-        <div className="absolute flex flex-col items-center justify-center gap-3 pointer-events-none"
-          style={{
-            background: 'rgba(13,17,23,0.75)',
-            top: 36,
-            left: showHierarchy && hierarchyData.length > 0 ? 240 : 0,
-            right: 0, bottom: 0,
-          }}>
-          <svg className="animate-spin w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2">
-            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-          </svg>
-          <span className="text-[12px]" style={{ color: '#a78bfa' }}>
-            {status === 'loading-scene' ? '씬 파일 파싱 중...' : `오브젝트 로딩 ${progress.loaded} / ${progress.total}`}
-          </span>
-          {status === 'loading-fbx' && progress.total > 0 && (
-            <div style={{ width: 180, height: 4, background: '#1e293b', borderRadius: 2 }}>
-              <div style={{ width: `${(progress.loaded / progress.total) * 100}%`, height: '100%', background: '#a78bfa', borderRadius: 2, transition: 'width 0.3s' }} />
+  const mat = obj.material
+
+  return (
+    <div>
+      {/* 이름 */}
+      <div style={{ fontWeight: 700, color: '#e2e8f0', fontSize: 13, marginBottom: 6, wordBreak: 'break-word' }}>
+        {obj.name}
             </div>
-          )}
+
+      {/* 경로 */}
+      <div style={{ color: '#64748b', fontSize: 10, marginBottom: 8, wordBreak: 'break-all', lineHeight: 1.4 }}>
+        {obj.path}
+        </div>
+
+      {/* 태그 / 레이어 */}
+      {section('Game Object')}
+      {obj.tag   && row('Tag',   obj.tag)}
+      {obj.layer && row('Layer', obj.layer)}
+
+      {/* 트랜스폼 */}
+      {section('Transform')}
+      {row('Position', v3(obj.transform.position))}
+      {row('Rotation', v3(obj.transform.rotation))}
+      {row('Scale',    v3(obj.transform.scale))}
+
+      {/* 지오메트리 */}
+      {section('Geometry')}
+      {row('Vertices',  obj.geometry.vertices.length.toLocaleString())}
+      {obj.geometry.triangles && row('Triangles', (obj.geometry.triangles.length / 3).toLocaleString())}
+      {obj.geometry.uvs && row('UVs', '✓', '#4ade80')}
+
+      {/* 머티리얼 */}
+      {mat && (
+        <>
+          {section('Material')}
+          {mat.color && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+              <span style={{ color: '#64748b' }}>Color</span>
+              <div style={{ width: 14, height: 14, borderRadius: 3, flexShrink: 0, background: `rgb(${Math.round(mat.color.r * 255)},${Math.round(mat.color.g * 255)},${Math.round(mat.color.b * 255)})`, border: '1px solid #475569' }} />
         </div>
       )}
-
-      {/* 오버레이: WebGL Context Lost */}
-      {status === 'context-lost' && (
-        <div className="absolute flex flex-col items-center justify-center gap-3"
-          style={{
-            background: 'rgba(13,17,23,0.92)',
-            top: 36,
-            left: showHierarchy && hierarchyData.length > 0 ? 240 : 0,
-            right: 0, bottom: 0,
-          }}>
-          <span style={{ fontSize: 28 }}>⚠️</span>
-          <span style={{ color: '#fbbf24', fontSize: 14, fontWeight: 600 }}>GPU 메모리 초과</span>
-          <span style={{ color: '#94a3b8', fontSize: 11, maxWidth: 350, textAlign: 'center', lineHeight: 1.5 }}>
-            씬의 FBX/텍스처가 너무 많아 WebGL 컨텍스트가 소실되었습니다.
-            <br/>브라우저가 자동 복구를 시도 중입니다...
-          </span>
-          <button
-            onClick={() => {
-              cleanupRef.current()
-              setStatus('idle')
-              setTimeout(() => setStatus('loading-scene'), 100)
-            }}
-            style={{
-              marginTop: 8, padding: '6px 16px', borderRadius: 6,
-              background: 'rgba(167,139,250,0.2)', color: '#a78bfa',
-              border: '1px solid rgba(167,139,250,0.4)', cursor: 'pointer', fontSize: 12
-            }}
-          >
-            🔄 다시 시도
-          </button>
-        </div>
-      )}
-
-      {/* 오버레이: 오류 */}
-      {status === 'error' && (
-        <div className="absolute flex flex-col items-center justify-center gap-2"
-          style={{
-            background: 'rgba(13,17,23,0.9)',
-            top: 36,
-            left: showHierarchy && hierarchyData.length > 0 ? 240 : 0,
-            right: 0, bottom: 0,
-          }}>
-          <span style={{ color: '#ef4444', fontSize: 13, fontWeight: 600 }}>씬 로드 실패</span>
-          <span style={{ color: '#94a3b8', fontSize: 11, maxWidth: 400, textAlign: 'center' }}>{errMsg}</span>
-          {errMsg.includes('GUID index not found') && (
-            <code style={{ background: '#1e293b', color: '#a78bfa', padding: '4px 10px', borderRadius: 4, fontSize: 11, marginTop: 8 }}>
-              .\build_guid_index.ps1 실행 필요
-            </code>
-          )}
-        </div>
+          {mat.mainTextureId && row('Texture', mat.mainTextureId, '#a78bfa')}
+          {mat.mainTextureTiling && row('Tiling', `${mat.mainTextureTiling.x.toFixed(2)}, ${mat.mainTextureTiling.y.toFixed(2)}`)}
+          {mat.lightmapIndex !== undefined && mat.lightmapIndex >= 0 && row('Lightmap', `#${mat.lightmapIndex}`)}
+        </>
       )}
     </div>
   )
 }
 
-/** Lazy export for code-splitting */
 export default SceneViewer
