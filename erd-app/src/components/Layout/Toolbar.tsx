@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useSyncStore } from '../../store/useSyncStore.ts';
 import { usePresence } from '../../hooks/usePresence.ts';
@@ -8,9 +8,22 @@ export default function Toolbar() {
   const navigate = useNavigate();
   const location = useLocation();
   const [showImport, setShowImport] = useState(false);
+  const [showHomeMenu, setShowHomeMenu] = useState(false);
+  const homeMenuRef = useRef<HTMLDivElement>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>(
     () => (document.documentElement.getAttribute('data-theme') as 'dark' | 'light') || 'dark'
   );
+
+  // 바깥 클릭 시 드롭다운 닫기
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (homeMenuRef.current && !homeMenuRef.current.contains(e.target as Node)) {
+        setShowHomeMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   const syncStatus   = useSyncStore((s) => s.status);
   const syncCommit   = useSyncStore((s) => s.commit);
@@ -41,33 +54,93 @@ export default function Toolbar() {
         className="flex items-center justify-between px-5 h-14 flex-shrink-0 select-none header-gradient"
         style={{ borderBottom: '1px solid var(--border-color)' }}
       >
-        {/* ── Left: Logo + Nav ── */}
-        <div className="flex items-center gap-5">
-          {/* Logo */}
-          <div className="flex items-center gap-2.5 mr-1">
-            <div
-              className="w-7 h-7 rounded-lg flex items-center justify-center"
-              style={{ background: 'var(--accent)', boxShadow: 'var(--shadow-glow)' }}
+        {/* ── Left: Logo(드롭다운) + Nav ── */}
+        <div className="flex items-center gap-3">
+
+          {/* DataMaster 홈 버튼 + 드롭다운 */}
+          <div className="relative" ref={homeMenuRef}>
+            <button
+              onClick={() => setShowHomeMenu((v) => !v)}
+              className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer"
+              style={{
+                background: showHomeMenu ? 'var(--bg-hover)' : 'transparent',
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={(e) => { if (!showHomeMenu) e.currentTarget.style.background = 'var(--bg-hover)'; }}
+              onMouseLeave={(e) => { if (!showHomeMenu) e.currentTarget.style.background = 'transparent'; }}
+              title="메뉴"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83" />
+              <div
+                className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                style={{ background: 'var(--accent)', boxShadow: 'var(--shadow-glow)' }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83" />
+                </svg>
+              </div>
+              <span className="font-bold text-[15px] tracking-tight" style={{ color: 'var(--text-primary)' }}>
+                DataMaster
+              </span>
+              {/* 현재 활성 페이지 표시 */}
+              {(isEditor || isDocs || isDiff || isValidation || isQuery) && (
+                <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded-md" style={{ background: 'rgba(var(--accent-rgb),0.15)', color: 'var(--accent)' }}>
+                  {isEditor ? 'ERD' : isDocs ? 'Data' : isDiff ? 'Diff' : isValidation ? 'Validation' : 'Query'}
+                </span>
+              )}
+              <svg
+                width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+                style={{ color: 'var(--text-muted)', transform: showHomeMenu ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}
+              >
+                <polyline points="6 9 12 15 18 9" />
               </svg>
-            </div>
-            <span className="font-bold text-[15px] tracking-tight" style={{ color: 'var(--text-primary)' }}>
-              DataMaster
-            </span>
+            </button>
+
+            {/* 드롭다운 메뉴 */}
+            {showHomeMenu && (
+              <div
+                className="absolute top-full left-0 mt-1.5 rounded-xl overflow-hidden z-50"
+                style={{
+                  minWidth: 180,
+                  background: 'var(--bg-elevated)',
+                  border: '1px solid var(--border-color)',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
+                }}
+              >
+                {[
+                  { label: 'ERD', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="2" y="7" width="6" height="10" rx="1"/><rect x="9" y="3" width="6" height="6" rx="1"/><rect x="9" y="15" width="6" height="6" rx="1"/><line x1="8" y1="12" x2="9" y2="12"/><line x1="8" y1="6" x2="12" y2="6"/><line x1="8" y1="18" x2="12" y2="18"/><line x1="15" y1="6" x2="22" y2="12"/><line x1="15" y1="18" x2="22" y2="12"/></svg>, path: '/editor', active: isEditor },
+                  { label: 'Data', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>, path: '/docs', active: isDocs },
+                  { label: 'Diff', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>, path: '/diff', active: isDiff },
+                  { label: 'Validation', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>, path: '/validation', active: isValidation },
+                  { label: 'Query', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>, path: '/query', active: isQuery },
+                ].map(({ label, icon, path, active }) => (
+                  <button
+                    key={path}
+                    onClick={() => { navigate(path); setShowHomeMenu(false); }}
+                    className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left text-[13px] font-medium"
+                    style={{
+                      background: active ? 'rgba(var(--accent-rgb),0.12)' : 'transparent',
+                      color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                      borderLeft: active ? '2px solid var(--accent)' : '2px solid transparent',
+                      transition: 'background 0.1s, color 0.1s',
+                    }}
+                    onMouseEnter={(e) => { if (!active) { e.currentTarget.style.background = 'var(--bg-hover)'; e.currentTarget.style.color = 'var(--text-primary)'; } }}
+                    onMouseLeave={(e) => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; } }}
+                  >
+                    <span style={{ opacity: 0.7, flexShrink: 0 }}>{icon}</span>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* Nav tabs */}
+          <Divider />
+
+          {/* Nav tabs — ChatBot + Explore 만 */}
           <div className="flex items-center gap-1">
-            <ModeTab active={isEditor}     onClick={() => navigate('/editor')}>ERD</ModeTab>
-            <ModeTab active={isDocs}       onClick={() => navigate('/docs')}>Data</ModeTab>
-            <ModeTab active={isDiff}       onClick={() => navigate('/diff')}>Diff</ModeTab>
-            <ModeTab active={isValidation} onClick={() => navigate('/validation')}>Validation</ModeTab>
-            <ModeTab active={isQuery}      onClick={() => navigate('/query')}>Query</ModeTab>
-            <ModeTab active={isChat}       onClick={() => navigate('/chat')}>ChatBot</ModeTab>
-            <ModeTab active={isExplore}    onClick={() => navigate('/explore')}>
+            <ModeTab active={isChat} onClick={() => navigate('/chat')}>ChatBot</ModeTab>
+            <ModeTab active={isExplore} onClick={() => navigate('/explore')}>
               <span className="flex items-center gap-1.5">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                   <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
