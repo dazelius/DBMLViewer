@@ -40,6 +40,28 @@ echo [INFO] 빌드 완료!
 
 :START_SERVER
 echo.
+
+:: ── 바이블테이블링 서버 (포트 8100) ──────────────────────────────────
+echo [INFO] 8100 포트 기존 프로세스 종료 중...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8100 " 2^>nul') do (
+  taskkill /PID %%a /F >nul 2>&1
+)
+timeout /t 1 /nobreak >nul
+
+echo [INFO] 바이블테이블링 서버 시작 중... (포트 8100)
+start "BibleTabling Server" /d "%~dp0erd-app\bible-tabling" /min cmd /k "python main.py"
+timeout /t 3 /nobreak >nul
+
+:: 서버 시작 확인
+curl -s http://localhost:8100/api/bible-tabling/health >nul 2>&1
+if %errorlevel% equ 0 (
+  echo [OK] 바이블테이블링 서버 실행 중 (http://localhost:8100)
+) else (
+  echo [WARN] 바이블테이블링 서버 응답 없음 - Python 환경 확인 필요
+)
+echo.
+
+:: ── TableMaster 앱 서버 (포트 5173) ─────────────────────────────────
 echo [INFO] 5173 포트 기존 프로세스 종료 중...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5173 " 2^>nul') do (
   taskkill /PID %%a /F >nul 2>&1

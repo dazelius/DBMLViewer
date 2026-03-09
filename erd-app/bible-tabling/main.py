@@ -19,8 +19,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -104,6 +104,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "*",
+    "Access-Control-Allow-Headers": "*",
+}
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_cors_handler(request: Request, exc: HTTPException):
+    """HTTPException 에러 응답에도 CORS 헤더 보장 (브라우저 fetch 오류 방지)"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=CORS_HEADERS,
+    )
+
+
+@app.exception_handler(Exception)
+async def generic_exception_cors_handler(request: Request, exc: Exception):
+    """예상치 못한 서버 오류에도 CORS 헤더 보장"""
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"서버 오류: {str(exc)}"},
+        headers=CORS_HEADERS,
+    )
+
 
 editor = BibleTablingEditor(GIT_REPO_DATA_DIR)
 
@@ -247,20 +274,22 @@ async def health():
 # ── 서버 시작 ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import sys
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     print(f"""
-╔══════════════════════════════════════════════════════════════╗
-║  🔧 바이블테이블링 (Bible Tabling) 서버                       ║
-║                                                              ║
-║  📂 데이터: {str(GIT_REPO_DATA_DIR)[:45].ljust(45)}║
-║  🌐 포트: {str(PORT).ljust(49)}║
-║                                                              ║
-║  API:                                                        ║
-║  POST /api/bible-tabling/edit      — 데이터 편집             ║
-║  POST /api/bible-tabling/add-rows  — 행 추가                 ║
-║  GET  /api/bible-tabling/tables    — 테이블 목록             ║
-║  GET  /api/bible-tabling/download/ — 파일 다운로드           ║
-║                                                              ║
-║  종료: Ctrl+C                                                ║
-╚══════════════════════════════════════════════════════════════╝
++--------------------------------------------------------------+
+|  [바이블테이블링 (Bible Tabling) 서버]                        |
+|                                                              |
+|  데이터: {str(GIT_REPO_DATA_DIR)[:48].ljust(48)}|
+|  포트: {str(PORT).ljust(51)}|
+|                                                              |
+|  API:                                                        |
+|  POST /api/bible-tabling/edit      - 데이터 편집             |
+|  POST /api/bible-tabling/add-rows  - 행 추가                 |
+|  GET  /api/bible-tabling/tables    - 테이블 목록             |
+|  GET  /api/bible-tabling/download/ - 파일 다운로드           |
+|                                                              |
+|  종료: Ctrl+C                                                |
++--------------------------------------------------------------+
     """)
     uvicorn.run(app, host="0.0.0.0", port=PORT)

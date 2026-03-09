@@ -5168,6 +5168,25 @@ function WebReadCard({ tc }: { tc: WebReadResult }) {
   );
 }
 
+// ── 바이블테이블링 fetch 다운로드 헬퍼 (브라우저 직접 접속 대신 fetch+Blob) ──
+async function bibleTablingDownload(url: string, filename: string) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`서버 오류 ${resp.status}`);
+    const blob = await resp.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename || 'download.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+  } catch (e) {
+    alert(`다운로드 실패: ${String(e)}`);
+  }
+}
+
 // ── BibleTablingCard — 바이블테이블링 편집 결과 ──────────────────────────────
 function BibleTablingCard({ tc }: { tc: BibleTablingEditResult }) {
   return (
@@ -5190,9 +5209,13 @@ function BibleTablingCard({ tc }: { tc: BibleTablingEditResult }) {
           </div>
           {tc.tables.length > 0 && <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>테이블: {tc.tables.join(', ')}</div>}
           {tc.downloadUrl && (
-            <a href={tc.downloadUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium" style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308', border: '1px solid rgba(234,179,8,0.3)', textDecoration: 'none', cursor: 'pointer' }}>
+            <button
+              onClick={() => bibleTablingDownload(tc.downloadUrl, tc.downloadFilename)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
+              style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308', border: '1px solid rgba(234,179,8,0.3)', cursor: 'pointer' }}
+            >
               📥 {tc.downloadFilename || '다운로드'}
-            </a>
+            </button>
           )}
           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>💡 노란색 하이라이트 = AI 편집 셀</div>
         </div>
@@ -5218,9 +5241,13 @@ function BibleTablingAddRowsCard({ tc }: { tc: BibleTablingAddRowsResult }) {
           {tc.file && <div className="text-[12px]" style={{ color: 'var(--text-muted)' }}>파일: {tc.file}</div>}
           <div className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>➕ {tc.rowsAdded}행 추가됨</div>
           {tc.downloadUrl && (
-            <a href={tc.downloadUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.3)', textDecoration: 'none', cursor: 'pointer' }}>
+            <button
+              onClick={() => bibleTablingDownload(tc.downloadUrl, tc.downloadFilename)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
+              style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.3)', cursor: 'pointer' }}
+            >
               📥 {tc.downloadFilename || '다운로드'}
-            </a>
+            </button>
           )}
           <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>💡 노란색 하이라이트 = AI 추가 셀</div>
         </div>
