@@ -315,6 +315,8 @@ interface GitPluginOptions {
   confluenceApiToken?: string
   // Web Search
   webSearchApiKey?: string         // Brave Search API Key
+  // 슬랙 다운로드 링크용 공개 URL (Tailscale 등 외부 접근 주소)
+  tableMasterUrl?: string
 }
 
 function buildAuthUrl(repoUrl: string, token?: string): string {
@@ -5930,7 +5932,10 @@ async function serverExecuteToolAsync(
   if (syncTools.includes(toolName)) return serverExecuteTool(toolName, input, options)
 
   // ── 바이블테이블링 (Python 백엔드 호출) ──
-  const BIBLE_TABLING_URL = process.env.BIBLE_TABLING_URL || 'http://localhost:8100'
+  // fetch는 서버→서버 직통(localhost:8100), 다운로드 링크는 Vite 프록시 경유(5173)
+  const BIBLE_TABLING_API_URL = process.env.BIBLE_TABLING_URL || 'http://localhost:8100'
+  // 슬랙에 전달할 다운로드 링크 베이스: Vite 프록시 서버 URL (외부에서 접근 가능)
+  const BIBLE_TABLING_LINK_BASE = options.tableMasterUrl || process.env.TABLEMASTER_URL || 'http://localhost:5173'
 
   if (toolName === 'edit_game_data') {
     try {
@@ -5939,7 +5944,7 @@ async function serverExecuteToolAsync(
         reason: String(input.reason ?? ''),
         edit_plan: input.edit_plan as unknown[],
       })
-      const btRes = await fetch(`${BIBLE_TABLING_URL}/api/bible-tabling/edit`, {
+      const btRes = await fetch(`${BIBLE_TABLING_API_URL}/api/bible-tabling/edit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: payload,
@@ -5951,6 +5956,7 @@ async function serverExecuteToolAsync(
       const data = await btRes.json() as Record<string, unknown>
       const summary = data.summary as Record<string, unknown>
       const details = (summary.details as Array<Record<string, unknown>>) || []
+      const jobId = String(data.job_id ?? '')
 
       let resultText = `✅ 바이블테이블링 편집 완료\n`
       resultText += `제목: ${summary.title}\n`
@@ -5967,12 +5973,27 @@ async function serverExecuteToolAsync(
         if (changes.length > 10) resultText += `  ... 외 ${changes.length - 10}건\n`
       }
 
-      resultText += `\n📥 다운로드: ${BIBLE_TABLING_URL}${data.download_url}\n`
+      // 개별 파일 링크 (여러 파일인 경우)
+      const seenFiles = new Set<string>()
+      const fileLinks: string[] = []
+      for (const d of details) {
+        const fname = String(d.file ?? '')
+        if (fname && !seenFiles.has(fname)) {
+          seenFiles.add(fname)
+          fileLinks.push(`• ${fname}: ${BIBLE_TABLING_LINK_BASE}/api/bible-tabling/download/${jobId}/${fname}`)
+        }
+      }
+      if (fileLinks.length > 1) {
+        resultText += `\n📥 개별 다운로드:\n${fileLinks.join('\n')}\n`
+        resultText += `📦 모두 받기(ZIP): ${BIBLE_TABLING_LINK_BASE}${data.download_url}\n`
+      } else {
+        resultText += `\n📥 다운로드: ${BIBLE_TABLING_LINK_BASE}${data.download_url}\n`
+      }
       resultText += `(노란색 하이라이트 = AI 편집 셀)`
 
       return { result: resultText, data }
     } catch (e) {
-      return { result: `바이블테이블링 연결 실패: ${e instanceof Error ? e.message : String(e)}\n바이블테이블링 서버(${BIBLE_TABLING_URL})가 실행 중인지 확인하세요.` }
+      return { result: `바이블테이블링 연결 실패: ${e instanceof Error ? e.message : String(e)}\nstart.bat을 실행하여 바이블테이블링 서버를 시작하세요.` }
     }
   }
 
@@ -5985,7 +6006,7 @@ async function serverExecuteToolAsync(
         file: input.file ? String(input.file) : undefined,
         rows: input.rows as unknown[],
       })
-      const btRes = await fetch(`${BIBLE_TABLING_URL}/api/bible-tabling/add-rows`, {
+      const btRes = await fetch(`${BIBLE_TABLING_API_URL}/api/bible-tabling/add-rows`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: payload,
@@ -6000,7 +6021,7 @@ async function serverExecuteToolAsync(
       let resultText = `✅ 바이블테이블링 행 추가 완료\n`
       resultText += `테이블: ${summary.table} (${summary.file})\n`
       resultText += `추가된 행: ${summary.rows_added}개\n`
-      resultText += `\n📥 다운로드: ${BIBLE_TABLING_URL}${data.download_url}\n`
+      resultText += `\n📥 다운로드: ${BIBLE_TABLING_LINK_BASE}${data.download_url}\n`
       resultText += `(노란색 하이라이트 = AI 추가 셀)`
 
       return { result: resultText, data }
