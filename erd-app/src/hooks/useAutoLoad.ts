@@ -21,9 +21,11 @@ export function useAutoLoad() {
     (async () => {
       try {
         setSyncing();
+        const { setRepo2Syncing, setRepo2Done, setRepo2Error } = useSyncStore.getState();
+        setRepo2Syncing();
 
         // 1) git sync - aegisdata (데이터 저장소) + aegis (코드 저장소) 병렬 sync
-        const [syncResult] = await Promise.all([
+        const [syncResult, aegisResp] = await Promise.all([
           gitSync(undefined, undefined, BRANCH),
           // aegis 코드 저장소도 sync (데이터는 로드하지 않음, git log/diff용)
           fetch('/api/git/sync?repo=aegis', {
@@ -33,6 +35,19 @@ export function useAutoLoad() {
           }).catch(() => null), // 실패해도 무시 (repo2 미설정 시 정상)
         ]);
         setDone(syncResult.status, syncResult.commit ?? '');
+
+        // repo2 결과 저장
+        if (aegisResp && aegisResp.ok) {
+          try {
+            const aegisData = await aegisResp.json() as { status?: string; commit?: string; branch?: string };
+            const r2status = (aegisData.status as 'cloned' | 'updated' | 'up-to-date') ?? 'up-to-date';
+            setRepo2Done(r2status, aegisData.commit ?? '', aegisData.branch ?? BRANCH);
+          } catch {
+            setRepo2Error('응답 파싱 실패');
+          }
+        } else {
+          setRepo2Error(aegisResp ? `HTTP ${aegisResp.status}` : '연결 실패');
+        }
 
         // 2) Load schema + data files
         const schemaFiles = await gitLoadFiles(SCHEMA_PATH);

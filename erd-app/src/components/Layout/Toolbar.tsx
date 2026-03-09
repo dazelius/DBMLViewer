@@ -17,6 +17,8 @@ export default function Toolbar() {
   const syncResultType = useSyncStore((s) => s.resultType);
   const syncLastAt   = useSyncStore((s) => s.lastSyncAt);
 
+  const repo2 = useSyncStore((s) => s.repo2);
+
   const presenceCount = usePresence();
 
   const isEditor     = location.pathname.startsWith('/editor') || location.pathname === '/';
@@ -109,10 +111,19 @@ export default function Toolbar() {
           )}
 
           <GitVersionChip
+            label="Data"
             status={syncStatus}
             commit={syncCommit}
             resultType={syncResultType}
             lastSyncAt={syncLastAt}
+          />
+          <GitVersionChip
+            label="Aegis"
+            status={repo2.status}
+            commit={repo2.commit}
+            resultType={repo2.resultType}
+            lastSyncAt={repo2.lastSyncAt}
+            branch={repo2.branch ?? undefined}
           />
 
           <Divider />
@@ -194,12 +205,14 @@ function ModeTab({ active, onClick, children }: { active: boolean; onClick: () =
 
 // ── Git 버전 칩 ──────────────────────────────────────────────────────────────
 function GitVersionChip({
-  status, commit, resultType, lastSyncAt,
+  label, status, commit, resultType, lastSyncAt, branch,
 }: {
+  label?: string;
   status: 'idle' | 'syncing' | 'done' | 'error';
   commit: string | null;
   resultType: 'cloned' | 'updated' | 'up-to-date' | null;
   lastSyncAt: Date | null;
+  branch?: string;
 }) {
   const shortHash = commit ? commit.slice(0, 7) : null;
   const timeStr = lastSyncAt
@@ -244,21 +257,24 @@ function GitVersionChip({
   const isLatest  = resultType === 'up-to-date';
   const isUpdated = resultType === 'updated' || resultType === 'cloned';
   const dotColor    = isLatest ? '#22c55e' : isUpdated ? '#60a5fa' : 'var(--text-muted)';
-  const labelColor  = isLatest ? '#22c55e' : isUpdated ? '#60a5fa' : 'var(--text-muted)';
+  const statusLabelColor = isLatest ? '#22c55e' : isUpdated ? '#60a5fa' : 'var(--text-muted)';
   const bgColor     = isLatest ? 'rgba(34,197,94,0.07)' : isUpdated ? 'rgba(96,165,250,0.07)' : 'var(--bg-surface)';
   const borderColor = isLatest ? 'rgba(34,197,94,0.25)' : isUpdated ? 'rgba(96,165,250,0.25)' : 'var(--border-color)';
-  const label       = isLatest ? '최신' : isUpdated ? '업데이트됨' : '';
+  const statusLabel = isLatest ? '최신' : isUpdated ? '업데이트됨' : '';
 
   return (
     <div
       className="flex items-center gap-1.5 px-2.5 h-7 rounded-lg text-[11px] font-medium select-none"
       style={{ background: bgColor, border: `1px solid ${borderColor}`, color: 'var(--text-secondary)' }}
-      title={`마지막 동기화: ${timeStr ?? '-'}  |  commit: ${commit ?? '-'}`}
+      title={`[${label ?? 'repo'}] ${branch ? `branch: ${branch}  |  ` : ''}마지막 동기화: ${timeStr ?? '-'}  |  commit: ${commit ?? '-'}`}
     >
       <span
         className="w-[6px] h-[6px] rounded-full flex-shrink-0"
         style={{ background: dotColor, boxShadow: `0 0 6px ${dotColor}` }}
       />
+      {label && (
+        <span style={{ color: 'var(--text-muted)', fontSize: 10, fontWeight: 600 }}>{label}</span>
+      )}
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ opacity: 0.55, flexShrink: 0 }}>
         <circle cx="12" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" />
         <path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9" />
@@ -269,9 +285,9 @@ function GitVersionChip({
           {shortHash}
         </span>
       )}
-      {label && (
-        <span className="px-1.5 py-px rounded-md text-[10px] font-bold" style={{ color: labelColor }}>
-          {label}
+      {statusLabel && (
+        <span className="px-1.5 py-px rounded-md text-[10px] font-bold" style={{ color: statusLabelColor }}>
+          {statusLabel}
         </span>
       )}
       {timeStr && (
