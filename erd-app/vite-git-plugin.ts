@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSy
 import { join, resolve, extname, sep } from 'path'
 import { promisify } from 'util'
 import { createRequire } from 'module'
+import { request as httpRequest } from 'http'
 import type { IncomingMessage, ServerResponse } from 'http'
 import { request as httpsRequest } from 'https'
 import { deflateSync } from 'zlib'
@@ -7980,6 +7981,36 @@ for line in resp.iter_lines():
 }
 
 /** async 미들웨어를 안전하게 래핑 — 미처리 예외를 로그 + 500 응답 */
+// ── 바이블테이블링 프록시 미들웨어 (localhost:5173 → localhost:8100) ────────────
+function createBibleTablingProxy() {
+  return (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    if (!req.url?.startsWith('/api/bible-tabling/')) return next()
+
+    const proxyReq = httpRequest(
+      {
+        hostname: '127.0.0.1',
+        port: 8100,
+        path: req.url,
+        method: req.method ?? 'GET',
+        headers: { ...req.headers, host: '127.0.0.1:8100' },
+      },
+      (proxyRes) => {
+        // CORS 헤더 보장
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', '*')
+        res.setHeader('Access-Control-Allow-Headers', '*')
+        res.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers)
+        proxyRes.pipe(res, { end: true })
+      }
+    )
+    proxyReq.on('error', () => {
+      res.writeHead(502, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ detail: '바이블테이블링 서버(8100)에 연결할 수 없습니다.' }))
+    })
+    req.pipe(proxyReq, { end: true })
+  }
+}
+
 function safeMiddleware(
   label: string,
   mw: (req: IncomingMessage, res: ServerResponse, next: () => void) => Promise<void> | void
@@ -8016,6 +8047,7 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
   return {
     name: 'vite-git-plugin',
     configureServer(server) {
+      server.middlewares.use(createBibleTablingProxy())
       server.middlewares.use(safeMiddleware('chatApi', createChatApiMiddleware(options)))
       server.middlewares.use(safeMiddleware('gitApi', createGitMiddleware(options)))
     },
@@ -8034,6 +8066,7 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
         }
         next()
       })
+      server.middlewares.use(createBibleTablingProxy())
       server.middlewares.use(safeMiddleware('chatApi', createChatApiMiddleware(options)))
       server.middlewares.use(safeMiddleware('gitApi', createGitMiddleware(options)))
     },

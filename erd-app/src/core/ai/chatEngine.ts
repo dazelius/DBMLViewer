@@ -4105,7 +4105,7 @@ function showTab(id){
 
         // ── edit_game_data (바이블테이블링 — 데이터 편집) ──
         else if (tb.name === 'edit_game_data') {
-          const BIBLE_TABLING_URL = 'http://localhost:8100';
+          const BIBLE_TABLING_URL = ''; // Vite 프록시 경유 (/api/bible-tabling/ → localhost:8100)
           const title = String(inp.title ?? '바이블테이블링');
           const reason = inp.reason ? String(inp.reason) : '';
           const t0 = Date.now();
@@ -4167,13 +4167,13 @@ function showTab(id){
             }
           } catch (e) {
             const duration = Date.now() - t0;
-            resultStr = `바이블테이블링 연결 실패: ${String(e)}\n바이블테이블링 서버(http://localhost:8100)가 실행 중인지 확인하세요.`;
+            resultStr = `바이블테이블링 연결 실패: ${String(e)}\nstart.bat을 실행하여 바이블테이블링 서버를 시작하세요.`;
             tc = { kind: 'bible_tabling_edit', title, reason, jobId: '', downloadUrl: '', downloadFilename: '', filesModified: 0, totalRowsMatched: 0, totalCellsModified: 0, tables: [], error: resultStr, duration };
           }
         }
         // ── add_game_data_rows (바이블테이블링 — 행 추가) ──
         else if (tb.name === 'add_game_data_rows') {
-          const BIBLE_TABLING_URL = 'http://localhost:8100';
+          const BIBLE_TABLING_URL = ''; // Vite 프록시 경유 (/api/bible-tabling/ → localhost:8100)
           const title = String(inp.title ?? '바이블테이블링 — 행 추가');
           const reason = inp.reason ? String(inp.reason) : '';
           const table = String(inp.table ?? '');
@@ -4223,7 +4223,7 @@ function showTab(id){
             }
           } catch (e) {
             const duration = Date.now() - t0;
-            resultStr = `바이블테이블링 연결 실패: ${String(e)}`;
+            resultStr = `바이블테이블링 연결 실패: ${String(e)}\nstart.bat을 실행하여 바이블테이블링 서버를 시작하세요.`;
             tc = { kind: 'bible_tabling_add_rows', table, file, jobId: '', downloadUrl: '', downloadFilename: '', rowsAdded: 0, error: resultStr, duration };
           }
         }
