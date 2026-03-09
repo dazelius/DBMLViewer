@@ -5167,6 +5167,93 @@ const API_TOOLS = [
       required: ['name'],
     },
   },
+  {
+    name: 'edit_game_data',
+    description: `게임 데이터 Excel 파일을 편집합니다 (바이블테이블링).
+ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편집하세요.
+편집된 셀은 노란색 하이라이트로 표시됩니다. 결과는 다운로드 링크로 제공됩니다.
+
+편집 순서 규칙:
+1. ERD에서 FK 관계를 확인하여 부모 테이블(참조되는 쪽)부터 편집
+2. 부모 테이블의 PK 값이 변경되면 자식 테이블의 FK도 반드시 업데이트
+3. order 필드로 편집 순서 지정 (낮은 숫자 = 먼저 편집)
+4. 연관 테이블이 있으면 반드시 함께 편집 계획에 포함
+
+필터 op: eq, neq, gt, gte, lt, lte, in, contains, starts_with, ends_with
+변경 action: set(값 설정), multiply(곱하기), add(더하기), subtract(빼기), append(텍스트 추가)`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '편집 작업 제목 (예: "전사 캐릭터 HP 밸런스 조정")' },
+        reason: { type: 'string', description: '편집 사유' },
+        edit_plan: {
+          type: 'array',
+          description: '편집 계획 배열 — order 순서대로 실행됨',
+          items: {
+            type: 'object',
+            properties: {
+              order: { type: 'number', description: '편집 순서 (1=가장 먼저, 부모 테이블에 낮은 번호)' },
+              table: { type: 'string', description: '테이블(시트) 이름' },
+              file: { type: 'string', description: '엑셀 파일명 (예: Character.xlsx). 생략 시 테이블명.xlsx' },
+              filters: {
+                type: 'array',
+                description: '대상 행 필터. 비어있으면 전체 행.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    column: { type: 'string', description: '필터 컬럼명' },
+                    op: { type: 'string', enum: ['eq','neq','gt','gte','lt','lte','in','contains','starts_with','ends_with'], description: '비교 연산자' },
+                    value: { type: 'string', description: '비교값 (eq/neq/gt 등)' },
+                    values: { type: 'array', items: { type: 'string' }, description: 'in 연산자용 값 목록' },
+                  },
+                  required: ['column', 'op'],
+                },
+              },
+              changes: {
+                type: 'array',
+                description: '적용할 변경 목록',
+                items: {
+                  type: 'object',
+                  properties: {
+                    column: { type: 'string', description: '변경할 컬럼명' },
+                    action: { type: 'string', enum: ['set','multiply','add','subtract','append'], description: '변경 액션' },
+                    value: { description: '변경값 (set=새값, multiply=배수, add/subtract=증감값, append=추가텍스트)' },
+                  },
+                  required: ['column', 'action', 'value'],
+                },
+              },
+            },
+            required: ['table', 'changes'],
+          },
+        },
+      },
+      required: ['title', 'edit_plan'],
+    },
+  },
+  {
+    name: 'add_game_data_rows',
+    description: `게임 데이터 Excel 테이블에 새 행을 추가합니다 (바이블테이블링).
+추가된 셀은 노란색 하이라이트로 표시됩니다.
+ERD를 참고하여 상위 테이블에 먼저 추가한 후 하위 테이블에 추가하세요.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '작업 제목' },
+        reason: { type: 'string', description: '추가 사유' },
+        table: { type: 'string', description: '테이블(시트) 이름' },
+        file: { type: 'string', description: '엑셀 파일명 (생략 시 테이블명.xlsx)' },
+        rows: {
+          type: 'array',
+          description: '추가할 행 데이터 배열',
+          items: {
+            type: 'object',
+            description: '각 행: { "컬럼명": "값", ... }',
+          },
+        },
+      },
+      required: ['table', 'rows'],
+    },
+  },
 ]
 
 // ── 서버사이드 Tool 실행 ──
@@ -5724,6 +5811,86 @@ async function serverExecuteToolAsync(
     'build_character_profile', 'read_guide', 'show_revision_diff', 'preview_prefab',
     'patch_artifact', 'save_knowledge', 'read_knowledge', 'list_knowledge', 'delete_knowledge']
   if (syncTools.includes(toolName)) return serverExecuteTool(toolName, input, options)
+
+  // ── 바이블테이블링 (Python 백엔드 호출) ──
+  const BIBLE_TABLING_URL = process.env.BIBLE_TABLING_URL || 'http://localhost:8100'
+
+  if (toolName === 'edit_game_data') {
+    try {
+      const payload = JSON.stringify({
+        title: String(input.title ?? '바이블테이블링'),
+        reason: String(input.reason ?? ''),
+        edit_plan: input.edit_plan as unknown[],
+      })
+      const btRes = await fetch(`${BIBLE_TABLING_URL}/api/bible-tabling/edit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      })
+      if (!btRes.ok) {
+        const errText = await btRes.text()
+        return { result: `바이블테이블링 오류 (${btRes.status}): ${errText}` }
+      }
+      const data = await btRes.json() as Record<string, unknown>
+      const summary = data.summary as Record<string, unknown>
+      const details = (summary.details as Array<Record<string, unknown>>) || []
+
+      let resultText = `✅ 바이블테이블링 편집 완료\n`
+      resultText += `제목: ${summary.title}\n`
+      if (summary.reason) resultText += `사유: ${summary.reason}\n`
+      resultText += `파일: ${summary.files_modified}개 | 행: ${summary.total_rows_matched}개 매치 | 셀: ${summary.total_cells_modified}개 변경\n`
+      resultText += `테이블: ${(summary.tables as string[]).join(', ')}\n\n`
+
+      for (const d of details) {
+        resultText += `📊 ${d.table} (${d.file}): ${d.rows_matched}행 매치, ${d.cells_modified}셀 변경\n`
+        const changes = (d.changes as Array<Record<string, unknown>>) || []
+        for (const c of changes.slice(0, 10)) {
+          resultText += `  [${c.pk}] ${c.column}: "${c.old}" → "${c.new}"\n`
+        }
+        if (changes.length > 10) resultText += `  ... 외 ${changes.length - 10}건\n`
+      }
+
+      resultText += `\n📥 다운로드: ${BIBLE_TABLING_URL}${data.download_url}\n`
+      resultText += `(노란색 하이라이트 = AI 편집 셀)`
+
+      return { result: resultText, data }
+    } catch (e) {
+      return { result: `바이블테이블링 연결 실패: ${e instanceof Error ? e.message : String(e)}\n바이블테이블링 서버(${BIBLE_TABLING_URL})가 실행 중인지 확인하세요.` }
+    }
+  }
+
+  if (toolName === 'add_game_data_rows') {
+    try {
+      const payload = JSON.stringify({
+        title: String(input.title ?? '바이블테이블링 — 행 추가'),
+        reason: String(input.reason ?? ''),
+        table: String(input.table ?? ''),
+        file: input.file ? String(input.file) : undefined,
+        rows: input.rows as unknown[],
+      })
+      const btRes = await fetch(`${BIBLE_TABLING_URL}/api/bible-tabling/add-rows`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      })
+      if (!btRes.ok) {
+        const errText = await btRes.text()
+        return { result: `바이블테이블링 행 추가 오류 (${btRes.status}): ${errText}` }
+      }
+      const data = await btRes.json() as Record<string, unknown>
+      const summary = data.summary as Record<string, unknown>
+
+      let resultText = `✅ 바이블테이블링 행 추가 완료\n`
+      resultText += `테이블: ${summary.table} (${summary.file})\n`
+      resultText += `추가된 행: ${summary.rows_added}개\n`
+      resultText += `\n📥 다운로드: ${BIBLE_TABLING_URL}${data.download_url}\n`
+      resultText += `(노란색 하이라이트 = AI 추가 셀)`
+
+      return { result: resultText, data }
+    } catch (e) {
+      return { result: `바이블테이블링 연결 실패: ${e instanceof Error ? e.message : String(e)}` }
+    }
+  }
 
   // ── Jira 이슈 키 파싱 헬퍼 (URL or 키 모두 허용) ──
   const parseIssueKey = (raw: string): string => {

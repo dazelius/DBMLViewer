@@ -479,6 +479,8 @@ const TOOL_LABELS = {
   preview_prefab:    '🧩 프리팹',
   preview_fbx_animation: '🎬 애니메이션',
   find_resource_image: '🖼️ 이미지 찾기',
+  edit_game_data:      '📝 바이블테이블링',
+  add_game_data_rows:  '➕ 데이터 행 추가',
 };
 
 // ── 도구 결과 요약을 Slack 친화적으로 포맷 ──
@@ -511,6 +513,27 @@ function formatToolResultForSlack(tc) {
   if (tc.tool === 'search_code' || tc.tool === 'read_code_file') {
     const fileMatch = summary.match(/파일:\s*(\S+)/);
     if (fileMatch) return `${label}: \`${fileMatch[1]}\``;
+  }
+  
+  // 바이블테이블링: 편집 결과 + 다운로드 링크
+  if (tc.tool === 'edit_game_data') {
+    const cellMatch = summary.match(/셀:\s*(\d+)개 변경/);
+    const rowMatch = summary.match(/행:\s*(\d+)개 매치/);
+    const downloadMatch = summary.match(/다운로드:\s*(https?:\/\/\S+)/);
+    let text = `${label}`;
+    if (cellMatch) text += `: *${cellMatch[1]}셀* 편집`;
+    if (rowMatch) text += ` (${rowMatch[1]}행)`;
+    if (downloadMatch) text += ` 📥 <${downloadMatch[1]}|다운로드>`;
+    return text;
+  }
+  
+  if (tc.tool === 'add_game_data_rows') {
+    const addMatch = summary.match(/추가된 행:\s*(\d+)/);
+    const downloadMatch = summary.match(/다운로드:\s*(https?:\/\/\S+)/);
+    let text = `${label}`;
+    if (addMatch) text += `: *${addMatch[1]}행* 추가`;
+    if (downloadMatch) text += ` 📥 <${downloadMatch[1]}|다운로드>`;
+    return text;
   }
   
   // 기본: 80자 요약
@@ -978,6 +1001,9 @@ async function handleMessage({ message, say, client, event }) {
       } else if (toolName === 'create_artifact') {
         const tMatch = inputStr.match(/title['":\s]*['"]?([^'"}{,]+)/i);
         if (tMatch) detail = tMatch[1].trim().slice(0, 30);
+      } else if (toolName === 'edit_game_data' || toolName === 'add_game_data_rows') {
+        const titleMatch = inputStr.match(/title['":\s]*['"]?([^'"}{,]+)/i);
+        if (titleMatch) detail = titleMatch[1].trim().slice(0, 40);
       }
       
       const stepLine = detail ? `${label}  _${detail}_` : label;

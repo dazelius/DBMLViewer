@@ -2422,6 +2422,8 @@ export async function sendChatMessage(
         read_knowledge: '🧠 널리지 읽기',
         web_search: '🌐 웹 검색',
         read_url: '🌐 웹페이지 읽기',
+        edit_game_data: '📝 바이블테이블링',
+        add_game_data_rows: '➕ 데이터 행 추가',
       };
 
       await Promise.all(toolBlocks.map(async (tb) => {
