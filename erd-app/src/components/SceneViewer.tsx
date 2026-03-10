@@ -1,11 +1,11 @@
 /**
- * SceneViewer.tsx  (v3 – BufferGeometry 방식)
+ * SceneViewer.tsx  (v4 – On-demand Bake)
  *
- * C:\AegisLevel\Map\<MapFolder>\meshes.json 사전 익스포트 데이터를
- * BufferGeometry로 직접 로드 (collaborative_map_viewer 방식).
+ * Unity .unity 씬 파일을 열면 서버가 즉석으로 FBX를 파싱해
+ * scene-cache/<SceneName>/meshes.json 을 생성/캐싱.
  *
- * 버텍스는 이미 월드 스페이스로 베이크되어 있으므로 Transform 계산 불필요.
- * → FBXLoader 완전 제거, 텍스처·UV·노멀 완전 지원.
+ * 이미 캐시가 있으면 즉시 로드, 없으면 SSE 진행률 표시 후 자동 로드.
+ * 버텍스는 월드 스페이스로 베이크되므로 클라이언트 Transform 계산 불필요.
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'

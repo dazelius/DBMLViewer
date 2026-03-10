@@ -2224,30 +2224,29 @@ function createGitMiddleware(options: GitPluginOptions) {
           return
         }
 
-        // ── /api/assets/map-list : AegisLevel 사전 익스포트 맵 목록 ────────────
+        // ── /api/assets/map-list : 씬 캐시 맵 목록 ─────────────────────────────
         if (req.url.startsWith('/api/assets/map-list')) {
-          const AEGIS_MAP_DIR = join('C:', 'AegisLevel', 'Map')
-          if (!existsSync(AEGIS_MAP_DIR)) {
-            sendJson(res, 404, { error: 'AegisLevel map directory not found', maps: [] })
+          const SCENE_CACHE_DIR = join(process.cwd(), '..', 'scene-cache')
+          if (!existsSync(SCENE_CACHE_DIR)) {
+            sendJson(res, 200, { maps: [] })
             return
           }
-          const mapEntries = readdirSync(AEGIS_MAP_DIR, { withFileTypes: true })
-            .filter(e => e.isDirectory() && existsSync(join(AEGIS_MAP_DIR, e.name, 'meshes.json')))
+          const mapEntries = readdirSync(SCENE_CACHE_DIR, { withFileTypes: true })
+            .filter(e => e.isDirectory() && existsSync(join(SCENE_CACHE_DIR, e.name, 'meshes.json')))
             .map(e => {
               let meshCount = 0
               let sceneName = e.name
               try {
-                const info = JSON.parse(readFileSync(join(AEGIS_MAP_DIR, e.name, 'scene_info.json'), 'utf-8').replace(/^\uFEFF/, ''))
+                const info = JSON.parse(readFileSync(join(SCENE_CACHE_DIR, e.name, 'scene_info.json'), 'utf-8').replace(/^\uFEFF/, ''))
                 meshCount = info.meshCount || 0
                 sceneName = info.sceneName || e.name
               } catch {}
-              const thumbPath = join(AEGIS_MAP_DIR, e.name, 'thumbnail.jpg')
               return {
                 folder: e.name,
                 sceneName,
                 meshCount,
-                hasThumbnail: existsSync(thumbPath),
-                thumbUrl: `/api/assets/map-thumb?map=${encodeURIComponent(e.name)}`,
+                hasThumbnail: false,
+                thumbUrl: '',
               }
             })
           sendJson(res, 200, { maps: mapEntries })
@@ -2258,8 +2257,8 @@ function createGitMiddleware(options: GitPluginOptions) {
         if (req.url.startsWith('/api/assets/map-scene-info')) {
           const url2  = new URL(req.url, 'http://localhost')
           const mapName = url2.searchParams.get('map') || ''
-          const AEGIS_MAP_DIR = join('C:', 'AegisLevel', 'Map')
-          const infoPath = join(AEGIS_MAP_DIR, mapName, 'scene_info.json')
+          const SCENE_CACHE_DIR = join(process.cwd(), '..', 'scene-cache')
+          const infoPath = join(SCENE_CACHE_DIR, mapName, 'scene_info.json')
           if (!mapName || !existsSync(infoPath)) {
             sendJson(res, 404, { error: `scene_info.json not found for map: ${mapName}` }); return
           }
@@ -2269,30 +2268,20 @@ function createGitMiddleware(options: GitPluginOptions) {
           return
         }
 
-        // ── /api/assets/map-thumb : thumbnail.jpg 서빙 ───────────────────────
+        // ── /api/assets/map-thumb : thumbnail (미지원 - 빈 응답) ─────────────
         if (req.url.startsWith('/api/assets/map-thumb')) {
-          const url2 = new URL(req.url, 'http://localhost')
-          const mapName = url2.searchParams.get('map') || ''
-          const AEGIS_MAP_DIR = join('C:', 'AegisLevel', 'Map')
-          const thumbPath = join(AEGIS_MAP_DIR, mapName, 'thumbnail.jpg')
-          if (!mapName || !existsSync(thumbPath)) {
-            sendJson(res, 404, { error: 'thumbnail not found' }); return
-          }
-          const buf = readFileSync(thumbPath)
-          res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Access-Control-Allow-Origin': '*' })
-          res.end(buf)
-          return
+          sendJson(res, 404, { error: 'thumbnail not supported' }); return
         }
 
-        // ── /api/assets/map-texture : 맵 텍스처 파일 서빙 ────────────────────
+        // ── /api/assets/map-texture : 씬 캐시 텍스처 서빙 ────────────────────
         if (req.url.startsWith('/api/assets/map-texture')) {
           const url2    = new URL(req.url, 'http://localhost')
           const mapName = url2.searchParams.get('map') || ''
           const file    = url2.searchParams.get('file') || ''
-          const AEGIS_MAP_DIR = join('C:', 'AegisLevel', 'Map')
+          const SCENE_CACHE_DIR = join(process.cwd(), '..', 'scene-cache')
           // 경로 탈출 방지
           const safeName = file.replace(/[/\\]/g, '')
-          const texPath  = join(AEGIS_MAP_DIR, mapName, 'textures', safeName)
+          const texPath  = join(SCENE_CACHE_DIR, mapName, 'textures', safeName)
           if (!mapName || !safeName || !existsSync(texPath)) {
             sendJson(res, 404, { error: `texture not found: ${mapName}/${safeName}` }); return
           }
@@ -2308,8 +2297,8 @@ function createGitMiddleware(options: GitPluginOptions) {
         if (req.url.startsWith('/api/assets/map-meshes')) {
           const url2    = new URL(req.url, 'http://localhost')
           const mapName = url2.searchParams.get('map') || ''
-          const AEGIS_MAP_DIR = join('C:', 'AegisLevel', 'Map')
-          const meshPath = join(AEGIS_MAP_DIR, mapName, 'meshes.json')
+          const SCENE_CACHE_DIR = join(process.cwd(), '..', 'scene-cache')
+          const meshPath = join(SCENE_CACHE_DIR, mapName, 'meshes.json')
           if (!mapName || !existsSync(meshPath)) {
             sendJson(res, 404, { error: `meshes.json not found for map: ${mapName}` }); return
           }
@@ -3450,11 +3439,11 @@ function createGitMiddleware(options: GitPluginOptions) {
             sse({ type: 'progress', pct: 88, msg: '씬 정보 저장 중...' })
             await new Promise(r => setTimeout(r, 0))
 
-            // ④ 출력 디렉토리에 저장 (C:\AegisLevel\Map\<sceneName>\)
+            // ④ 출력 디렉토리에 저장 (scene-cache/<sceneName>/)
             const rawSceneName = scenePath.split('/').pop()?.replace(/\.unity$/i, '') || 'scene'
             // 파일시스템 안전 이름
             const safeFolder   = rawSceneName.replace(/[<>:"/\\|?*]/g, '_').slice(0, 60)
-            const outDir       = join('C:', 'AegisLevel', 'Map', safeFolder)
+            const outDir       = join(process.cwd(), '..', 'scene-cache', safeFolder)
             mkdirSync(outDir, { recursive: true })
 
             writeFileSync(join(outDir, 'meshes.json'), JSON.stringify({ meshObjects }))
