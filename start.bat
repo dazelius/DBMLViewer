@@ -61,6 +61,24 @@ if %errorlevel% equ 0 (
 )
 echo.
 
+:: ── Slack Bot ──────────────────────────────────────────────────────
+if exist "%~dp0erd-app\.env" (
+  findstr /C:"SLACK_BOT_TOKEN" "%~dp0erd-app\.env" >nul 2>&1
+  if not errorlevel 1 (
+    echo [INFO] Slack Bot 시작 중...
+    start "DataMaster Slack Bot" /d "%~dp0erd-app" /min cmd /k "node slack-bot.cjs"
+    timeout /t 2 /nobreak >nul
+    echo [OK] Slack Bot 실행 중
+    echo.
+  ) else (
+    echo [SKIP] .env 에 SLACK_BOT_TOKEN 없음 - Slack Bot 건너뜀
+    echo.
+  )
+) else (
+  echo [SKIP] .env 파일 없음 - Slack Bot 건너뜀
+  echo.
+)
+
 :: ── TableMaster 앱 서버 (포트 5173) ─────────────────────────────────
 echo [INFO] 5173 포트 기존 프로세스 종료 중...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5173 " 2^>nul') do (

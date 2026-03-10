@@ -7781,6 +7781,20 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [dataStatusOpen, setDataStatusOpen] = useState(false);
+  const [serviceStatusOpen, setServiceStatusOpen] = useState(false);
+
+  // 서비스 상태
+  const [serviceHealth, setServiceHealth] = useState<Record<string, { ok: boolean; detail?: string }>>({});
+  useEffect(() => {
+    let mounted = true
+    const check = () => {
+      fetch('/api/service-health').then(r => r.json()).then(d => { if (mounted) setServiceHealth(d) }).catch(() => {})
+    }
+    check()
+    const iv = setInterval(check, 30_000)
+    return () => { mounted = false; clearInterval(iv) }
+  }, [])
 
   // RAG Graph용 널리지 파일 목록
   const [knowledgeNames, setKnowledgeNames] = useState<string[]>([]);
@@ -8589,14 +8603,41 @@ export default function ChatPage() {
                   </svg>
                 </div>
               )}
+              {Object.keys(serviceHealth).length > 0 && (() => {
+                const allOk = Object.values(serviceHealth).every(s => s.ok)
+                const okCount = Object.values(serviceHealth).filter(s => s.ok).length
+                const total = Object.values(serviceHealth).length
+                return (
+                  <div className="w-8 h-8 flex items-center justify-center rounded-lg"
+                    style={{ background: allOk ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)' }}
+                    title={`서비스 ${okCount}/${total} 정상`}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                      style={{ color: allOk ? '#22c55e' : '#ef4444' }}>
+                      <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+                    </svg>
+                  </div>
+                )
+              })()}
             </div>
           ) : (
           <>
           {/* 데이터 현황 */}
-          <div className="px-4 pt-4 pb-3" style={{ borderBottom: '1px solid var(--border-color)' }}>
-            <div className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>
-              데이터 현황
-            </div>
+          <div className="px-4 pt-3 pb-2" style={{ borderBottom: '1px solid var(--border-color)' }}>
+            <button
+              onClick={() => setDataStatusOpen(v => !v)}
+              className="w-full flex items-center justify-between cursor-pointer"
+              style={{ background: 'none', border: 'none', padding: 0 }}
+            >
+              <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                데이터 현황
+              </span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                style={{ color: 'var(--text-muted)', transition: 'transform 0.15s', transform: dataStatusOpen ? 'rotate(0deg)' : 'rotate(-90deg)' }}>
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
+            {dataStatusOpen && (
+            <div className="mt-2">
             {hasData ? (
               <div className="space-y-1.5">
                 <div className="flex justify-between text-[12px]">
@@ -8627,7 +8668,68 @@ export default function ChatPage() {
                 데이터를 먼저 Import 해주세요
               </div>
             )}
+            </div>
+            )}
           </div>
+
+          {/* 서비스 상태 */}
+          {Object.keys(serviceHealth).length > 0 && (
+          <div className="px-4 pt-3 pb-2" style={{ borderBottom: '1px solid var(--border-color)' }}>
+            <button
+              onClick={() => setServiceStatusOpen(v => !v)}
+              className="w-full flex items-center justify-between cursor-pointer"
+              style={{ background: 'none', border: 'none', padding: 0 }}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                  서비스 상태
+                </span>
+                {!serviceStatusOpen && (() => {
+                  const okCount = Object.values(serviceHealth).filter(s => s.ok).length
+                  const total = Object.values(serviceHealth).length
+                  const allOk = okCount === total
+                  return (
+                    <span className="flex items-center gap-1 text-[10px]" style={{ color: allOk ? '#22c55e' : '#ef4444' }}>
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: allOk ? '#22c55e' : '#ef4444', boxShadow: allOk ? '0 0 4px #22c55e' : '0 0 4px #ef4444' }} />
+                      {okCount}/{total}
+                    </span>
+                  )
+                })()}
+              </div>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                style={{ color: 'var(--text-muted)', transition: 'transform 0.15s', transform: serviceStatusOpen ? 'rotate(0deg)' : 'rotate(-90deg)' }}>
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
+            {serviceStatusOpen && (
+            <div className="grid grid-cols-2 gap-x-2 gap-y-1 mt-2">
+              {([
+                ['claude', 'Claude'],
+                ['jira', 'Jira'],
+                ['gitData', 'Git Data'],
+                ['gitAegis', 'Git Aegis'],
+                ['slackBot', 'Slack Bot'],
+                ['bibleTabling', 'Bible'],
+              ] as const).map(([key, label]) => {
+                const s = serviceHealth[key]
+                const ok = s?.ok ?? false
+                return (
+                  <div key={key} className="flex items-center gap-1.5 text-[11px]" title={s?.detail || (ok ? '연결됨' : '꺼짐')}>
+                    <span
+                      className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                      style={{
+                        background: ok ? '#22c55e' : '#ef4444',
+                        boxShadow: ok ? '0 0 4px #22c55e' : '0 0 4px #ef4444',
+                      }}
+                    />
+                    <span style={{ color: ok ? 'var(--text-secondary)' : 'var(--text-muted)' }}>{label}</span>
+                  </div>
+                )
+              })}
+            </div>
+            )}
+          </div>
+          )}
 
           {/* 가이드 파일 브라우저 */}
           <GuideBrowser />

@@ -194,9 +194,10 @@ function rotateLogs() {
   try {
     if (!existsSync(SERVER_LOG)) return
     const stat = statSync(SERVER_LOG)
-    if (stat.size > 5 * 1024 * 1024) { // 5MB 초과 시 로테이션
+    if (stat.size > 5 * 1024 * 1024) {
+      const { renameSync } = require('fs')
       const backup = SERVER_LOG.replace('.log', `_${Date.now()}.log`)
-      writeFileSync(backup, readFileSync(SERVER_LOG))
+      try { renameSync(SERVER_LOG, backup) } catch { unlinkSync(SERVER_LOG) }
       writeFileSync(SERVER_LOG, `[${ts()}] [INFO] === Log rotated ===\n`)
     }
   } catch { /* ignore */ }
@@ -506,6 +507,18 @@ function runGit(cmd: string, cwd: string): string {
   } catch (err: any) {
     throw new Error(err.stderr || err.message || String(err))
   }
+}
+
+async function runGitAsync(cmd: string, cwd: string): Promise<string> {
+  const parts = cmd.match(/(?:[^\s"]+|"[^"]*")+/g) || []
+  const bin = parts[0]!
+  const args = parts.slice(1).map((a: string) => a.replace(/^"|"$/g, ''))
+  return new Promise<string>((resolve, reject) => {
+    execFile(bin, args, { cwd, encoding: 'utf-8', timeout: 300_000, maxBuffer: 10 * 1024 * 1024 }, (err: Error | null, stdout: string, stderr: string) => {
+      if (err) reject(new Error(stderr || err.message || String(err)))
+      else resolve((stdout ?? '').trim())
+    })
+  })
 }
 
 function sendJson(res: ServerResponse, status: number, data: unknown) {
@@ -866,6 +879,58 @@ function broadcastPresence() {
 function createGitMiddleware(options: GitPluginOptions) {
   const { localDir } = options
   return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+
+    // ── /api/service-health : 전체 서비스 상태 ──────────────────────────────
+    if (req.url === '/api/service-health' && req.method === 'GET') {
+      const checks: Record<string, { ok: boolean; detail?: string }> = {}
+
+      // Claude
+      checks.claude = { ok: !!options.claudeApiKey }
+
+      // Jira
+      const jiraOk = !!(options.jiraBaseUrl && options.jiraApiToken)
+      checks.jira = { ok: jiraOk, detail: jiraOk ? options.jiraBaseUrl : undefined }
+
+      // Git Data
+      checks.gitData = { ok: existsSync(join(localDir, '.git')) }
+      if (checks.gitData.ok) {
+        try { checks.gitData.detail = execSync('git rev-parse --short HEAD', { cwd: localDir, encoding: 'utf-8', timeout: 3000 }).trim() } catch {}
+      }
+
+      // Git Aegis
+      if (options.repo2LocalDir) {
+        checks.gitAegis = { ok: existsSync(join(options.repo2LocalDir, '.git')) }
+        if (checks.gitAegis.ok) {
+          try { checks.gitAegis.detail = execSync('git rev-parse --short HEAD', { cwd: options.repo2LocalDir, encoding: 'utf-8', timeout: 3000 }).trim() } catch {}
+        }
+      } else {
+        checks.gitAegis = { ok: false }
+      }
+
+      // Bible Tabling — http.request with manual timeout
+      await new Promise<void>((resolve) => {
+        const r = httpRequest({ hostname: '127.0.0.1', port: 8100, path: '/api/bible-tabling/health', method: 'GET', timeout: 2000 }, (resp) => {
+          checks.bibleTabling = { ok: resp.statusCode === 200 }
+          resp.resume()
+          resolve()
+        })
+        r.on('error', () => { checks.bibleTabling = { ok: false }; resolve() })
+        r.on('timeout', () => { r.destroy(); checks.bibleTabling = { ok: false }; resolve() })
+        r.end()
+      })
+
+      // Slack Bot — node.exe 프로세스 수로 추정 (preview 서버 1개 + slack-bot 1개)
+      try {
+        const ps = execSync('tasklist /FI "IMAGENAME eq node.exe" /FO CSV /NH 2>nul', { encoding: 'utf-8', timeout: 3000 })
+        const nodeCount = (ps.match(/"node\.exe"/gi) || []).length
+        checks.slackBot = { ok: nodeCount >= 2 }
+      } catch {
+        checks.slackBot = { ok: false }
+      }
+
+      sendJson(res, 200, checks)
+      return
+    }
 
     // ── /api/claude & /api/v1/messages : Anthropic API 프록시 (널리지 자동 주입) ──
     // TableMaster 내부 + 외부 도구 모두 이 엔드포인트를 사용
@@ -4609,19 +4674,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (!isCloned) {
               mkdirSync(activeDir, { recursive: true })
-              runGit(`git clone --branch ${branch} "${authUrl}" .`, activeDir)
-              sendJson(res, 200, { status: 'cloned', message: 'Repository cloned successfully' })
+              await runGitAsync(`git clone --depth 1 --single-branch --branch ${branch} "${authUrl}" .`, activeDir)
+              const head = await runGitAsync('git rev-parse --short HEAD', activeDir)
+              sendJson(res, 200, { status: 'cloned', message: 'Repository cloned successfully', commit: head })
+              // 백그라운드에서 히스토리 확장 (git log/diff 용)
+              runGitAsync(`git fetch --deepen=200 origin ${branch}`, activeDir).catch(() => {})
             } else {
-              runGit(`git remote set-url origin "${authUrl}"`, activeDir)
-              runGit(`git fetch origin ${branch}:refs/remotes/origin/${branch}`, activeDir)
-              const localHead = runGit('git rev-parse HEAD', activeDir)
-              const remoteHead = runGit(`git rev-parse origin/${branch}`, activeDir)
+              await runGitAsync(`git remote set-url origin "${authUrl}"`, activeDir)
+              // 일반 fetch — 기존 클론에서는 델타만 받으므로 빠름
+              await runGitAsync(`git fetch origin ${branch}`, activeDir)
+              const localHead = await runGitAsync('git rev-parse HEAD', activeDir)
+              const remoteHead = await runGitAsync(`git rev-parse origin/${branch}`, activeDir).catch(() => localHead)
 
               if (localHead === remoteHead) {
                 sendJson(res, 200, { status: 'up-to-date', message: 'Already up to date', commit: localHead.substring(0, 8) })
               } else {
-                runGit(`git reset --hard origin/${branch}`, activeDir)
-                const newHead = runGit('git rev-parse HEAD', activeDir)
+                await runGitAsync(`git reset --hard origin/${branch}`, activeDir)
+                const newHead = await runGitAsync('git rev-parse HEAD', activeDir)
                 sendJson(res, 200, { status: 'updated', message: 'Pulled latest changes', commit: newHead.substring(0, 8) })
               }
             }
