@@ -1,11 +1,12 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useState, lazy, Suspense } from 'react';
 import { useSchemaStore } from '../../store/useSchemaStore.ts';
 import { useCanvasStore } from '../../store/useCanvasStore.ts';
 import { useExploreStore } from '../../store/useExploreStore.ts';
 import { forceArrangeLayout } from '../../core/layout/autoLayout.ts';
 import { fitToScreen } from './interaction/ZoomPanHandler.ts';
 import { exportCanvasAsImage } from '../../core/export/imageExporter.ts';
-import SQLExportModal from '../Export/SQLExportModal.tsx';
+
+const SQLExportModal = lazy(() => import('../Export/SQLExportModal.tsx'));
 
 /**
  * ERD 전용 플로팅 도구 모음 — 캔버스 우하단에 배치
@@ -142,7 +143,7 @@ export default function ERDCanvasTools() {
         </FloatBtn>
       </div>
 
-      {showExport && <SQLExportModal onClose={() => setShowExport(false)} />}
+      {showExport && <Suspense fallback={null}><SQLExportModal onClose={() => setShowExport(false)} /></Suspense>}
     </>
   );
 }

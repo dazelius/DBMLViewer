@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, lazy, Suspense } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useSyncStore } from '../../store/useSyncStore.ts';
 import { usePresence } from '../../hooks/usePresence.ts';
-import ExcelImportModal from '../Import/ExcelImportModal.tsx';
+
+const ExcelImportModal = lazy(() => import('../Import/ExcelImportModal.tsx'));
 
 export default function Toolbar() {
   const navigate = useNavigate();
@@ -234,7 +235,7 @@ export default function Toolbar() {
         </div>
       </div>
 
-      {showImport && <ExcelImportModal onClose={() => setShowImport(false)} />}
+      {showImport && <Suspense fallback={null}><ExcelImportModal onClose={() => setShowImport(false)} /></Suspense>}
     </>
   );
 }
