@@ -8,6 +8,7 @@ import { request as httpRequest } from 'http'
 import type { IncomingMessage, ServerResponse } from 'http'
 import { request as httpsRequest } from 'https'
 import { deflateSync } from 'zlib'
+import { networkInterfaces } from 'os'
 
 // ── 서버사이드 Three.js (FBX 메시 추출용) ────────────────────────────────────
 // 동적 임포트로 지연 로딩. Node.js 폴리필을 먼저 설정한 뒤 로드.
@@ -510,6 +511,30 @@ function runGit(cmd: string, cwd: string): string {
 function sendJson(res: ServerResponse, status: number, data: unknown) {
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(data))
+}
+
+let _cachedLocalIp: string | null = null
+function getLocalIp(): string {
+  if (_cachedLocalIp) return _cachedLocalIp
+  const nets = networkInterfaces()
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]!) {
+      if (net.family === 'IPv4' && !net.internal) {
+        _cachedLocalIp = net.address
+        return net.address
+      }
+    }
+  }
+  return 'localhost'
+}
+
+function resolveHost(req: IncomingMessage): string {
+  const host = req.headers.host || 'localhost:5173'
+  if (host.startsWith('localhost') || host.startsWith('127.0.0.1')) {
+    const port = host.split(':')[1] || '5173'
+    return `${getLocalIp()}:${port}`
+  }
+  return host
 }
 
 function readBody(req: IncomingMessage, maxBytes = 1_048_576 /* 1MB */): Promise<string> {
@@ -6591,7 +6616,7 @@ async function serverExecuteToolAsync(
   // fetch는 서버→서버 직통(localhost:8100), 다운로드 링크는 Vite 프록시 경유(5173)
   const BIBLE_TABLING_API_URL = process.env.BIBLE_TABLING_URL || 'http://localhost:8100'
   // 슬랙에 전달할 다운로드 링크 베이스: Vite 프록시 서버 URL (외부에서 접근 가능)
-  const BIBLE_TABLING_LINK_BASE = options.tableMasterUrl || process.env.TABLEMASTER_URL || 'http://localhost:5173'
+  const BIBLE_TABLING_LINK_BASE = options.tableMasterUrl || process.env.TABLEMASTER_URL || `http://${getLocalIp()}:5173`
 
   if (toolName === 'edit_game_data') {
     try {
@@ -8026,7 +8051,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       writePublishedIndex(list)
 
       // URL 생성 (Explore의 /api/p/:id 경로 사용)
-      const host = req.headers.host || 'localhost:5173'
+      const host = resolveHost(req)
       const protocol = req.headers['x-forwarded-proto'] || 'http'
       const url = `${protocol}://${host}/api/p/${id}`
 

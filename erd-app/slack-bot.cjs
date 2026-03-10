@@ -18,6 +18,7 @@
 const { App } = require('@slack/bolt');
 const { readFileSync, writeFileSync, existsSync, mkdirSync } = require('fs');
 const path = require('path');
+const os = require('os');
 
 // ── .env 로드 ──
 function loadEnv() {
@@ -41,8 +42,18 @@ loadEnv();
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN || '';
 const DATAMASTER_URL = process.env.DATAMASTER_URL || 'http://localhost:5173';
-// 외부에서 접근 가능한 URL (Slack 링크용)
-const DATAMASTER_PUBLIC_URL = process.env.DATAMASTER_PUBLIC_URL || DATAMASTER_URL;
+// 외부에서 접근 가능한 URL (Slack 링크용) — 자동 감지
+function detectLocalIp() {
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal) return net.address;
+    }
+  }
+  return 'localhost';
+}
+const DATAMASTER_PUBLIC_URL = process.env.DATAMASTER_PUBLIC_URL
+  || `http://${detectLocalIp()}:5173`;
 
 if (!SLACK_BOT_TOKEN || !SLACK_APP_TOKEN) {
   console.error(`
