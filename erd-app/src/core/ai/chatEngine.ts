@@ -1294,6 +1294,10 @@ function buildSystemPrompt(
   // ── 아티팩트 규칙: artifact 도구 포함 시에만 ──
   if (hasTools(['create_artifact', 'patch_artifact'])) {
     lines.push('## 아티팩트 생성 프로토콜');
+    lines.push('⭐ 아티팩트 생성 전에 **반드시** search_published_artifacts로 유사한 기존 문서를 먼저 검색하세요!');
+    lines.push('- 유사한 기존 아티팩트가 있으면 → 사용자에게 링크와 함께 "기존 문서를 갱신할까요, 새로 만들까요?" 제안');
+    lines.push('- 사용자가 "갱신/수정/업데이트" 요청 시 → get_published_artifact로 기존 HTML 가져와서 create_artifact로 수정본 생성');
+    lines.push('- 사용자가 기존 아티팩트를 언급/링크하면 → get_published_artifact로 가져와서 수정');
     lines.push('<<<ARTIFACT_START>>> + HTML(body만, 다크테마 bg:#0f1117 text:#e2e8f0 accent:#6366f1) + <<<ARTIFACT_END>>> → create_artifact(title). 수정은 patch_artifact만.');
     lines.push('임베드: data-embed="schema|query|relations|graph|diff|csv|scene|prefab|fbx-anim" 속성 사용. 이미지: /api/images/smart?name=파일명. [[TableName]]→스키마 팝업.');
     lines.push('Mermaid: \\n+4칸 들여쓰기, 노드ID=영문, 한글=["..."], 특수문자 금지.');
