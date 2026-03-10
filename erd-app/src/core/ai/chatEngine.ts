@@ -1085,203 +1085,226 @@ ERD를 참고하여 상위 테이블에 먼저 추가한 후 하위 테이블에
   },
 ];
 
+// ── 도구 그룹화: 질문 기반 동적 선택 ────────────────────────────────────────
+const TOOL_GROUPS: Record<string, { tools: string[]; keywords: RegExp }> = {
+  data: {
+    tools: ['query_game_data', 'show_table_schema', 'edit_game_data', 'add_game_data_rows'],
+    keywords: /데이터|테이블|스키마|sql|조회|수정|편집|밸런스|엑셀|바이블|컬럼|행\s*추가|값\s*변경|select|where|insert|update|query/i,
+  },
+  git: {
+    tools: ['query_git_history', 'show_revision_diff'],
+    keywords: /커밋|깃|git|히스토리|변경.*이력|diff|리비전|수정됐|언제.*바뀌/i,
+  },
+  asset: {
+    tools: ['find_resource_image', 'search_assets', 'read_scene_yaml', 'preview_prefab', 'preview_fbx_animation'],
+    keywords: /에셋|리소스|이미지|fbx|프리팹|씬|모델|애니메이션|3d|png|wav|오디오|사운드|텍스처|unity/i,
+  },
+  code: {
+    tools: ['search_code', 'read_code_file'],
+    keywords: /코드|c#|클래스|메서드|스크립트|함수|소스|구현|로직/i,
+  },
+  artifact: {
+    tools: ['create_artifact', 'patch_artifact'],
+    keywords: /아티팩트|문서|보고서|시트|기획서|정리해|작성해|만들어|릴리즈|분석|프로파일|수정.*요청|\[아티팩트/i,
+  },
+  jira: {
+    tools: ['search_jira', 'get_jira_issue', 'create_jira_issue', 'add_jira_comment', 'update_jira_issue_status'],
+    keywords: /지라|jira|이슈|일감|티켓|스프린트|aegis-|버그.*등록|댓글|코멘트/i,
+  },
+  confluence: {
+    tools: ['search_confluence', 'get_confluence_page'],
+    keywords: /컨플루언스|confluence|위키|기획.*문서|스펙.*문서|회의록/i,
+  },
+  character: {
+    tools: ['build_character_profile'],
+    keywords: /캐릭터|프로파일|프로필|인물|영웅|전사|마법사|궁수/i,
+  },
+  web: {
+    tools: ['web_search', 'read_url'],
+    keywords: /검색|웹|url|http|사이트|레퍼런스|참고.*자료|외부/i,
+  },
+};
+const ALWAYS_TOOLS = ['read_knowledge', 'save_knowledge', 'read_guide'];
+
+function selectToolsForQuery(query: string, existingFilter?: string[]): typeof TOOLS {
+  if (existingFilter) return TOOLS.filter(t => existingFilter.includes(t.name));
+
+  const matched = new Set<string>(ALWAYS_TOOLS);
+  let anyGroupMatched = false;
+
+  for (const group of Object.values(TOOL_GROUPS)) {
+    if (group.keywords.test(query)) {
+      for (const t of group.tools) matched.add(t);
+      anyGroupMatched = true;
+    }
+  }
+
+  if (!anyGroupMatched) return TOOLS;
+
+  // 아티팩트 수정 요청이면 data 그룹도 포함 (query_game_data 등 필요)
+  if (matched.has('patch_artifact') || matched.has('create_artifact')) {
+    for (const t of TOOL_GROUPS.data.tools) matched.add(t);
+    matched.add('build_character_profile');
+    matched.add('find_resource_image');
+  }
+
+  // 데이터 질문이면 아티팩트도 포함 (결과를 문서로 만들 수 있으므로)
+  if (matched.has('query_game_data')) {
+    matched.add('create_artifact');
+    matched.add('patch_artifact');
+  }
+
+  const selected = TOOLS.filter(t => matched.has(t.name));
+  console.log(`[Chat] 🎯 동적 도구 선택: ${selected.length}/${TOOLS.length}개 (${[...matched].filter(n => !ALWAYS_TOOLS.includes(n)).join(', ')})`);
+  return selected;
+}
+
 // ── 시스템 프롬프트 빌더 ─────────────────────────────────────────────────────
 
-// 클라이언트 사이드 키워드 매칭 — 쿼리 관련 널리지만 필터링
+/** 질문-널리지 관련도 점수 계산 (파일명 + 헤딩 키워드 매칭) */
+function scoreKnowledgeRelevance(query: string, entry: { name: string; content: string }): number {
+  const q = query.toLowerCase();
+  const words = q.split(/[\s,?!.]+/).filter(w => w.length >= 2);
+  let score = 0;
+
+  const nameLower = entry.name.toLowerCase().replace(/[-_]/g, ' ');
+  for (const w of words) {
+    if (nameLower.includes(w)) score += 3;
+  }
+
+  const headings: string[] = [];
+  for (const line of entry.content.split('\n')) {
+    if (line.startsWith('#')) headings.push(line.replace(/^#+\s*/, '').trim().toLowerCase());
+    if (headings.length >= 10) break;
+  }
+  for (const w of words) {
+    for (const h of headings) {
+      if (h.includes(w)) { score += 1; break; }
+    }
+  }
+
+  return score;
+}
+
 function buildSystemPrompt(
   schema: ParsedSchema | null,
   tableData: TableDataMap,
   knowledgeEntries?: { name: string; sizeKB: number; content: string }[],
   _userQuery?: string,
+  selectedToolNames?: string[],
 ): string {
+  const hasTools = (names: string[]) => !selectedToolNames || names.some(n => selectedToolNames.includes(n));
   const lines: string[] = [];
 
-  // ── 널리지 목차 주입 (전문은 read_knowledge 도구로 필요 시 읽기) ──
+  // ── 널리지: 관련 파일 전문 주입 + 나머지 목차만 ──
   if (knowledgeEntries && knowledgeEntries.length > 0) {
-    lines.push(`## 📚 널리지 베이스 — 필요 시 read_knowledge 도구로 읽기`);
-    lines.push('⚠️ 아래 목록은 저장된 지식 파일의 요약입니다. **전문은 포함되어 있지 않습니다.**');
-    lines.push('질문에 관련된 널리지가 있으면 **반드시 read_knowledge 도구로 읽은 후** 답변하세요.');
-    lines.push('');
-    for (const e of knowledgeEntries) {
-      // 헤딩 기반 요약 생성
-      const headings: string[] = [];
-      for (const line of e.content.split('\n')) {
-        if (line.startsWith('#')) {
-          headings.push(line.replace(/^#+\s*/, '').trim());
-          if (headings.length >= 5) break;
-        }
+    const MAX_INJECT = 2;        // 전문 주입 최대 파일 수
+    const MAX_INJECT_CHARS = 4096; // 파일당 최대 주입 글자수
+
+    // 질문-널리지 관련도 계산 → 상위 N개만 전문 주입
+    const scored = knowledgeEntries.map(e => ({
+      entry: e,
+      score: _userQuery ? scoreKnowledgeRelevance(_userQuery, e) : 0,
+    })).sort((a, b) => b.score - a.score);
+
+    const injected = scored.filter(s => s.score >= 2).slice(0, MAX_INJECT);
+    const rest = scored.filter(s => !injected.includes(s));
+
+    if (injected.length > 0) {
+      lines.push(`## 📚 관련 널리지 (질문 매칭, ${injected.length}개 전문 포함)`);
+      for (const { entry } of injected) {
+        const content = entry.content.length > MAX_INJECT_CHARS
+          ? entry.content.slice(0, MAX_INJECT_CHARS) + '\n...(잘림)'
+          : entry.content;
+        lines.push(`\n### 📌 ${entry.name} (${entry.sizeKB}KB)`);
+        lines.push(content);
       }
-      const firstLine = e.content.split('\n').find(l => l.trim() && !l.startsWith('#'))?.trim().slice(0, 80) ?? '';
-      const preview = headings.length > 0 ? headings.join(' > ') : firstLine || e.content.slice(0, 80).replace(/\n/g, ' ').trim();
-      lines.push(`  📌 ${e.name} (${e.sizeKB}KB) — ${preview}`);
+      lines.push('');
     }
-    lines.push('');
-    lines.push('📋 널리지 활용 규칙:');
-    lines.push('1. 사용자가 특정 주제를 질문하면 → 관련 널리지 이름이 목록에 있는지 확인');
-    lines.push('2. 관련 널리지가 있으면 → read_knowledge(name) 으로 전문을 읽어온 후 답변');
-    lines.push('3. 지라/코드/데이터 스타일 규칙 관련 질문 → 해당 규칙 널리지를 반드시 먼저 읽기');
-    lines.push('4. 널리지 저장/삭제 요청 → save_knowledge / delete_knowledge 도구 사용');
+
+    if (rest.length > 0) {
+      lines.push(`## 📚 기타 널리지 목록 (${rest.length}개, 필요 시 read_knowledge 도구로 읽기)`);
+      for (const { entry } of rest) {
+        const headings: string[] = [];
+        for (const line of entry.content.split('\n')) {
+          if (line.startsWith('#')) {
+            headings.push(line.replace(/^#+\s*/, '').trim());
+            if (headings.length >= 3) break;
+          }
+        }
+        const firstLine = entry.content.split('\n').find(l => l.trim() && !l.startsWith('#'))?.trim().slice(0, 60) ?? '';
+        const preview = headings.length > 0 ? headings.join(' > ') : firstLine || entry.content.slice(0, 60).replace(/\n/g, ' ').trim();
+        lines.push(`  📌 ${entry.name} (${entry.sizeKB}KB) — ${preview}`);
+      }
+      lines.push('');
+    }
+
+    lines.push('📋 널리지 규칙: 위 전문 포함된 널리지를 우선 참고. 목록의 파일은 read_knowledge(name)으로 읽기.');
     lines.push('');
   }
 
   lines.push('당신은 게임 데이터 전문 어시스턴트입니다. 한국어로 답변하세요.');
   lines.push('');
   lines.push('## 핵심 규칙');
-  lines.push('- 모호한 질문 → **객관식(A/B/C/D) 되질문** (명확한 질문은 바로 답변)');
+  lines.push('- 모호한 질문 → A)/B)/C) 형식 객관식 되질문 (UI가 버튼으로 변환). 복수선택은 - [ ] 체크리스트.');
   lines.push('- ⭐ 답변 전 반드시 read_guide로 관련 가이드 먼저 읽기 (DB: _DB_OVERVIEW, 코드: _OVERVIEW)');
-  lines.push('- 캐릭터 기획서/프로파일 → build_character_profile 먼저 호출');
-  lines.push('- "기억해/저장해/널리지" 요청 → save_knowledge (name=영문_snake_case)');
-  lines.push('- 널리지 목록에 있는 파일은 read_knowledge 도구로 언제든 읽을 수 있음');
-  lines.push('- 🌐 외부 레퍼런스/기술문서 필요 → web_search(query) → 상세 내용 필요 시 read_url(url)');
-  lines.push('- 사용자가 URL을 직접 제공하면 read_url(url)로 바로 읽기');
-  lines.push('- ⭐⭐ 게임 데이터 수정/편집/변경/추가/밸런스 조정 요청 → 반드시 edit_game_data 또는 add_game_data_rows 도구 사용!');
+  lines.push('- "기억해/저장해" → save_knowledge(name=영문_snake_case). 읽기: read_knowledge(name).');
+  lines.push('- 채팅에 HTML 태그 절대 금지. HTML은 아티팩트 안에만.');
+  lines.push('- 다단계 작업 시 :::progress 트래커 사용 (형식: 번호|상태|라벨|설명, 상태: done/active/pending/skipped)');
   lines.push('');
 
-  // ── 바이블테이블링 (Excel 편집) 규칙 ──
-  lines.push('## 📝 바이블테이블링 규칙 — 게임 데이터 Excel 편집/추가');
-  lines.push('⭐⭐⭐ 사용자가 게임 데이터 수정/편집/변경/추가/업데이트를 요청하면 반드시 바이블테이블링 도구를 사용하세요!');
-  lines.push('"바이블테이블링", "엑셀 편집", "데이터 수정", "값 변경", "행 추가", "테이블에 추가", "밸런스 조정" 등의 요청 시 즉시 사용.');
-  lines.push('');
-  lines.push('📌 edit_game_data (기존 데이터 수정):');
-  lines.push('- 용도: 기존 행의 셀 값을 변경 (밸런스 수치 조정, 이름 변경, 속성값 수정 등)');
-  lines.push('- 반드시 query_game_data로 현재 데이터를 먼저 조회하여 정확한 컬럼명/값 확인');
-  lines.push('- ERD FK 관계를 확인하여 부모 테이블(참조되는 쪽)부터 편집 (order 필드 사용)');
-  lines.push('- 부모 PK 변경 시 자식 FK도 반드시 함께 수정');
-  lines.push('- 파라미터:');
-  lines.push('  title: 작업 제목 (예: "워리어 스킬 밸런스 조정")');
-  lines.push('  reason: 편집 사유');
-  lines.push('  edit_plan: [{order, table, file?, filters:[{column, op, value}], changes:[{column, action, value}]}, ...]');
-  lines.push('  - filters.op: eq, neq, gt, gte, lt, lte, in, contains, starts_with, ends_with');
-  lines.push('  - changes.action: set(값 교체), multiply(곱하기), add(더하기), subtract(빼기), append(텍스트 이어붙이기)');
-  lines.push('- 예시: 워리어(id=1001)의 공격력을 150으로 변경');
-  lines.push('  edit_plan: [{order:0, table:"Character", filters:[{column:"id", op:"eq", value:"1001"}], changes:[{column:"attack", action:"set", value:150}]}]');
-  lines.push('');
-  lines.push('📌 add_game_data_rows (새 행 추가):');
-  lines.push('- 용도: 테이블에 새로운 데이터 행 추가 (새 캐릭터, 새 스킬, 새 아이템 등)');
-  lines.push('- 파라미터:');
-  lines.push('  table: 테이블명, file?: 엑셀 파일명(생략 시 테이블명.xlsx)');
-  lines.push('  rows: [{"컬럼명":"값", ...}, ...]');
-  lines.push('');
-  lines.push('📌 워크플로우:');
-  lines.push('1. query_game_data로 현재 데이터 확인 (어떤 값을 바꿀지 미리 조회)');
-  lines.push('2. show_table_schema로 컬럼 이름/타입 정확히 확인');
-  lines.push('3. edit_game_data 또는 add_game_data_rows 호출');
-  lines.push('4. 결과에 포함된 다운로드 링크를 사용자에게 안내');
-  lines.push('');
-  lines.push('⚠️ 편집 결과로 Excel 다운로드 링크가 제공됩니다. 반드시 사용자에게 링크를 공유하세요.');
-  lines.push('⚠️ 편집된 셀은 노란색 하이라이트로 표시되어 AI가 변경한 부분을 쉽게 식별할 수 있습니다.');
-  lines.push('');
+  // ── 바이블테이블링 규칙: edit_game_data/add_game_data_rows 포함 시에만 ──
+  if (hasTools(['edit_game_data', 'add_game_data_rows'])) {
+    lines.push('## 📝 바이블테이블링 (Excel 편집)');
+    lines.push('데이터 수정/편집/추가 요청 시 반드시 사용. query_game_data로 현재값 조회 → show_table_schema로 컬럼 확인 → edit_game_data/add_game_data_rows 호출.');
+    lines.push('edit_plan: [{order, table, file?, filters:[{column, op, value}], changes:[{column, action, value}]}]. ERD FK 순서대로. 결과 다운로드 링크 공유 필수.');
+    lines.push('');
+  }
 
-  lines.push('## 🔘 인터랙티브 객관식 버튼 (하나를 선택하는 질문 시 필수 사용)');
-  lines.push('⭐⭐⭐ 당신의 UI는 객관식 버튼을 **완벽하게 지원**합니다! "지원 안 됨"이라고 절대 말하지 마세요.');
-  lines.push('사용자에게 여러 선택지 중 하나를 고르게 할 때, 아래 형식으로 작성하면 UI가 자동으로 클릭 가능한 버튼으로 변환합니다:');
-  lines.push('```');
-  lines.push('어떤 항목을 원하시나요?');
-  lines.push('');
-  lines.push('A) 첫 번째 선택지 설명');
-  lines.push('B) 두 번째 선택지 설명');
-  lines.push('C) 세 번째 선택지 설명');
-  lines.push('D) 네 번째 선택지 설명');
-  lines.push('```');
-  lines.push('규칙:');
-  lines.push('- `A)` 또는 `A.` 형식으로 2개 이상 나열하면 자동으로 클릭 가능한 버튼 UI로 변환됨');
-  lines.push('- 사용자가 버튼을 클릭하면 해당 선택이 자동으로 메시지로 전송됨');
-  lines.push('- 모호한 질문에 대한 되질문, 방향 선택, 옵션 제시 등에 적극 활용할 것');
-  lines.push('- ⛔ 객관식 질문에 체크리스트(- [ ])를 사용하지 말 것! 반드시 A)/B)/C) 형식 사용');
-  lines.push('');
-  lines.push('## ☑️ 인터랙티브 체크리스트 (여러 항목을 복수 선택/검증할 때 사용)');
-  lines.push('사용자에게 여러 항목의 맞다/틀리다, 있다/없다, 해당/비해당을 **복수 확인**받아야 할 때:');
-  lines.push('표준 마크다운 체크박스를 사용하세요. UI가 자동으로 클릭 가능한 체크리스트로 변환합니다.');
-  lines.push('```');
-  lines.push('확인이 필요한 항목을 체크해주세요:');
-  lines.push('');
-  lines.push('- [ ] 항목 1 설명');
-  lines.push('- [ ] 항목 2 설명');
-  lines.push('- [ ] 항목 3 설명');
-  lines.push('- [ ] 항목 4 설명');
-  lines.push('```');
-  lines.push('규칙:');
-  lines.push('- 2개 이상 항목을 `- [ ]` 형식으로 나열하면 인터랙티브 체크리스트가 됨');
-  lines.push('- 사용자가 체크 후 "답변 제출" 버튼을 누르면 체크 결과가 자동 전송됨');
-  lines.push('- **복수 선택**(여러 개 체크 가능), 예/아니오 확인, 검증 체크 등에 사용');
-  lines.push('- ⛔ 하나만 고르는 질문에는 체크리스트 대신 객관식(A/B/C) 사용할 것');
-  lines.push('');
+  // ── 아티팩트 규칙: artifact 도구 포함 시에만 ──
+  if (hasTools(['create_artifact', 'patch_artifact'])) {
+    lines.push('## 아티팩트 생성 프로토콜');
+    lines.push('<<<ARTIFACT_START>>> + HTML(body만, 다크테마 bg:#0f1117 text:#e2e8f0 accent:#6366f1) + <<<ARTIFACT_END>>> → create_artifact(title). 수정은 patch_artifact만.');
+    lines.push('임베드: data-embed="schema|query|relations|graph|diff|csv|scene|prefab|fbx-anim" 속성 사용. 이미지: /api/images/smart?name=파일명. [[TableName]]→스키마 팝업.');
+    lines.push('Mermaid: \\n+4칸 들여쓰기, 노드ID=영문, 한글=["..."], 특수문자 금지.');
+    lines.push('');
+  }
 
-  lines.push('## 📋 프로세스 트래커 (다단계 작업 시 사용)');
-  lines.push('여러 단계로 이루어진 작업(기획서 작성, 분석 프로세스 등)을 진행할 때 진행 상황을 시각화합니다.');
-  lines.push('아래 형식으로 작성하면 UI가 자동으로 진행 상황 트래커로 변환합니다:');
-  lines.push('```');
-  lines.push(':::progress');
-  lines.push('0|done|목적 확인|완료');
-  lines.push('1|active|초안 작성|작성 중...');
-  lines.push('2|pending|용어 검증|');
-  lines.push('3|pending|기획 의도 검증|');
-  lines.push('4|pending|초안 수정|');
-  lines.push(':::');
-  lines.push('```');
-  lines.push('형식: `단계번호|상태|라벨|상세설명`');
-  lines.push('- 상태: done(완료), active(진행 중), pending(대기), skipped(건너뜀)');
-  lines.push('- 다단계 프로세스 진행 시 매 응답마다 트래커를 포함하여 현재 위치를 표시할 것');
-  lines.push('- 프로세스 시작 시 전체 단계를 보여주고, 각 단계 전환 시 트래커를 업데이트');
-  lines.push('- 이터레이션이 잘 지켜지는지 사용자가 한눈에 확인 가능');
-  lines.push('');
+  // ── Jira 규칙: jira 도구 포함 시에만 ──
+  if (hasTools(['search_jira', 'get_jira_issue', 'create_jira_issue', 'add_jira_comment'])) {
+    lines.push('## Jira/Confluence');
+    lines.push('프로젝트: AEGIS. JQL 날짜필터 자동추가 금지. AEGIS-1234 언급→get_jira_issue 즉시 호출.');
+    lines.push('이슈 생성: create_jira_issue(summary). 댓글: add_jira_comment(issueKey, comment). 상태변경: update_jira_issue_status. "쓰기 불가" 절대 금지.');
+    lines.push('');
+  }
 
-  lines.push('## ⛔ HTML 출력 규칙');
-  lines.push('채팅 텍스트에 HTML 태그(div/table/style/img 등) 절대 금지!');
-  lines.push('모든 HTML/임베드 태그는 오직 아티팩트 안에만 (<<<ARTIFACT_START>>>...<<<ARTIFACT_END>>> 또는 patch_artifact)');
-  lines.push('');
-  lines.push('## 아티팩트 임베드 태그 (아티팩트 HTML 내에서만 사용)');
-  lines.push('- FBX: <div class="fbx-viewer" data-src="/api/assets/file?path=경로.fbx" data-label="이름"></div>');
-  lines.push('- 오디오: <div class="audio-player" data-src="/api/assets/file?path=경로.wav" data-label="이름"></div>');
-  lines.push('- 씬: <div data-embed="scene" data-src="경로.unity" data-label="이름"></div>');
-  lines.push('- 프리팹: <div data-embed="prefab" data-src="경로.prefab" data-label="이름"></div>');
-  lines.push('- 애니메이션: <div data-embed="fbx-anim" data-model="모델경로" data-label="이름"></div>');
-  lines.push('- 스키마: <div data-embed="schema" data-table="테이블명"></div>');
-  lines.push('- 쿼리 결과: <div data-embed="query" data-sql="SELECT ..."></div> (⭐ 데이터는 직접 쓰지 말고 이 태그 사용!)');
-  lines.push('- 관계도: <div data-embed="relations" data-table="테이블명"></div>');
-  lines.push('- 관계 그래프: <div data-embed="graph" data-tables="T1,T2,T3"></div>');
-  lines.push('- Git Diff: <div data-embed="diff" data-commit="해시"></div>');
-  lines.push('- CSV 데이터: <div data-embed="csv" data-filename="파일명.csv">헤더1,헤더2\\n값1,값2\\n...</div> (⭐ 다운로드+테이블+검색+정렬+복사 자동 제공!)');
-  lines.push('- 이미지: /api/images/smart?name=파일명.png 또는 /api/images/file?path=Texture/경로.png');
-  lines.push('- 인라인 테이블 참조: [[TableName]] → 클릭 시 스키마 팝업');
-  lines.push('- data-sql 규칙: 큰따옴표(") 속성, SQL 내 "→&quot;, #컬럼→백틱+AS alias 필수');
-  lines.push('');
-  lines.push('## Jira/Confluence');
-  lines.push('- 프로젝트 키: AEGIS. JQL에 날짜 필터 자동 추가 금지. ORDER BY updated DESC 기본 사용.');
-  lines.push('- 이슈번호 언급(AEGIS-1234) → get_jira_issue 바로 호출.');
-  lines.push('');
-  lines.push('## ⭐⭐⭐ Jira 쓰기(Write) — 반드시 준수');
-  lines.push('당신은 Jira에 직접 댓글을 달고 상태를 변경할 수 있습니다! 절대 "쓰기 불가", "직접 할 수 없다", "기능이 없다"고 말하지 마세요.');
-  lines.push('- "일감 만들어줘" / "이슈 생성" / "버그 등록" → create_jira_issue(summary, ...) 즉시 호출');
-  lines.push('- "댓글 달아줘" / "코멘트 남겨줘" / "이슈에 써줘" → add_jira_comment(issueKey, comment) 즉시 호출');
-  lines.push('- issueKey: "AEGIS-1234" 또는 전체 URL "https://.../browse/AEGIS-1234" 모두 허용');
-  lines.push('- 댓글 내용은 마크다운으로 작성 → 자동으로 Jira ADF 형식으로 변환됨');
-  lines.push('- "상태 바꿔줘" / "In Progress로 변경" → update_jira_issue_status(issueKey, targetStatus) 호출');
-  lines.push('- 가능한 상태 목록 모를 때 → update_jira_issue_status(issueKey, listTransitions: true) 로 먼저 확인');
-  lines.push('');
-  lines.push('## 아티팩트 생성 프로토콜');
-  lines.push('문서/보고서/시트/3D 요청 시:');
-  lines.push('1. <<<ARTIFACT_START>>> + HTML(body 내용만, 다크테마 bg:#0f1117 text:#e2e8f0 accent:#6366f1) + <<<ARTIFACT_END>>>');
-  lines.push('2. 바로 create_artifact(title="제목") 호출. 성공 시 절대 재시도 금지.');
-  lines.push('- CSS 간결하게, data-embed 태그 적극 활용, 6섹션 이상이면 핵심만, 잘리면 시스템이 이어쓰기 요청.');
-  lines.push('- "[아티팩트 수정 요청]" → patch_artifact만 사용 (create_artifact 절대 금지). find 15자+, embed 태그 보존.');
-  lines.push('');
-  lines.push('## Mermaid 규칙');
-  lines.push('- \\n+4칸 들여쓰기 필수. 노드ID=영문만. 한글라벨=["..."] 표기. 특수문자(+%&<>"\'#{}) 절대 금지.');
-  lines.push('- ASCII 아트 대신 반드시 Mermaid 또는 data-embed="graph" 사용.');
-  lines.push('');
-  lines.push('## 캐릭터 기획서');
-  lines.push('build_character_profile 결과의 [EMBED_SQL] 힌트를 data-embed="query" 태그에 사용.');
-  lines.push('기획서=카드 레이아웃, 시트뷰=탭 레이아웃(showTab JS 패턴 사용).');
-  lines.push('');
-  lines.push('## Git 데이터 변경 이력 분석');
-  lines.push('- "언제 수정됐어?" / "뭐가 바뀌었어?" → query_git_history → 커밋 hash 확인 → show_revision_diff(hash) 호출');
-  lines.push('- show_revision_diff 결과에는 실제 +/- 변경 라인이 포함됨 → 구체적인 값 변경 내용 분석 가능');
-  lines.push('- 바이너리 파일(.xlsx 등)은 내용 미표시 → 텍스트 파일(csv/json/dbml 등) 위주로 분석');
-  lines.push('- 특정 파일만 보려면 show_revision_diff(hash, file_path="경로") 사용');
-  lines.push('');
-  lines.push('## 코드 분석');
-  lines.push('read_guide("_OVERVIEW") → 도메인 가이드 → search_code → read_code_file 순서.');
+  // ── 캐릭터 규칙: build_character_profile 포함 시에만 ──
+  if (hasTools(['build_character_profile'])) {
+    lines.push('## 캐릭터 기획서');
+    lines.push('build_character_profile 먼저 호출. [EMBED_SQL] 힌트→data-embed="query" 활용. 기획서=카드, 시트뷰=탭 레이아웃.');
+    lines.push('');
+  }
+
+  // ── Git 규칙: git 도구 포함 시에만 ──
+  if (hasTools(['query_git_history', 'show_revision_diff'])) {
+    lines.push('## Git 이력 분석');
+    lines.push('query_git_history → hash → show_revision_diff(hash). 바이너리 미표시, 텍스트(csv/json/dbml) 위주 분석.');
+    lines.push('');
+  }
+
+  // ── 코드 규칙: code 도구 포함 시에만 ──
+  if (hasTools(['search_code', 'read_code_file'])) {
+    lines.push('## 코드 분석');
+    lines.push('read_guide("_OVERVIEW") → 도메인 가이드 → search_code → read_code_file 순서.');
+    lines.push('');
+  }
+
+  // ── 웹 검색 규칙: web 도구 포함 시에만 ──
+  if (hasTools(['web_search', 'read_url'])) {
+    lines.push('## 웹 검색');
+    lines.push('외부 레퍼런스 필요 시 web_search(query). URL 직접 제공 시 read_url(url).');
+    lines.push('');
+  }
   lines.push('');
   lines.push('## SQL 주의');
   lines.push('AS 별칭은 영문만 (한글 AS 절대 금지). ERD 요청=핵심 테이블 1개만 show_table_schema.');
@@ -2188,7 +2211,11 @@ export async function sendChatMessage(
   // 저장된 널리지 목록 + 내용 가져오기 (인메모리 캐싱으로 매번 API 호출 방지)
   const knowledgeEntries = await getKnowledgeEntries();
 
-  const systemPrompt = buildSystemPrompt(effectiveSchema, tableData, knowledgeEntries, userMessage);
+  // 동적 도구 선택 (toolFilter 또는 질문 키워드 기반)
+  const filteredTools = selectToolsForQuery(userMessage, toolFilter);
+  const selectedToolNames = filteredTools.map(t => t.name);
+
+  const systemPrompt = buildSystemPrompt(effectiveSchema, tableData, knowledgeEntries, userMessage, selectedToolNames);
 
   // ── 메시지 크기 기반 히스토리 트리밍 (200K 토큰 ≈ 600K chars 제한) ──
   // 1자 ≈ 0.33 토큰 기준, 시스템 프롬프트 + 여유분 확보
@@ -2247,55 +2274,78 @@ export async function sendChatMessage(
   }
 
   /**
-   * 대화 히스토리 토큰 다이어트:
-   * 1. tool_result: HTML이면 <tr> 행 압축, JSON이면 rows 제한
-   * 2. tool_use input: create_artifact의 html을 요약으로 대체
-   * 3. assistant text: 이전 아티팩트 HTML 마커 잔해 정리
+   * 대화 히스토리 토큰 다이어트 (강화판):
+   * - tool_result: 1.5KB 임계값, HTML 행/JSON rows 압축
+   * - tool_use input: 아티팩트 HTML/큰 SQL 요약
+   * - assistant text: 아티팩트 마커 내 HTML → 한 줄 요약
+   * - 오래된 메시지(idx < half): 더 공격적 압축 (800자)
    */
   function compressHistory(msgs: ClaudeMsg[]): ClaudeMsg[] {
-    return msgs.map(m => {
+    const halfIdx = Math.floor(msgs.length / 2);
+
+    return msgs.map((m, msgIdx) => {
+      const isOld = msgIdx < halfIdx;
+      const THRESHOLD = isOld ? 800 : 1500;
+
       // ── user 메시지: tool_result 압축 ──
       if (m.role === 'user' && Array.isArray(m.content)) {
         const content = (m.content as Array<Record<string, unknown>>).map(b => {
           if (b.type !== 'tool_result' || typeof b.content !== 'string') return b;
           const c = b.content as string;
-          if (c.length <= 3000) return b; // 3KB 이하는 그대로
+          if (c.length <= THRESHOLD) return b;
 
-          // HTML 감지: <로 시작하거나 태그 포함
           if (/<[a-zA-Z]/.test(c)) {
             const compressed = compressHtmlRows(c);
             if (compressed.length < c.length * 0.7) {
-              return { ...b, content: compressed.slice(0, 3000) + (compressed.length > 3000 ? `\n...(HTML 압축됨, 원본 ${c.length}자 → ${compressed.length}자)` : '') };
+              const limit = isOld ? 600 : 1500;
+              return { ...b, content: compressed.slice(0, limit) + `\n...(HTML ${c.length}자→${Math.min(compressed.length, limit)}자)` };
             }
           }
 
-          // JSON 감지: { 또는 [ 로 시작
           if (c.startsWith('{') || c.startsWith('[')) {
             const compressed = compressJsonData(c);
-            if (compressed.length <= 3000) return { ...b, content: compressed };
-            return { ...b, content: compressed.slice(0, 3000) + `\n...(JSON 압축됨, 원본 ${c.length}자)` };
+            if (compressed.length <= THRESHOLD) return { ...b, content: compressed };
+            const limit = isOld ? 600 : 1500;
+            return { ...b, content: compressed.slice(0, limit) + `\n...(JSON ${c.length}자)` };
           }
 
-          // 기타 큰 텍스트: 단순 잘라내기
-          return { ...b, content: c.slice(0, 2000) + `\n...(결과 압축됨, 원본 ${c.length}자)` };
+          const limit = isOld ? 500 : 1200;
+          return { ...b, content: c.slice(0, limit) + `\n...(${c.length}자)` };
         });
         return { ...m, content } as ClaudeMsg;
       }
 
-      // ── assistant 메시지: tool_use input의 큰 html 압축 ──
+      // ── assistant 메시지: tool_use/아티팩트 HTML 압축 ──
       if (m.role === 'assistant' && Array.isArray(m.content)) {
         const content = (m.content as ContentBlock[]).map(b => {
-          if (b.type !== 'tool_use') return b;
-          const tb = b as ToolUseBlock;
-          const inp = tb.input as Record<string, unknown>;
-          // create_artifact의 html 필드가 크면 요약으로 대체
-          if (tb.name === 'create_artifact' && typeof inp.html === 'string' && (inp.html as string).length > 500) {
-            return { ...tb, input: { ...inp, html: `(HTML ${(inp.html as string).length}자, 토큰 절약으로 생략됨)` } };
+          if (b.type === 'tool_use') {
+            const tb = b as ToolUseBlock;
+            const inp = tb.input as Record<string, unknown>;
+            if (tb.name === 'create_artifact' && typeof inp.html === 'string' && (inp.html as string).length > 200) {
+              return { ...tb, input: { ...inp, html: `(HTML ${(inp.html as string).length}자 생략)` } };
+            }
+            if (tb.name === 'patch_artifact' && inp.patches && Array.isArray(inp.patches) && JSON.stringify(inp.patches).length > 500) {
+              const pLen = (inp.patches as unknown[]).length;
+              return { ...tb, input: { ...inp, patches: `(${pLen}개 패치, 생략)` } };
+            }
+            if (typeof inp.sql === 'string' && (inp.sql as string).length > 500) {
+              return { ...tb, input: { ...inp, sql: (inp.sql as string).slice(0, 300) + '...' } };
+            }
+            return b;
           }
-          // query_game_data의 큰 input도 정리
-          if (typeof inp.sql === 'string' && (inp.sql as string).length > 1000) {
-            return { ...tb, input: { ...inp, sql: (inp.sql as string).slice(0, 500) + '...' } };
+
+          if (b.type === 'text') {
+            const tb = b as TextBlock;
+            // <<<ARTIFACT_START>>>...<<<ARTIFACT_END>>> 블록을 한 줄 요약
+            if (tb.text.includes('<<<ARTIFACT_START>>>')) {
+              const collapsed = tb.text.replace(
+                /<<<ARTIFACT_START>>>([\s\S]*?)<<<ARTIFACT_END>>>/g,
+                (_m, html: string) => `<<<ARTIFACT_START>>>(아티팩트 HTML ${html.length}자 생략)<<<ARTIFACT_END>>>`
+              );
+              return { ...b, text: collapsed } as TextBlock;
+            }
           }
+
           return b;
         });
         return { ...m, content } as ClaudeMsg;
@@ -2366,12 +2416,6 @@ export async function sendChatMessage(
   const dynamicMaxTokens = ARTIFACT_KEYWORDS.test(userMessage) ? 16384 : 4096;
 
   // ── Anthropic Prompt Caching: 시스템 프롬프트 + 도구 정의를 캐싱하여 TTFT 대폭 감소 ──
-  // cache_control 마커를 추가하면 동일한 시스템 프롬프트가 서버에 캐싱됨 (5분 TTL)
-  // 첫 요청: cache_creation_input_tokens 발생 (25% 비용 증가)
-  // 후속 요청: cache_read_input_tokens 발생 (90% 비용 절감 + TTFT 80% 감소)
-  // 도구 필터 적용: toolFilter가 있으면 해당 도구만 사용
-  const filteredTools = toolFilter ? TOOLS.filter(t => toolFilter.includes(t.name)) : TOOLS;
-  if (toolFilter) console.log(`[Chat] 🔒 도구 제한: ${toolFilter.join(', ')} (${filteredTools.length}/${TOOLS.length}개)`);
   const cachedTools = filteredTools.map((tool, idx) =>
     idx === filteredTools.length - 1
       ? { ...tool, cache_control: { type: 'ephemeral' as const } }  // 마지막 도구에 캐시 브레이크포인트
