@@ -856,6 +856,36 @@ const TOOLS = [
       required: ['title'],
     },
   },
+  // ── 출판 아티팩트 검색/가져오기 ──────────────────────────────────────────
+  {
+    name: 'search_published_artifacts',
+    description:
+      '기존에 출판된 아티팩트(문서/보고서)를 검색합니다. ' +
+      '아티팩트 생성 전에 반드시 호출하여 유사한 기존 문서가 있는지 확인하세요. ' +
+      '비슷한 문서가 있으면 사용자에게 링크를 제안하고, 수정/갱신 여부를 물어보세요.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '검색 키워드 (제목/설명에서 검색). 비워두면 최근 문서 목록 반환.' },
+        limit: { type: 'number', description: '최대 결과 수 (기본 10)' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'get_published_artifact',
+    description:
+      '기존 출판된 아티팩트의 HTML 전체 내용을 가져옵니다. ' +
+      '기존 문서를 수정/갱신하거나, 내용을 참고하여 새 문서를 만들 때 사용하세요. ' +
+      '가져온 HTML을 기반으로 patch_artifact 또는 create_artifact로 수정본을 만들 수 있습니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        artifact_id: { type: 'string', description: '아티팩트 ID (search_published_artifacts 결과에서 확인)' },
+      },
+      required: ['artifact_id'],
+    },
+  },
   // ── Jira / Confluence 툴 ─────────────────────────────────────────────────
   {
     name: 'search_jira',
@@ -1104,8 +1134,8 @@ const TOOL_GROUPS: Record<string, { tools: string[]; keywords: RegExp }> = {
     keywords: /코드|c#|클래스|메서드|스크립트|함수|소스|구현|로직/i,
   },
   artifact: {
-    tools: ['create_artifact', 'patch_artifact'],
-    keywords: /아티팩트|문서|보고서|시트|기획서|정리해|작성해|만들어|릴리즈|분석|프로파일|수정.*요청|\[아티팩트/i,
+    tools: ['create_artifact', 'patch_artifact', 'search_published_artifacts', 'get_published_artifact'],
+    keywords: /아티팩트|문서|보고서|시트|기획서|정리해|작성해|만들어|릴리즈|분석|프로파일|수정.*요청|\[아티팩트|기존.*문서|이전.*문서|출판/i,
   },
   jira: {
     tools: ['search_jira', 'get_jira_issue', 'create_jira_issue', 'add_jira_comment', 'update_jira_issue_status'],
@@ -3592,6 +3622,54 @@ function showTab(id){
               artifactAccumulatedHtml = '';
               artifactContinuationCount = 0;
             }
+          }
+        }
+
+        // ── search_published_artifacts ──
+        else if (tb.name === 'search_published_artifacts') {
+          const t0 = performance.now();
+          try {
+            const resp = await fetch('/api/tool/execute', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ tool: 'search_published_artifacts', input: inp }),
+            });
+            const data2 = await resp.json() as { result: string; data?: { total: number; matched: number; artifacts: { id: string; title: string; description: string; createdAt: string }[] } };
+            const duration = performance.now() - t0;
+            resultStr = data2.result;
+            const artifacts = data2.data?.artifacts ?? [];
+            tc = { kind: 'artifact', title: '기존 문서 검색', html: '', description: resultStr, duration } as ArtifactResult;
+            if (artifacts.length > 0) {
+              resultStr += `\n\n기존 문서를 수정하려면 get_published_artifact(artifact_id)로 HTML을 가져온 후 patch_artifact로 수정하세요.`;
+            }
+          } catch (e) {
+            resultStr = `출판 아티팩트 검색 오류: ${String(e)}`;
+            tc = { kind: 'artifact', title: '기존 문서 검색', html: '', description: resultStr, error: String(e) } as ArtifactResult;
+          }
+        }
+
+        // ── get_published_artifact ──
+        else if (tb.name === 'get_published_artifact') {
+          const artifactId = String(inp.artifact_id ?? '');
+          const t0 = performance.now();
+          try {
+            const resp = await fetch('/api/tool/execute', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ tool: 'get_published_artifact', input: inp }),
+            });
+            const data2 = await resp.json() as { result: string; data?: { id: string; title: string; html: string; description: string; createdAt: string; url: string } };
+            const duration = performance.now() - t0;
+            resultStr = data2.result;
+            const art = data2.data;
+            if (art) {
+              tc = { kind: 'artifact', title: art.title, html: art.html, description: art.description ?? '', duration } as ArtifactResult;
+            } else {
+              tc = { kind: 'artifact', title: '문서 가져오기', html: '', description: resultStr, duration } as ArtifactResult;
+            }
+          } catch (e) {
+            resultStr = `출판 아티팩트 조회 오류: ${String(e)}`;
+            tc = { kind: 'artifact', title: '문서 가져오기', html: '', description: resultStr, error: String(e) } as ArtifactResult;
           }
         }
 
