@@ -424,7 +424,10 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
     if (!scenePath || !availMaps.length) return
     const detected = detectMapFolder(scenePath, availMaps)
     if (detected) loadMap(detected)
-    else setStatus('idle') // MapSelector 표시
+    else {
+      // 사전 익스포트 없음 → on-demand bake 시작
+      startBake(scenePath)
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scenePath, availMaps])
 
@@ -551,6 +554,59 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
           setStatus('error')
         }
   }, [])
+
+  // ── On-demand Bake: 사전 익스포트 없을 때 서버에서 즉석 생성 (SSE) ────────
+  const startBake = useCallback((path: string) => {
+    setStatus('loading')
+    setProgress(0)
+    setProgressMsg('씬 분석 중...')
+
+    // 씬 경로 파라미터 추출
+    let rawPath = path
+    try {
+      rawPath = new URL(path, 'http://x').searchParams.get('path') || path
+    } catch {}
+
+    const url = `/api/assets/scene?path=${encodeURIComponent(rawPath)}&bake=1&max=500`
+    const evtSrc = new EventSource(url)
+
+    evtSrc.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        if (data.type === 'progress') {
+          setProgress(data.pct ?? 0)
+          setProgressMsg(data.msg ?? '')
+        } else if (data.type === 'start') {
+          setProgressMsg(`FBX ${data.total}개 변환 시작...`)
+        } else if (data.type === 'done') {
+          evtSrc.close()
+          setProgressMsg('맵 데이터 로드 중...')
+          // 생성된 맵 리스트 새로고침 후 로드
+          fetch('/api/assets/map-list')
+            .then(r => r.json())
+            .then((listData: { maps: MapEntry[] }) => {
+              setAvailMaps(listData.maps || [])
+              const newMap = (listData.maps || []).find(
+                (m: MapEntry) => m.folder === data.mapFolder || m.sceneName === data.sceneName,
+              )
+              if (newMap) loadMap(newMap)
+              else setStatus('error')
+            })
+            .catch(() => setStatus('error'))
+        } else if (data.type === 'error') {
+          evtSrc.close()
+          setProgressMsg('오류: ' + data.msg)
+          setStatus('error')
+        }
+      } catch {}
+    }
+
+    evtSrc.onerror = () => {
+      evtSrc.close()
+      setProgressMsg('서버 연결 오류')
+      setStatus('error')
+    }
+  }, [loadMap])
 
   // ── 씬 전체 보기 ────────────────────────────────────────────────────────
   const fitToScene = useCallback(() => {
@@ -698,12 +754,12 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
                         </div>
           )}
 
-          {/* 맵 선택 */}
+          {/* 맵 선택 (수동) */}
           {status === 'idle' && availMaps.length > 0 && (
             <div style={{ position: 'absolute', inset: 0, background: '#0f1420' }}>
               <MapSelector maps={availMaps} onSelect={setManualMap} />
-                    </div>
-                  )}
+            </div>
+          )}
         </div>
 
         {/* Inspector */}

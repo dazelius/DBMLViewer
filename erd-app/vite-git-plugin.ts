@@ -9,7 +9,174 @@ import type { IncomingMessage, ServerResponse } from 'http'
 import { request as httpsRequest } from 'https'
 import { deflateSync } from 'zlib'
 
-// ── 서버 로깅 ─────────────────────────────────────────────────────────────────
+// ── 서버사이드 Three.js (FBX 메시 추출용) ────────────────────────────────────
+// 동적 임포트로 지연 로딩. Node.js 폴리필을 먼저 설정한 뒤 로드.
+let _sTHREE: any   = null   // THREE namespace
+let _sFBXLoader: any = null  // FBXLoader class
+
+async function getServerThree(): Promise<{ THREE: any; FBXLoader: any }> {
+  if (_sTHREE) return { THREE: _sTHREE, FBXLoader: _sFBXLoader }
+
+  // ── Node.js 폴리필 (Three.js가 필요로 하는 최소 DOM API) ──────────────────
+  const g = globalThis as any
+  if (!g.__threeNodeSetup) {
+    g.__threeNodeSetup = true
+    if (!g.document) {
+      g.document = {
+        createElement: (_tag: string) => ({
+          onload: null, onerror: null, src: '', style: {},
+          getContext: () => null,
+          setAttribute: () => {},
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }),
+        createElementNS: () => ({ setAttribute: () => {} }),
+        createEvent:      () => ({ initEvent: () => {} }),
+      }
+    }
+    if (!g.window)     g.window     = { document: g.document, addEventListener: () => {}, removeEventListener: () => {} }
+    if (!g.navigator)  g.navigator  = { userAgent: 'node.js' }
+    if (!g.self)       g.self       = g.window
+  }
+
+  _sTHREE     = await import('three')
+  const fbxMod = await import('three/examples/jsm/loaders/FBXLoader.js' as any)
+  _sFBXLoader = fbxMod.FBXLoader
+  return { THREE: _sTHREE, FBXLoader: _sFBXLoader }
+}
+
+/**
+ * FBX 파일(절대경로)을 서버에서 로드하여 메시별 버텍스/노멀/UV/인덱스를 추출.
+ * Three.js FBXLoader를 사용 (텍스처 로딩은 무시).
+ */
+async function serverExtractFBX(fbxAbsPath: string): Promise<Array<{
+  name:      string
+  vertices:  { x: number; y: number; z: number }[]
+  normals:   { x: number; y: number; z: number }[]
+  uvs:       { x: number; y: number }[]
+  triangles: number[]
+}>> {
+  const { THREE, FBXLoader } = await getServerThree()
+
+  const nodeBuffer = readFileSync(fbxAbsPath)
+  const ab = new Uint8Array(nodeBuffer).buffer   // ArrayBuffer (copy)
+
+  // TextureLoader를 무음 처리 (Node.js에 img/canvas 없으므로)
+  const origLoad = THREE.TextureLoader.prototype.load
+  THREE.TextureLoader.prototype.load = function(
+    _url: string,
+    onLoad?: (t: any) => void,
+  ) {
+    const t = new THREE.Texture()
+    if (onLoad) Promise.resolve().then(() => onLoad(t))
+    return t
+  }
+
+  let group: any
+  try {
+    group = new FBXLoader().parse(ab, '')
+  } finally {
+    THREE.TextureLoader.prototype.load = origLoad
+  }
+
+  const result: ReturnType<typeof serverExtractFBX> extends Promise<infer R> ? R : never = []
+  group.traverse((child: any) => {
+    if (!child.isMesh || !child.geometry) return
+    const geo   = child.geometry
+    const posA  = geo.attributes?.position
+    if (!posA) return
+
+    const cnt = posA.count
+    const verts: { x: number; y: number; z: number }[] = []
+    for (let i = 0; i < cnt; i++) verts.push({ x: posA.getX(i), y: posA.getY(i), z: posA.getZ(i) })
+
+    const norms: { x: number; y: number; z: number }[] = []
+    const normA = geo.attributes?.normal
+    if (normA) for (let i = 0; i < normA.count; i++) norms.push({ x: normA.getX(i), y: normA.getY(i), z: normA.getZ(i) })
+
+    const uvs: { x: number; y: number }[] = []
+    const uvA = geo.attributes?.uv
+    if (uvA) for (let i = 0; i < uvA.count; i++) uvs.push({ x: uvA.getX(i), y: uvA.getY(i) })
+
+    const tris: number[] = geo.index
+      ? (Array.from(geo.index.array as Uint16Array | Uint32Array | Int32Array) as number[])
+      : Array.from({ length: cnt }, (_, i) => i)
+
+    result.push({ name: child.name || 'Mesh', vertices: verts, normals: norms, uvs, triangles: tris })
+  })
+
+  return result
+}
+
+type V3 = { x: number; y: number; z: number }
+type Q4 = { x: number; y: number; z: number; w: number }
+
+/**
+ * Unity 월드 트랜스폼(LH Y-up)을 Three.js 좌표계(RH Y-up)로 변환한 뒤
+ * 버텍스 배열을 월드스페이스로 베이킹.
+ *
+ * Unity → Three.js:  pos.z *= -1,  quat = (-qx, -qy, qz, qw)
+ */
+function bakeWorldTransform(
+  verts: V3[],
+  pos:   V3,
+  rot:   Q4,
+  scl:   V3,
+  THREE: any,
+): V3[] {
+  const p   = new THREE.Vector3(pos.x, pos.y, -pos.z)
+  const q   = new THREE.Quaternion(-rot.x, -rot.y, rot.z, rot.w)
+  const s   = new THREE.Vector3(scl.x, scl.y, scl.z)
+  const mat = new THREE.Matrix4().compose(p, q, s)
+
+  return verts.map(v => {
+    const vec = new THREE.Vector3(v.x, v.y, v.z).applyMatrix4(mat)
+    return { x: vec.x, y: vec.y, z: vec.z }
+  })
+}
+
+/**
+ * ProBuilder 버텍스(Unity LH 로컬)를 Three.js 월드스페이스로 변환.
+ * - Z 반전 + 와인딩 반전으로 LH→RH 변환
+ * - 이후 월드 트랜스폼 적용
+ */
+function bakeProBuilderVerts(
+  flatVerts: number[],  // [x,y,z, x,y,z, ...]
+  indices:   number[],
+  pos: V3, rot: Q4, scl: V3,
+  THREE: any,
+): { vertices: V3[]; normals: V3[]; uvs: {x:number;y:number}[]; triangles: number[] } {
+  const localVerts: V3[] = []
+  for (let i = 0; i < flatVerts.length; i += 3) {
+    // Unity LH → Three.js RH: negate Z
+    localVerts.push({ x: flatVerts[i], y: flatVerts[i + 1], z: -flatVerts[i + 2] })
+  }
+
+  // 와인딩 반전 (LH→RH 뒤집기)
+  const flipped: number[] = []
+  for (let i = 0; i + 2 < indices.length; i += 3) {
+    flipped.push(indices[i + 2], indices[i + 1], indices[i])
+  }
+
+  const worldVerts = bakeWorldTransform(localVerts, pos, rot, scl, THREE)
+  return { vertices: worldVerts, normals: [], uvs: [], triangles: flipped }
+}
+
+/** 메시 오브젝트 배열에서 바운딩 박스 계산 */
+function computeMeshBounds(meshObjs: any[]): { min: V3; max: V3 } | null {
+  let mnX = Infinity, mnY = Infinity, mnZ = Infinity
+  let mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity
+  for (const obj of meshObjs) {
+    for (const v of (obj.geometry?.vertices ?? [])) {
+      if (v.x < mnX) mnX = v.x;  if (v.x > mxX) mxX = v.x
+      if (v.y < mnY) mnY = v.y;  if (v.y > mxY) mxY = v.y
+      if (v.z < mnZ) mnZ = v.z;  if (v.z > mxZ) mxZ = v.z
+    }
+  }
+  return isFinite(mnX) ? { min: { x: mnX, y: mnY, z: mnZ }, max: { x: mxX, y: mxY, z: mxZ } } : null
+}
+
+
 const SERVER_LOG = join(process.cwd(), '..', 'server.log')
 
 function ts(): string {
@@ -3191,6 +3358,124 @@ function createGitMiddleware(options: GitPluginOptions) {
 
         // 이름순 정렬
         hierarchy.sort((a, b) => a.name.localeCompare(b.name))
+
+        // ── bake=1 : 서버사이드 FBX 로딩으로 meshes.json 즉석 생성 (SSE 스트림) ──
+        if (url2.searchParams.get('bake') === '1') {
+          res.writeHead(200, {
+            'Content-Type':                'text/event-stream',
+            'Cache-Control':               'no-cache',
+            'Connection':                  'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+          })
+          const sse = (data: object) => {
+            if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`)
+          }
+
+          try {
+            const fbxObjs  = sceneObjects.filter(o => o.type === 'fbx'         && o.fbxPath)
+            const pbObjs   = sceneObjects.filter(o => o.type === 'probuilder'  && o.vertices)
+            const totalWork = fbxObjs.length + pbObjs.length
+            sse({ type: 'start', total: totalWork, sceneName: scenePath })
+
+            // ① Three.js 초기화
+            sse({ type: 'progress', pct: 3, msg: 'Three.js 초기화 중...' })
+            const { THREE } = await getServerThree()
+
+            const meshObjects: any[] = []
+            let done = 0
+
+            // ② FBX 오브젝트 처리
+            for (const obj of fbxObjs) {
+              done++
+              if (done % 5 === 0 || done === fbxObjs.length) {
+                sse({ type: 'progress', pct: 5 + (done / totalWork) * 80,
+                      msg: `FBX 로딩 ${done} / ${totalWork}` })
+                await new Promise(r => setTimeout(r, 0))  // event loop 양보
+              }
+
+              try {
+                const UNITY_ASSETS_DIR = join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets')
+                const absPath = join(UNITY_ASSETS_DIR, ...obj.fbxPath.replace(/\//g, sep).split(sep))
+                if (!existsSync(absPath)) continue
+
+                const subMeshes = await serverExtractFBX(absPath)
+                for (const sm of subMeshes) {
+                  const worldVerts = bakeWorldTransform(sm.vertices, obj.pos, obj.rot, obj.scale, THREE)
+                  const worldNorms = sm.normals.length
+                    ? bakeWorldTransform(sm.normals, { x:0,y:0,z:0 }, obj.rot, { x:1,y:1,z:1 }, THREE)
+                    : []
+                  meshObjects.push({
+                    name: obj.name + (subMeshes.length > 1 ? '/' + sm.name : ''),
+                    path: obj.name,
+                    layer: '',
+                    tag:   '',
+                    transform: {
+                      position: obj.pos,
+                      rotation: { x:0,y:0,z:0 },
+                      scale:    obj.scale,
+                    },
+                    geometry: {
+                      vertices:  worldVerts,
+                      normals:   worldNorms,
+                      uvs:       sm.uvs,
+                      triangles: sm.triangles,
+                    },
+                  })
+                }
+              } catch (fbxErr) {
+                console.error('[bake FBX]', obj.fbxPath, String(fbxErr))
+              }
+            }
+
+            // ③ ProBuilder 오브젝트 처리
+            for (const obj of pbObjs) {
+              done++
+              try {
+                const baked = bakeProBuilderVerts(obj.vertices!, obj.indices || [], obj.pos, obj.rot, obj.scale, THREE)
+                meshObjects.push({
+                  name:  obj.name,
+                  path:  obj.name,
+                  layer: '',
+                  tag:   'ProBuilder',
+                  transform: {
+                    position: obj.pos,
+                    rotation: { x:0,y:0,z:0 },
+                    scale:    obj.scale,
+                  },
+                  geometry: baked,
+                })
+              } catch {}
+            }
+
+            sse({ type: 'progress', pct: 88, msg: '씬 정보 저장 중...' })
+            await new Promise(r => setTimeout(r, 0))
+
+            // ④ 출력 디렉토리에 저장 (C:\AegisLevel\Map\<sceneName>\)
+            const rawSceneName = scenePath.split('/').pop()?.replace(/\.unity$/i, '') || 'scene'
+            // 파일시스템 안전 이름
+            const safeFolder   = rawSceneName.replace(/[<>:"/\\|?*]/g, '_').slice(0, 60)
+            const outDir       = join('C:', 'AegisLevel', 'Map', safeFolder)
+            mkdirSync(outDir, { recursive: true })
+
+            writeFileSync(join(outDir, 'meshes.json'), JSON.stringify({ meshObjects }))
+
+            const bounds = computeMeshBounds(meshObjects)
+            const sceneInfoOut = {
+              sceneName:  rawSceneName,
+              meshCount:  meshObjects.length,
+              exportTime: new Date().toISOString(),
+              bounds,
+            }
+            writeFileSync(join(outDir, 'scene_info.json'), JSON.stringify(sceneInfoOut))
+
+            sse({ type: 'progress', pct: 100, msg: '완료!' })
+            sse({ type: 'done', mapFolder: safeFolder, meshCount: meshObjects.length, sceneName: rawSceneName })
+          } catch (bakeErr) {
+            sse({ type: 'error', msg: String(bakeErr) })
+          }
+          res.end()
+          return
+        }
 
         sendJson(res, 200, {
           scenePath: resolvedScenePath,
