@@ -2,8 +2,6 @@ import { useEffect, useRef } from 'react';
 import { useEditorStore } from '../store/useEditorStore.ts';
 import { useSchemaStore } from '../store/useSchemaStore.ts';
 import { useCanvasStore } from '../store/useCanvasStore.ts';
-import { parseAndTransform } from '../core/schema/schemaTransform.ts';
-import { computeLayout } from '../core/layout/autoLayout.ts';
 
 const DEBOUNCE_MS = 300;
 
@@ -17,7 +15,9 @@ export function useDebouncedParse() {
 
   useEffect(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => {
+    timerRef.current = setTimeout(async () => {
+      const { parseAndTransform } = await import('../core/schema/schemaTransform.ts');
+      const { computeLayout } = await import('../core/layout/autoLayout.ts');
       const { schema, errors } = parseAndTransform(dbmlText);
       if (schema) {
         setSchema(schema);

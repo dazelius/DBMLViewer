@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 import { gitSync, gitLoadFiles } from '../core/import/gitlabService.ts';
-import { excelFilesToDbml } from '../core/import/excelToDbml.ts';
 import { useEditorStore } from '../store/useEditorStore.ts';
 import { useCanvasStore } from '../store/useCanvasStore.ts';
 import { useSyncStore } from '../store/useSyncStore.ts';
@@ -56,6 +55,7 @@ export function useAutoLoad() {
         const allFiles = [...schemaFiles, ...dataFiles];
         if (allFiles.length === 0) return;
 
+        const { excelFilesToDbml } = await import('../core/import/excelToDbml.ts');
         const result = excelFilesToDbml(allFiles);
 
         useEditorStore.getState().setDbmlText(result.dbml);

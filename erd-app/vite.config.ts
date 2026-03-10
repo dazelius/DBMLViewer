@@ -41,5 +41,20 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0',
       port: 5173,
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('react-dom') || id.includes('react-router')) return 'vendor-react';
+              if (id.includes('monaco-editor') || id.includes('@monaco-editor')) return 'vendor-monaco';
+              if (id.includes('/three/') || id.includes('3d-force-graph') || id.includes('three-spritetext')) return 'vendor-three';
+              if (id.includes('alasql') || id.includes('/xlsx/')) return 'vendor-data';
+              if (id.includes('@dbml/core') || id.includes('@dbml/parse')) return 'vendor-dbml';
+            }
+          },
+        },
+      },
+    },
   }
 })
