@@ -373,7 +373,7 @@ const MERMAID_INIT_SCRIPT = '<script type="module">'
   + '      else if(n.querySelector&&n.querySelector(".mermaid"))renderAll();'
   + '    }'
   + '  }'
-  + '}).observe(document.body,{childList:true,subtree:true});'
+  + '}).observe(document.body||document.documentElement,{childList:true,subtree:true});'
   + '</' + 'script>';
 
 /** 인터랙티브 SVG ERD 렌더러 (artifact iframe 내에서 실행) */
@@ -427,7 +427,7 @@ function initTables(){
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',initTables);
 else setTimeout(initTables,50);
-new MutationObserver(function(){setTimeout(initTables,100);}).observe(document.body,{childList:true,subtree:true});
+var _tgt=document.body||document.documentElement;if(_tgt)new MutationObserver(function(){setTimeout(initTables,100);}).observe(_tgt,{childList:true,subtree:true});
 })();
 <` + `/script>`;
 
@@ -3420,8 +3420,9 @@ const FBX_VIEWER_SCRIPT = `
     processAll();
   }
   // body 변경 감지 (스트리밍 중 innerHTML 갱신 대응)
-  new MutationObserver(function(){ processAll(); }).observe(
-    document.documentElement, { childList: true, subtree: true }
+  var _obsTarget = document.body || document.documentElement;
+  if (_obsTarget) new MutationObserver(function(){ processAll(); }).observe(
+    _obsTarget, { childList: true, subtree: true }
   );
 })();
 `;
@@ -6409,10 +6410,20 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
   const historyEst = usage.total_input - usage.system_prompt_estimate;
   const historyPct = usage.total_input > 0 ? Math.round((Math.max(0, historyEst) / usage.total_input) * 100) : 0;
 
-  // 비용 추정 (Claude Sonnet 기준: input $3/MTok, output $15/MTok)
-  const inputCost = (usage.total_input / 1_000_000) * 3;
+  // 캐시 합계
+  const totalCacheRead = usage.iterations.reduce((s, t) => s + (t.cache_read ?? 0), 0);
+  const totalCacheCreation = usage.iterations.reduce((s, t) => s + (t.cache_creation ?? 0), 0);
+  const hasCacheData = totalCacheRead > 0 || totalCacheCreation > 0;
+  const cacheHitPct = usage.total_input > 0 ? Math.round((totalCacheRead / usage.total_input) * 100) : 0;
+
+  // 비용 추정 (Claude Sonnet: input $3/MTok, cached $0.3/MTok, output $15/MTok)
+  const uncachedInput = Math.max(0, usage.total_input - totalCacheRead);
+  const inputCost = (uncachedInput / 1_000_000) * 3 + (totalCacheRead / 1_000_000) * 0.3 + (totalCacheCreation / 1_000_000) * 3.75;
   const outputCost = (usage.total_output / 1_000_000) * 15;
   const totalCost = inputCost + outputCost;
+  // 캐시 없었을 때의 비용 (비교용)
+  const noCacheCost = (usage.total_input / 1_000_000) * 3 + outputCost;
+  const savedCost = noCacheCost - totalCost;
 
   // 바 비율 계산 (시스템 프롬프트 vs 히스토리+메시지 vs 출력)
   const total = usage.total_input + usage.total_output;
@@ -6435,6 +6446,11 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
         <span className="text-[11px] font-mono flex-shrink-0" style={{ color: '#a5b4fc' }}>
           {fmt(usage.total_tokens)} tokens
         </span>
+        {hasCacheData && (
+          <span className="text-[9px] font-mono flex-shrink-0 px-1.5 py-0.5 rounded-full" style={{ color: '#38bdf8', background: 'rgba(56,189,248,0.1)' }}>
+            ⚡{cacheHitPct}% cached
+          </span>
+        )}
 
         {/* 미니 바 */}
         <div className="flex-1 h-1.5 rounded-full overflow-hidden flex" style={{ background: 'rgba(255,255,255,0.06)' }}>
@@ -6476,6 +6492,48 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
             </div>
           </div>
 
+          {/* 캐시 바 (있을 때만) */}
+          {hasCacheData && (
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[9px] font-semibold" style={{ color: '#38bdf8' }}>CACHE</span>
+                <div className="flex-1 h-2 rounded-full overflow-hidden flex" style={{ background: 'rgba(255,255,255,0.04)' }}>
+                  {totalCacheRead > 0 && (
+                    <div
+                      title={`캐시 히트 ${fmt(totalCacheRead)} (${cacheHitPct}% — 90% 할인)`}
+                      style={{ width: `${usage.total_input > 0 ? (totalCacheRead / usage.total_input) * 100 : 0}%`, background: '#38bdf8', minWidth: 4, transition: 'width 0.3s' }}
+                    />
+                  )}
+                  {totalCacheCreation > 0 && (
+                    <div
+                      title={`캐시 생성 ${fmt(totalCacheCreation)} (25% 추가 비용)`}
+                      style={{ width: `${usage.total_input > 0 ? (totalCacheCreation / usage.total_input) * 100 : 0}%`, background: '#a78bfa', minWidth: 4, transition: 'width 0.3s' }}
+                    />
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                {totalCacheRead > 0 && (
+                  <span className="flex items-center gap-1 text-[9px]" style={{ color: '#38bdf8' }}>
+                    <span className="inline-block w-1.5 h-1.5 rounded-sm" style={{ background: '#38bdf8' }} />
+                    캐시 히트 {fmt(totalCacheRead)} ({cacheHitPct}%)
+                  </span>
+                )}
+                {totalCacheCreation > 0 && (
+                  <span className="flex items-center gap-1 text-[9px]" style={{ color: '#a78bfa' }}>
+                    <span className="inline-block w-1.5 h-1.5 rounded-sm" style={{ background: '#a78bfa' }} />
+                    캐시 생성 {fmt(totalCacheCreation)}
+                  </span>
+                )}
+                {savedCost > 0.0001 && (
+                  <span className="text-[9px]" style={{ color: '#4ade80' }}>
+                    -${savedCost.toFixed(4)} 절감
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* 범례 */}
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             <span className="flex items-center gap-1.5 text-[10px]" style={{ color: '#f59e0b' }}>
@@ -6499,15 +6557,18 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
                 <span className="w-6 text-center">#</span>
                 <span className="flex-1">Input</span>
                 <span className="flex-1">Output</span>
-                {usage.iterations.some(t => t.cache_read) && <span className="flex-1">Cache</span>}
+                {hasCacheData && <span className="flex-1">Cache Hit</span>}
               </div>
               {usage.iterations.map((t) => (
                 <div key={t.iteration} className="flex gap-2">
                   <span className="w-6 text-center" style={{ color: '#818cf8' }}>{t.iteration}</span>
                   <span className="flex-1">{fmt(t.input_tokens)}</span>
                   <span className="flex-1">{fmt(t.output_tokens)}</span>
-                  {usage.iterations.some(it => it.cache_read) && (
-                    <span className="flex-1">{t.cache_read ? `${fmt(t.cache_read)} hit` : '-'}</span>
+                  {hasCacheData && (
+                    <span className="flex-1" style={{ color: t.cache_read ? '#38bdf8' : 'inherit' }}>
+                      {t.cache_read ? `${fmt(t.cache_read)}` : '-'}
+                      {t.cache_creation ? ` +${fmt(t.cache_creation)}w` : ''}
+                    </span>
                   )}
                 </div>
               ))}
@@ -6515,18 +6576,25 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
           )}
 
           {/* 합계 */}
-          <div className="flex gap-4 pt-1" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 10 }}>
+          <div className="flex flex-wrap gap-x-4 gap-y-0.5 pt-1" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 10 }}>
             <span style={{ color: 'var(--text-muted)' }}>
               입력 <span style={{ color: '#a5b4fc' }}>{fmt(usage.total_input)}</span>
             </span>
             <span style={{ color: 'var(--text-muted)' }}>
               출력 <span style={{ color: '#4ade80' }}>{fmt(usage.total_output)}</span>
             </span>
+            {hasCacheData && (
+              <span style={{ color: 'var(--text-muted)' }}>
+                캐시 <span style={{ color: '#38bdf8' }}>{fmt(totalCacheRead)}</span>
+                <span style={{ color: 'var(--text-muted)', opacity: 0.5 }}> ({cacheHitPct}%)</span>
+              </span>
+            )}
             <span style={{ color: 'var(--text-muted)' }}>
               합계 <span style={{ color: '#e2e8f0' }}>{fmt(usage.total_tokens)}</span>
             </span>
             <span className="ml-auto" style={{ color: '#f59e0b' }}>
               ≈${totalCost.toFixed(4)}
+              {savedCost > 0.0001 && <span style={{ color: '#4ade80', marginLeft: 4 }}>(-${savedCost.toFixed(4)})</span>}
             </span>
           </div>
         </div>
@@ -6888,12 +6956,20 @@ function ThinkingIndicator({ liveToolCalls }: { liveToolCalls?: ToolCallResult[]
     return () => clearInterval(t);
   }, []);
 
+  const knowledgeTCs = (liveToolCalls ?? []).filter(tc => tc.kind === 'knowledge') as KnowledgeResult[];
+  const otherTCs = (liveToolCalls ?? []).filter(tc => tc.kind !== 'knowledge');
+
   return (
     <div className="flex flex-col gap-3">
-      {/* 실시간 tool calls */}
-      {liveToolCalls && liveToolCalls.length > 0 && (
+      {(knowledgeTCs.length > 0 || otherTCs.length > 0) && (
         <div className="space-y-2.5">
-          {liveToolCalls.map((tc, i) => (
+          {knowledgeTCs.length > 1
+            ? <KnowledgeGroup items={knowledgeTCs} />
+            : knowledgeTCs.length === 1
+              ? <KnowledgeCard tc={knowledgeTCs[0]} />
+              : null
+          }
+          {otherTCs.map((tc, i) => (
             <ToolCallCard key={i} tc={tc} index={i} />
           ))}
         </div>

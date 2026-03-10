@@ -880,6 +880,21 @@ function createGitMiddleware(options: GitPluginOptions) {
   const { localDir } = options
   return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
 
+    // ── /api/tool/execute : 클라이언트사이드 도구 실행 ──────────────────────
+    if (req.url === '/api/tool/execute' && req.method === 'POST') {
+      try {
+        const raw = await readBody(req)
+        const body = raw ? JSON.parse(raw) : {}
+        const toolName = String(body.tool ?? '')
+        const input = (body.input ?? {}) as Record<string, unknown>
+        const result = await serverExecuteToolAsync(toolName, input, options)
+        sendJson(res, 200, result)
+      } catch (e: unknown) {
+        sendJson(res, 500, { result: `도구 실행 오류: ${e instanceof Error ? e.message : String(e)}` })
+      }
+      return
+    }
+
     // ── /api/service-health : 전체 서비스 상태 ──────────────────────────────
     if (req.url === '/api/service-health' && req.method === 'GET') {
       const checks: Record<string, { ok: boolean; detail?: string }> = {}
@@ -4672,16 +4687,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const isCloned = existsSync(join(activeDir, '.git'))
 
+            // stale index.lock 자동 제거 (이전 git 프로세스 강제 종료 시 잔류)
+            if (isCloned) {
+              const lockPath = join(activeDir, '.git', 'index.lock')
+              if (existsSync(lockPath)) {
+                try { unlinkSync(lockPath); sLog('WARN', `Removed stale index.lock: ${lockPath}`) } catch {}
+              }
+            }
+
             if (!isCloned) {
               mkdirSync(activeDir, { recursive: true })
               await runGitAsync(`git clone --depth 1 --single-branch --branch ${branch} "${authUrl}" .`, activeDir)
+              await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
               const head = await runGitAsync('git rev-parse --short HEAD', activeDir)
               sendJson(res, 200, { status: 'cloned', message: 'Repository cloned successfully', commit: head })
               // 백그라운드에서 히스토리 확장 (git log/diff 용)
               runGitAsync(`git fetch --deepen=200 origin ${branch}`, activeDir).catch(() => {})
             } else {
+              await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
               await runGitAsync(`git remote set-url origin "${authUrl}"`, activeDir)
-              // 일반 fetch — 기존 클론에서는 델타만 받으므로 빠름
               await runGitAsync(`git fetch origin ${branch}`, activeDir)
               const localHead = await runGitAsync('git rev-parse HEAD', activeDir)
               const remoteHead = await runGitAsync(`git rev-parse origin/${branch}`, activeDir).catch(() => localHead)
@@ -8219,7 +8243,10 @@ function createChatApiMiddleware(options: GitPluginOptions) {
             try {
               data = await serverStreamClaude(
               apiKey,
-                { model: MODEL, max_tokens: MAX_TOKENS, system: systemPrompt, tools: API_TOOLS, messages },
+                { model: MODEL, max_tokens: MAX_TOKENS,
+                  system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+                  tools: API_TOOLS.map((t: Record<string, unknown>, i: number) => i === API_TOOLS.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t),
+                  messages },
               res,
               () => {}, // tool_use 처리는 아래에서
             )
@@ -8413,8 +8440,8 @@ function createChatApiMiddleware(options: GitPluginOptions) {
             data = await serverCallClaude(apiKey, {
               model: MODEL,
               max_tokens: MAX_TOKENS,
-            system: systemPrompt,
-            tools: API_TOOLS,
+            system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+            tools: API_TOOLS.map((t: Record<string, unknown>, i: number) => i === API_TOOLS.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t),
             messages,
           })
           } catch (apiErr) {

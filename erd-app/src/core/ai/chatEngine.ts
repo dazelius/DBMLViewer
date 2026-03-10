@@ -2316,16 +2316,24 @@ export async function sendChatMessage(
    */
   function compressHistory(msgs: ClaudeMsg[]): ClaudeMsg[] {
     const halfIdx = Math.floor(msgs.length / 2);
+    const thirdIdx = Math.floor(msgs.length / 3);
 
     return msgs.map((m, msgIdx) => {
+      const isVeryOld = msgIdx < thirdIdx;
       const isOld = msgIdx < halfIdx;
-      const THRESHOLD = isOld ? 800 : 1500;
+      const THRESHOLD = isVeryOld ? 300 : isOld ? 800 : 1500;
 
       // ── user 메시지: tool_result 압축 ──
       if (m.role === 'user' && Array.isArray(m.content)) {
         const content = (m.content as Array<Record<string, unknown>>).map(b => {
           if (b.type !== 'tool_result' || typeof b.content !== 'string') return b;
           const c = b.content as string;
+
+          // 매우 오래된 턴: tool_result 극단적 압축 (어시스턴트가 이미 요약했으므로)
+          if (isVeryOld && c.length > 300) {
+            return { ...b, content: c.slice(0, 200) + `\n...(${c.length}자, 이전 대화 요약 참조)` };
+          }
+
           if (c.length <= THRESHOLD) return b;
 
           if (/<[a-zA-Z]/.test(c)) {
@@ -2339,11 +2347,11 @@ export async function sendChatMessage(
           if (c.startsWith('{') || c.startsWith('[')) {
             const compressed = compressJsonData(c);
             if (compressed.length <= THRESHOLD) return { ...b, content: compressed };
-            const limit = isOld ? 600 : 1500;
+            const limit = isVeryOld ? 200 : isOld ? 600 : 1500;
             return { ...b, content: compressed.slice(0, limit) + `\n...(JSON ${c.length}자)` };
           }
 
-          const limit = isOld ? 500 : 1200;
+          const limit = isVeryOld ? 200 : isOld ? 500 : 1200;
           return { ...b, content: c.slice(0, limit) + `\n...(${c.length}자)` };
         });
         return { ...m, content } as ClaudeMsg;
@@ -2365,18 +2373,29 @@ export async function sendChatMessage(
             if (typeof inp.sql === 'string' && (inp.sql as string).length > 500) {
               return { ...tb, input: { ...inp, sql: (inp.sql as string).slice(0, 300) + '...' } };
             }
+            // 매우 오래된 턴: 모든 tool_use input 축소
+            if (isVeryOld) {
+              const inputStr = JSON.stringify(inp);
+              if (inputStr.length > 300) {
+                const keys = Object.keys(inp).join(', ');
+                return { ...tb, input: { _summary: `(${keys}, ${inputStr.length}자 생략)` } };
+              }
+            }
             return b;
           }
 
           if (b.type === 'text') {
             const tb = b as TextBlock;
-            // <<<ARTIFACT_START>>>...<<<ARTIFACT_END>>> 블록을 한 줄 요약
             if (tb.text.includes('<<<ARTIFACT_START>>>')) {
               const collapsed = tb.text.replace(
                 /<<<ARTIFACT_START>>>([\s\S]*?)<<<ARTIFACT_END>>>/g,
                 (_m, html: string) => `<<<ARTIFACT_START>>>(아티팩트 HTML ${html.length}자 생략)<<<ARTIFACT_END>>>`
               );
               return { ...b, text: collapsed } as TextBlock;
+            }
+            // 매우 오래된 턴의 긴 텍스트도 축소
+            if (isVeryOld && tb.text.length > 1000) {
+              return { ...b, text: tb.text.slice(0, 800) + `\n...(${tb.text.length}자)` } as TextBlock;
             }
           }
 
@@ -2400,6 +2419,32 @@ export async function sendChatMessage(
   const sysChars = systemPrompt.length;
   const msgChars = estimateMsgChars(rawHistoryMsgs);
   console.log(`[Chat] 토큰 추정: system=${Math.round(sysChars/3)}t, history=${Math.round(msgChars/3)}t, 합계≈${Math.round((sysChars+msgChars)/3)}t (${rawHistoryMsgs.length}개 메시지)`);
+
+  // ── 멀티턴 대화 캐싱: 히스토리 끝에 cache_control 브레이크포인트 ──
+  // 히스토리가 충분히 길면 (4턴+) 마지막 히스토리 메시지에 캐시 마커를 넣어
+  // 이전 대화 전체가 캐시되도록 함 → 매 턴마다 히스토리 재전송 비용 절감
+  if (rawHistoryMsgs.length >= 4) {
+    const lastHistMsg = rawHistoryMsgs[rawHistoryMsgs.length - 1];
+    if (lastHistMsg.role === 'assistant' && Array.isArray(lastHistMsg.content)) {
+      const blocks = lastHistMsg.content as ContentBlock[];
+      if (blocks.length > 0) {
+        const lastBlock = blocks[blocks.length - 1];
+        (lastBlock as Record<string, unknown>).cache_control = { type: 'ephemeral' };
+      }
+    } else if (lastHistMsg.role === 'user') {
+      if (typeof lastHistMsg.content === 'string') {
+        // string content → content block 배열로 변환하여 cache_control 추가
+        (lastHistMsg as Record<string, unknown>).content = [
+          { type: 'text', text: lastHistMsg.content, cache_control: { type: 'ephemeral' } },
+        ];
+      } else if (Array.isArray(lastHistMsg.content)) {
+        const blocks = lastHistMsg.content as Array<Record<string, unknown>>;
+        if (blocks.length > 0) {
+          blocks[blocks.length - 1].cache_control = { type: 'ephemeral' };
+        }
+      }
+    }
+  }
 
   const messages: ClaudeMsg[] = [
     ...rawHistoryMsgs,
@@ -3638,17 +3683,22 @@ function showTab(id){
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ tool: 'search_published_artifacts', input: inp }),
             });
+            if (!resp.ok) {
+              const errText = await resp.text().catch(() => `HTTP ${resp.status}`);
+              throw new Error(errText.slice(0, 200));
+            }
             const data2 = await resp.json() as { result: string; data?: { total: number; matched: number; artifacts: { id: string; title: string; description: string; createdAt: string }[] } };
             const duration = performance.now() - t0;
             resultStr = data2.result;
             const artifacts = data2.data?.artifacts ?? [];
-            tc = { kind: 'artifact', title: '기존 문서 검색', html: '', description: resultStr, duration } as ArtifactResult;
+            tc = { kind: 'knowledge', action: 'read', name: '기존 문서 검색', content: resultStr, duration } as KnowledgeResult;
             if (artifacts.length > 0) {
               resultStr += `\n\n기존 문서를 수정하려면 get_published_artifact(artifact_id)로 HTML을 가져온 후 patch_artifact로 수정하세요.`;
             }
           } catch (e) {
-            resultStr = `출판 아티팩트 검색 오류: ${String(e)}`;
-            tc = { kind: 'artifact', title: '기존 문서 검색', html: '', description: resultStr, error: String(e) } as ArtifactResult;
+            const errMsg = String(e).replace(/^Error:\s*/, '').slice(0, 200);
+            resultStr = `출판 아티팩트 검색 오류: ${errMsg}`;
+            tc = { kind: 'knowledge', action: 'read', name: '기존 문서 검색', content: resultStr, error: errMsg } as KnowledgeResult;
           }
         }
 
@@ -3662,18 +3712,23 @@ function showTab(id){
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ tool: 'get_published_artifact', input: inp }),
             });
+            if (!resp.ok) {
+              const errText = await resp.text().catch(() => `HTTP ${resp.status}`);
+              throw new Error(errText.slice(0, 200));
+            }
             const data2 = await resp.json() as { result: string; data?: { id: string; title: string; html: string; description: string; createdAt: string; url: string } };
             const duration = performance.now() - t0;
             resultStr = data2.result;
             const art = data2.data;
-            if (art) {
+            if (art?.html) {
               tc = { kind: 'artifact', title: art.title, html: art.html, description: art.description ?? '', duration } as ArtifactResult;
             } else {
-              tc = { kind: 'artifact', title: '문서 가져오기', html: '', description: resultStr, duration } as ArtifactResult;
+              tc = { kind: 'knowledge', action: 'read', name: art?.title ?? '문서 가져오기', content: resultStr, duration } as KnowledgeResult;
             }
           } catch (e) {
-            resultStr = `출판 아티팩트 조회 오류: ${String(e)}`;
-            tc = { kind: 'artifact', title: '문서 가져오기', html: '', description: resultStr, error: String(e) } as ArtifactResult;
+            const errMsg = String(e).replace(/^Error:\s*/, '').slice(0, 200);
+            resultStr = `출판 아티팩트 조회 오류: ${errMsg}`;
+            tc = { kind: 'knowledge', action: 'read', name: '문서 가져오기', content: resultStr, error: errMsg } as KnowledgeResult;
           }
         }
 
