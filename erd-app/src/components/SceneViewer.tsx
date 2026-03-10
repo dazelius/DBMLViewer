@@ -322,6 +322,7 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
   const [progressMsg,   setProgressMsg] = useState('')
   const [loadedMap,     setLoadedMap]   = useState<MapEntry | null>(null)
   const [availMaps,     setAvailMaps]   = useState<MapEntry[]>([])
+  const [mapsLoaded,    setMapsLoaded]  = useState(false)
   const [meshObjects,   setMeshObjects] = useState<MeshJsonObject[]>([])
   const [hierarchy,     setHierarchy]   = useState<HierarchyNode | null>(null)
   const [selected,      setSelected]    = useState<number | null>(null)
@@ -415,21 +416,27 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
   useEffect(() => {
     fetch('/api/assets/map-list')
       .then(r => r.json())
-      .then((data: { maps: MapEntry[] }) => setAvailMaps(data.maps || []))
-      .catch(() => setAvailMaps([]))
+      .then((data: { maps: MapEntry[] }) => {
+        setAvailMaps(data.maps || [])
+        setMapsLoaded(true)
+      })
+      .catch(() => {
+        setAvailMaps([])
+        setMapsLoaded(true)  // 오류여도 로드 완료로 처리
+      })
   }, [])
 
   // ── 씬 경로 → 맵 감지 후 로드 ─────────────────────────────────────────────
   useEffect(() => {
-    if (!scenePath || !availMaps.length) return
+    if (!scenePath || !mapsLoaded) return   // 맵 목록 로드 완료 후에만 진행
     const detected = detectMapFolder(scenePath, availMaps)
     if (detected) loadMap(detected)
     else {
-      // 사전 익스포트 없음 → on-demand bake 시작
+      // 캐시에 없음 → on-demand bake 시작
       startBake(scenePath)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenePath, availMaps])
+  }, [scenePath, mapsLoaded])
 
   // ── 수동 맵 선택 ─────────────────────────────────────────────────────────
   useEffect(() => {
