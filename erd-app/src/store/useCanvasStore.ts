@@ -2,6 +2,16 @@ import { create } from 'zustand';
 import type { TableNode, ViewTransform } from '../core/layout/layoutTypes.ts';
 import type { ParsedSchema } from '../core/schema/types.ts';
 import { computeFocusLayout } from '../core/layout/autoLayout.ts';
+import type { AnomalyReport } from '../core/ai/anomalyDetector.ts';
+import type { ValidationResult } from '../core/ai/validationEngine.ts';
+
+export type ClaudeModelId = 'claude-opus-4-6' | 'claude-sonnet-4-6' | 'claude-sonnet-4-20250514' | 'claude-haiku-4-5-20251001';
+export const CLAUDE_MODELS: { id: ClaudeModelId; label: string; short: string; color: string }[] = [
+  { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', short: 'Opus 4.6', color: '#a78bfa' },
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', short: 'Sonnet 4.6', color: '#38bdf8' },
+  { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', short: 'Sonnet 4', color: '#60a5fa' },
+  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', short: 'Haiku 4.5', color: '#34d399' },
+];
 
 interface CanvasState {
   nodes: Map<string, TableNode>;
@@ -18,6 +28,9 @@ interface CanvasState {
   heatmapData: Map<string, number>;
   heatmapEnabled: boolean;
   tableData: Map<string, { headers: string[]; rows: Record<string, string>[] }>;
+  anomalyReport: AnomalyReport | null;
+  validationResult: ValidationResult | null;
+  claudeModel: ClaudeModelId;
 
   setNodes: (nodes: Map<string, TableNode>) => void;
   updateNodePosition: (tableId: string, x: number, y: number) => void;
@@ -33,6 +46,9 @@ interface CanvasState {
   setHeatmapData: (data: Map<string, number>) => void;
   toggleHeatmap: () => void;
   setTableData: (data: Map<string, { headers: string[]; rows: Record<string, string>[] }>) => void;
+  setAnomalyReport: (report: AnomalyReport | null) => void;
+  setValidationResult: (result: ValidationResult | null) => void;
+  setClaudeModel: (model: ClaudeModelId) => void;
 }
 
 export const useCanvasStore = create<CanvasState>((set, get) => ({
@@ -50,6 +66,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   heatmapData: new Map(),
   heatmapEnabled: false,
   tableData: new Map(),
+  anomalyReport: null,
+  validationResult: null,
+  claudeModel: (() => { const s = localStorage.getItem('tm_claude_model'); return CLAUDE_MODELS.some(m => m.id === s) ? s as ClaudeModelId : 'claude-haiku-4-5-20251001'; })(),
 
   setNodes: (nodes) => set({ nodes: new Map(nodes) }),
 
@@ -134,4 +153,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   setHeatmapData: (data) => set({ heatmapData: data, heatmapEnabled: data.size > 0 }),
   toggleHeatmap: () => set((s) => ({ heatmapEnabled: !s.heatmapEnabled })),
   setTableData: (data) => set({ tableData: data }),
+  setAnomalyReport: (report) => set({ anomalyReport: report }),
+  setValidationResult: (result) => set({ validationResult: result }),
+  setClaudeModel: (model) => { localStorage.setItem('tm_claude_model', model); set({ claudeModel: model }); },
 }));

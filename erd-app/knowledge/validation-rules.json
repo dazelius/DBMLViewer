@@ -1,0 +1,781 @@
+[
+  {
+    "id": "character_hp_positive",
+    "name": "캐릭터 HP 양수 필수",
+    "table": "CharacterStat",
+    "severity": "error",
+    "condition": {
+      "type": "range",
+      "column": "hp",
+      "min": 1
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203223021,
+    "updatedAt": 1773203222864
+  },
+  {
+    "id": "character_speed_positive",
+    "name": "캐릭터 이동속도 양수 필수 (Hero만)",
+    "table": "CharacterStat",
+    "severity": "error",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "type",
+        "op": "eq",
+        "value": "Hero"
+      },
+      "then": {
+        "column": "move_speed",
+        "op": "gte",
+        "value": "0.1"
+      }
+    },
+    "enabled": true,
+    "scope": "personal",
+    "createdAt": 1773203454065,
+    "updatedAt": 1773203453915
+  },
+  {
+    "id": "weapon_damage_positive",
+    "name": "무기 기본 데미지 양수 필수 (방패/특수 제외)",
+    "table": "WeaponStat",
+    "severity": "error",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "weapon_type",
+        "op": "not_in",
+        "value": "Shield,Special"
+      },
+      "then": {
+        "column": "damage_base",
+        "op": "gte",
+        "value": "1"
+      }
+    },
+    "enabled": true,
+    "scope": "personal",
+    "createdAt": 1773203695228,
+    "updatedAt": 1773203695081
+  },
+  {
+    "id": "weapon_fire_rate_positive",
+    "name": "무기 연사속도 양수 필수 (방패/투척 제외)",
+    "table": "WeaponStat",
+    "severity": "error",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "weapon_type",
+        "op": "not_in",
+        "value": "Shield,Throwable"
+      },
+      "then": {
+        "column": "fire_rate",
+        "op": "gte",
+        "value": "0.01"
+      }
+    },
+    "enabled": true,
+    "scope": "personal",
+    "createdAt": 1773203695228,
+    "updatedAt": 1773203695105
+  },
+  {
+    "id": "weapon_mag_positive",
+    "name": "무기 탄창 용량 양수 필수 (방패/투척 제외)",
+    "table": "WeaponStat",
+    "severity": "error",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "weapon_type",
+        "op": "not_in",
+        "value": "Shield,Throwable"
+      },
+      "then": {
+        "column": "mag_capacity_1",
+        "op": "gte",
+        "value": "1"
+      }
+    },
+    "enabled": true,
+    "scope": "personal",
+    "createdAt": 1773203695228,
+    "updatedAt": 1773203695122
+  },
+  {
+    "id": "weapon_range_reasonable",
+    "name": "무기 사거리 합리적 범위",
+    "table": "WeaponStat",
+    "severity": "warning",
+    "condition": {
+      "type": "range",
+      "column": "range",
+      "min": 1,
+      "max": 10000
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203244147,
+    "updatedAt": 1773203243985
+  },
+  {
+    "id": "skill_cooltime_positive",
+    "name": "스킬 쿨타임 양수 필수",
+    "table": "Skill",
+    "severity": "error",
+    "condition": {
+      "type": "range",
+      "column": "cool_time",
+      "min": 0.1
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203244147,
+    "updatedAt": 1773203243995
+  },
+  {
+    "id": "skill_range_positive",
+    "name": "스킬 사거리 양수 필수",
+    "table": "Skill",
+    "severity": "error",
+    "condition": {
+      "type": "range",
+      "column": "range",
+      "min": 0
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203244147,
+    "updatedAt": 1773203244018
+  },
+  {
+    "id": "reward_amount_positive",
+    "name": "보상 수량 양수 필수",
+    "table": "Reward",
+    "severity": "error",
+    "condition": {
+      "type": "range",
+      "column": "amount",
+      "min": 1
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203244148,
+    "updatedAt": 1773203244044
+  },
+  {
+    "id": "statuseffect_duration_positive",
+    "name": "상태효과 지속시간 양수",
+    "table": "StatusEffect",
+    "severity": "warning",
+    "condition": {
+      "type": "range",
+      "column": "duration",
+      "min": 0.1
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203244148,
+    "updatedAt": 1773203244078
+  },
+  {
+    "id": "bot_stat_range",
+    "name": "Bot 능력치 0~1 범위",
+    "table": "BotActionStat",
+    "severity": "warning",
+    "condition": {
+      "type": "range",
+      "column": "accuracy",
+      "min": 0,
+      "max": 1
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203257186,
+    "updatedAt": 1773203257029
+  },
+  {
+    "id": "consumable_name_required",
+    "name": "소모품 이름 필수",
+    "table": "ConsumableItem",
+    "severity": "error",
+    "condition": {
+      "type": "not_null",
+      "column": "name"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203257184,
+    "updatedAt": 1773203257105
+  },
+  {
+    "id": "character_name_required",
+    "name": "캐릭터 이름 필수",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "not_null",
+      "column": "name"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203257184,
+    "updatedAt": 1773203257119
+  },
+  {
+    "id": "weapon_damage_consistency",
+    "name": "무기 데미지 일관성 (base ≤ max)",
+    "table": "WeaponStat",
+    "severity": "error",
+    "condition": {
+      "type": "compare_columns",
+      "left": "damage_base",
+      "op": "<=",
+      "right": "damage_max"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203257185,
+    "updatedAt": 1773203257149
+  },
+  {
+    "id": "weapon_moa_consistency",
+    "name": "무기 MOA 일관성 (base ≤ max, SG 제외)",
+    "table": "weaponstat",
+    "severity": "error",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "weapon_type",
+        "op": "neq",
+        "value": "SG"
+      },
+      "then": {
+        "column": "moa_base",
+        "op": "lte",
+        "right_column": "moa_max"
+      }
+    },
+    "enabled": true,
+    "scope": "personal",
+    "createdAt": 1773203797556,
+    "updatedAt": 1773203797408
+  },
+  {
+    "id": "battlemode_round_positive",
+    "name": "배틀모드 라운드 수 양수",
+    "table": "BattleModeInfo",
+    "severity": "error",
+    "condition": {
+      "type": "range",
+      "column": "total_round",
+      "min": 1
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203265005,
+    "updatedAt": 1773203264845
+  },
+  {
+    "id": "weapon_name_required",
+    "name": "무기 이름 필수",
+    "table": "Weapon",
+    "severity": "error",
+    "condition": {
+      "type": "not_null",
+      "column": "name"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203265004,
+    "updatedAt": 1773203264882
+  },
+  {
+    "id": "skill_name_required",
+    "name": "스킬 이름 필수",
+    "table": "Skill",
+    "severity": "error",
+    "condition": {
+      "type": "not_null",
+      "column": "name"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203265004,
+    "updatedAt": 1773203264894
+  },
+  {
+    "id": "character_id_unique",
+    "name": "캐릭터 ID 고유값",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203265005,
+    "updatedAt": 1773203264912
+  },
+  {
+    "id": "weapon_reload_time_reasonable",
+    "name": "무기 재장전 시간 합리적 범위 (ms, Shield 제외)",
+    "table": "WeaponStat",
+    "severity": "warning",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "weapon_type",
+        "op": "neq",
+        "value": "Shield"
+      },
+      "then": {
+        "column": "reload_time",
+        "op": "range",
+        "min": 100,
+        "max": 30000
+      }
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773203850674,
+    "updatedAt": 1773203850512
+  },
+  {
+    "id": "character_class_fk_valid",
+    "name": "캐릭터 클래스 FK 참조 무결성",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "in",
+      "column": "character_class",
+      "values": [
+        "None",
+        "Damage",
+        "Support",
+        "Tank"
+      ]
+    },
+    "enabled": true,
+    "scope": "personal",
+    "createdAt": 1773204140750,
+    "updatedAt": 1773204140633
+  },
+  {
+    "id": "weapon_type_enum_valid",
+    "name": "무기 타입 Enum 값 유효성",
+    "table": "WeaponStat",
+    "severity": "error",
+    "condition": {
+      "type": "in",
+      "column": "weapon_type",
+      "values": [
+        "None",
+        "AR",
+        "CG",
+        "HG",
+        "Melee",
+        "Throwable",
+        "Special",
+        "DMR",
+        "SMG",
+        "SG",
+        "LMG",
+        "SR",
+        "Shield",
+        "LockOnCharge",
+        "PreCharge"
+      ]
+    },
+    "enabled": true,
+    "scope": "personal",
+    "createdAt": 1773204140750,
+    "updatedAt": 1773204140659
+  },
+  {
+    "id": "character_gearset_fk_not_null",
+    "name": "캐릭터 → 장비셋 FK 필수",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "not_null",
+      "column": "character_gear_set_id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204140751,
+    "updatedAt": 1773204140668
+  },
+  {
+    "id": "character_skillset_fk_not_null",
+    "name": "캐릭터 → 스킬셋 FK 필수",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "not_null",
+      "column": "skill_set_id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204140751,
+    "updatedAt": 1773204140684
+  },
+  {
+    "id": "character_appearance_fk_not_null",
+    "name": "캐릭터 → 외형 FK 필수",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "not_null",
+      "column": "character_appearance_id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204140751,
+    "updatedAt": 1773204140725
+  },
+  {
+    "id": "character_stat_fk_not_null",
+    "name": "캐릭터 → 캐릭터스탯 FK 필수",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "not_null",
+      "column": "character_stat_id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204140751,
+    "updatedAt": 1773204140736
+  },
+  {
+    "id": "weapon_id_unique",
+    "name": "무기 ID 고유값",
+    "table": "Weapon",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204140751,
+    "updatedAt": 1773204140746
+  },
+  {
+    "id": "skill_id_unique",
+    "name": "스킬 ID 고유값",
+    "table": "Skill",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204140752,
+    "updatedAt": 1773204140773
+  },
+  {
+    "id": "character_id_not_null",
+    "name": "캐릭터 ID 필수",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "not_null",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204140751,
+    "updatedAt": 1773204140790
+  },
+  {
+    "id": "weaponstat_id_unique",
+    "name": "무기스탯 ID 고유값",
+    "table": "WeaponStat",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204140752,
+    "updatedAt": 1773204140824
+  },
+  {
+    "id": "statuseffect_id_unique",
+    "name": "상태효과 ID 고유값",
+    "table": "StatusEffect",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204154993,
+    "updatedAt": 1773204154832
+  },
+  {
+    "id": "passive_id_unique",
+    "name": "패시브 ID 고유값",
+    "table": "Passive",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204154994,
+    "updatedAt": 1773204154841
+  },
+  {
+    "id": "gear_id_unique",
+    "name": "장비 ID 고유값",
+    "table": "Gear",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204154994,
+    "updatedAt": 1773204154850
+  },
+  {
+    "id": "characterstat_id_unique",
+    "name": "캐릭터스탯 ID 고유값",
+    "table": "CharacterStat",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204154994,
+    "updatedAt": 1773204154858
+  },
+  {
+    "id": "skillexecute_id_unique",
+    "name": "스킬실행 ID 고유값",
+    "table": "SkillExecute",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204154994,
+    "updatedAt": 1773204154868
+  },
+  {
+    "id": "skill_execute_id1_not_null",
+    "name": "스킬 → 실행1 FK 필수",
+    "table": "Skill",
+    "severity": "warning",
+    "condition": {
+      "type": "not_null",
+      "column": "execute_id1"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204154994,
+    "updatedAt": 1773204154885
+  },
+  {
+    "id": "skill_display_fk_not_null",
+    "name": "스킬 → UI 표시데이터 FK 필수",
+    "table": "Skill",
+    "severity": "warning",
+    "condition": {
+      "type": "not_null",
+      "column": "skill_id_display_data"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204154995,
+    "updatedAt": 1773204154900
+  },
+  {
+    "id": "card_id_unique",
+    "name": "카드 ID 고유값",
+    "table": "Card",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204154995,
+    "updatedAt": 1773204154933
+  },
+  {
+    "id": "perk_id_unique",
+    "name": "퍽 ID 고유값",
+    "table": "Perk",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204154995,
+    "updatedAt": 1773204154946
+  },
+  {
+    "id": "reward_id_unique",
+    "name": "보상 ID 고유값",
+    "table": "Reward",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204154995,
+    "updatedAt": 1773204154963
+  },
+  {
+    "id": "skill_cooldown_vs_damage",
+    "name": "스킬 쿨타임 vs 데미지 밸런스",
+    "table": "Skill",
+    "severity": "warning",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "cooldown_sec",
+        "op": "lt",
+        "value": "5"
+      },
+      "then": {
+        "column": "skill_level",
+        "op": "lte",
+        "value": "3"
+      }
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204762726,
+    "updatedAt": 1773204762557
+  },
+  {
+    "id": "skill_range_vs_damage",
+    "name": "스킬 범위 vs 데미지 밸런스",
+    "table": "SkillExecute",
+    "severity": "warning",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "check_target_num",
+        "op": "gte",
+        "value": "3"
+      },
+      "then": {
+        "column": "power_value",
+        "op": "lt",
+        "value": "100"
+      }
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204762727,
+    "updatedAt": 1773204762564
+  },
+  {
+    "id": "skill_stamina_effect_balance",
+    "name": "스킬 높은 스태미너 소모 시 중요 효과 필수",
+    "table": "SkillExecute",
+    "severity": "warning",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "change_stamina_value",
+        "op": "gt",
+        "value": "50"
+      },
+      "then": {
+        "column": "power_value",
+        "op": "gte",
+        "value": "80"
+      }
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204762727,
+    "updatedAt": 1773204762570
+  },
+  {
+    "id": "skill_energy_cooldown_balance",
+    "name": "스킬 에너지 소모 vs 쿨타임 균형",
+    "table": "SkillExecute",
+    "severity": "warning",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "change_en_value",
+        "op": "gt",
+        "value": "30"
+      },
+      "then": {
+        "column": "power_value",
+        "op": "gte",
+        "value": "60"
+      }
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204762727,
+    "updatedAt": 1773204763101
+  },
+  {
+    "id": "longrange_skill_range_required",
+    "name": "장거리 스킬 SkillExecuteRange 필수",
+    "table": "SkillExecute",
+    "severity": "error",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "skill_distance",
+        "op": "gt",
+        "value": "1500"
+      },
+      "then": {
+        "column": "skill_distance",
+        "op": "gt",
+        "value": "0"
+      }
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773204762727,
+    "updatedAt": 1773204763130
+  },
+  {
+    "id": "rule_1773206796524",
+    "name": "캐릭터스탯 ID 고유값",
+    "table": "CharacterStat",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id,level"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773206796524,
+    "updatedAt": 1773206796524
+  }
+]

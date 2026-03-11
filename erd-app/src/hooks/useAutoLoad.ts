@@ -3,6 +3,9 @@ import { gitSync, gitStatus, gitLoadFiles } from '../core/import/gitlabService.t
 import { useEditorStore } from '../store/useEditorStore.ts';
 import { useCanvasStore } from '../store/useCanvasStore.ts';
 import { useSyncStore } from '../store/useSyncStore.ts';
+import { useSchemaStore } from '../store/useSchemaStore.ts';
+import { runAnomalyDetection } from '../core/ai/anomalyDetector.ts';
+import { runValidation, fetchRulesFromServer } from '../core/ai/validationEngine.ts';
 
 const SCHEMA_PATH = 'GameData/DataDefine';
 const DATA_PATH = 'GameData/Data';
@@ -18,7 +21,27 @@ async function loadAndApplyFiles() {
   const result = excelFilesToDbml(allFiles);
   useEditorStore.getState().setDbmlText(result.dbml);
   if (result.dataRowCounts.size > 0) useCanvasStore.getState().setHeatmapData(result.dataRowCounts);
-  if (result.dataSheets.size > 0) useCanvasStore.getState().setTableData(result.dataSheets);
+  if (result.dataSheets.size > 0) {
+    useCanvasStore.getState().setTableData(result.dataSheets);
+    // 백그라운드 이상치 탐지 (데이터 로드 완료 후 비동기)
+    setTimeout(() => {
+      const schema = useSchemaStore.getState().schema;
+      const report = runAnomalyDetection(result.dataSheets, schema);
+      useCanvasStore.getState().setAnomalyReport(report);
+      const c = report.anomalies.filter(a => a.severity === 'critical').length;
+      const w = report.anomalies.filter(a => a.severity === 'warning').length;
+      console.log(`[Anomaly] 이상치 탐지 완료: ${report.analyzedTables}개 테이블 분석, ${c}건 critical, ${w}건 warning (${report.durationMs.toFixed(0)}ms)`);
+
+      // 서버에서 룰 로드 + 유효성 검증 실행
+      fetchRulesFromServer().then(rules => {
+        if (rules.length > 0) {
+          const vResult = runValidation(result.dataSheets, rules);
+          useCanvasStore.getState().setValidationResult(vResult);
+          console.log(`[Validation] 검증 완료: ${vResult.checkedRules}/${vResult.totalRules}개 룰, ${vResult.violations.length}건 위반 (${vResult.durationMs.toFixed(0)}ms)`);
+        }
+      }).catch(() => {});
+    }, 500);
+  }
   return allFiles.length;
 }
 

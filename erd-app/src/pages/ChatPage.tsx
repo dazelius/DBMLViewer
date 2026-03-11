@@ -3,11 +3,12 @@ import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import Toolbar from '../components/Layout/Toolbar.tsx';
 import { useSchemaStore } from '../store/useSchemaStore.ts';
-import { useCanvasStore } from '../store/useCanvasStore.ts';
+import { useCanvasStore, CLAUDE_MODELS, type ClaudeModelId } from '../store/useCanvasStore.ts';
 import DocsMiniERD from '../components/Docs/DocsMiniERD.tsx';
 import { useDebouncedParse } from '../hooks/useDebouncedParse.ts';
 import {
   sendChatMessage,
+  tryFastPath,
   type ChatTurn,
   type ToolCallResult,
   type DataQueryResult,
@@ -1434,6 +1435,7 @@ interface Message {
   tokenUsage?: TokenUsageSummary; // 토큰 사용량
   iterations?: string[]; // 이터레이션별 텍스트 (각 버블로 분리 렌더링)
   feedback?: MessageFeedback;     // 사용자 피드백 (만족도)
+  isFastPath?: boolean; // FastPath 즉답 (API 미사용)
 }
 
 /** UI용 thinking step (chatEngine의 ThinkingStep + UI 상태) */
@@ -2038,7 +2040,7 @@ function InlineImageCell({ text }: { text: string }) {
 function inlineMarkdown(text: string): React.ReactNode {
   // 이미지, 링크, 볼드, 코드, 이탤릭, .prefab 경로, bare URL 순서대로 파싱
   // ⚠️ 순서 중요: 이미지 > 링크 > bold > code > italic > .prefab > bare URL
-  const INLINE_RE = /!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]*)\]\(([^)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|\*([^*]+)\*|([\w.+\-/]+\.prefab)\b|(https?:\/\/[^\s<>"'\)\]，。、！？；：]+)/g;
+  const INLINE_RE = /!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]*)\]\(([^)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|\*([^*]+)\*|([\w.+\-/]+\.prefab)\b|(https?:\/\/[^\s<>"'\)\]，。、！？；：]+)|\[\[([^\]]+)\]\]/g;
   const segments: React.ReactNode[] = [];
   let lastIndex = 0;
   let key = 0;
@@ -2048,7 +2050,7 @@ function inlineMarkdown(text: string): React.ReactNode {
     // 매치 앞 평문 텍스트
     if (match.index > lastIndex) segments.push(text.slice(lastIndex, match.index));
 
-    const [full, imgAlt, imgUrl, linkText, linkUrl, boldText, codeText, italicText, prefabPath, bareUrl] = match;
+    const [full, imgAlt, imgUrl, linkText, linkUrl, boldText, codeText, italicText, prefabPath, bareUrl, tableRef] = match;
 
     if (imgUrl !== undefined) {
       // 이미지: ![alt](url) — Confluence URL이면 프록시 사용
@@ -2156,6 +2158,37 @@ function inlineMarkdown(text: string): React.ReactNode {
                 <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
               </svg>
               {linkText || pShortName}
+            </span>,
+          );
+        } else if (/^\/api\/p\/[a-z0-9_]+$/i.test(linkUrl)) {
+          // 출판된 아티팩트 링크 → 인앱 패널로 열기
+          const artId = linkUrl.split('/').pop() ?? '';
+          segments.push(
+            <span
+              key={key++}
+              className="inline-flex items-center gap-1 cursor-pointer"
+              style={{
+                display: 'inline-flex', verticalAlign: 'middle',
+                background: 'rgba(251,191,36,0.08)',
+                border: '1px solid rgba(251,191,36,0.25)',
+                borderRadius: 4,
+                padding: '1px 6px 1px 4px',
+                fontSize: '0.9em',
+                color: '#fbbf24',
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(251,191,36,0.18)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(251,191,36,0.08)'; }}
+              title={`아티팩트 열기: ${artId}`}
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent('openPublishedArtifact', { detail: { id: artId, title: linkText } }));
+              }}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0 }}>
+                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+                <polyline points="14 2 14 8 20 8"/>
+              </svg>
+              {linkText}
             </span>,
           );
         } else {
@@ -2316,6 +2349,42 @@ function inlineMarkdown(text: string): React.ReactNode {
            style={{ color: '#60a5fa', textDecoration: 'underline', textUnderlineOffset: '2px', wordBreak: 'break-all' }}>
           {isAtlassian ? '🔗 ' : '🌐 '}{label}
         </a>,
+      );
+    } else if (tableRef !== undefined) {
+      segments.push(
+        <span
+          key={key++}
+          className="inline-flex items-center gap-1 cursor-pointer"
+          style={{
+            display: 'inline-flex', verticalAlign: 'middle',
+            background: 'rgba(99,102,241,0.08)',
+            border: '1px solid rgba(99,102,241,0.25)',
+            borderRadius: 4,
+            padding: '1px 7px 1px 5px',
+            fontSize: '0.88em',
+            fontFamily: 'var(--font-mono)',
+            fontWeight: 600,
+            color: '#818cf8',
+            transition: 'background 0.15s, border-color 0.15s',
+          }}
+          onMouseEnter={e => {
+            (e.currentTarget as HTMLElement).style.background = 'rgba(99,102,241,0.18)';
+            (e.currentTarget as HTMLElement).style.borderColor = 'rgba(99,102,241,0.5)';
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as HTMLElement).style.background = 'rgba(99,102,241,0.08)';
+            (e.currentTarget as HTMLElement).style.borderColor = 'rgba(99,102,241,0.25)';
+          }}
+          title={`테이블: ${tableRef}`}
+          onClick={() => {
+            window.dispatchEvent(new CustomEvent('focusTableOnERD', { detail: { tableName: tableRef } }));
+          }}
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0 }}>
+            <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/>
+          </svg>
+          {tableRef}
+        </span>,
       );
     }
 
@@ -6376,6 +6445,130 @@ function KnowledgeBrowser() {
   );
 }
 
+// ── 검증 룰 브라우저 (사이드바용) ────────────────────────────────────────
+
+function ValidationRuleBrowser() {
+  const [rules, setRules] = useState<Array<{ id: string; name: string; table: string; severity: 'error' | 'warning'; enabled: boolean; condition: any }>>([]);
+  const [expanded, setExpanded] = useState(false);
+
+  const loadRulesList = useCallback(async () => {
+    try {
+      const { fetchRulesFromServer } = await import('../core/ai/validationEngine.ts');
+      const rules = await fetchRulesFromServer();
+      setRules(rules);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    loadRulesList();
+    const handler = () => loadRulesList();
+    window.addEventListener('validation-rules-updated', handler);
+    return () => window.removeEventListener('validation-rules-updated', handler);
+  }, [loadRulesList]);
+
+  const handleToggle = useCallback(async (ruleId: string) => {
+    try {
+      const { toggleRule } = await import('../core/ai/validationEngine.ts');
+      const updated = await toggleRule(ruleId);
+      setRules(updated);
+    } catch { /* ignore */ }
+  }, []);
+
+  const handleDelete = useCallback(async (ruleId: string, ruleName: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm(`"${ruleName}" 룰을 삭제하시겠습니까?`)) return;
+    try {
+      const { deleteRule } = await import('../core/ai/validationEngine.ts');
+      const updated = await deleteRule(ruleId);
+      setRules(updated);
+    } catch { /* ignore */ }
+  }, []);
+
+  const conditionText = (cond: any): string => {
+    if (!cond) return '?';
+    switch (cond.type) {
+      case 'range': {
+        const p: string[] = [];
+        if (cond.min !== undefined) p.push(`${cond.min} ≤`);
+        p.push(cond.column ?? '?');
+        if (cond.max !== undefined) p.push(`≤ ${cond.max}`);
+        return p.join(' ');
+      }
+      case 'not_null': return `${cond.column} ≠ NULL`;
+      case 'in': return `${cond.column} ∈ {${(cond.values ?? []).slice(0, 3).join(', ')}${(cond.values?.length ?? 0) > 3 ? '...' : ''}}`;
+      case 'compare_columns': return `${cond.left} ${cond.op} ${cond.right}`;
+      case 'conditional': return `IF ${cond.when?.column}${cond.when?.op}${cond.when?.value} → ${cond.then?.column}${cond.then?.op}${cond.then?.value}`;
+      case 'unique': return `${cond.column} UNIQUE`;
+      case 'regex': return `${cond.column} ~ /${(cond.pattern ?? '').slice(0, 20)}/`;
+      default: return cond.type ?? '?';
+    }
+  };
+
+  if (rules.length === 0 && !expanded) return null;
+
+  return (
+    <div className="border-t" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-1.5 px-3 py-2 hover:bg-white/[0.02] transition-colors"
+      >
+        <span className="text-[11px]" style={{ opacity: 0.6 }}>
+          🛡️
+        </span>
+        <span className="text-[11px] font-semibold uppercase tracking-wider flex-1 text-left" style={{ color: 'var(--text-muted)' }}>
+          검증 룰 ({rules.length})
+        </span>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+          style={{ color: 'var(--text-muted)', opacity: 0.4, transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="space-y-1 pb-2 px-1" style={{ maxHeight: '300px', overflowY: 'auto' }}>
+          {rules.length === 0 && (
+            <div className="px-2 py-2 text-[10px]" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>
+              등록된 룰이 없습니다. 채팅에서 "HP는 0보다 커야 해" 같이 말해보세요.
+            </div>
+          )}
+          {rules.map(r => (
+            <div
+              key={r.id}
+              className="flex items-start gap-1.5 px-2 py-1.5 rounded group hover:bg-white/[0.03] transition-colors"
+              style={{ opacity: r.enabled ? 1 : 0.45 }}
+            >
+              <button
+                onClick={() => handleToggle(r.id)}
+                className="flex-shrink-0 mt-0.5 text-[10px] cursor-pointer"
+                title={r.enabled ? '비활성화' : '활성화'}
+              >
+                {r.enabled ? '✅' : '⏸️'}
+              </button>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1">
+                  <span className="text-[9px]">{r.severity === 'error' ? '🔴' : '🟡'}</span>
+                  <span className="text-[10px] font-medium truncate" style={{ color: 'var(--text-secondary)' }}>
+                    {r.name}
+                  </span>
+                </div>
+                <div className="text-[9px] truncate" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>
+                  {r.table} — {conditionText(r.condition)}
+                </div>
+              </div>
+              <button
+                onClick={(e) => handleDelete(r.id, r.name, e)}
+                className="flex-shrink-0 text-[9px] px-1 rounded opacity-0 group-hover:opacity-40 hover:!opacity-80 cursor-pointer transition-opacity"
+                style={{ color: '#ef4444' }}
+                title="삭제"
+              >✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GuideFileRow({ guide, isOpen, onClick }: { guide: GuideFile; isOpen: boolean; onClick: () => void }) {
   const isOverview = guide.name.includes('OVERVIEW');
   const isEnum = guide.name.includes('Enum');
@@ -6396,6 +6589,95 @@ function GuideFileRow({ guide, isOpen, onClick }: { guide: GuideFile; isOpen: bo
         {guide.sizeKB}KB
       </span>
     </button>
+  );
+}
+
+// ── 모델 선택 버튼 ────────────────────────────────────────────────────────
+
+function ModelSelector() {
+  const claudeModel = useCanvasStore(s => s.claudeModel);
+  const setClaudeModel = useCanvasStore(s => s.setClaudeModel);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const current = CLAUDE_MODELS.find(m => m.id === claudeModel) ?? CLAUDE_MODELS[1];
+
+  return (
+    <div ref={ref} className="relative flex-shrink-0">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="h-8 px-3 rounded-lg flex items-center gap-2 transition-all"
+        style={{
+          background: `${current.color}20`,
+          border: `1px solid ${current.color}50`,
+          color: current.color,
+          fontSize: 13,
+          fontWeight: 600,
+          whiteSpace: 'nowrap',
+          cursor: 'pointer',
+        }}
+        title={`현재 모델: ${current.label} (클릭하여 변경)`}
+      >
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: current.color, boxShadow: `0 0 6px ${current.color}`, flexShrink: 0 }} />
+        {current.label}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ opacity: 0.7 }}>
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      {open && (
+        <div
+          className="absolute top-full left-0 mt-1 rounded-xl overflow-hidden"
+          style={{
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border-color)',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+            zIndex: 50,
+            minWidth: 180,
+          }}
+        >
+          {CLAUDE_MODELS.map(m => (
+            <button
+              key={m.id}
+              onClick={() => { setClaudeModel(m.id); setOpen(false); }}
+              className="w-full text-left px-4 py-2.5 flex items-center gap-2 transition-colors"
+              style={{
+                background: m.id === claudeModel ? `${m.color}15` : 'transparent',
+                color: m.id === claudeModel ? m.color : 'var(--text-secondary)',
+                fontSize: 13,
+                fontWeight: m.id === claudeModel ? 600 : 400,
+                borderBottom: '1px solid var(--border-color)',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = `${m.color}20`)}
+              onMouseLeave={e => (e.currentTarget.style.background = m.id === claudeModel ? `${m.color}15` : 'transparent')}
+            >
+              <span
+                style={{
+                  width: 8, height: 8, borderRadius: '50%',
+                  background: m.color,
+                  boxShadow: m.id === claudeModel ? `0 0 6px ${m.color}` : 'none',
+                  flexShrink: 0,
+                }}
+              />
+              <span>{m.label}</span>
+              {m.id === claudeModel && (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ marginLeft: 'auto' }}>
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -7812,10 +8094,17 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onF
                 </div>
               )}
 
-              {/* 토큰 사용량 */}
-              {msg.tokenUsage && msg.tokenUsage.total_tokens > 0 && (
+              {/* 토큰 사용량 또는 FastPath 뱃지 */}
+              {msg.isFastPath ? (
+                <div className="flex items-center gap-1.5 mt-2 px-1" style={{ fontSize: 10, color: '#4ade80' }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                  </svg>
+                  즉시 응답 — API 호출 없음
+                </div>
+              ) : msg.tokenUsage && msg.tokenUsage.total_tokens > 0 ? (
                 <TokenUsageBar usage={msg.tokenUsage} />
-              )}
+              ) : null}
 
               {/* 피드백 위젯 — 완료된 AI 메시지에만 표시 */}
               {!msg.isLoading && !msg.error && onFeedback && (
@@ -7839,6 +8128,8 @@ export default function ChatPage() {
 
   const schema = useSchemaStore((s) => s.schema);
   const tableData = useCanvasStore((s) => s.tableData);
+  const anomalyReport = useCanvasStore((s) => s.anomalyReport);
+  const validationResult = useCanvasStore((s) => s.validationResult);
 
   // localStorage에서 이전 대화 복원
   const [messages, setMessages] = useState<Message[]>(() => {
@@ -7929,6 +8220,29 @@ export default function ChatPage() {
     };
     window.addEventListener('openPrefabPreview', handler);
     return () => window.removeEventListener('openPrefabPreview', handler);
+  }, []);
+
+  // 채팅 내 출판된 아티팩트 링크 클릭 → 아티팩트 패널에서 열기
+  useEffect(() => {
+    const handler = async (e: Event) => {
+      const { id, title } = (e as CustomEvent).detail ?? {};
+      if (!id) return;
+      try {
+        const resp = await fetch('/api/tool/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tool: 'get_published_artifact', input: { artifact_id: id } }),
+        });
+        if (!resp.ok) return;
+        const data = await resp.json() as { result: string; data?: { id: string; title: string; html: string; description: string } };
+        if (data.data?.html) {
+          const tc: ArtifactResult = { kind: 'artifact', title: data.data.title || title || '문서', html: data.data.html, description: data.data.description ?? '' };
+          setArtifactPanel({ html: tc.html, title: tc.title, charCount: tc.html.length, isComplete: true, finalTc: tc });
+        }
+      } catch { /* ignore */ }
+    };
+    window.addEventListener('openPublishedArtifact', handler);
+    return () => window.removeEventListener('openPublishedArtifact', handler);
   }, []);
 
   // 생성된 아티팩트 목록 (사이드바용) — localStorage 복원
@@ -8060,6 +8374,28 @@ export default function ChatPage() {
       // 일반 메시지: baseHtml 초기화 (패치 모드 해제)
       _artBuf.html = ''; _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0; _artBuf.rawJson = '';
       _artBuf.baseHtml = '';
+    }
+
+    // ── FastPath: 간단한 질문은 API 호출 없이 즉시 응답 ──
+    const fastResult = await tryFastPath(text.trim(), schema, tableData);
+    if (fastResult) {
+      console.log(`[FastPath] ⚡ 즉답 (${fastResult.toolCalls.length}개 도구, ${fastResult.content.length}자)`);
+      const assistantMsg: Message = {
+        id: loadingId,
+        role: 'assistant',
+        content: fastResult.content,
+        timestamp: new Date(),
+        toolCalls: fastResult.toolCalls,
+        isFastPath: true,
+      };
+      setMessages(prev => prev.map(m => m.id === loadingId ? assistantMsg : m));
+      historyRef.current = [
+        ...historyRef.current,
+        { id: genId(), role: 'user' as const, content: text.trim(), timestamp: new Date() },
+        { id: genId(), role: 'assistant' as const, content: fastResult.content, toolCalls: fastResult.toolCalls, timestamp: new Date() },
+      ];
+      setIsLoading(false);
+      return;
     }
 
     // 이터레이션별 텍스트 버퍼 — 각 이터레이션마다 별도 버블로 렌더링
@@ -8696,7 +9032,7 @@ export default function ChatPage() {
               })()}
             </div>
           ) : (
-          <>
+          <div className="flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
           {/* 데이터 현황 */}
           <div className="px-4 pt-3 pb-2" style={{ borderBottom: '1px solid var(--border-color)' }}>
             <button
@@ -8738,6 +9074,87 @@ export default function ChatPage() {
                   <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#22c55e', boxShadow: '0 0 5px #22c55e' }} />
                   AI 준비 완료
                 </div>
+                {anomalyReport && anomalyReport.anomalies.length > 0 && (() => {
+                  const critCount = anomalyReport.anomalies.filter(a => a.severity === 'critical').length;
+                  const warnCount = anomalyReport.anomalies.filter(a => a.severity === 'warning').length;
+                  return (
+                    <details className="mt-2" style={{ fontSize: '11px' }}>
+                      <summary className="cursor-pointer flex items-center gap-1.5" style={{
+                        color: critCount > 0 ? '#ef4444' : '#f59e0b',
+                        listStyle: 'none',
+                      }}>
+                        <span style={{
+                          display: 'inline-flex', alignItems: 'center', gap: '4px',
+                          background: critCount > 0 ? 'rgba(239,68,68,0.1)' : 'rgba(245,158,11,0.1)',
+                          border: `1px solid ${critCount > 0 ? 'rgba(239,68,68,0.3)' : 'rgba(245,158,11,0.3)'}`,
+                          borderRadius: '6px', padding: '2px 8px',
+                        }}>
+                          {critCount > 0 ? '🔴' : '🟡'} 이상치 {anomalyReport.anomalies.length}건 감지
+                          {critCount > 0 && <span style={{ color: '#ef4444', fontWeight: 700 }}>({critCount} critical)</span>}
+                        </span>
+                      </summary>
+                      <div className="mt-1.5 space-y-1 pl-1" style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                        {anomalyReport.anomalies.slice(0, 10).map((a, idx) => (
+                          <div key={idx} className="text-[10px] leading-tight" style={{
+                            color: a.severity === 'critical' ? '#fca5a5' : '#fcd34d',
+                            padding: '2px 4px', borderRadius: '3px',
+                            background: a.severity === 'critical' ? 'rgba(239,68,68,0.05)' : 'rgba(245,158,11,0.05)',
+                          }}>
+                            {a.severity === 'critical' ? '🔴' : '🟡'} <strong>{a.table}</strong>.{a.column} id={a.rowId}: {a.value}
+                            {a.groupLabel && <span style={{ opacity: 0.7 }}> [{a.groupLabel}]</span>}
+                            <span style={{ opacity: 0.6 }}> (중앙값 {a.groupMedian}, {a.ratio?.toFixed(1) ?? '?'}배)</span>
+                          </div>
+                        ))}
+                        {anomalyReport.anomalies.length > 10 && (
+                          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                            ... 외 {anomalyReport.anomalies.length - 10}건
+                          </div>
+                        )}
+                      </div>
+                    </details>
+                  );
+                })()}
+                {/* 유효성 검증 결과 */}
+                {validationResult && validationResult.violations.length > 0 && (() => {
+                  const errCount = validationResult.violations.filter(v => v.severity === 'error').length;
+                  const warnCount2 = validationResult.violations.filter(v => v.severity === 'warning').length;
+                  return (
+                    <details className="mt-2" style={{ fontSize: '11px' }}>
+                      <summary className="cursor-pointer flex items-center gap-1.5" style={{
+                        color: errCount > 0 ? '#ef4444' : '#f59e0b',
+                        listStyle: 'none',
+                      }}>
+                        <span style={{
+                          display: 'inline-flex', alignItems: 'center', gap: '4px',
+                          background: errCount > 0 ? 'rgba(239,68,68,0.1)' : 'rgba(245,158,11,0.1)',
+                          border: `1px solid ${errCount > 0 ? 'rgba(239,68,68,0.3)' : 'rgba(245,158,11,0.3)'}`,
+                          borderRadius: '6px', padding: '2px 8px',
+                        }}>
+                          🛡️ 검증 위반 {validationResult.violations.length}건
+                          {errCount > 0 && <span style={{ color: '#ef4444', fontWeight: 700 }}>({errCount} error)</span>}
+                          {warnCount2 > 0 && <span style={{ color: '#f59e0b', fontWeight: 700 }}>({warnCount2} warning)</span>}
+                        </span>
+                      </summary>
+                      <div className="mt-1.5 space-y-1 pl-1" style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                        {validationResult.violations.slice(0, 15).map((v, idx) => (
+                          <div key={idx} className="text-[10px] leading-tight" style={{
+                            color: v.severity === 'error' ? '#fca5a5' : '#fcd34d',
+                            padding: '2px 4px', borderRadius: '3px',
+                            background: v.severity === 'error' ? 'rgba(239,68,68,0.05)' : 'rgba(245,158,11,0.05)',
+                          }}>
+                            {v.severity === 'error' ? '🔴' : '🟡'} <strong>{v.ruleName}</strong> — {v.table} id={v.rowId}
+                            <span style={{ opacity: 0.7 }}> {v.details}</span>
+                          </div>
+                        ))}
+                        {validationResult.violations.length > 15 && (
+                          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                            ... 외 {validationResult.violations.length - 15}건
+                          </div>
+                        )}
+                      </div>
+                    </details>
+                  );
+                })()}
               </div>
             ) : (
               <div className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
@@ -8812,6 +9229,9 @@ export default function ChatPage() {
 
           {/* 널리지 브라우저 */}
           <KnowledgeBrowser />
+
+          {/* 검증 룰 브라우저 */}
+          <ValidationRuleBrowser />
 
           {/* 생성된 문서 목록 */}
           {savedArtifacts.length > 0 && (
@@ -8920,7 +9340,7 @@ export default function ChatPage() {
               </button>
             )}
           </div>
-          </>
+          </div>
           )}
         </div>
 
@@ -8929,6 +9349,11 @@ export default function ChatPage() {
 
         {/* ── 채팅 영역 ── */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          {/* 모델 선택 바 */}
+          <div className="flex-shrink-0 flex items-center gap-3 px-6 py-2" style={{ borderBottom: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>AI 모델</span>
+            <ModelSelector />
+          </div>
           {/* 메시지 목록 */}
           <div className="flex-1 overflow-y-auto py-8">
             <div className="w-full px-8 space-y-8">
@@ -8947,24 +9372,28 @@ export default function ChatPage() {
                 </p>
                 {hasData && (
                   <div className="grid grid-cols-2 gap-3 max-w-lg w-full">
-                    {[
-                      '캐릭터 목록 보여줘',
-                      '스킬 테이블 분석해줘',
-                      '카야 기획서 써줘',
-                      '테이블 관계도 그려줘',
-                    ].map((hint) => (
+                    {([
+                      { text: '테이블 목록', icon: '⚡', fast: true },
+                      { text: '데이터 현황', icon: '⚡', fast: true },
+                      { text: '도움말', icon: '⚡', fast: true },
+                      { text: '스킬 테이블 분석해줘', icon: '🤖', fast: false },
+                      { text: '프리드웬 리소스 시트 만들어줘', icon: '📄', fast: false },
+                      { text: '최근 Git 변경사항 알려줘', icon: '🔍', fast: false },
+                    ] as const).map((hint) => (
                       <button
-                        key={hint}
-                        onClick={() => sendMessage(hint)}
-                        className="px-4 py-3 rounded-xl text-[13px] text-left transition-all hover:opacity-90"
+                        key={hint.text}
+                        onClick={() => sendMessage(hint.text)}
+                        className="px-4 py-3 rounded-xl text-[13px] text-left transition-all hover:scale-[1.02] hover:opacity-90"
                         style={{
-                          background: 'var(--bg-surface)',
-                          border: '1px solid var(--border-color)',
+                          background: hint.fast ? 'rgba(74,222,128,0.06)' : 'var(--bg-surface)',
+                          border: `1px solid ${hint.fast ? 'rgba(74,222,128,0.2)' : 'var(--border-color)'}`,
                           color: 'var(--text-secondary)',
                           boxShadow: '0 1px 4px rgba(0,0,0,0.1)',
                         }}
                       >
-                        {hint}
+                        <span className="mr-1.5">{hint.icon}</span>
+                        {hint.text}
+                        {hint.fast && <span className="ml-1.5 text-[9px] font-semibold" style={{ color: '#4ade80' }}>즉답</span>}
                       </button>
                     ))}
                   </div>

@@ -1739,17 +1739,16 @@ function createGitMiddleware(options: GitPluginOptions) {
     }
 
     // ── 널리지 git 동기화 헬퍼 ──
-    let _knGitPullTs = 0 // 마지막 git pull 시간 (ms)
-    const KN_PULL_INTERVAL = 30_000 // 30초마다 pull
+    const KN_PULL_INTERVAL = 60_000 // 60초마다 pull
 
     /** 백그라운드 git pull (knowledge 폴더만, 응답 블록 안 함) */
     function knowledgeGitPull() {
+      const g = globalThis as any
       const now = Date.now()
-      if (now - _knGitPullTs < KN_PULL_INTERVAL) return // 쿨다운
-      _knGitPullTs = now
+      if (now - (g.__knGitPullTs ?? 0) < KN_PULL_INTERVAL) return
+      g.__knGitPullTs = now
       execFile('git', ['pull', '--no-rebase', '--no-edit'], { cwd: KNOWLEDGE_GIT_CWD, timeout: 15_000 }, (err) => {
-        if (err) console.warn('[Knowledge] git pull failed (non-blocking):', (err as any).stderr || err.message)
-        else console.log('[Knowledge] git pull 완료 — 최신 널리지 동기화됨')
+        if (err) console.warn('[Knowledge] git pull failed:', (err as any).stderr || err.message)
       })
     }
 
@@ -1875,6 +1874,115 @@ function createGitMiddleware(options: GitPluginOptions) {
       sendJson(res, 200, { deleted: true, name })
       // 백그라운드 git push — 삭제도 다른 인스턴스와 자동 공유
       knowledgeGitPush('delete', name)
+      return
+    }
+
+    // ── /api/validation-rules/* : 검증 룰 CRUD + Git 공유 ──────────────────────
+    const VRULES_FILE = join(process.cwd(), 'knowledge', 'validation-rules.json')
+    function ensureVRulesFile() {
+      ensureKnowledgeDir()
+      if (!existsSync(VRULES_FILE)) writeFileSync(VRULES_FILE, '[]', 'utf-8')
+    }
+    function loadVRulesFromDisk(): any[] {
+      ensureVRulesFile()
+      try {
+        let raw = readFileSync(VRULES_FILE, 'utf-8')
+        if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
+        return JSON.parse(raw) as any[]
+      } catch { return [] }
+    }
+    function saveVRulesToDisk(rules: any[]) {
+      ensureVRulesFile()
+      writeFileSync(VRULES_FILE, JSON.stringify(rules, null, 2), 'utf-8')
+      // Git 자동 push
+      knowledgeGitPush('update', 'validation-rules')
+    }
+
+    // GET /api/validation-rules/list
+    if (req.url?.startsWith('/api/validation-rules/list') && req.method === 'GET') {
+      knowledgeGitPull()
+      const rules = loadVRulesFromDisk()
+      sendJson(res, 200, { rules, total: rules.length })
+      return
+    }
+
+    // POST /api/validation-rules/save — 룰 추가/수정
+    if (req.url?.startsWith('/api/validation-rules/save') && req.method === 'POST') {
+      try {
+        const body = await readBody(req)
+        const rule = JSON.parse(body) as { id?: string; name?: string; [key: string]: any }
+        if (!rule.name || !rule.condition) {
+          sendJson(res, 400, { error: '"name" and "condition" are required' })
+          return
+        }
+        const rules = loadVRulesFromDisk()
+        if (!rule.id) rule.id = `rule_${Date.now()}`
+        rule.updatedAt = Date.now()
+        const idx = rules.findIndex((r: any) => r.id === rule.id)
+        if (idx >= 0) {
+          rules[idx] = { ...rules[idx], ...rule }
+        } else {
+          rule.createdAt = rule.createdAt || Date.now()
+          rule.enabled = rule.enabled ?? true
+          rule.scope = 'team'
+          rules.push(rule)
+        }
+        saveVRulesToDisk(rules)
+        console.log(`[Validation] 룰 저장: "${rule.name}" (id: ${rule.id}, total: ${rules.length})`)
+        sendJson(res, 200, { rule, total: rules.length })
+      } catch (e) {
+        sendJson(res, 500, { error: `Save failed: ${String(e)}` })
+      }
+      return
+    }
+
+    // DELETE /api/validation-rules/delete?id=...
+    if (req.url?.startsWith('/api/validation-rules/delete') && req.method === 'DELETE') {
+      const url = new URL(req.url, 'http://localhost')
+      const ruleId = url.searchParams.get('id') || ''
+      if (!ruleId) { sendJson(res, 400, { error: '"id" query param required' }); return }
+      const rules = loadVRulesFromDisk()
+      const before = rules.length
+      const filtered = rules.filter((r: any) => r.id !== ruleId)
+      if (filtered.length === before) {
+        sendJson(res, 404, { error: `Rule '${ruleId}' not found` })
+        return
+      }
+      saveVRulesToDisk(filtered)
+      console.log(`[Validation] 룰 삭제: ${ruleId} (남은: ${filtered.length})`)
+      sendJson(res, 200, { deleted: true, id: ruleId, total: filtered.length })
+      return
+    }
+
+    // POST /api/validation-rules/toggle — 룰 활성/비활성
+    if (req.url?.startsWith('/api/validation-rules/toggle') && req.method === 'POST') {
+      try {
+        const body = await readBody(req)
+        const { id } = JSON.parse(body) as { id?: string }
+        if (!id) { sendJson(res, 400, { error: '"id" is required' }); return }
+        const rules = loadVRulesFromDisk()
+        const rule = rules.find((r: any) => r.id === id)
+        if (!rule) { sendJson(res, 404, { error: `Rule '${id}' not found` }); return }
+        rule.enabled = !rule.enabled
+        rule.updatedAt = Date.now()
+        saveVRulesToDisk(rules)
+        sendJson(res, 200, { rule, total: rules.length })
+      } catch (e) {
+        sendJson(res, 500, { error: `Toggle failed: ${String(e)}` })
+      }
+      return
+    }
+
+    // GET /api/validation-rules/run — 서버 사이드 검증 실행
+    if (req.url?.startsWith('/api/validation-rules/run') && req.method === 'GET') {
+      loadServerData(localDir)
+      const rules = loadVRulesFromDisk().filter((r: any) => r.enabled)
+      if (rules.length === 0) {
+        sendJson(res, 200, { totalRules: 0, checkedRules: 0, violations: [], durationMs: 0 })
+        return
+      }
+      const result = serverRunValidation(_serverTableData, rules)
+      sendJson(res, 200, result)
       return
     }
 
@@ -5301,6 +5409,133 @@ function loadServerData(gitRepoDir: string) {
   }
 }
 
+// ── 검증 룰 Git push (전역 헬퍼) ──────────────────────────────────────────────
+function _vrGitPush(action: string, fileName: string) {
+  const gitCwd = join(process.cwd(), '..')
+  const relPath = `erd-app/knowledge/${fileName}.json`
+  const msg = `validation: ${action} ${fileName}`
+  const addArgs = action === 'delete' ? ['add', '-A', 'erd-app/knowledge/'] : ['add', relPath]
+  execFile('git', addArgs, { cwd: gitCwd, timeout: 10_000 }, (addErr) => {
+    if (addErr) { console.warn('[Validation] git add failed:', (addErr as NodeJS.ErrnoException & { stderr?: string }).stderr || addErr.message); return }
+    execFile('git', ['commit', '-m', msg], { cwd: gitCwd, timeout: 10_000 }, (commitErr) => {
+      if (commitErr) {
+        const stderr = (commitErr as NodeJS.ErrnoException & { stderr?: string }).stderr || commitErr.message || ''
+        if (!stderr.includes('nothing to commit') && !stderr.includes('no changes')) console.warn('[Validation] git commit failed:', stderr)
+        return
+      }
+      execFile('git', ['push'], { cwd: gitCwd, timeout: 30_000 }, (pushErr) => {
+        if (pushErr) console.warn('[Validation] git push failed:', (pushErr as NodeJS.ErrnoException & { stderr?: string }).stderr || pushErr.message)
+        else sLog('INFO', `[Validation] git push — "${fileName}" ${action}`)
+      })
+    })
+  })
+}
+
+// ── 서버사이드 검증 엔진 ──────────────────────────────────────────────────────
+
+interface VRule {
+  id: string; name: string; table: string; severity: 'error' | 'warning'
+  condition: { type: string; column?: string; min?: number; max?: number; values?: string[]; pattern?: string; left?: string; op?: string; right?: string; when?: { column: string; op: string; value: string }; then?: { column: string; op: string; value: string }; expr?: string }
+  enabled: boolean
+}
+interface VViolation { ruleId: string; ruleName: string; table: string; severity: string; rowId: string; details: string }
+
+function _vParseNum(val: string | number | null | undefined): number | null {
+  if (val == null || val === '') return null
+  const n = typeof val === 'number' ? val : Number(val)
+  return isFinite(n) ? n : null
+}
+
+function _vCompare(left: string, op: string, right: string): boolean {
+  const nl = _vParseNum(left), nr = _vParseNum(right)
+  if (nl !== null && nr !== null) {
+    switch (op) { case '<': return nl < nr; case '<=': return nl <= nr; case '==': return nl === nr; case '!=': return nl !== nr; case '>=': return nl >= nr; case '>': return nl > nr }
+  }
+  return op === '==' ? left === right : op === '!=' ? left !== right : left < right
+}
+
+function _vMatchTable(ruleTable: string, tableName: string): boolean {
+  if (ruleTable === '*') return true
+  if (ruleTable.includes('*')) {
+    const pat = ruleTable.replace(/\*/g, '.*')
+    return new RegExp(`^${pat}$`, 'i').test(tableName)
+  }
+  return ruleTable.toLowerCase() === tableName.toLowerCase()
+}
+
+function _vFindPK(headers: string[]): string {
+  return headers.find(h => /^id$/i.test(h)) ?? headers[0] ?? '?'
+}
+
+function _vCheckRule(rule: VRule, headers: string[], rows: Record<string, string>[], tableName: string): VViolation[] {
+  const vs: VViolation[] = []
+  const c = rule.condition
+  const pk = _vFindPK(headers)
+  const MAX = 20
+  const push = (rowId: string, details: string) => { vs.push({ ruleId: rule.id, ruleName: rule.name, table: tableName, severity: rule.severity, rowId, details }); return vs.length >= MAX }
+
+  switch (c.type) {
+    case 'range': {
+      if (!c.column || !headers.includes(c.column)) break
+      for (const row of rows) { const n = _vParseNum(row[c.column]); if (n === null) continue; if ((c.min !== undefined && n < c.min) || (c.max !== undefined && n > c.max)) { if (push(String(row[pk] ?? ''), `${c.column}=${n} (범위: ${c.min ?? ''}~${c.max ?? ''})`)) return vs } } break
+    }
+    case 'not_null': {
+      if (!c.column || !headers.includes(c.column)) break
+      for (const row of rows) { const v = row[c.column]; if (v == null || v === '' || v === 'null' || v === 'NULL') { if (push(String(row[pk] ?? ''), `${c.column}이(가) 비어있음`)) return vs } } break
+    }
+    case 'in': {
+      if (!c.column || !headers.includes(c.column) || !c.values) break
+      const allowed = new Set(c.values.map(v => v.toLowerCase()))
+      for (const row of rows) { const v = String(row[c.column] ?? '').toLowerCase(); if (v && !allowed.has(v)) { if (push(String(row[pk] ?? ''), `${c.column}="${row[c.column]}" (허용: ${c.values.join(', ')})`)) return vs } } break
+    }
+    case 'not_in': {
+      if (!c.column || !headers.includes(c.column) || !c.values) break
+      const forbidden = new Set(c.values.map(v => v.toLowerCase()))
+      for (const row of rows) { const v = String(row[c.column] ?? '').toLowerCase(); if (forbidden.has(v)) { if (push(String(row[pk] ?? ''), `${c.column}="${row[c.column]}" (금지값)`)) return vs } } break
+    }
+    case 'regex': {
+      if (!c.column || !headers.includes(c.column) || !c.pattern) break
+      let re: RegExp; try { re = new RegExp(c.pattern) } catch { break }
+      for (const row of rows) { const v = String(row[c.column] ?? ''); if (v && !re.test(v)) { if (push(String(row[pk] ?? ''), `${c.column}="${v}" (패턴 불일치)`)) return vs } } break
+    }
+    case 'compare_columns': {
+      if (!c.left || !c.right || !c.op || !headers.includes(c.left) || !headers.includes(c.right)) break
+      for (const row of rows) { const lv = String(row[c.left!] ?? ''), rv = String(row[c.right!] ?? ''); if (lv === '' || rv === '') continue; if (!_vCompare(lv, c.op!, rv)) { if (push(String(row[pk] ?? ''), `${c.left}=${lv} ${c.op} ${c.right}=${rv} 위반`)) return vs } } break
+    }
+    case 'conditional': {
+      if (!c.when || !c.then || !headers.includes(c.when.column) || !headers.includes(c.then.column)) break
+      for (const row of rows) { const wv = String(row[c.when!.column] ?? ''); if (!_vCompare(wv, c.when!.op, c.when!.value)) continue; const tv = String(row[c.then!.column] ?? ''); if (!_vCompare(tv, c.then!.op, c.then!.value)) { if (push(String(row[pk] ?? ''), `${c.when!.column}=${wv}일 때 ${c.then!.column}=${tv} (기대: ${c.then!.op} ${c.then!.value})`)) return vs } } break
+    }
+    case 'unique': {
+      if (!c.column || !headers.includes(c.column)) break
+      const seen = new Map<string, string>()
+      for (const row of rows) { const v = String(row[c.column!] ?? ''); if (!v) continue; const rid = String(row[pk] ?? ''); if (seen.has(v)) { if (push(rid, `${c.column}="${v}" 중복 (기존: id=${seen.get(v)})`)) return vs } else { seen.set(v, rid) } } break
+    }
+  }
+  return vs
+}
+
+function serverRunValidation(tableData: Map<string, ServerTableData>, rules: VRule[]): { timestamp: number; totalRules: number; checkedRules: number; violations: VViolation[]; durationMs: number } {
+  const t0 = Date.now()
+  const enabledRules = rules.filter(r => r.enabled)
+  const violations: VViolation[] = []
+  let checkedRules = 0
+
+  for (const rule of enabledRules) {
+    let ruleChecked = false
+    for (const [tableName, { headers, rows }] of tableData) {
+      if (!_vMatchTable(rule.table, tableName)) continue
+      ruleChecked = true
+      violations.push(..._vCheckRule(rule, headers, rows, tableName))
+    }
+    if (ruleChecked) checkedRules++
+  }
+
+  violations.sort((a, b) => a.severity === b.severity ? a.table.localeCompare(b.table) : a.severity === 'error' ? -1 : 1)
+
+  return { timestamp: Date.now(), totalRules: rules.length, checkedRules, violations, durationMs: Date.now() - t0 }
+}
+
 // ── 서버사이드 SQL 실행 (alasql) ──
 // 예약어 테이블명 remap 캐시
 const _serverTableRemap = new Map<string, string>() // 원본명 → 내부명 (__u_xxx)
@@ -5684,14 +5919,16 @@ const API_TOOLS = [
   // ── Confluence ──
   {
     name: 'search_confluence',
-    description: 'Confluence 페이지를 CQL로 검색합니다. 기획 문서, 스펙, 회의록 등.',
+    description: 'Confluence 문서 검색. query(자연어)를 주면 자동으로 CQL 변환됨. 직접 CQL을 쓸 수도 있음.',
     input_schema: {
       type: 'object',
       properties: {
-        cql: { type: 'string', description: 'CQL 쿼리. 예: "text ~ \\"스킬 시스템\\" AND type = page"' },
+        query: { type: 'string', description: '검색 키워드 (자연어). 자동으로 CQL text~"..." 변환됨.' },
+        cql: { type: 'string', description: '직접 CQL 쿼리. query보다 우선.' },
+        space: { type: 'string', description: 'Confluence Space 키 필터 (예: "AEGIS")' },
         limit: { type: 'number', description: '최대 반환 건수 (기본 10, 최대 20)' },
       },
-      required: ['cql'],
+      required: [],
     },
   },
   {
@@ -5768,6 +6005,46 @@ const API_TOOLS = [
         name: { type: 'string', description: '가이드 이름. 빈 문자열이면 전체 목록.' },
       },
       required: [],
+    },
+  },
+  // ── 검증 룰 ──
+  {
+    name: 'run_validation',
+    description: '등록된 데이터 검증 룰을 전체 실행하고 위반 결과를 반환합니다. "전체 검증 돌려줘", "밸리데이션 실행" 요청 시 사용.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'save_validation_rule',
+    description: '데이터 유효성 검증 룰을 등록/수정합니다. "HP는 0보다 커야 해" 같은 요청 시 사용.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '룰 ID (신규면 자동생성)' },
+        name: { type: 'string', description: '룰 이름 (예: "캐릭터 HP 양수 필수")' },
+        table: { type: 'string', description: '대상 테이블명 (와일드카드: "*Stat", "*")' },
+        severity: { type: 'string', enum: ['error', 'warning'], description: 'error=필수, warning=권장' },
+        condition: {
+          type: 'object',
+          description: '조건 객체. type 필수. range{column,min?,max?}, not_null{column}, in{column,values[]}, regex{column,pattern}, compare_columns{left,op,right}, conditional{when,then}, unique{column}',
+          properties: { type: { type: 'string' } },
+          required: ['type'],
+        },
+      },
+      required: ['name', 'table', 'severity', 'condition'],
+    },
+  },
+  {
+    name: 'list_validation_rules',
+    description: '등록된 데이터 검증 룰 목록을 반환합니다.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'delete_validation_rule',
+    description: '검증 룰을 삭제합니다.',
+    input_schema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: '삭제할 룰 ID' } },
+      required: ['id'],
     },
   },
   // ── Jira 쓰기 ──
@@ -6221,7 +6498,7 @@ function serverExecuteTool(
             }
             if (contentHits.length > 0) {
               return {
-                result: `"${query}" 인덱스에 없어 전문검색 → ${contentHits.length}개 파일\n` +
+                result: `"${query}" 전문검색 → ${contentHits.length}개 파일\n` +
                   contentHits.slice(0, 5).map(r => `  📄 ${r.path}\n` + r.matches.slice(0, 3).map(m => `    L${m.line}: ${m.lineContent}`).join('\n')).join('\n'),
                 data: { type: 'content_fallback', totalFiles: contentHits.length, results: contentHits }
               }
@@ -6382,8 +6659,15 @@ function serverExecuteTool(
         const results = all.filter(f => f.name.toLowerCase().includes(query)).slice(0, 30)
         if (results.length === 0) return { result: `"${query}" 이미지 없음 (전체 ${all.length}개 중)` }
         return {
-          result: `${results.length}개 이미지 발견: ${results.map(i => i.name).join(', ')}`,
-          data: { total: results.length, images: results.map(r => ({ name: r.name, relPath: r.relPath, url: `/api/images/file?path=${encodeURIComponent(r.relPath)}` })) }
+          result: results.map(r => {
+            const tmUrl = options.tableMasterUrl || process.env.TABLEMASTER_URL || `http://${getLocalIp()}:5173`
+            const url = `${tmUrl}/api/images/file?path=${encodeURIComponent(r.relPath)}`
+            return `${r.name} → ${url}`
+          }).join('\n') + `\n\n총 ${results.length}개. 아티팩트에 삽입할 때: <img src="위의URL" style="max-width:100%">`,
+          data: { total: results.length, images: results.map(r => {
+            const tmUrl = options.tableMasterUrl || process.env.TABLEMASTER_URL || `http://${getLocalIp()}:5173`
+            return { name: r.name, relPath: r.relPath, url: `${tmUrl}/api/images/file?path=${encodeURIComponent(r.relPath)}` }
+          }) }
         }
       } catch (e) {
         return { result: `이미지 검색 오류: ${e instanceof Error ? e.message : String(e)}` }
@@ -6598,21 +6882,115 @@ function serverExecuteTool(
       }
     }
 
+    // ── run_validation ──
+    case 'run_validation': {
+      loadServerData(options.localDir)
+      const VRULES_FILE2 = join(process.cwd(), 'knowledge', 'validation-rules.json')
+      let allRules: VRule[] = []
+      try {
+        if (existsSync(VRULES_FILE2)) {
+          let raw2 = readFileSync(VRULES_FILE2, 'utf-8')
+          if (raw2.charCodeAt(0) === 0xFEFF) raw2 = raw2.slice(1)
+          allRules = JSON.parse(raw2) as VRule[]
+        }
+      } catch { /* empty */ }
+      if (allRules.length === 0) return { result: '등록된 검증 룰이 없습니다.' }
+      const vResult = serverRunValidation(_serverTableData, allRules)
+      const errors = vResult.violations.filter(v => v.severity === 'error')
+      const warnings = vResult.violations.filter(v => v.severity === 'warning')
+      let summary = `검증 완료: ${vResult.totalRules}개 룰, ${vResult.checkedRules}개 검증 (${vResult.durationMs}ms)\n`
+      summary += vResult.violations.length === 0
+        ? '✅ 위반 없음'
+        : `⚠️ ${vResult.violations.length}건 위반 (error ${errors.length}, warning ${warnings.length})\n\n`
+      for (const v of vResult.violations.slice(0, 30)) {
+        summary += `${v.severity === 'error' ? '🔴' : '🟡'} ${v.ruleName} — ${v.table} id=${v.rowId}: ${v.details}\n`
+      }
+      if (vResult.violations.length > 30) summary += `\n... 외 ${vResult.violations.length - 30}건`
+      return { result: summary, data: vResult }
+    }
+
+    // ── save_validation_rule ──
+    case 'save_validation_rule': {
+      try {
+        const VRULES_FILE3 = join(process.cwd(), 'knowledge', 'validation-rules.json')
+        const knDir = join(process.cwd(), 'knowledge')
+        if (!existsSync(knDir)) mkdirSync(knDir, { recursive: true })
+        if (!existsSync(VRULES_FILE3)) writeFileSync(VRULES_FILE3, '[]', 'utf-8')
+        let raw3 = readFileSync(VRULES_FILE3, 'utf-8')
+        if (raw3.charCodeAt(0) === 0xFEFF) raw3 = raw3.slice(1)
+        const rules3 = JSON.parse(raw3) as any[]
+        const newRule = {
+          id: String(input.id ?? `rule_${Date.now()}`),
+          name: String(input.name ?? ''),
+          table: String(input.table ?? '*'),
+          severity: String(input.severity ?? 'warning'),
+          condition: input.condition ?? {},
+          enabled: true,
+          scope: 'team',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }
+        const idx3 = rules3.findIndex((r: any) => r.id === newRule.id)
+        if (idx3 >= 0) rules3[idx3] = { ...rules3[idx3], ...newRule, createdAt: rules3[idx3].createdAt }
+        else rules3.push(newRule)
+        writeFileSync(VRULES_FILE3, JSON.stringify(rules3, null, 2), 'utf-8')
+        _vrGitPush('update', 'validation-rules')
+        return { result: `✅ 검증 룰 "${newRule.name}" 저장 완료 (id: ${newRule.id}, 전체 ${rules3.length}개)`, data: { rule: newRule, total: rules3.length } }
+      } catch (e) {
+        return { result: `룰 저장 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
+    // ── list_validation_rules ──
+    case 'list_validation_rules': {
+      const VRULES_FILE4 = join(process.cwd(), 'knowledge', 'validation-rules.json')
+      let rules4: any[] = []
+      try {
+        if (existsSync(VRULES_FILE4)) {
+          let raw4 = readFileSync(VRULES_FILE4, 'utf-8')
+          if (raw4.charCodeAt(0) === 0xFEFF) raw4 = raw4.slice(1)
+          rules4 = JSON.parse(raw4)
+        }
+      } catch { /* empty */ }
+      if (rules4.length === 0) return { result: '등록된 검증 룰이 없습니다.' }
+      const listText = rules4.map((r: any) => `- [${r.enabled ? '✅' : '⏸️'}] ${r.name} (${r.table}, ${r.severity}, ${r.condition?.type})`).join('\n')
+      return { result: `검증 룰 ${rules4.length}개:\n${listText}`, data: { rules: rules4, total: rules4.length } }
+    }
+
+    // ── delete_validation_rule ──
+    case 'delete_validation_rule': {
+      const delId = String(input.id ?? '')
+      if (!delId) return { result: 'id가 필요합니다.' }
+      try {
+        const VRULES_FILE5 = join(process.cwd(), 'knowledge', 'validation-rules.json')
+        if (!existsSync(VRULES_FILE5)) return { result: `룰 "${delId}" 없음` }
+        let raw5 = readFileSync(VRULES_FILE5, 'utf-8')
+        if (raw5.charCodeAt(0) === 0xFEFF) raw5 = raw5.slice(1)
+        const rules5 = JSON.parse(raw5) as any[]
+        const filtered5 = rules5.filter((r: any) => r.id !== delId)
+        if (filtered5.length === rules5.length) return { result: `룰 "${delId}" 없음` }
+        writeFileSync(VRULES_FILE5, JSON.stringify(filtered5, null, 2), 'utf-8')
+        _vrGitPush('delete', 'validation-rules')
+        return { result: `✅ 룰 "${delId}" 삭제 완료. 남은: ${filtered5.length}개`, data: { deleted: true, total: filtered5.length } }
+      } catch (e) {
+        return { result: `룰 삭제 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
     // ── search_published_artifacts ──
     case 'search_published_artifacts': {
       try {
         const query = String(input.query ?? '').trim().toLowerCase()
         const limit = Number(input.limit ?? 10)
         const list = readPublishedIndex()
+        const baseUrl = options.tableMasterUrl || process.env.TABLEMASTER_URL || `http://${getLocalIp()}:5173`
 
         if (list.length === 0) return { result: '출판된 아티팩트가 없습니다.' }
 
         let results: typeof list
         if (!query) {
-          // 검색어 없으면 최신순
           results = list.slice(0, limit)
         } else {
-          // 제목/설명에서 키워드 검색 (공백으로 AND 분리)
           const keywords = query.split(/\s+/).filter(Boolean)
           results = list.filter(m => {
             const text = `${m.title} ${m.description}`.toLowerCase()
@@ -6624,21 +7002,20 @@ function serverExecuteTool(
           return { result: `"${query}" 관련 기존 아티팩트를 찾을 수 없습니다. (전체 ${list.length}개 중)`, data: { total: list.length, matched: 0, artifacts: [] } }
         }
 
-        // URL 생성
         const artifacts = results.map(m => ({
           id: m.id,
           title: m.title,
           description: m.description.slice(0, 100),
           createdAt: m.createdAt,
           author: m.author || '',
-          url: `/api/p/${m.id}`,
+          url: `${baseUrl}/api/p/${m.id}`,
         }))
 
         let resultText = `📚 기존 아티팩트 ${results.length}개 발견 (전체 ${list.length}개):\n\n`
         for (const a of artifacts) {
-          resultText += `• "${a.title}" (${a.createdAt.slice(0, 10)})\n  ID: ${a.id}\n  ${a.description}...\n\n`
+          resultText += `• [${a.title}](${a.url}) (${a.createdAt.slice(0, 10)})\n  ID: ${a.id}\n  ${a.description}...\n\n`
         }
-        resultText += `\n기존 문서를 수정하려면 get_published_artifact(artifact_id)로 HTML을 가져온 후 patch_artifact로 수정하세요.`
+        resultText += `\n사용자에게 위 링크를 제공하세요. 수정이 필요하면 get_published_artifact(artifact_id)로 HTML을 가져온 후 patch_artifact로 수정.`
 
         return { result: resultText, data: { total: list.length, matched: results.length, artifacts } }
       } catch (e) {
@@ -6702,7 +7079,8 @@ async function serverExecuteToolAsync(
     'search_code', 'read_code_file', 'search_assets', 'preview_fbx_animation', 'find_resource_image',
     'build_character_profile', 'read_guide', 'show_revision_diff', 'preview_prefab',
     'patch_artifact', 'save_knowledge', 'read_knowledge', 'list_knowledge', 'delete_knowledge',
-    'search_published_artifacts', 'get_published_artifact']
+    'search_published_artifacts', 'get_published_artifact',
+    'run_validation', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule']
   if (syncTools.includes(toolName)) return serverExecuteTool(toolName, input, options)
 
   // ── 바이블테이블링 (Python 백엔드 호출) ──
@@ -7024,7 +7402,17 @@ async function serverExecuteToolAsync(
 
     // ── search_confluence ──
     case 'search_confluence': {
-      const cql = String(input.cql ?? '')
+      let cql = String(input.cql ?? '').trim()
+      const query = String(input.query ?? '').trim()
+      const space = String(input.space ?? '').trim()
+      if (!cql && query) {
+        const parts: string[] = ['type = "page"']
+        if (space) parts.push(`space = "${space}"`)
+        const keywords = query.split(/\s+/).filter(Boolean)
+        for (const kw of keywords) parts.push(`text ~ "${kw}"`)
+        cql = parts.join(' AND ')
+      }
+      if (!cql) cql = 'type = "page" ORDER BY lastmodified DESC'
       const limit = Math.min(Number(input.limit ?? 10), 20)
       if (!confToken || !confluenceBase) return { result: 'Confluence 연결 정보가 설정되지 않았습니다.' }
       try {
@@ -7753,6 +8141,88 @@ function buildPublishedPage(title: string, contentHtml: string): string {
 </html>`
 }
 
+// ── 서버 사이드 FastPath — Claude 없이 즉시 응답 ──────────────────────────────
+function serverFastPath(msg: string, options: GitPluginOptions): string | null {
+  const m = msg.trim()
+
+  // ── 검증/밸리데이션 실행 ──
+  if (/^(전체\s*)?(데이터\s*)?(검증|밸리데이션|validation|룰\s*검증)\s*(실행|해줘|해봐|돌려|돌려봐|체크|확인|run|ㄱㄱ)?[.!~]*$/i.test(m) ||
+      /^(검증|밸리데이션)\s*(결과|위반|현황|상태)/i.test(m) ||
+      /검증\s*(해|실행|돌려|체크)/i.test(m)) {
+    loadServerData(options.localDir)
+    const VRULES_FILE = join(process.cwd(), 'knowledge', 'validation-rules.json')
+    let rules: VRule[] = []
+    try {
+      if (existsSync(VRULES_FILE)) {
+        let raw = readFileSync(VRULES_FILE, 'utf-8')
+        if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
+        rules = JSON.parse(raw) as VRule[]
+      }
+    } catch { /* empty */ }
+
+    if (rules.length === 0) return '🛡️ 등록된 검증 룰이 없습니다. "HP는 0보다 커야 한다" 같은 룰을 등록해주세요.'
+
+    const result = serverRunValidation(_serverTableData, rules)
+    const errors = result.violations.filter(v => v.severity === 'error')
+    const warnings = result.violations.filter(v => v.severity === 'warning')
+
+    const lines: string[] = []
+    lines.push(`🛡️ **데이터 검증 결과**`)
+    lines.push(`- 전체 ${result.totalRules}개 룰 중 ${result.checkedRules}개 검증 (${result.durationMs}ms)`)
+    if (result.violations.length === 0) {
+      lines.push(`- ✅ **위반 없음** — 모든 데이터가 정상입니다!`)
+    } else {
+      lines.push(`- ⚠️ **${result.violations.length}건 위반** (🔴 error ${errors.length}, 🟡 warning ${warnings.length})`)
+      lines.push('')
+      for (const v of result.violations.slice(0, 30)) {
+        const icon = v.severity === 'error' ? '🔴' : '🟡'
+        lines.push(`${icon} **${v.ruleName}** — \`${v.table}\` id=${v.rowId}: ${v.details}`)
+      }
+      if (result.violations.length > 30) {
+        lines.push(`\n... 외 ${result.violations.length - 30}건`)
+      }
+    }
+    return lines.join('\n')
+  }
+
+  // ── 검증 룰 목록 ──
+  if (/^(검증|밸리데이션|validation)\s*(룰|규칙|rule)\s*(목록|리스트|list|보여|뭐\s*있)/i.test(m)) {
+    const VRULES_FILE = join(process.cwd(), 'knowledge', 'validation-rules.json')
+    let rules: VRule[] = []
+    try {
+      if (existsSync(VRULES_FILE)) {
+        let raw = readFileSync(VRULES_FILE, 'utf-8')
+        if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
+        rules = JSON.parse(raw) as VRule[]
+      }
+    } catch { /* empty */ }
+
+    if (rules.length === 0) return '🛡️ 등록된 검증 룰이 없습니다.'
+    const enabled = rules.filter(r => r.enabled)
+    const lines: string[] = [`🛡️ **검증 룰 목록** (${rules.length}개, 활성 ${enabled.length}개)\n`]
+    for (const r of rules) {
+      const status = r.enabled ? '✅' : '⏸️'
+      const sev = r.severity === 'error' ? '🔴' : '🟡'
+      lines.push(`${status} ${sev} **${r.name}** — \`${r.table}\` (${r.condition.type}) ${r.enabled ? '' : '[비활성]'}`)
+    }
+    return lines.join('\n')
+  }
+
+  // ── 테이블 목록 ──
+  if (/^(테이블|table)\s*(목록|리스트|list|뭐\s*있|종류)/i.test(m)) {
+    loadServerData(options.localDir)
+    if (_serverTableList.length === 0) return '📋 데이터가 아직 로드되지 않았습니다.'
+    const lines = [`📋 **테이블 목록** (${_serverTableList.length}개)\n`]
+    for (const t of _serverTableList.slice(0, 50)) {
+      lines.push(`- \`${t.name}\` — ${t.rowCount}행, ${t.columns.length}컬럼`)
+    }
+    if (_serverTableList.length > 50) lines.push(`\n... 외 ${_serverTableList.length - 50}개`)
+    return lines.join('\n')
+  }
+
+  return null
+}
+
 function buildServerSystemPrompt(_userQuery?: string): string {
   const lines: string[] = []
 
@@ -7809,6 +8279,10 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   lines.push('  → DB/게임 질문: read_guide("_DB_OVERVIEW") → 도메인 가이드(_DB_Character, _DB_Skill 등)')
   lines.push('  → 코드 질문:   read_guide("_OVERVIEW") → 도메인 가이드(_Skill, _Weapon, _Character 등)')
   lines.push('  → 가이드 목록: read_guide("") 로 전체 확인')
+  lines.push('- run_validation: 등록된 검증 룰로 전체 데이터 검증 실행. "검증 돌려줘", "밸리데이션 실행" 요청 시 사용')
+  lines.push('- save_validation_rule: 검증 룰 등록/수정. "HP는 0보다 커야 해" 같은 자연어 → 구조화된 룰 변환')
+  lines.push('- list_validation_rules: 등록된 검증 룰 목록 조회')
+  lines.push('- delete_validation_rule: 검증 룰 삭제')
   lines.push('- edit_game_data: ⭐ 바이블테이블링 — 게임 데이터 Excel 파일의 기존 셀을 편집. 필터 조건으로 대상 행 선택 후 값 변경. 편집된 셀은 노란색 하이라이트. 결과는 다운로드 링크로 제공')
   lines.push('- add_game_data_rows: ⭐ 바이블테이블링 — 게임 데이터 Excel 테이블에 새 행 추가. 추가된 셀은 노란색 하이라이트. 결과는 다운로드 링크로 제공')
   lines.push('')
@@ -8005,6 +8479,14 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   lines.push('- CSV 데이터 제공 시: <div data-embed="csv" data-filename="파일명.csv">헤더1,헤더2\\n값1,값2\\n...</div> 사용 → 다운로드+테이블+검색+정렬+복사 자동!')
   lines.push('- 데이터를 표 형태로 제공해야할 때, DB 쿼리가 불가능하면 CSV embed를 사용하여 인터랙티브 테이블로 제공')
   lines.push('- 아티팩트 생성 후 짧은 요약 텍스트도 함께 보내야 함 (Slack 등 외부 클라이언트에서 미리보기 제공)')
+  lines.push('- ⚠️ 이미지 삽입 시 find_resource_image 결과의 url(전체 URL)을 <img src="...">에 그대로 사용')
+  lines.push('- 상대경로(/api/images/...)는 금지! 반드시 http://로 시작하는 전체 URL 사용 (외부에서 접근 가능하도록)')
+  lines.push('')
+  lines.push('[기존 아티팩트 소개 — Slack/외부 채널 ⭐]')
+  lines.push('- 사용자 질문에 관련된 기존 아티팩트가 있으면 **새로 만들지 말고 링크를 먼저 제안**')
+  lines.push('- search_published_artifacts로 검색 후 결과가 있으면: "관련 문서가 이미 있습니다: [문서제목](URL)"')
+  lines.push('- URL 형식: search_published_artifacts 결과의 url 필드 사용 (전체 URL)')
+  lines.push('- 기존 문서가 충분하면 새 아티팩트를 만들 필요 없음 — 링크만 제공')
   lines.push('')
 
   // ── 응답 규칙 ──
@@ -8108,6 +8590,15 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       }
       if (!contentHtml) { sendJson(res, 400, { error: 'markdown 또는 html이 필요합니다.' }); return }
 
+      // 상대 이미지 경로 → 전체 URL 변환 (슬랙 등 외부에서 열릴 때 이미지가 보이도록)
+      const host = resolveHost(req)
+      const protocol = req.headers['x-forwarded-proto'] || 'http'
+      const publicBase = `${protocol}://${host}`
+      contentHtml = contentHtml.replace(
+        /(?:src|href)=["'](\/(api\/images\/[^"']+))["']/gi,
+        (match, path) => match.replace(path, `${publicBase}${path}`)
+      )
+
       // ID 생성 및 Explore와 동일한 published/ 폴더에 저장 (index.json에 등록)
       const id = `pub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
       ensurePublishedDir()
@@ -8144,9 +8635,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       writePublishedIndex(list)
 
       // URL 생성 (Explore의 /api/p/:id 경로 사용)
-      const host = resolveHost(req)
-      const protocol = req.headers['x-forwarded-proto'] || 'http'
-      const url = `${protocol}://${host}/api/p/${id}`
+      const url = `${publicBase}/api/p/${id}`
 
       sLog('INFO', `[Publish] ${source} → "${title}" (${id})`)
       sendJson(res, 200, { id, url, title })
@@ -8194,7 +8683,29 @@ function createChatApiMiddleware(options: GitPluginOptions) {
 
       const session = getOrCreateSession(body.session_id)
       const isStream = body.stream === true
-      const MODEL = 'claude-opus-4-6'
+
+      // ── 서버 사이드 FastPath: Claude 없이 즉시 응답 ──
+      const fastResult = serverFastPath(userMessage, options)
+      if (fastResult) {
+        session.messages.push({ role: 'user', content: userMessage })
+        session.messages.push({ role: 'assistant', content: fastResult })
+        session.messageCount += 2
+        session.updated = new Date().toISOString()
+        saveSession(session)
+
+        if (isStream) {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'Access-Control-Allow-Origin': '*', 'X-Accel-Buffering': 'no' })
+          res.write(`event: session\ndata: ${JSON.stringify({ session_id: session.id })}\n\n`)
+          res.write(`event: text\ndata: ${JSON.stringify({ text: fastResult })}\n\n`)
+          res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: fastResult, tool_calls: [], fast_path: true })}\n\n`)
+          res.end()
+        } else {
+          sendJson(res, 200, { session_id: session.id, content: fastResult, tool_calls: [], fast_path: true })
+        }
+        return
+      }
+
+      const MODEL = 'claude-sonnet-4-6'
       const MAX_ITERATIONS = 12
       // ── 동적 max_tokens: 슬랙/아티팩트 요청이면 16384, 일반 대화면 8192 ──
       const ARTIFACT_KEYWORDS = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|캐릭터.*시트|릴리즈.*노트|분석|작성해줘|보여줘|프로필|비교|현황|리스트|목록|전체/
@@ -8811,23 +9322,29 @@ function createBibleTablingProxy() {
   }
 }
 
+const QUIET_ROUTES = /\/(presence|validation-rules\/list|knowledge\/list|service-health)/
 function safeMiddleware(
   label: string,
   mw: (req: IncomingMessage, res: ServerResponse, next: () => void) => Promise<void> | void
 ) {
   return (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     const t0     = Date.now()
-    const isApi  = !!(req.url?.startsWith('/api/') || req.url?.startsWith('/v1/'))
-    const method = req.method ?? '?'
     const url    = req.url ?? '?'
+    const method = req.method ?? '?'
+    const isApi  = !!(url.startsWith('/api/') || url.startsWith('/v1/'))
+    const alreadyHandled = (req as any).__tmHandled
+    const shouldLog = isApi && !QUIET_ROUTES.test(url) && !alreadyHandled
 
-    if (isApi) sLog('REQ', `→ [${label}] ${method} ${url}`)
+    if (shouldLog) sLog('REQ', `→ [${label}] ${method} ${url}`)
 
-    const result = mw(req, res, next)
+    let calledNext = false
+    const wrappedNext = () => { calledNext = true; next() }
+    const result = mw(req, res, wrappedNext)
     if (result && typeof result.catch === 'function') {
       result
         .then(() => {
-          if (isApi) sLog('INFO', `← [${label}] ${method} ${url} ${Date.now() - t0}ms`)
+          if (!calledNext) (req as any).__tmHandled = true
+          if (shouldLog && !calledNext) sLog('INFO', `← [${label}] ${method} ${url} ${Date.now() - t0}ms`)
         })
         .catch((err: unknown) => {
           const msg = err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err)
@@ -8847,11 +9364,25 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
   return {
     name: 'vite-git-plugin',
     configureServer(server) {
+      // /TableMaster/api/... → /api/... rewrite (Vite base 경로 안에서 API 호출 시)
+      server.middlewares.use((req, _res, next) => {
+        if (req.url?.startsWith('/TableMaster/api/')) {
+          req.url = req.url.slice('/TableMaster'.length)
+        }
+        next()
+      })
       server.middlewares.use(createBibleTablingProxy())
       server.middlewares.use(safeMiddleware('chatApi', createChatApiMiddleware(options)))
       server.middlewares.use(safeMiddleware('gitApi', createGitMiddleware(options)))
     },
     configurePreviewServer(server) {
+      // /TableMaster/api/... → /api/... rewrite
+      server.middlewares.use((req, _res, next) => {
+        if (req.url?.startsWith('/TableMaster/api/')) {
+          req.url = req.url.slice('/TableMaster'.length)
+        }
+        next()
+      })
       // ── 캐시 헤더: HTML은 항상 최신, 해시된 에셋은 장기 캐시 ──
       server.middlewares.use((req, res, next) => {
         const url = req.url ?? ''

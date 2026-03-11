@@ -2,6 +2,8 @@ import type { ParsedSchema } from '../schema/types.ts';
 import type { Row, TableDataMap } from '../query/schemaQueryEngine.ts';
 import { executeDataSQL, RESERVED_TABLE_NAMES, VIRTUAL_TABLE_SCHEMA } from '../query/schemaQueryEngine.ts';
 import { useSchemaStore } from '../../store/useSchemaStore.ts';
+import { useCanvasStore } from '../../store/useCanvasStore.ts';
+import { anomalyReportToPrompt } from './anomalyDetector.ts';
 
 // ── ADF (Atlassian Document Format) → 플레인텍스트 변환 ──────────────────────
 
@@ -615,6 +617,9 @@ export const TOOL_META: ToolMeta[] = [
   { name: 'get_confluence_page',    label: 'Confluence 페이지',   emoji: '📚', dataSources: ['confluence'] },
   { name: 'save_knowledge',         label: '널리지 저장',         emoji: '🧠', dataSources: ['knowledge'] },
   { name: 'read_knowledge',         label: '널리지 읽기',         emoji: '🧠', dataSources: ['knowledge'] },
+  { name: 'save_validation_rule',   label: '검증 룰 등록',       emoji: '🛡️', dataSources: ['knowledge'] },
+  { name: 'list_validation_rules',  label: '검증 룰 목록',       emoji: '🛡️', dataSources: ['knowledge'] },
+  { name: 'delete_validation_rule', label: '검증 룰 삭제',       emoji: '🛡️', dataSources: ['knowledge'] },
   { name: 'web_search',             label: '웹 검색',             emoji: '🌐', dataSources: ['web'] },
   { name: 'edit_game_data',         label: '바이블테이블링',       emoji: '📝', dataSources: ['excel'] },
   { name: 'add_game_data_rows',     label: '데이터 행 추가',       emoji: '➕', dataSources: ['excel'] },
@@ -912,14 +917,16 @@ const TOOLS = [
   },
   {
     name: 'search_confluence',
-    description: 'CQL로 Confluence 문서 검색 (기획서/스펙/회의록).',
+    description: 'Confluence 문서 검색. query(자연어)를 주면 자동으로 CQL 변환됨. 직접 CQL을 쓸 수도 있음.',
     input_schema: {
       type: 'object',
       properties: {
-        cql: { type: 'string', description: 'CQL 쿼리' },
+        query: { type: 'string', description: '검색 키워드 (자연어, 예: "캐릭터 밸런스 기획서"). 자동으로 CQL text~"..." 변환됨.' },
+        cql: { type: 'string', description: '직접 CQL 쿼리 (예: "type=page AND text~\\"캐릭터\\"", "space=AEGIS AND title~\\"기획서\\""). query보다 우선.' },
+        space: { type: 'string', description: 'Confluence Space 키 필터 (예: "AEGIS")' },
         limit: { type: 'number', description: '최대 건수 (기본 10)' },
       },
-      required: ['cql'],
+      required: [],
     },
   },
   {
@@ -954,6 +961,45 @@ const TOOLS = [
         name: { type: 'string', description: '파일 이름 (""=전체 목록)' },
       },
       required: [],
+    },
+  },
+  // ── 검증 룰 도구 ──────────────────────────────────────────────────────────
+  {
+    name: 'save_validation_rule',
+    description: '데이터 유효성 검증 룰을 등록/수정합니다. "HP는 0보다 커야 해", "쿨타임은 0.1~300" 같은 요청 시 사용. 자연어를 구조화된 룰로 변환하여 저장.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '룰 ID (영문 snake_case, 신규면 자동생성 가능)' },
+        name: { type: 'string', description: '룰 이름 (한글 가능, 예: "캐릭터 HP 양수 필수")' },
+        table: { type: 'string', description: '대상 테이블명 (와일드카드 가능: "*Stat", "*", 정확한 이름)' },
+        severity: { type: 'string', enum: ['error', 'warning'], description: 'error=필수, warning=권장' },
+        condition: {
+          type: 'object',
+          description: '조건 객체. type 필수. 지원: range{column,min?,max?}, not_null{column}, in{column,values[]}, not_in{column,values[]}, regex{column,pattern}, compare_columns{left,op,right}, conditional{when:{column,op,value},then:{column,op,value}}, unique{column}',
+          properties: {
+            type: { type: 'string', enum: ['range', 'not_null', 'in', 'not_in', 'regex', 'compare_columns', 'conditional', 'unique'] },
+          },
+          required: ['type'],
+        },
+      },
+      required: ['name', 'table', 'severity', 'condition'],
+    },
+  },
+  {
+    name: 'list_validation_rules',
+    description: '등록된 데이터 검증 룰 목록을 반환합니다.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'delete_validation_rule',
+    description: '검증 룰을 삭제합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '삭제할 룰 ID' },
+      },
+      required: ['id'],
     },
   },
   // ── Jira 쓰기 툴 ──────────────────────────────────────────────────────────
@@ -1123,7 +1169,7 @@ const TOOL_GROUPS: Record<string, { tools: string[]; keywords: RegExp }> = {
   },
   git: {
     tools: ['query_git_history', 'show_revision_diff'],
-    keywords: /커밋|깃|git|히스토리|변경.*이력|diff|리비전|수정됐|언제.*바뀌/i,
+    keywords: /커밋|깃|git|히스토리|변경.*이력|diff|리비전|수정됐|언제.*바뀌|수정점|변경점|변경사항|바뀐\s*거|뭐\s*바뀌|뭐\s*수정|최근.*변경|최근.*수정|패치.*노트|업데이트.*내역|누가.*바꿨|누가.*수정/i,
   },
   asset: {
     tools: ['find_resource_image', 'search_assets', 'read_scene_yaml', 'preview_prefab', 'preview_fbx_animation'],
@@ -1143,7 +1189,7 @@ const TOOL_GROUPS: Record<string, { tools: string[]; keywords: RegExp }> = {
   },
   confluence: {
     tools: ['search_confluence', 'get_confluence_page'],
-    keywords: /컨플루언스|confluence|위키|기획.*문서|스펙.*문서|회의록/i,
+    keywords: /컨플루언스|컨플|confluence|위키|기획.*문서|스펙.*문서|회의록|기획서|디자인.*문서|기획.*페이지|문서.*찾|문서.*검색/i,
   },
   character: {
     tools: ['build_character_profile'],
@@ -1154,7 +1200,7 @@ const TOOL_GROUPS: Record<string, { tools: string[]; keywords: RegExp }> = {
     keywords: /검색|웹|url|http|사이트|레퍼런스|참고.*자료|외부/i,
   },
 };
-const ALWAYS_TOOLS = ['read_knowledge', 'save_knowledge', 'read_guide'];
+const ALWAYS_TOOLS = ['read_knowledge', 'save_knowledge', 'read_guide', 'query_game_data', 'show_table_schema', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule', 'search_confluence', 'get_confluence_page'];
 
 function selectToolsForQuery(query: string, existingFilter?: string[]): typeof TOOLS {
   if (existingFilter) return TOOLS.filter(t => existingFilter.includes(t.name));
@@ -1182,6 +1228,16 @@ function selectToolsForQuery(query: string, existingFilter?: string[]): typeof T
   if (matched.has('query_game_data')) {
     matched.add('create_artifact');
     matched.add('patch_artifact');
+  }
+
+  // 데이터+변경 질문이면 Git 도구도 포함 ("Character 수정점" 등)
+  if (matched.has('query_game_data') && /수정|변경|바뀌|업데이트|패치|최근/i.test(query)) {
+    for (const t of TOOL_GROUPS.git.tools) matched.add(t);
+  }
+  // Git 질문에 테이블명이 포함되면 데이터 도구도 포함 (변경 전후 비교 가능)
+  if (matched.has('query_git_history')) {
+    matched.add('show_table_schema');
+    matched.add('query_game_data');
   }
 
   const selected = TOOLS.filter(t => matched.has(t.name));
@@ -1222,6 +1278,8 @@ function buildSystemPrompt(
   knowledgeEntries?: { name: string; sizeKB: number; content: string }[],
   _userQuery?: string,
   selectedToolNames?: string[],
+  anomalyPrompt?: string,
+  validationPrompt?: string,
 ): string {
   const hasTools = (names: string[]) => !selectedToolNames || names.some(n => selectedToolNames.includes(n));
   const lines: string[] = [];
@@ -1279,8 +1337,16 @@ function buildSystemPrompt(
   lines.push('- 모호한 질문 → A)/B)/C) 형식 객관식 되질문 (UI가 버튼으로 변환). 복수선택은 - [ ] 체크리스트.');
   lines.push('- ⭐ 답변 전 반드시 read_guide로 관련 가이드 먼저 읽기 (DB: _DB_OVERVIEW, 코드: _OVERVIEW)');
   lines.push('- "기억해/저장해" → save_knowledge(name=영문_snake_case). 읽기: read_knowledge(name).');
+  lines.push('- "룰 등록/검증 룰/HP는 0보다 커야/조건 추가" → save_validation_rule. 자연어를 구조화된 condition으로 변환. 목록: list_validation_rules. 삭제: delete_validation_rule(id).');
+  lines.push('  condition types: range{column,min?,max?}, not_null{column}, in{column,values[]}, compare_columns{left,op,right}, conditional{when:{column,op,value},then:{column,op,value}}, unique{column}, regex{column,pattern}');
   lines.push('- 채팅에 HTML 태그 절대 금지. HTML은 아티팩트 안에만.');
   lines.push('- 다단계 작업 시 :::progress 트래커 사용 (형식: 번호|상태|라벨|설명, 상태: done/active/pending/skipped)');
+  lines.push('');
+  lines.push('## ⚡ 최적 호출 패턴 (이터레이션 최소화)');
+  lines.push('- **데이터 조회**: 위 사전주입 스키마가 있으면 → 바로 query_game_data(sql). show_table_schema 생략.');
+  lines.push('- **데이터 수정**: query_game_data(현재값 확인) → edit_game_data. 최소 2회.');
+  lines.push('- **변경 이력**: query_git_history(repo=data) + query_git_history(repo=aegis) 병렬 호출 → show_revision_diff(hash).');
+  lines.push('- **단순 질문**: 스키마/데이터를 이미 알고 있으면 도구 없이 바로 텍스트 응답. 불필요한 확인 호출 금지.');
   lines.push('');
 
   // ── 바이블테이블링 규칙: edit_game_data/add_game_data_rows 포함 시에만 ──
@@ -1295,11 +1361,13 @@ function buildSystemPrompt(
   if (hasTools(['create_artifact', 'patch_artifact'])) {
     lines.push('## 아티팩트 생성 프로토콜');
     lines.push('⭐ 아티팩트 생성 전에 **반드시** search_published_artifacts로 유사한 기존 문서를 먼저 검색하세요!');
-    lines.push('- 유사한 기존 아티팩트가 있으면 → 사용자에게 링크와 함께 "기존 문서를 갱신할까요, 새로 만들까요?" 제안');
+    lines.push('- 유사한 기존 아티팩트가 있으면 → **반드시 [문서제목](/api/p/아티팩트_id) 형식 인라인 링크 포함**하여 사용자에게 제안');
+    lines.push('- 예: "기존에 [AEGIS 캐릭터 종합 데이터 시트](/api/p/aegis_character_sheet) 문서가 있습니다. 갱신할까요?"');
     lines.push('- 사용자가 "갱신/수정/업데이트" 요청 시 → get_published_artifact로 기존 HTML 가져와서 create_artifact로 수정본 생성');
     lines.push('- 사용자가 기존 아티팩트를 언급/링크하면 → get_published_artifact로 가져와서 수정');
     lines.push('<<<ARTIFACT_START>>> + HTML(body만, 다크테마 bg:#0f1117 text:#e2e8f0 accent:#6366f1) + <<<ARTIFACT_END>>> → create_artifact(title). 수정은 patch_artifact만.');
-    lines.push('임베드: data-embed="schema|query|relations|graph|diff|csv|scene|prefab|fbx-anim" 속성 사용. 이미지: /api/images/smart?name=파일명. [[TableName]]→스키마 팝업.');
+    lines.push('임베드: data-embed="schema|query|relations|graph|diff|csv|scene|prefab|fbx-anim" 속성 사용. [[TableName]]→스키마 팝업.');
+    lines.push('이미지: find_resource_image로 검색한 결과의 url 필드(전체 URL)를 <img src="...">에 사용. /api/images/... 상대경로 금지!');
     lines.push('Mermaid: \\n+4칸 들여쓰기, 노드ID=영문, 한글=["..."], 특수문자 금지.');
     lines.push('');
   }
@@ -1309,6 +1377,17 @@ function buildSystemPrompt(
     lines.push('## Jira/Confluence');
     lines.push('프로젝트: AEGIS. JQL 날짜필터 자동추가 금지. AEGIS-1234 언급→get_jira_issue 즉시 호출.');
     lines.push('이슈 생성: create_jira_issue(summary). 댓글: add_jira_comment(issueKey, comment). 상태변경: update_jira_issue_status. "쓰기 불가" 절대 금지.');
+    lines.push('### Confluence 검색 패턴');
+    lines.push('- **자연어 검색**: search_confluence(query: "캐릭터 밸런스") → 자동 CQL 변환');
+    lines.push('- **Space 필터**: search_confluence(query: "기획서", space: "AEGIS")');
+    lines.push('- **직접 CQL**: search_confluence(cql: \'type="page" AND text~"스킬" AND space="AEGIS"\')');
+    lines.push('- 검색 결과에서 페이지 내용이 필요하면 get_confluence_page(pageId) 추가 호출');
+    lines.push('- query만 넘기면 됨. CQL 문법 몰라도 OK.');
+    lines.push('### ⚠️ Confluence URL 감지 (필수)');
+    lines.push('- 사용자가 atlassian.net/wiki 또는 confluence URL을 붙여넣으면 **반드시 get_confluence_page(pageId)** 사용');
+    lines.push('- URL에서 pageId 추출: .../pages/926910300/... → pageId="926910300"');
+    lines.push('- **절대 read_url이나 web_search로 Confluence 페이지를 읽지 마라** (인증 실패함)');
+    lines.push('- Confluence 페이지는 get_confluence_page만 접근 가능 (API 토큰 인증 자동 처리)');
     lines.push('');
   }
 
@@ -1321,8 +1400,16 @@ function buildSystemPrompt(
 
   // ── Git 규칙: git 도구 포함 시에만 ──
   if (hasTools(['query_git_history', 'show_revision_diff'])) {
-    lines.push('## Git 이력 분석');
-    lines.push('query_git_history → hash → show_revision_diff(hash). 바이너리 미표시, 텍스트(csv/json/dbml) 위주 분석.');
+    lines.push('## Git 이력 분석 (2개 저장소)');
+    lines.push('- **data 저장소** (기본): xlsx 원본 데이터. 경로 예시: "GameData/Data/Character"');
+    lines.push('- **aegis 저장소**: 엔진 코드 + xlsx→C# 파싱 결과. 경로 예시: "ReferenceTable/RefCharacter.cs"');
+    lines.push('- 데이터 변경 질문 시 → **양쪽 모두** 조회해야 완전한 이력을 제공 가능');
+    lines.push('  1. query_git_history(repo="data", filter_path="GameData/Data/테이블명") — xlsx 원본 수정');
+    lines.push('  2. query_git_history(repo="aegis", filter_path="ReferenceTable/Ref테이블명") — 파싱된 C# 코드 변경');
+    lines.push('- 커밋 목록 확인 후 → show_revision_diff(commit_hash, repo=해당repo)로 상세 diff 표시');
+    lines.push('- xlsx 자체는 바이너리라 diff 불가 → aegis 쪽 Ref*.cs diff가 실제 데이터 변경 내용을 보여줌');
+    lines.push('- 양쪽 이력을 교차 분석하면 "언제 데이터가 바뀌었고, 엔진에 언제 반영됐는지" 파악 가능');
+    lines.push('- 결과를 아티팩트로 정리하면 더 좋음 (패치노트/변경 이력 문서)');
     lines.push('');
   }
 
@@ -1373,21 +1460,16 @@ function buildSystemPrompt(
     lines.push('');
 
     if (schema.refs.length > 0) {
-      // 관계를 테이블별로 그룹화하여 압축 표시
-      const refsByFrom = new Map<string, string[]>();
+      // FK는 질문 관련 테이블이 사전주입에 이미 포함되어 있으므로 전체 목록은 초압축
+      // show_table_schema 호출 시 상세 FK를 알 수 있으므로 여기서는 개수만 표시
+      const refsByFrom = new Map<string, number>();
       for (const r of schema.refs) {
         const from = nameById.get(r.fromTable) ?? r.fromTable;
-        const to = nameById.get(r.toTable) ?? r.toTable;
-        if (!refsByFrom.has(from)) refsByFrom.set(from, []);
-        refsByFrom.get(from)!.push(`${r.fromColumns[0]}→${to}`);
+        refsByFrom.set(from, (refsByFrom.get(from) ?? 0) + 1);
       }
-      lines.push(`## FK 관계 (${schema.refs.length}개)`);
-      let refCount = 0;
-      for (const [from, refs] of refsByFrom) {
-        if (refCount >= 30) { lines.push(`... 외 ${refsByFrom.size - 30}개 테이블`); break; }
-        lines.push(`${from}: ${refs.join(', ')}`);
-        refCount++;
-      }
+      const topFKTables = [...refsByFrom.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+      lines.push(`## FK 관계 (${schema.refs.length}개, 상세: show_table_schema 또는 위 사전주입 참고)`);
+      lines.push(`주요: ${topFKTables.map(([t, n]) => `${t}(${n})`).join(', ')}`);
       lines.push('');
     }
 
@@ -1406,22 +1488,60 @@ function buildSystemPrompt(
   if (tableList) lines.push(`## 데이터 테이블: ${tableList}`);
   lines.push('');
 
+  // ── 질문에서 언급된 테이블의 컬럼을 사전 주입 (show_table_schema 호출 절약) ──
+  if (schema && _userQuery) {
+    const q = _userQuery.toLowerCase();
+    const mentionedTables = schema.tables.filter(t => {
+      const nameLow = t.name.toLowerCase();
+      const aliasLow = t.alias?.toLowerCase() ?? '';
+      return q.includes(nameLow) || (aliasLow && q.includes(aliasLow));
+    });
+    if (mentionedTables.length > 0 && mentionedTables.length <= 5) {
+      const nameById = new Map(schema.tables.map(t => [t.id, t.name]));
+      lines.push(`## 🎯 질문 관련 테이블 스키마 (사전 주입 — show_table_schema 불필요, 바로 query_game_data 호출 가능)`);
+      for (const t of mentionedTables) {
+        const cols = t.columns.map(c => {
+          const flags = [c.isPrimaryKey && 'PK', c.isForeignKey && 'FK', c.isNotNull && 'NN'].filter(Boolean).join(',');
+          return `${c.name}:${c.type}${flags ? `[${flags}]` : ''}`;
+        }).join(', ');
+        const fks = schema.refs
+          .filter(r => r.fromTable === t.id)
+          .map(r => `${r.fromColumns[0]}→${nameById.get(r.toTable) ?? r.toTable}`)
+          .join(', ');
+        const rowCount = tableData.get(t.name)?.rows.length ?? '?';
+        const reservedNote = RESERVED_TABLE_NAMES.has(t.name.toUpperCase()) ? ` ⚠️SQL: FROM __u_${t.name}` : '';
+        lines.push(`**${t.name}** (${rowCount}행${reservedNote}): ${cols}${fks ? ` | FK: ${fks}` : ''}`);
+      }
+      lines.push('');
+    }
+  }
+
   lines.push('## SQL 규칙');
   lines.push('테이블명 대소문자 무시. #컬럼→백틱(`#col`). 값=문자열(WHERE id=\'1001\'). 숫자비교=CAST(col AS NUMBER). AS별칭=영문만(한글 AS 절대금지).');
+  lines.push('⭐ 질문 관련 테이블 스키마가 위에 포함되어 있으면 show_table_schema 호출 없이 바로 query_game_data 호출.');
   lines.push('');
   lines.push('## Enum 조회 (가상테이블 ENUMS)');
   lines.push(VIRTUAL_TABLE_SCHEMA);
   lines.push('SELECT * FROM ENUMS WHERE enum_name=\'이름\'. ⛔ FROM Enum (예약어), FROM __u_enum 절대 금지.');
   lines.push('');
-  lines.push('## ⛔ alasql 예약어 테이블명 규칙 — 반드시 준수');
-  lines.push('아래 테이블명은 alasql 예약어이므로 SQL에서 직접 사용 불가. 내부명(__u_xxx)으로 쿼리할 것:');
 
-  // 로드된 tableData 중 예약어인 것 목록
+  // 예약어 테이블 목록 (질문 관련 사전주입에 이미 ⚠️ 표시했으므로 간소화)
+  const reservedTableNames: string[] = [];
   for (const [key] of tableData) {
-    const upperKey = key.toUpperCase();
-    if (RESERVED_TABLE_NAMES.has(upperKey)) {
-      lines.push(`- "${key}" 게임데이터 테이블 → SELECT * FROM __u_${key} WHERE ... (절대 FROM ${key} 사용 금지)`);
-    }
+    if (RESERVED_TABLE_NAMES.has(key.toUpperCase())) reservedTableNames.push(key);
+  }
+  if (reservedTableNames.length > 0) {
+    lines.push(`## ⛔ alasql 예약어: ${reservedTableNames.map(k => `${k}→__u_${k}`).join(', ')}`);
+  }
+
+  if (anomalyPrompt) {
+    lines.push('');
+    lines.push(anomalyPrompt);
+  }
+
+  if (validationPrompt) {
+    lines.push('');
+    lines.push(validationPrompt);
   }
 
   return lines.join('\n');
@@ -1745,10 +1865,15 @@ async function streamClaude(
   /** true이면 이어쓰기 모드: <<<ARTIFACT_START>>> 없이도 텍스트를 바로 아티팩트 HTML로 캡처 */
   artifactContinuationMode = false,
 ): Promise<ClaudeResponse & { usage?: TokenUsage; _streamedArtifactHtml?: string }> {
-  // ── 자동 재시도 (529 Overloaded / 네트워크 오류) ──
-  const MAX_RETRIES = 3;
-  const RETRY_DELAYS = [3000, 8000, 15000]; // 3초, 8초, 15초
+  // ── 자동 재시도 + 429 모델 폴백 체인 (현재 선택 모델 이후부터) ──
+  const ALL_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001'];
+  const currentModel = (requestBody as Record<string, unknown>).model as string || 'claude-opus-4-6';
+  const currentIdx = ALL_MODELS.indexOf(currentModel);
+  const MODEL_FALLBACK_CHAIN = ALL_MODELS.filter((_, i) => i > currentIdx);
+  const MAX_RETRIES = 5;
+  const RETRY_DELAYS = [2000, 5000, 10000, 20000, 30000];
   let response!: Response;
+  let fallbackIdx = 0;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -1758,11 +1883,33 @@ async function streamClaude(
         body: JSON.stringify({ ...requestBody, stream: true }),
       });
 
-      if (response.ok) break; // 성공
+      if (response.ok) break;
+
+      // 429 Rate Limit → 모델 폴백 체인: Opus → Sonnet → Haiku → 대기 후 재시도
+      if (response.status === 429) {
+        const currentModel = String((requestBody as any).model ?? '');
+        if (fallbackIdx < MODEL_FALLBACK_CHAIN.length) {
+          const nextModel = MODEL_FALLBACK_CHAIN[fallbackIdx++];
+          const label = nextModel.includes('sonnet') ? 'Sonnet' : nextModel.includes('haiku') ? 'Haiku' : nextModel;
+          console.warn(`[streamClaude] ⚠️ 429 (${currentModel}) → ${label}로 폴백`);
+          onTextDelta(`\n⏳ Rate Limit (${currentModel.split('-').slice(0, 2).join('-')}) — ${label}로 자동 전환합니다...\n`);
+          (requestBody as any).model = nextModel;
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        // 모든 모델 소진 → 대기 후 현재 모델로 재시도
+        if (attempt < MAX_RETRIES) {
+          const delay = RETRY_DELAYS[Math.min(attempt, RETRY_DELAYS.length - 1)];
+          console.warn(`[streamClaude] ⚠️ 429 모든 모델 제한 — ${delay / 1000}초 대기 후 재시도`);
+          onTextDelta(`\n⏳ 모든 모델 Rate Limit — ${delay / 1000}초 후 재시도합니다... (${attempt + 1}/${MAX_RETRIES})\n`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+      }
 
       if (response.status === 529 || response.status === 503 || response.status === 502) {
         if (attempt < MAX_RETRIES) {
-          const delay = RETRY_DELAYS[attempt];
+          const delay = RETRY_DELAYS[Math.min(attempt, RETRY_DELAYS.length - 1)];
           console.warn(`[streamClaude] ⚠️ ${response.status} Overloaded — ${delay / 1000}초 후 재시도 (${attempt + 1}/${MAX_RETRIES})`);
           onTextDelta(`\n⏳ 서버 과부하 (${response.status}) — ${delay / 1000}초 후 자동 재시도합니다... (${attempt + 1}/${MAX_RETRIES})\n`);
           await new Promise(r => setTimeout(r, delay));
@@ -2226,6 +2373,256 @@ if (typeof window !== 'undefined') {
   window.addEventListener('knowledge-updated', () => { _knowledgeCache = null; });
 }
 
+// ── FastPath: 간단한 질문에 대한 로컬 즉답 (API 호출 없음) ──────────────────
+// 스키마/데이터 조회, 사용법 등 로컬 데이터만으로 답할 수 있는 질문을 감지하여 즉시 응답
+
+export async function tryFastPath(
+  userMessage: string,
+  schema: ParsedSchema | null,
+  tableData: TableDataMap,
+): Promise<{ content: string; toolCalls: ToolCallResult[] } | null> {
+  const msg = userMessage.trim();
+  const effectiveSchema = schema ?? useSchemaStore.getState().schema;
+  if (!effectiveSchema) return null;
+
+  const tables = effectiveSchema.tables;
+  const refs = effectiveSchema.refs;
+  const nameById = new Map(tables.map(t => [t.id, t.name]));
+
+  // ── 1. 테이블 목록 ──
+  if (/^(테이블|table)\s*(목록|리스트|list|뭐\s*있|몇\s*개|갯수|개수|전체)/i.test(msg) ||
+      /^(전체|모든)\s*테이블/i.test(msg) ||
+      /테이블이?\s*(몇\s*개|뭐\s*있|어떤)/i.test(msg)) {
+    const groups = new Map<string, string[]>();
+    for (const t of tables) {
+      const g = t.groupName ?? '기타';
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g)!.push(t.name);
+    }
+    let text = `📋 **전체 테이블 ${tables.length}개**\n\n`;
+    for (const [group, names] of groups) {
+      text += `**${group}** (${names.length}개)\n`;
+      text += names.map(n => {
+        const td = tableData.get(n);
+        const rowCount = td ? td.rows.length : 0;
+        return `- ${n}${rowCount > 0 ? ` (${rowCount}행)` : ''}`;
+      }).join('\n') + '\n\n';
+    }
+    return { content: text, toolCalls: [] };
+  }
+
+  // ── 2. 특정 테이블 스키마 ──
+  const schemaMatch = msg.match(/^(.+?)\s*(테이블|table)?\s*(컬럼|필드|스키마|column|field|schema|구조|뭐\s*있|정보|보여|알려)/i)
+    ?? msg.match(/^(show|describe|desc)\s+(\w+)/i);
+  if (schemaMatch) {
+    const tblName = (schemaMatch[1] || schemaMatch[2] || '').trim();
+    const info = resolveTableSchema(tblName, effectiveSchema);
+    if (info) {
+      const tc: SchemaCardResult = {
+        kind: 'schema_card',
+        tableName: info.name,
+        tableInfo: info,
+      };
+      let text = `📊 **${info.name}** 테이블 — ${info.columns.length}개 컬럼`;
+      if (info.group) text += ` (${info.group})`;
+      if (info.note) text += `\n> ${info.note}`;
+      const td = tableData.get(info.name);
+      if (td && td.rows.length > 0) text += `\n\n데이터: ${td.rows.length}행`;
+      return { content: text, toolCalls: [tc] };
+    }
+  }
+
+  // ── 3. 데이터 미리보기 ──
+  const previewMatch = msg.match(/^(.+?)\s*(테이블|table)?\s*(데이터|미리\s*보기|preview|샘플|보여줘|내용|확인)/i)
+    ?? msg.match(/^(.+?)\s*(에|의)\s*(뭐\s*들어|데이터|내용)/i);
+  if (previewMatch) {
+    const tblName = (previewMatch[1] || '').trim();
+    const lower = tblName.toLowerCase();
+    const tbl = tables.find(t => t.name.toLowerCase() === lower || t.alias?.toLowerCase() === lower);
+    if (tbl) {
+      const td = tableData.get(tbl.name);
+      if (td && td.rows.length > 0) {
+        const MAX_PREVIEW = 10;
+        const MAX_CELL = 30;
+        const previewRows = td.rows.slice(0, MAX_PREVIEW);
+        const headers = td.headers;
+        const displayRows = previewRows.map((r: Record<string, string>) => {
+          const row: Record<string, string> = {};
+          for (const h of headers) {
+            const v = String(r[h] ?? '');
+            row[h] = v.length > MAX_CELL ? v.slice(0, MAX_CELL) + '…' : v;
+          }
+          return row;
+        });
+        const tc: DataQueryResult = {
+          kind: 'data_query',
+          sql: `SELECT * FROM ${tbl.name} LIMIT ${MAX_PREVIEW}`,
+          columns: headers,
+          rows: displayRows as Row[],
+          rowCount: td.rows.length,
+        };
+        return {
+          content: `📊 **${tbl.name}** 데이터 미리보기 (${td.rows.length}행 중 상위 ${Math.min(MAX_PREVIEW, td.rows.length)}행)`,
+          toolCalls: [tc],
+        };
+      }
+    }
+  }
+
+  // ── 4. FK/관계 조회 ──
+  if (/^(.+?)\s*(의?\s*)(관계|FK|외래키|참조|연결|relation|reference)/i.test(msg)) {
+    const m = msg.match(/^(.+?)\s*(의?\s*)(관계|FK|외래키|참조|연결|relation|reference)/i);
+    if (m) {
+      const tblName = m[1].trim();
+      const info = resolveTableSchema(tblName, effectiveSchema);
+      if (info && info.relations.length > 0) {
+        let text = `🔗 **${info.name}** 관계 (${info.relations.length}개)\n\n`;
+        for (const r of info.relations) {
+          const arrow = r.direction === 'out' ? '→' : '←';
+          text += `- ${arrow} **${r.table}** (${r.fromCol} ${r.relType} ${r.toCol})\n`;
+        }
+        return { content: text, toolCalls: [] };
+      }
+    }
+  }
+
+  // ── 5. 행 수 / 데이터 통계 ──
+  if (/^(데이터|행)\s*(수|통계|현황|요약|사이즈|크기)/i.test(msg) ||
+      /^(data|row)\s*(count|stat|size|summary)/i.test(msg) ||
+      /데이터\s*(얼마나|몇)/i.test(msg)) {
+    const sorted = tables
+      .map(t => ({ name: t.name, group: t.groupName ?? '기타', rows: tableData.get(t.name)?.rows.length ?? 0 }))
+      .sort((a, b) => b.rows - a.rows);
+    const totalRows = sorted.reduce((s, t) => s + t.rows, 0);
+    const withData = sorted.filter(t => t.rows > 0);
+    let text = `📊 **데이터 현황** — ${tables.length}개 테이블, ${totalRows.toLocaleString()}행\n\n`;
+    text += `데이터 있는 테이블: ${withData.length}개\n\n`;
+    if (withData.length > 0) {
+      text += '| 테이블 | 그룹 | 행 수 |\n|--------|------|------|\n';
+      for (const t of withData.slice(0, 30)) {
+        text += `| ${t.name} | ${t.group} | ${t.rows.toLocaleString()} |\n`;
+      }
+      if (withData.length > 30) text += `\n... 외 ${withData.length - 30}개 테이블`;
+    }
+    return { content: text, toolCalls: [] };
+  }
+
+  // ── 6. 사용법 / 도움말 ──
+  if (/^(도움|help|사용법|뭐.*할\s*수|기능|어떻게|사용.*방법|뭘.*물어)/i.test(msg)) {
+    const text = `## 💡 이런 걸 물어보세요!\n\n` +
+      `**📋 스키마 조회** — 즉시 응답\n` +
+      `- "테이블 목록" / "Character 컬럼" / "Skill FK"\n\n` +
+      `**📊 데이터 조회**\n` +
+      `- "Character 데이터 보여줘" / "레벨 100 이상 캐릭터 찾아줘"\n\n` +
+      `**📄 문서 생성**\n` +
+      `- "프리드웬 리소스 시트 만들어줘" / "스킬 밸런스 분석해줘"\n\n` +
+      `**🔍 검색**\n` +
+      `- "Jira에서 프리드웬 이슈 찾아줘" / "최근 Git 변경사항"\n\n` +
+      `**🧠 지식 관리**\n` +
+      `- "널리지 저장해줘" / "기존 문서 검색"\n\n` +
+      `> 💡 테이블/컬럼/통계 질문은 **API 호출 없이 즉시** 응답합니다!`;
+    return { content: text, toolCalls: [] };
+  }
+
+  // ── 7. enum 조회 ──
+  const enumMatch = msg.match(/^(.+?)\s*(enum|이넘|열거|값\s*목록)/i);
+  if (enumMatch) {
+    const enumName = enumMatch[1].trim().toLowerCase();
+    const found = effectiveSchema.enums.find(e => e.name.toLowerCase().includes(enumName));
+    if (found) {
+      let text = `📌 **${found.name}** enum (${found.values.length}개 값)\n\n`;
+      for (const v of found.values.slice(0, 50)) {
+        text += `- \`${v.name}\`${v.note ? ` — ${v.note}` : ''}\n`;
+      }
+      if (found.values.length > 50) text += `\n... 외 ${found.values.length - 50}개`;
+      return { content: text, toolCalls: [] };
+    }
+  }
+
+  // ── 8. 그룹 조회 ──
+  if (/^(그룹|group)\s*(목록|리스트|뭐|list)/i.test(msg) ||
+      /^(전체|모든)\s*그룹/i.test(msg)) {
+    const groups = effectiveSchema.tableGroups;
+    if (groups.length > 0) {
+      let text = `📁 **테이블 그룹 ${groups.length}개**\n\n`;
+      for (const g of groups) {
+        text += `- **${g.name}** (${g.tables.length}개 테이블)`;
+        if (g.note) text += ` — ${g.note}`;
+        text += '\n';
+      }
+      return { content: text, toolCalls: [] };
+    }
+  }
+
+  // Git 변경점/디프 질문 → FastPath 안 함 (Claude AI가 양쪽 레포를 깊이 분석하도록)
+
+  // ── 검증 실행 / 룰 목록 ──
+  if (/^(전체\s*)?(데이터\s*)?(검증|밸리데이션|validation|룰\s*검증)\s*(실행|해줘|해봐|돌려|돌려봐|체크|확인|run|ㄱㄱ)?[.!~]*$/i.test(msg) ||
+      /^(검증|밸리데이션)\s*(결과|위반|현황|상태)/i.test(msg) ||
+      /검증\s*(해|실행|돌려|체크)/i.test(msg)) {
+    const { fetchRulesFromServer, runValidation } = await import('./validationEngine.ts');
+    const rules = await fetchRulesFromServer();
+    if (rules.length === 0) {
+      return {
+        content: '🛡️ **등록된 검증 룰이 없습니다.**\n\n채팅으로 룰을 등록해보세요:\n- "캐릭터 HP는 0보다 커야 해"\n- "스킬 쿨타임은 0.1~300 사이"\n- "아이템 이름은 비어있으면 안 돼"\n- "min_damage ≤ max_damage"',
+        toolCalls: [],
+      };
+    }
+    if (tableData.size === 0) {
+      return { content: '🛡️ 데이터가 아직 로드되지 않았습니다. 먼저 Import 해주세요.', toolCalls: [] };
+    }
+    const result = runValidation(tableData, rules);
+    useCanvasStore.getState().setValidationResult(result);
+
+    const enabled = rules.filter(r => r.enabled).length;
+    let text = `🛡️ **데이터 유효성 검증 완료** (${result.durationMs.toFixed(0)}ms)\n\n`;
+    text += `📋 룰: ${rules.length}개 (활성 ${enabled}개), 검증 대상: ${result.checkedRules}개 룰\n\n`;
+
+    if (result.violations.length === 0) {
+      text += '✅ **위반 없음!** 모든 데이터가 룰을 통과했습니다.\n';
+    } else {
+      const errCount = result.violations.filter(v => v.severity === 'error').length;
+      const warnCount = result.violations.filter(v => v.severity === 'warning').length;
+      text += `⚠️ **${result.violations.length}건 위반** (🔴 error ${errCount}, 🟡 warning ${warnCount})\n\n`;
+
+      const byRule = new Map<string, typeof result.violations>();
+      for (const v of result.violations) {
+        if (!byRule.has(v.ruleName)) byRule.set(v.ruleName, []);
+        byRule.get(v.ruleName)!.push(v);
+      }
+      for (const [ruleName, vs] of byRule) {
+        const icon = vs[0].severity === 'error' ? '🔴' : '🟡';
+        text += `${icon} **${ruleName}** — ${vs.length}건\n`;
+        for (const v of vs.slice(0, 5)) {
+          text += `  - \`${v.table}\` id=${v.rowId}: ${v.details}\n`;
+        }
+        if (vs.length > 5) text += `  - _... 외 ${vs.length - 5}건_\n`;
+        text += '\n';
+      }
+    }
+
+    text += '\n💡 룰 관리: "검증 룰 목록", "룰 삭제해줘", "새 룰 등록해줘"';
+    return { content: text, toolCalls: [] };
+  }
+
+  // ── 검증 룰 목록 ──
+  if (/룰\s*(목록|리스트|list|보여|확인|현황|뭐\s*있)/i.test(msg) ||
+      /검증.*룰/i.test(msg) && /목록|보여|확인|뭐/i.test(msg) ||
+      /^(validation\s*)?rules?\s*(list)?$/i.test(msg)) {
+    const { fetchRulesFromServer, rulesToSummary } = await import('./validationEngine.ts');
+    const rules = await fetchRulesFromServer();
+    if (rules.length === 0) {
+      return {
+        content: '🛡️ **등록된 검증 룰이 없습니다.**\n\n채팅으로 룰을 등록해보세요:\n- "캐릭터 HP는 0보다 커야 해"\n- "스킬 쿨타임은 0.1~300 사이"',
+        toolCalls: [],
+      };
+    }
+    return { content: rulesToSummary(rules), toolCalls: [] };
+  }
+
+  return null;
+}
+
 export async function sendChatMessage(
   userMessage: string,
   history: ChatTurn[],
@@ -2249,7 +2646,20 @@ export async function sendChatMessage(
   const filteredTools = selectToolsForQuery(userMessage, toolFilter);
   const selectedToolNames = filteredTools.map(t => t.name);
 
-  const systemPrompt = buildSystemPrompt(effectiveSchema, tableData, knowledgeEntries, userMessage, selectedToolNames);
+  // 이상치 탐지 결과를 시스템 프롬프트에 주입 (데이터 로드 시 자동 감지된 것)
+  const anomalyReport = useCanvasStore.getState().anomalyReport;
+  const anomalyPrompt = anomalyReport && anomalyReport.anomalies.length > 0
+    ? anomalyReportToPrompt(anomalyReport) : undefined;
+
+  // 유효성 검증 결과도 주입
+  const validationRes = useCanvasStore.getState().validationResult;
+  let validationPrompt: string | undefined;
+  if (validationRes && validationRes.violations.length > 0) {
+    const { validationResultToPrompt } = await import('./validationEngine.ts');
+    validationPrompt = validationResultToPrompt(validationRes);
+  }
+
+  const systemPrompt = buildSystemPrompt(effectiveSchema, tableData, knowledgeEntries, userMessage, selectedToolNames, anomalyPrompt, validationPrompt);
 
   // ── 메시지 크기 기반 히스토리 트리밍 (200K 토큰 ≈ 600K chars 제한) ──
   // 1자 ≈ 0.33 토큰 기준, 시스템 프롬프트 + 여유분 확보
@@ -2501,8 +2911,9 @@ export async function sendChatMessage(
       : tool
   );
 
+  const selectedModel = useCanvasStore.getState().claudeModel || 'claude-opus-4-6';
   const requestBase = {
-    model: 'claude-opus-4-6',
+    model: selectedModel,
     max_tokens: dynamicMaxTokens,
     system: [
       {
@@ -2560,7 +2971,16 @@ export async function sendChatMessage(
         break;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('529') || msg.includes('과부하')) {
+        if (msg.includes('429') || msg.includes('rate_limit')) {
+          if (attempt < 2) {
+            const wait = 10000 * (attempt + 1);
+            console.warn(`[Chat] ⚠️ 429 Rate Limit — ${wait / 1000}초 대기 후 재시도`);
+            onTextDelta?.(`\n⏳ Rate Limit — ${wait / 1000}초 후 재시도합니다...\n`, '');
+            await new Promise(r => setTimeout(r, wait));
+            continue;
+          }
+          throw err;
+        } else if (msg.includes('529') || msg.includes('과부하')) {
           if (attempt === 2) throw err;
         } else {
           throw err;
@@ -2704,6 +3124,9 @@ export async function sendChatMessage(
         get_character_profile: '👤 캐릭터 프로필 조회',
         save_knowledge: '🧠 널리지 저장',
         read_knowledge: '🧠 널리지 읽기',
+        save_validation_rule: '🛡️ 검증 룰 등록',
+        list_validation_rules: '🛡️ 검증 룰 목록',
+        delete_validation_rule: '🛡️ 검증 룰 삭제',
         web_search: '🌐 웹 검색',
         read_url: '🌐 웹페이지 읽기',
         edit_game_data: '📝 바이블테이블링',
@@ -2724,7 +3147,7 @@ export async function sendChatMessage(
           : tb.name === 'search_git_history' ? String(inp.keyword ?? '')
           : tb.name === 'create_artifact' ? String(inp.title ?? '')
           : tb.name === 'search_jira_issues' ? String(inp.jql ?? '')
-          : tb.name === 'search_confluence' ? String(inp.query ?? '')
+          : tb.name === 'search_confluence' ? String(inp.query ?? inp.cql ?? '')
           : tb.name === 'search_code' ? String(inp.query ?? '')
           : tb.name === 'search_assets' ? String(inp.query ?? '')
           : tb.name === 'get_scene_yaml' ? String(inp.path ?? '')
@@ -2733,6 +3156,8 @@ export async function sendChatMessage(
           : tb.name === 'get_character_profile' ? String(inp.character_id ?? '')
           : tb.name === 'save_knowledge' ? String(inp.name ?? '')
           : tb.name === 'read_knowledge' ? String(inp.name ?? '') || '(목록)'
+          : tb.name === 'save_validation_rule' ? String(inp.name ?? '')
+          : tb.name === 'delete_validation_rule' ? String(inp.id ?? '')
           : undefined;
         onThinkingUpdate?.({ type: 'tool_start', iteration: i + 1, maxIterations: MAX_ITERATIONS, toolName: tb.name, toolLabel, detail: toolDetail, timestamp: Date.now() });
 
@@ -2760,9 +3185,10 @@ export async function sendChatMessage(
           } else if (qr.rowCount === 0) {
             resultStr = '결과 없음 (0행)';
           } else {
-            // 행수 제한 (30행) + 셀 값 길이 제한 (200자) → 토큰 대폭 절약
-            const MAX_ROWS = 30;
-            const MAX_CELL_LEN = 200;
+            // 행수 제한 (15행) + 셀 값 길이 제한 (150자) → 토큰 대폭 절약
+            // UI에는 전체 데이터가 보이므로 Claude에게는 판단에 충분한 양만 전달
+            const MAX_ROWS = 15;
+            const MAX_CELL_LEN = 150;
             const trimmedRows = qr.rows.slice(0, MAX_ROWS).map(row => {
               const trimmedRow: Record<string, unknown> = {};
               for (const [k, v] of Object.entries(row)) {
@@ -2842,9 +3268,13 @@ export async function sendChatMessage(
                 files: c.files?.slice(0, 30), // 파일 목록 30개로 확장
               })),
             });
-            // 데이터 수정점 분석을 위한 힌트
             if (commits.length > 0) {
-              resultStr += '\n\n[힌트] 특정 커밋의 실제 변경 내용(+/- 라인)을 보려면 show_revision_diff(commit_hash)를 호출하세요.'
+              resultStr += '\n\n[힌트] 특정 커밋의 실제 변경 내용(+/- 라인)을 보려면 show_revision_diff(commit_hash, repo="' + repo + '")를 호출하세요.';
+              if (repo === 'data') {
+                resultStr += '\n[힌트] xlsx 원본은 바이너리라 diff 불가. 엔진 쪽 파싱 결과도 확인하려면 query_git_history(repo="aegis", filter_path="ReferenceTable/Ref테이블명")도 호출하세요.';
+              } else if (repo === 'aegis') {
+                resultStr += '\n[힌트] 이것은 엔진 파싱 결과입니다. xlsx 원본 수정 이력도 보려면 query_git_history(repo="data", filter_path="GameData/Data/테이블명")도 호출하세요.';
+              }
             }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -2882,10 +3312,10 @@ export async function sendChatMessage(
                 repo,
                 duration,
               } as RevisionDiffResult;
-              // Claude에게 실제 변경 내용(hunks)을 포함해서 전달
+              // Claude에게 실제 변경 내용(hunks)을 포함해서 전달 (토큰 절약을 위해 제한)
               const diffFiles = (data.files || []) as DiffFile[];
-              const MAX_DIFF_LINES = 300; // 파일당 최대 라인
-              const MAX_FILES_WITH_CONTENT = 10;
+              const MAX_DIFF_LINES = 150;
+              const MAX_FILES_WITH_CONTENT = 5;
               let totalLines = 0;
               const fileDetails = diffFiles.slice(0, 20).map((f: DiffFile, idx: number) => {
                 const base: Record<string, unknown> = {
@@ -2940,15 +3370,17 @@ export async function sendChatMessage(
             const resp = await fetch(`/api/images/list?q=${encodeURIComponent(query)}`);
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json() as { total: number; results: { name: string; relPath: string }[] };
+            const imgBase = window.location.origin;
             const images = data.results.map((r: { name: string; relPath: string; isAtlas?: boolean }) => ({
               name: r.name,
               relPath: r.relPath,
-              url: `/api/images/file?path=${encodeURIComponent(r.relPath)}`,
+              url: `${imgBase}/api/images/file?path=${encodeURIComponent(r.relPath)}`,
               isAtlas: r.isAtlas ?? false,
             }));
             tc = { kind: 'image_search', query, images, total: data.total } as ImageResult;
             resultStr = images.length > 0
-              ? `${images.length}개 이미지 발견: ${images.map((i) => i.name).join(', ')}`
+              ? images.map((i) => `${i.name} → ${i.url}`).join('\n') +
+                `\n\n총 ${images.length}개. 아티팩트에 삽입할 때: <img src="위의URL" style="max-width:100%">`
               : `"${query}" 이미지 없음 (전체 ${data.total}개 중)`;
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -3548,10 +3980,10 @@ function showTab(id){
                   duration,
                 } as CodeSearchResult;
                 resultStr = contentHits.length > 0
-                  ? `"${query}" 인덱스에 없어 전문검색으로 폴백 → ${contentHits.length}개 파일\n` + contentHits.slice(0, 5).map(r =>
+                  ? `"${query}" 전문검색 → ${contentHits.length}개 파일\n` + contentHits.slice(0, 5).map(r =>
                       `  📄 ${r.path}\n` + r.matches.slice(0, 3).map(m => `    L${m.line}: ${m.lineContent}`).join('\n')
                     ).join('\n')
-                  : `"${query}" 인덱스·전문검색 모두 결과 없음 (전체 ${total}개 파일). 다른 키워드로 시도하거나 type="content"로 검색하세요.`;
+                  : `"${query}" 검색 결과 없음 (전체 ${total}개 파일). 다른 키워드로 시도해보세요.`;
               } else {
                 tc = {
                   kind: 'code_search',
@@ -3693,7 +4125,9 @@ function showTab(id){
             const artifacts = data2.data?.artifacts ?? [];
             tc = { kind: 'knowledge', action: 'read', name: '기존 문서 검색', content: resultStr, duration } as KnowledgeResult;
             if (artifacts.length > 0) {
-              resultStr += `\n\n기존 문서를 수정하려면 get_published_artifact(artifact_id)로 HTML을 가져온 후 patch_artifact로 수정하세요.`;
+              resultStr += '\n\n⚠️ 기존 문서를 사용자에게 언급할 때 반드시 인라인 링크 포함: [문서제목](/api/p/아티팩트_id)';
+              resultStr += '\n예: [' + artifacts[0].title + '](/api/p/' + artifacts[0].id + ')';
+              resultStr += '\n수정하려면 get_published_artifact(artifact_id)로 HTML을 가져온 후 create_artifact로 수정본 생성.';
             }
           } catch (e) {
             const errMsg = String(e).replace(/^Error:\s*/, '').slice(0, 200);
@@ -3975,7 +4409,24 @@ function showTab(id){
 
         // ── search_confluence ──
         else if (tb.name === 'search_confluence') {
-          const cql = String(inp.cql ?? '');
+          // query → CQL 자동 변환 (cql이 없으면)
+          let cql = String(inp.cql ?? '').trim();
+          const query = String(inp.query ?? '').trim();
+          const space = String(inp.space ?? '').trim();
+          if (!cql && query) {
+            const parts: string[] = [];
+            parts.push(`type = "page"`);
+            if (space) parts.push(`space = "${space}"`);
+            // 여러 키워드로 분리하여 각각 text~ 으로 AND 연결
+            const keywords = query.split(/\s+/).filter(Boolean);
+            for (const kw of keywords) {
+              parts.push(`text ~ "${kw}"`);
+            }
+            cql = parts.join(' AND ');
+          }
+          if (!cql) {
+            cql = 'type = "page" ORDER BY lastmodified DESC';
+          }
           const limit = Math.min(Number(inp.limit ?? 10), 20);
           const t0 = performance.now();
           try {
@@ -4229,6 +4680,80 @@ function showTab(id){
           }
         }
 
+        // ── save_validation_rule ──
+        else if (tb.name === 'save_validation_rule') {
+          try {
+            const vMod = await import('./validationEngine.ts');
+            const ruleId = String(inp.id ?? `rule_${Date.now()}`);
+            const ruleName = String(inp.name ?? '');
+            const ruleTable = String(inp.table ?? '*');
+            const severity = (inp.severity === 'warning' ? 'warning' : 'error') as 'error' | 'warning';
+            const condition = inp.condition as any;
+
+            if (!ruleName || !condition?.type) {
+              resultStr = '오류: name과 condition.type이 필요합니다.';
+              tc = { kind: 'knowledge', action: 'save', name: '', error: resultStr };
+            } else {
+              const newRule = {
+                id: ruleId, name: ruleName, table: ruleTable, severity,
+                condition, enabled: true, scope: 'personal' as const,
+                createdAt: Date.now(), updatedAt: Date.now(),
+              };
+              const allRules = await vMod.addRule(newRule);
+              const tableData = useCanvasStore.getState().tableData;
+              if (tableData.size > 0) {
+                const vResult = vMod.runValidation(tableData, allRules);
+                useCanvasStore.getState().setValidationResult(vResult);
+                const vCount = vResult.violations.filter(v => v.ruleId === ruleId).length;
+                resultStr = `✅ 검증 룰 "${ruleName}" 등록 완료 (id: ${ruleId})\n현재 데이터 검증 결과: ${vCount > 0 ? `⚠️ ${vCount}건 위반 감지` : '✅ 위반 없음'}\n\n전체: ${allRules.length}개 룰 활성`;
+              } else {
+                resultStr = `✅ 검증 룰 "${ruleName}" 등록 완료 (id: ${ruleId})\n데이터 로드 시 자동 검증됩니다.`;
+              }
+              tc = { kind: 'knowledge', action: 'save', name: ruleId } as unknown as ToolCallResult;
+            }
+          } catch (e) {
+            resultStr = `검증 룰 저장 오류: ${String(e)}`;
+            tc = { kind: 'knowledge', action: 'save', name: '', error: String(e) };
+          }
+        }
+
+        // ── list_validation_rules ──
+        else if (tb.name === 'list_validation_rules') {
+          try {
+            const vMod = await import('./validationEngine.ts');
+            const rules = await vMod.fetchRulesFromServer();
+            resultStr = vMod.rulesToSummary(rules);
+            tc = { kind: 'knowledge', action: 'list', name: '', items: [] } as unknown as ToolCallResult;
+          } catch (e) {
+            resultStr = `검증 룰 목록 오류: ${String(e)}`;
+            tc = { kind: 'knowledge', action: 'list', name: '', error: String(e) };
+          }
+        }
+
+        // ── delete_validation_rule ──
+        else if (tb.name === 'delete_validation_rule') {
+          try {
+            const vMod = await import('./validationEngine.ts');
+            const ruleId = String(inp.id ?? '');
+            if (!ruleId) {
+              resultStr = '오류: 삭제할 룰 id가 필요합니다.';
+              tc = { kind: 'knowledge', action: 'save', name: '', error: resultStr };
+            } else {
+              const remaining = await vMod.deleteRule(ruleId);
+              const tableData = useCanvasStore.getState().tableData;
+              if (tableData.size > 0) {
+                const vResult = vMod.runValidation(tableData, remaining);
+                useCanvasStore.getState().setValidationResult(vResult);
+              }
+              resultStr = `✅ 룰 "${ruleId}" 삭제 완료. 남은 룰: ${remaining.length}개`;
+              tc = { kind: 'knowledge', action: 'save', name: ruleId } as unknown as ToolCallResult;
+            }
+          } catch (e) {
+            resultStr = `검증 룰 삭제 오류: ${String(e)}`;
+            tc = { kind: 'knowledge', action: 'save', name: '', error: String(e) };
+          }
+        }
+
         // ── web_search ──
         else if (tb.name === 'web_search') {
           const query = String(inp.query ?? '').trim();
@@ -4262,6 +4787,41 @@ function showTab(id){
         // ── read_url ──
         else if (tb.name === 'read_url') {
           const url = String(inp.url ?? '').trim();
+
+          // Confluence URL 감지 → get_confluence_page로 자동 전환
+          const confPageMatch = url.match(/atlassian\.net\/wiki\/.*?\/pages\/(\d+)/i);
+          if (confPageMatch) {
+            const pageId = confPageMatch[1];
+            const t0c = performance.now();
+            try {
+              const confResp = await fetch(`/api/confluence/page/${encodeURIComponent(pageId)}`);
+              const confData = await confResp.json() as Record<string, unknown>;
+              const duration = performance.now() - t0c;
+              if (!confResp.ok) {
+                resultStr = `Confluence 페이지 조회 실패 (${confResp.status}): ${String((confData as Record<string,unknown>).error ?? confData)}`;
+                tc = { kind: 'confluence_page', pageId, error: resultStr, duration } as ConfluencePageResult;
+              } else {
+                const title = String(confData.title ?? '');
+                const spaceKey = String(((confData as any).space as Record<string,unknown>)?.key ?? '');
+                const bodyHtml = String(((confData as any).body?.storage as Record<string,unknown>)?.value ?? '');
+                const plainText = bodyHtml
+                  .replace(/<ac:structured-macro[\s\S]*?<\/ac:structured-macro>/gi, '')
+                  .replace(/<[^>]+>/g, ' ')
+                  .replace(/&nbsp;/gi, ' ')
+                  .replace(/&[a-z]+;/gi, ' ')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+                const truncated = plainText.length > 12000 ? plainText.slice(0, 12000) + '...(잘림)' : plainText;
+                resultStr = `📚 Confluence 페이지: ${title} (Space: ${spaceKey}, ID: ${pageId})\n🔗 ${url}\n\n${truncated}`;
+                tc = { kind: 'confluence_page', pageId, title, space: spaceKey, bodyText: truncated, duration } as ConfluencePageResult;
+              }
+            } catch (e) {
+              resultStr = `Confluence 페이지 조회 오류: ${String(e)}`;
+              tc = { kind: 'confluence_page', pageId, error: String(e), duration: 0 } as ConfluencePageResult;
+            }
+            // Confluence URL이면 여기서 처리 완료 → read_url 로직 건너뜀
+          } else {
+          // 일반 URL 처리
           const maxLength = Number(inp.maxLength ?? 15000);
           const t0 = Date.now();
           try {
@@ -4286,6 +4846,7 @@ function showTab(id){
             resultStr = `URL 읽기 오류: ${String(e)}`;
             tc = { kind: 'web_read', url, title: '', content: '', contentLength: 0, error: String(e), duration: Date.now() - t0 };
           }
+          } // end else (일반 URL)
         }
 
         // ── edit_game_data (바이블테이블링 — 데이터 편집) ──
