@@ -552,20 +552,6 @@
     "updatedAt": 1773204154850
   },
   {
-    "id": "characterstat_id_unique",
-    "name": "캐릭터스탯 ID 고유값",
-    "table": "CharacterStat",
-    "severity": "error",
-    "condition": {
-      "type": "unique",
-      "column": "id,level"
-    },
-    "enabled": true,
-    "scope": "team",
-    "createdAt": 1773204154994,
-    "updatedAt": 1773207447561
-  },
-  {
     "id": "skillexecute_id_unique",
     "name": "스킬실행 ID 고유값",
     "table": "SkillExecute",
