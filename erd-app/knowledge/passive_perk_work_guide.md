@@ -33,6 +33,27 @@
 
 ---
 
+## ⭐ run_condition val 값 입력 규칙
+
+- run_condition에 따라 **val1, val2 등의 의미가 달라짐**
+- **반드시 코드를 직접 확인**하여 각 condition이 val을 어떻게 파싱하는지 확인 후 입력
+- Enum 이름만 보고 임의로 값을 추정하지 말 것
+
+### 확인 방법
+1. `search_code(query: "run_condition 이름", type: "class")` 로 해당 Invoker/Condition 클래스 탐색
+2. 클래스 내부에서 `val1`, `val2` 등을 어떻게 읽는지 확인
+3. 확인된 값 기준으로 데이터 입력
+
+### 확인된 예시
+| run_condition | val1 의미 | 참고 |
+|---|---|---|
+| AttackHit | 0=대미지적용, 1=헤드샷, 2=총기사격적중, 3=총기헤드샷적중 | 코드 확인 완료 |
+| ExistEnemyInRange | 탐지 반경(m) | 코드 확인 완료 |
+
+> ⚠️ 위 표에 없는 condition은 **코드 확인 필수** — 추정 입력 금지
+
+---
+
 ## 작업 순서 (FK 순서)
 
 1. **PassiveEffect** 등록
