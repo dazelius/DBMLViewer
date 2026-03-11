@@ -777,5 +777,53 @@
     "scope": "team",
     "createdAt": 1773207461834,
     "updatedAt": 1773207461834
+  },
+  {
+    "id": "rule_1773207551460",
+    "name": "모듈 Passive use_target_id 8백만번대 범위 필수",
+    "table": "ModuleItem",
+    "severity": "error",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "module_type",
+        "op": "eq",
+        "value": "Passive"
+      },
+      "then": {
+        "type": "range",
+        "column": "use_target_id",
+        "min": 8000000,
+        "max": 8999999
+      }
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773207551460,
+    "updatedAt": 1773207551460
+  },
+  {
+    "id": "rule_1773207551465",
+    "name": "모듈 Perk use_target_id 8백만번대 범위 필수",
+    "table": "ModuleItem",
+    "severity": "error",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "module_type",
+        "op": "eq",
+        "value": "Perk"
+      },
+      "then": {
+        "type": "range",
+        "column": "use_target_id",
+        "min": 8000000,
+        "max": 8999999
+      }
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773207551465,
+    "updatedAt": 1773207551465
   }
 ]
