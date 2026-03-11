@@ -558,12 +558,12 @@
     "severity": "error",
     "condition": {
       "type": "unique",
-      "column": "id"
+      "column": "id,level"
     },
     "enabled": true,
     "scope": "team",
     "createdAt": 1773204154994,
-    "updatedAt": 1773204154858
+    "updatedAt": 1773207447561
   },
   {
     "id": "skillexecute_id_unique",
