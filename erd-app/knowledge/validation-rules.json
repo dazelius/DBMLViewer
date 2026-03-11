@@ -763,5 +763,19 @@
     "scope": "team",
     "createdAt": 1773206796524,
     "updatedAt": 1773206796524
+  },
+  {
+    "id": "rule_1773207461834",
+    "name": "캐릭터스탯 ID+Level 복합 고유값",
+    "table": "CharacterStat",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id,level"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773207461834,
+    "updatedAt": 1773207461834
   }
 ]
