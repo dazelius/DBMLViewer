@@ -73,6 +73,18 @@
 - 해당 passive_effect_type에 대한 **코드 구현이 아예 존재하지 않으면** → val 값을 **임의로 입력해도 무방**
 - 단, 나중에 코드가 구현될 때 val 의미가 달라질 수 있으므로 **주석 또는 메모에 "코드 미구현 상태로 임의 입력" 표기 권장**
 
+### ✅ 확인된 PassiveEffect val 매핑
+
+| passive_effect_type | val1 의미 | val2 의미 | 참고 |
+|---|---|---|---|
+| GetStatusEffect | **duration(ms)** — SE 지속시간 | -1 고정 | 코드: `ApplyStatusEffect(..., RefValueHelper.ConvertTableValueToTime(intVars[0]), ...)` 확인 완료 |
+| GetStatusEffectCurrentHitTarget | **duration(ms)** — SE 지속시간 | -1 고정 | GetStatusEffect와 동일 파싱 구조 확인 완료 |
+
+> ⚠️ `GetStatusEffect` / `GetStatusEffectCurrentHitTarget` 사용 시:
+> - **val1 = duration(ms)** (예: 5초 → 5000, 1.5초 → 1500, 2초 → 2000)
+> - StatusEffect 테이블의 `duration` 컬럼은 **비워둠** (PassiveEffect.val1에서 지정)
+> - val이 아닌 별도 duration 컬럼에 넣는 방식이 **아님** — val1에 직접 기입
+
 > ⚠️ run_condition val 규칙과 동일한 원칙 적용 — 코드 확인 필수, 구현 없으면 임의 입력 허용
 
 ---
