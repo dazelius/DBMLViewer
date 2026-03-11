@@ -58,6 +58,25 @@
 
 ---
 
+## ⭐ PassiveEffect val 값 입력 규칙
+
+- PassiveEffect의 **val1, val2, val3, val4** 의미는 `passive_effect_type`(EPassiveEffectType)에 따라 달라짐
+- **반드시 코드를 직접 확인**하여 해당 effect type이 val을 어떻게 파싱하는지 확인 후 입력
+- Enum 이름만 보고 임의로 값을 추정하지 말 것
+
+### 확인 방법
+1. `search_code(query: "passive_effect_type 이름", type: "class")` 로 해당 Effect 처리 클래스 탐색
+2. 클래스 내부에서 `val1`, `val2` 등을 어떻게 읽는지 확인
+3. 확인된 값 기준으로 데이터 입력
+
+### ⚠️ 코드 구현 자체가 없는 경우
+- 해당 passive_effect_type에 대한 **코드 구현이 아예 존재하지 않으면** → val 값을 **임의로 입력해도 무방**
+- 단, 나중에 코드가 구현될 때 val 의미가 달라질 수 있으므로 **주석 또는 메모에 "코드 미구현 상태로 임의 입력" 표기 권장**
+
+> ⚠️ run_condition val 규칙과 동일한 원칙 적용 — 코드 확인 필수, 구현 없으면 임의 입력 허용
+
+---
+
 ## 작업 순서 (FK 순서)
 
 1. **PassiveEffect** 등록
