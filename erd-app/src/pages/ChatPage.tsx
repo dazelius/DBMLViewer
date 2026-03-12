@@ -2191,6 +2191,26 @@ function inlineMarkdown(text: string): React.ReactNode {
               {linkText}
             </span>,
           );
+        } else if (/\/api\/bible-tabling\/download\//.test(linkUrl)) {
+          const filename = linkUrl.split('/').pop() || 'download.xlsx';
+          segments.push(
+            <span
+              key={key++}
+              className="inline-flex items-center gap-1 cursor-pointer"
+              style={{
+                display: 'inline-flex', verticalAlign: 'middle',
+                background: 'rgba(234,179,8,0.1)',
+                border: '1px solid rgba(234,179,8,0.3)',
+                borderRadius: 6,
+                padding: '2px 8px',
+                fontSize: '0.9em',
+                color: '#eab308',
+              }}
+              onClick={() => bibleTablingDownload(linkUrl, filename)}
+            >
+              📥 {filename}
+            </span>,
+          );
         } else {
           // 일반 링크
           const isAtlassian = /atlassian\.net|jira|confluence/i.test(linkUrl);
@@ -2330,6 +2350,30 @@ function inlineMarkdown(text: string): React.ReactNode {
     } else if (italicText !== undefined) {
       segments.push(<em key={key++}>{italicText}</em>);
     } else if (bareUrl !== undefined) {
+      // 바이블테이블링 다운로드 URL → 다운로드 버튼으로 렌더
+      if (/\/api\/bible-tabling\/download\//.test(bareUrl)) {
+        const filename = bareUrl.split('/').pop() || 'download.xlsx';
+        segments.push(
+          <span
+            key={key++}
+            className="inline-flex items-center gap-1 cursor-pointer"
+            style={{
+              display: 'inline-flex', verticalAlign: 'middle',
+              background: 'rgba(234,179,8,0.1)',
+              border: '1px solid rgba(234,179,8,0.3)',
+              borderRadius: 6,
+              padding: '2px 8px',
+              fontSize: '0.9em',
+              color: '#eab308',
+            }}
+            onClick={() => bibleTablingDownload(bareUrl, filename)}
+          >
+            📥 {filename}
+          </span>,
+        );
+        lastIndex = match.index + full.length;
+        continue;
+      }
       // bare URL 자동 링크: https://... 형태를 자동으로 클릭 가능한 링크로 변환
       const isAtlassian = /atlassian\.net|jira|confluence/i.test(bareUrl);
       // URL에서 표시용 짧은 레이블 생성
@@ -5259,18 +5303,29 @@ async function bibleTablingDownload(url: string, filename: string) {
 
 // ── BibleTablingCard — 바이블테이블링 편집 결과 ──────────────────────────────
 function BibleTablingCard({ tc }: { tc: BibleTablingEditResult }) {
+  const isPartial = !!tc.partial;
+  const borderColor = isPartial ? 'rgba(251,146,60,0.4)' : tc.error ? 'rgba(248,113,113,0.3)' : 'rgba(234,179,8,0.3)';
+  const headerBg = isPartial ? 'rgba(251,146,60,0.1)' : tc.error ? 'rgba(248,113,113,0.06)' : 'rgba(234,179,8,0.1)';
+  const accentColor = isPartial ? '#fb923c' : '#eab308';
   return (
-    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(234,179,8,0.3)' }}>
-      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: 'rgba(234,179,8,0.1)', borderBottom: '1px solid rgba(234,179,8,0.18)' }}>
-        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(234,179,8,0.2)' }}>📝</div>
-        <span className="font-semibold text-[13px]" style={{ color: '#eab308' }}>바이블테이블링 — 데이터 편집</span>
+    <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: `1px solid ${borderColor}` }}>
+      <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: headerBg, borderBottom: `1px solid ${borderColor}` }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `${accentColor}33` }}>{isPartial ? '⚠️' : '📝'}</div>
+        <span className="font-semibold text-[13px]" style={{ color: accentColor }}>
+          바이블테이블링 — {isPartial ? '부분 완료' : '데이터 편집'}
+        </span>
+        {isPartial && tc.errorCount != null && tc.errorCount > 0 && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(248,113,113,0.15)', color: '#f87171' }}>
+            {tc.errorCount}건 오류
+          </span>
+        )}
         <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{tc.duration ? `${(tc.duration / 1000).toFixed(1)}s` : ''}</span>
       </div>
-      {tc.error ? (
+      {tc.error && !isPartial ? (
         <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{tc.error}</div>
       ) : (
         <div className="px-4 py-3 space-y-2">
-          <div className="font-semibold text-[14px]" style={{ color: '#eab308' }}>{tc.title}</div>
+          <div className="font-semibold text-[14px]" style={{ color: accentColor }}>{tc.title}</div>
           {tc.reason && <div className="text-[12px]" style={{ color: 'var(--text-muted)' }}>사유: {tc.reason}</div>}
           <div className="flex gap-4 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
             <span>📁 {tc.filesModified}개 파일</span>
@@ -5278,9 +5333,13 @@ function BibleTablingCard({ tc }: { tc: BibleTablingEditResult }) {
             <span>✏️ {tc.totalCellsModified}셀 변경</span>
           </div>
           {tc.tables.length > 0 && <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>테이블: {tc.tables.join(', ')}</div>}
+          {isPartial && (
+            <div className="text-[11px] px-2.5 py-1.5 rounded-lg" style={{ background: 'rgba(251,146,60,0.08)', color: '#fb923c', border: '1px solid rgba(251,146,60,0.2)' }}>
+              일부 편집이 실패했지만 성공한 편집은 보존되었습니다. 실패한 테이블만 다시 편집하면 됩니다.
+            </div>
+          )}
           {tc.downloadUrl && (
             <div className="flex flex-wrap gap-2 pt-0.5">
-              {/* 개별 파일 버튼 (여러 파일인 경우) */}
               {tc.files && tc.files.length > 1 && tc.files.map((f) => (
                 <button
                   key={f.filename}
@@ -5291,11 +5350,10 @@ function BibleTablingCard({ tc }: { tc: BibleTablingEditResult }) {
                   📄 {f.filename}
                 </button>
               ))}
-              {/* 단일 파일이면 기본 버튼 / 여러 파일이면 모두 받기(ZIP) 버튼 */}
               <button
                 onClick={() => bibleTablingDownload(tc.downloadUrl, tc.downloadFilename)}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium"
-                style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308', border: '1px solid rgba(234,179,8,0.3)', cursor: 'pointer' }}
+                style={{ background: `${accentColor}26`, color: accentColor, border: `1px solid ${accentColor}4d`, cursor: 'pointer' }}
               >
                 {tc.files && tc.files.length > 1 ? '📦 모두 받기 (ZIP)' : `📥 ${tc.downloadFilename || '다운로드'}`}
               </button>
@@ -5310,20 +5368,84 @@ function BibleTablingCard({ tc }: { tc: BibleTablingEditResult }) {
 
 // ── BibleTablingAddRowsCard — 바이블테이블링 행 추가 결과 ─────────────────────
 function BibleTablingAddRowsCard({ tc }: { tc: BibleTablingAddRowsResult }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const overrideCols = new Set((tc.overrideColumns ?? []).map(c => c.toLowerCase()));
+  const isClone = overrideCols.size > 0 || (tc.sampleRows && tc.sampleRows.length > 0);
+  const inputRows = tc.inputRows ?? [];
+  const allCols = React.useMemo(() => {
+    const s = new Set<string>();
+    for (const r of inputRows) for (const k of Object.keys(r)) s.add(k);
+    return [...s];
+  }, [inputRows]);
+  const displayCols = allCols.slice(0, 10);
+  const displayRows = expanded ? inputRows : inputRows.slice(0, 5);
+
   return (
     <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(34,197,94,0.3)' }}>
       <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: 'rgba(34,197,94,0.1)', borderBottom: '1px solid rgba(34,197,94,0.18)' }}>
-        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(34,197,94,0.2)' }}>➕</div>
-        <span className="font-semibold text-[13px]" style={{ color: '#22c55e' }}>바이블테이블링 — 행 추가</span>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(34,197,94,0.2)' }}>{isClone ? '📋' : '➕'}</div>
+        <span className="font-semibold text-[13px]" style={{ color: '#22c55e' }}>바이블테이블링 — {isClone ? '복제' : '행 추가'}</span>
+        <span className="text-[11px] px-2 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>+{tc.rowsAdded}행</span>
         <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{tc.duration ? `${(tc.duration / 1000).toFixed(1)}s` : ''}</span>
       </div>
       {tc.error ? (
         <div className="px-4 py-3 text-[12px]" style={{ color: '#f87171' }}>{tc.error}</div>
       ) : (
         <div className="px-4 py-3 space-y-2">
-          <div className="font-semibold text-[14px]" style={{ color: '#22c55e' }}>테이블: {tc.table}</div>
-          {tc.file && <div className="text-[12px]" style={{ color: 'var(--text-muted)' }}>파일: {tc.file}</div>}
-          <div className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>➕ {tc.rowsAdded}행 추가됨</div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="font-semibold text-[13px]" style={{ color: '#22c55e' }}>{tc.table}</span>
+            {tc.file && <span className="text-[11px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(100,116,139,0.15)', color: 'var(--text-muted)' }}>{tc.file}</span>}
+          </div>
+
+          {isClone && overrideCols.size > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] font-semibold" style={{ color: '#94a3b8' }}>변경 컬럼:</span>
+              {(tc.overrideColumns ?? []).map(col => (
+                <span key={col} className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24', fontWeight: 600 }}>{col}</span>
+              ))}
+            </div>
+          )}
+
+          {inputRows.length > 0 && displayCols.length > 0 && (
+            <div style={{ overflowX: 'auto', maxHeight: expanded ? 400 : 200 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead>
+                  <tr>
+                    {displayCols.map(col => {
+                      const isChanged = overrideCols.has(col.toLowerCase());
+                      return (
+                        <th key={col} style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid rgba(100,116,139,0.2)', color: isChanged ? '#fbbf24' : '#94a3b8', fontWeight: 600, whiteSpace: 'nowrap', fontSize: 10, background: isChanged ? 'rgba(251,191,36,0.06)' : 'transparent' }}>
+                          {col.length > 14 ? col.slice(0, 12) + '..' : col}
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayRows.map((row, ri) => (
+                    <tr key={ri} style={{ background: ri % 2 === 0 ? 'transparent' : 'rgba(100,116,139,0.05)' }}>
+                      {displayCols.map(col => {
+                        const v = String(row[col] ?? '');
+                        const isChanged = overrideCols.has(col.toLowerCase());
+                        return (
+                          <td key={col} style={{ padding: '3px 8px', borderBottom: '1px solid rgba(100,116,139,0.1)', color: isChanged ? '#fbbf24' : 'var(--text-secondary)', whiteSpace: 'nowrap', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: isChanged ? 600 : 400, background: isChanged ? 'rgba(251,191,36,0.06)' : 'transparent' }}>
+                            {v.length > 20 ? v.slice(0, 18) + '..' : v}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {allCols.length > 10 && <div className="text-[10px] pt-1" style={{ color: 'var(--text-muted)' }}>... 외 {allCols.length - 10}개 컬럼</div>}
+            </div>
+          )}
+          {inputRows.length > 5 && (
+            <button onClick={() => setExpanded(!expanded)} className="text-[11px]" style={{ color: '#22c55e', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+              {expanded ? '▲ 접기' : `▼ 전체 ${inputRows.length}행 보기`}
+            </button>
+          )}
+
           {tc.downloadUrl && (
             <button
               onClick={() => bibleTablingDownload(tc.downloadUrl, tc.downloadFilename)}
@@ -5333,7 +5455,6 @@ function BibleTablingAddRowsCard({ tc }: { tc: BibleTablingAddRowsResult }) {
               📥 {tc.downloadFilename || '다운로드'}
             </button>
           )}
-          <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>💡 노란색 하이라이트 = AI 추가 셀</div>
         </div>
       )}
     </div>
@@ -6498,7 +6619,7 @@ function ValidationRuleBrowser() {
       case 'in': return `${cond.column} ∈ {${(cond.values ?? []).slice(0, 3).join(', ')}${(cond.values?.length ?? 0) > 3 ? '...' : ''}}`;
       case 'compare_columns': return `${cond.left} ${cond.op} ${cond.right}`;
       case 'conditional': return `IF ${cond.when?.column}${cond.when?.op}${cond.when?.value} → ${cond.then?.column}${cond.then?.op}${cond.then?.value}`;
-      case 'unique': return `${cond.column} UNIQUE`;
+      case 'unique': return `${cond.column} UNIQUE${(cond as Record<string, unknown>).group_by ? ` (per ${(cond as Record<string, unknown>).group_by})` : ''}`;
       case 'regex': return `${cond.column} ~ /${(cond.pattern ?? '').slice(0, 20)}/`;
       default: return cond.type ?? '?';
     }
@@ -6688,27 +6809,27 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
 
   const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 
-  const systemPct = usage.total_input > 0 ? Math.round((usage.system_prompt_estimate / usage.total_input) * 100) : 0;
-  const historyEst = usage.total_input - usage.system_prompt_estimate;
-  const historyPct = usage.total_input > 0 ? Math.round((Math.max(0, historyEst) / usage.total_input) * 100) : 0;
+  // 논리적 입력 토큰 (캐시 포함 실제 입력량) — 비율 계산의 기준
+  const logicalInput = usage.total_input_logical ?? usage.total_input;
+  const systemPct = logicalInput > 0 ? Math.round((usage.system_prompt_estimate / logicalInput) * 100) : 0;
+  const historyEst = logicalInput - usage.system_prompt_estimate;
+  const historyPct = logicalInput > 0 ? Math.round((Math.max(0, historyEst) / logicalInput) * 100) : 0;
 
   // 캐시 합계
   const totalCacheRead = usage.iterations.reduce((s, t) => s + (t.cache_read ?? 0), 0);
   const totalCacheCreation = usage.iterations.reduce((s, t) => s + (t.cache_creation ?? 0), 0);
   const hasCacheData = totalCacheRead > 0 || totalCacheCreation > 0;
-  const cacheHitPct = usage.total_input > 0 ? Math.round((totalCacheRead / usage.total_input) * 100) : 0;
+  const cacheHitPct = logicalInput > 0 ? Math.round((totalCacheRead / logicalInput) * 100) : 0;
 
-  // 비용 추정 (Claude Sonnet: input $3/MTok, cached $0.3/MTok, output $15/MTok)
-  const uncachedInput = Math.max(0, usage.total_input - totalCacheRead);
-  const inputCost = (uncachedInput / 1_000_000) * 3 + (totalCacheRead / 1_000_000) * 0.3 + (totalCacheCreation / 1_000_000) * 3.75;
+  // 비용 추정 (Claude Sonnet: input $3/MTok, cached read $0.3/MTok, cache write $3.75/MTok, output $15/MTok)
+  const inputCost = (usage.total_input / 1_000_000) * 3 + (totalCacheRead / 1_000_000) * 0.3 + (totalCacheCreation / 1_000_000) * 3.75;
   const outputCost = (usage.total_output / 1_000_000) * 15;
   const totalCost = inputCost + outputCost;
-  // 캐시 없었을 때의 비용 (비교용)
-  const noCacheCost = (usage.total_input / 1_000_000) * 3 + outputCost;
+  const noCacheCost = (logicalInput / 1_000_000) * 3 + outputCost;
   const savedCost = noCacheCost - totalCost;
 
   // 바 비율 계산 (시스템 프롬프트 vs 히스토리+메시지 vs 출력)
-  const total = usage.total_input + usage.total_output;
+  const total = logicalInput + usage.total_output;
   const sysPx = total > 0 ? (usage.system_prompt_estimate / total) * 100 : 0;
   const histPx = total > 0 ? (Math.max(0, historyEst) / total) * 100 : 0;
   const outPx = total > 0 ? (usage.total_output / total) * 100 : 0;
@@ -6764,7 +6885,7 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
                 style={{ width: `${sysPx}%`, background: '#f59e0b', minWidth: sysPx > 0 ? 4 : 0, transition: 'width 0.3s' }}
               />
               <div
-                title={`히스토리+메시지 ≈${fmt(Math.max(0, historyEst))} (${historyPct}%)`}
+                title={`대화+데이터 ≈${fmt(Math.max(0, historyEst))} (${historyPct}%)`}
                 style={{ width: `${histPx}%`, background: '#6366f1', minWidth: histPx > 0 ? 4 : 0, transition: 'width 0.3s' }}
               />
               <div
@@ -6783,13 +6904,13 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
                   {totalCacheRead > 0 && (
                     <div
                       title={`캐시 히트 ${fmt(totalCacheRead)} (${cacheHitPct}% — 90% 할인)`}
-                      style={{ width: `${usage.total_input > 0 ? (totalCacheRead / usage.total_input) * 100 : 0}%`, background: '#38bdf8', minWidth: 4, transition: 'width 0.3s' }}
+                      style={{ width: `${logicalInput > 0 ? (totalCacheRead / logicalInput) * 100 : 0}%`, background: '#38bdf8', minWidth: 4, transition: 'width 0.3s' }}
                     />
                   )}
                   {totalCacheCreation > 0 && (
                     <div
                       title={`캐시 생성 ${fmt(totalCacheCreation)} (25% 추가 비용)`}
-                      style={{ width: `${usage.total_input > 0 ? (totalCacheCreation / usage.total_input) * 100 : 0}%`, background: '#a78bfa', minWidth: 4, transition: 'width 0.3s' }}
+                      style={{ width: `${logicalInput > 0 ? (totalCacheCreation / logicalInput) * 100 : 0}%`, background: '#a78bfa', minWidth: 4, transition: 'width 0.3s' }}
                     />
                   )}
                 </div>
@@ -6824,7 +6945,7 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
             </span>
             <span className="flex items-center gap-1.5 text-[10px]" style={{ color: '#818cf8' }}>
               <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#6366f1' }} />
-              히스토리+메시지 ≈{fmt(Math.max(0, historyEst))} ({historyPct}%)
+              대화+데이터 ≈{fmt(Math.max(0, historyEst))} ({historyPct}%)
             </span>
             <span className="flex items-center gap-1.5 text-[10px]" style={{ color: '#4ade80' }}>
               <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#22c55e' }} />
@@ -6860,7 +6981,10 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
           {/* 합계 */}
           <div className="flex flex-wrap gap-x-4 gap-y-0.5 pt-1" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 10 }}>
             <span style={{ color: 'var(--text-muted)' }}>
-              입력 <span style={{ color: '#a5b4fc' }}>{fmt(usage.total_input)}</span>
+              입력 <span style={{ color: '#a5b4fc' }}>{fmt(logicalInput)}</span>
+              {hasCacheData && usage.total_input !== logicalInput && (
+                <span style={{ color: 'var(--text-muted)', opacity: 0.5 }}> (과금 {fmt(usage.total_input)})</span>
+              )}
             </span>
             <span style={{ color: 'var(--text-muted)' }}>
               출력 <span style={{ color: '#4ade80' }}>{fmt(usage.total_output)}</span>
@@ -8210,6 +8334,45 @@ export default function ChatPage() {
   const artifactPanelRef = useRef(artifactPanel);
   useEffect(() => { artifactPanelRef.current = artifactPanel; }, [artifactPanel]);
 
+  // 바이블테이블링 사이드 패널 상태
+  interface BibleTablingPanelEntry {
+    table: string;
+    file?: string;
+    status: 'pending' | 'running' | 'done' | 'error';
+    type: 'edit' | 'add';
+    rowsMatched?: number;
+    cellsModified?: number;
+    rowsAdded?: number;
+    changes?: Array<Record<string, unknown>>;
+    inputRows?: Array<Record<string, unknown>>;
+    error?: string;
+  }
+  interface BtPreviewCell { value: unknown; highlighted: boolean; }
+  interface BtPreviewRow { rowIndex: number; cells: Record<string, BtPreviewCell>; }
+  interface BtPreviewSheet { name: string; headers: string[]; rows: BtPreviewRow[]; }
+  interface BtPreviewFile { filename: string; sheets: BtPreviewSheet[]; }
+  interface BtPendingEdit { file: string; sheet: string; row: number; column: string; value: string; }
+  const [btPanel, setBtPanel] = useState<{
+    title: string;
+    reason?: string;
+    isComplete: boolean;
+    entries: BibleTablingPanelEntry[];
+    downloadUrl?: string;
+    downloadFilename?: string;
+    jobId?: string;
+    allJobIds: string[];
+    previewData?: BtPreviewFile[];
+    previewLoading?: boolean;
+    pushed?: boolean;
+    pushLoading?: boolean;
+  } | null>(null);
+  const [btPendingEdits, setBtPendingEdits] = useState<BtPendingEdit[]>([]);
+  const [btEditingCell, setBtEditingCell] = useState<{ file: string; sheet: string; row: number; column: string } | null>(null);
+  const [btEditValue, setBtEditValue] = useState('');
+  const [btSaving, setBtSaving] = useState(false);
+  const btPanelRef = useRef(btPanel);
+  useEffect(() => { btPanelRef.current = btPanel; }, [btPanel]);
+
   // 채팅 내 프리팹 경로 클릭 → 프리팹 미리보기 모달
   const [chatPrefabPath, setChatPrefabPath] = useState<string | null>(null);
   const [chatPrefabLabel, setChatPrefabLabel] = useState('');
@@ -8375,6 +8538,18 @@ export default function ChatPage() {
       _artBuf.html = ''; _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0; _artBuf.rawJson = '';
       _artBuf.baseHtml = '';
     }
+    // 바이블테이블링 패널: ref로 최신 상태 확인 (useCallback stale closure 방지)
+    const activeBtPanel = btPanelRef.current;
+    const isBtContinuation = activeBtPanel && activeBtPanel.entries.length > 0 && (
+      text.includes('이전에 조회한 데이터를 기반으로') || displayText === '▶ 이어서 생성하기'
+    );
+    if (isBtContinuation) {
+      setBtPanel(prev => prev ? { ...prev, isComplete: false } : prev);
+    } else if (!activeBtPanel || activeBtPanel.entries.length === 0) {
+      setBtPanel(null);
+    } else {
+      setBtPanel(null);
+    }
 
     // ── FastPath: 간단한 질문은 API 호출 없이 즉시 응답 ──
     const fastResult = await tryFastPath(text.trim(), schema, tableData);
@@ -8417,6 +8592,48 @@ export default function ChatPage() {
                 : m,
             ),
           );
+          // 바이블테이블링 패널 실시간 업데이트
+          if (tc.kind === 'bible_tabling_edit') {
+            const btTc = tc as BibleTablingEditResult;
+            setBtPanel(prev => {
+              const detailsList = btTc.details ?? btTc.tables.map(t => ({ table: t, file: undefined, rows_matched: undefined, cells_modified: undefined, changes: undefined }));
+              const entries: BibleTablingPanelEntry[] = detailsList.map(d => ({
+                table: d.table, file: d.file, status: btTc.error ? 'error' as const : 'done' as const, type: 'edit' as const,
+                rowsMatched: d.rows_matched, cellsModified: d.cells_modified,
+                changes: d.changes, error: btTc.error,
+              }));
+              return {
+                title: btTc.title || prev?.title || '바이블테이블링',
+                reason: btTc.reason || prev?.reason,
+                isComplete: false,
+                entries: [...(prev?.entries ?? []), ...entries],
+                downloadUrl: btTc.downloadUrl || prev?.downloadUrl,
+                downloadFilename: btTc.downloadFilename || prev?.downloadFilename,
+                jobId: btTc.jobId || prev?.jobId,
+                allJobIds: [...(prev?.allJobIds ?? []), ...(btTc.jobId ? [btTc.jobId] : [])],
+              };
+            });
+          } else if (tc.kind === 'bible_tabling_add_rows') {
+            const btTc = tc as BibleTablingAddRowsResult;
+            setBtPanel(prev => {
+              const entry: BibleTablingPanelEntry = {
+                table: btTc.table, file: btTc.file, status: btTc.error ? 'error' : 'done', type: 'add',
+                rowsAdded: btTc.rowsAdded,
+                inputRows: btTc.inputRows,
+                error: btTc.error,
+              };
+              return {
+                title: prev?.title || '바이블테이블링',
+                reason: prev?.reason,
+                isComplete: false,
+                entries: [...(prev?.entries ?? []), entry],
+                downloadUrl: btTc.downloadUrl || prev?.downloadUrl,
+                downloadFilename: btTc.downloadFilename || prev?.downloadFilename,
+                jobId: btTc.jobId || prev?.jobId,
+                allJobIds: [...(prev?.allJobIds ?? []), ...(btTc.jobId ? [btTc.jobId] : [])],
+              };
+            });
+          }
         },
         (delta, _fullText) => {
           // 실시간 텍스트 스트리밍 — 현재 이터레이션 슬롯에 누적
@@ -8533,6 +8750,25 @@ export default function ChatPage() {
             : m,
         ),
       );
+
+      // 바이블테이블링 패널: 완료 처리 + preview 자동 로딩
+      setBtPanel(prev => prev ? { ...prev, isComplete: true } : prev);
+      {
+        const finalJobId = btPanelRef.current?.jobId;
+        if (finalJobId) {
+          setBtPanel(prev => prev ? { ...prev, previewLoading: true } : prev);
+          fetch(`/api/bible-tabling/preview/${finalJobId}`)
+            .then(r => r.ok ? r.json() : null)
+            .then((data: { files?: BtPreviewFile[] } | null) => {
+              if (data?.files) {
+                setBtPanel(prev => prev ? { ...prev, previewData: data.files, previewLoading: false } : prev);
+              } else {
+                setBtPanel(prev => prev ? { ...prev, previewLoading: false } : prev);
+              }
+            })
+            .catch(() => setBtPanel(prev => prev ? { ...prev, previewLoading: false } : prev));
+        }
+      }
 
       // 아티팩트 스트리밍 완료: 공유 버퍼의 최종 데이터를 React state에 반영 (create_artifact용)
       // patch_artifact의 경우 isComplete=true를 유지하므로 이 블록은 건너뜀
@@ -9477,12 +9713,14 @@ export default function ChatPage() {
               <MessageBubble
                 msg={msg}
                 onContinue={
-                  // 마지막 assistant 메시지가 잘린 경우에만 버튼 활성화
                   msg.isTruncated && !isLoading && idx === messages.length - 1
-                    ? () => sendMessage(
-                        '이전에 조회한 데이터를 기반으로 이어서 답변을 완성해주세요. 추가 데이터 조회 없이 기존에 수집된 데이터만으로 바로 답변해주세요. 필요하다면 create_artifact를 사용해 정리된 결과물을 만들어주세요.',
-                        '▶ 이어서 생성하기',
-                      )
+                    ? () => {
+                        const hasBt = btPanelRef.current && btPanelRef.current.entries.length > 0;
+                        const continueText = hasBt
+                          ? '이전에 조회한 데이터를 기반으로 이어서 바이블테이블링을 완성해주세요. 아직 편집/추가하지 못한 테이블이 있으면 이어서 edit_game_data/add_game_data_rows를 호출해주세요. create_artifact 사용 금지.'
+                          : '이전에 조회한 데이터를 기반으로 이어서 답변을 완성해주세요. 추가 데이터 조회 없이 기존에 수집된 데이터만으로 바로 답변해주세요. 필요하다면 create_artifact를 사용해 정리된 결과물을 만들어주세요.';
+                        sendMessage(continueText, '▶ 이어서 생성하기');
+                      }
                     : undefined
                 }
                 artifactStreaming={
@@ -9622,8 +9860,242 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
-        {/* ── 우측 사이드 패널: 아티팩트 또는 RAG Graph ── */}
-        {artifactPanel ? (
+        {/* ── 우측 사이드 패널: 바이블테이블링 > 아티팩트 > RAG Graph (BT 패널이 최우선) ── */}
+        {btPanel && btPanel.entries.length > 0 ? (
+          <div className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0" style={{ background: '#0a0d14', borderLeft: '1px solid rgba(234,179,8,0.2)' }}>
+            {/* 바이블테이블링 패널 헤더 */}
+            <div className="flex items-center gap-2 px-4 py-3 flex-shrink-0" style={{ borderBottom: '1px solid rgba(234,179,8,0.15)', background: 'rgba(234,179,8,0.05)' }}>
+              <span className="text-[15px]">📝</span>
+              <span className="text-[13px] font-bold flex-1" style={{ color: '#eab308' }}>바이블테이블링</span>
+              {!btPanel.isComplete && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-semibold" style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308', border: '1px solid rgba(234,179,8,0.3)' }}>
+                  <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: '#eab308' }} />
+                  진행 중
+                </span>
+              )}
+              {btPanel.isComplete && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>
+                  ✅ 완료
+                </span>
+              )}
+              <button
+                onClick={() => setBtPanel(null)}
+                className="w-6 h-6 rounded flex items-center justify-center"
+                style={{ background: 'rgba(255,255,255,0.04)', color: '#64748b', cursor: 'pointer' }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            {btPanel.title && (
+              <div className="px-4 py-2 text-[12px]" style={{ color: 'var(--text-secondary)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                <span className="font-semibold" style={{ color: '#eab308' }}>{btPanel.title}</span>
+                {btPanel.reason && <span style={{ color: 'var(--text-muted)' }}> — {btPanel.reason}</span>}
+              </div>
+            )}
+            {/* 테이블별 상세 미리보기 (previewData) 또는 요약 엔트리 */}
+            <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2" style={{ scrollbarWidth: 'thin' }}>
+              {btPanel.previewLoading && (
+                <div className="flex items-center justify-center gap-2 py-6 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  상세 데이터 로딩 중...
+                </div>
+              )}
+              {btPanel.previewData ? btPanel.previewData.map((fileData) =>
+                fileData.sheets.map((sheet) => {
+                  const matchingEntry = btPanel.entries.find(e => e.table.toLowerCase() === sheet.name.toLowerCase());
+                  return (
+                    <div key={`${fileData.filename}-${sheet.name}`} className="rounded-lg overflow-hidden" style={{ border: '1px solid rgba(34,197,94,0.2)', background: 'rgba(255,255,255,0.02)' }}>
+                      <div className="flex items-center gap-2 px-3 py-2" style={{ background: 'rgba(34,197,94,0.06)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <span className="text-[12px]">{matchingEntry?.type === 'edit' ? '✏️' : '➕'}</span>
+                        <span className="text-[12px] font-semibold" style={{ color: '#e2e8f0' }}>{sheet.name}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(100,116,139,0.15)', color: 'var(--text-muted)' }}>{fileData.filename}</span>
+                        <span className="ml-auto text-[10px]" style={{ color: '#22c55e' }}>{sheet.rows.length}행</span>
+                      </div>
+                      <div style={{ overflowX: 'auto', maxHeight: 280 }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10 }}>
+                          <thead><tr>
+                            {sheet.headers.slice(0, 12).map(h => (
+                              <th key={h} style={{ padding: '3px 6px', textAlign: 'left', borderBottom: '1px solid rgba(100,116,139,0.15)', color: '#64748b', fontWeight: 600, whiteSpace: 'nowrap', fontSize: 9, position: 'sticky', top: 0, background: '#0a0d14', zIndex: 1 }}>
+                                {h.length > 14 ? h.slice(0, 12) + '..' : h}
+                              </th>
+                            ))}
+                          </tr></thead>
+                          <tbody>{sheet.rows.map((row) => (
+                            <tr key={row.rowIndex} style={{ background: row.rowIndex % 2 ? 'rgba(100,116,139,0.03)' : 'transparent' }}>
+                              {sheet.headers.slice(0, 12).map(h => {
+                                const cellData = row.cells[h];
+                                const cellVal = cellData ? String(cellData.value ?? '') : '';
+                                const isHighlighted = cellData?.highlighted;
+                                const pendingEdit = btPendingEdits.find(e => e.file === fileData.filename && e.sheet === sheet.name && e.row === row.rowIndex && e.column === h);
+                                const displayVal = pendingEdit ? pendingEdit.value : cellVal;
+                                const isEditing = btEditingCell?.file === fileData.filename && btEditingCell?.sheet === sheet.name && btEditingCell?.row === row.rowIndex && btEditingCell?.column === h;
+                                return (
+                                  <td
+                                    key={h}
+                                    onClick={() => {
+                                      if (btPanel.pushed) setBtPanel(prev => prev ? { ...prev, pushed: false } : prev);
+                                      setBtEditingCell({ file: fileData.filename, sheet: sheet.name, row: row.rowIndex, column: h });
+                                      setBtEditValue(displayVal);
+                                    }}
+                                    style={{
+                                      padding: '2px 5px', borderBottom: '1px solid rgba(100,116,139,0.06)',
+                                      whiteSpace: 'nowrap', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis',
+                                      cursor: 'pointer',
+                                      color: pendingEdit ? '#60a5fa' : isHighlighted ? '#fbbf24' : 'var(--text-secondary)',
+                                      fontWeight: pendingEdit ? 600 : isHighlighted ? 500 : 400,
+                                      background: pendingEdit ? 'rgba(96,165,250,0.08)' : isHighlighted ? 'rgba(251,191,36,0.05)' : 'transparent',
+                                      outline: isEditing ? '1px solid #60a5fa' : 'none',
+                                    }}
+                                  >
+                                    {isEditing ? (
+                                      <input
+                                        autoFocus
+                                        value={btEditValue}
+                                        onChange={e => setBtEditValue(e.target.value)}
+                                        onBlur={() => {
+                                          if (btEditValue !== cellVal) {
+                                            setBtPendingEdits(prev => {
+                                              const filtered = prev.filter(e => !(e.file === fileData.filename && e.sheet === sheet.name && e.row === row.rowIndex && e.column === h));
+                                              return [...filtered, { file: fileData.filename, sheet: sheet.name, row: row.rowIndex, column: h, value: btEditValue }];
+                                            });
+                                          } else {
+                                            setBtPendingEdits(prev => prev.filter(e => !(e.file === fileData.filename && e.sheet === sheet.name && e.row === row.rowIndex && e.column === h)));
+                                          }
+                                          setBtEditingCell(null);
+                                        }}
+                                        onKeyDown={e => {
+                                          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                                          if (e.key === 'Escape') { setBtEditValue(cellVal); setBtEditingCell(null); }
+                                        }}
+                                        style={{ width: '100%', background: 'transparent', border: 'none', outline: 'none', color: '#60a5fa', fontSize: 10, fontWeight: 600, padding: 0 }}
+                                      />
+                                    ) : (
+                                      displayVal.length > 18 ? displayVal.slice(0, 16) + '..' : displayVal
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}</tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : !btPanel.previewLoading && btPanel.entries.map((entry, i) => (
+                <div key={i} className="rounded-lg overflow-hidden" style={{ border: `1px solid ${entry.status === 'error' ? 'rgba(239,68,68,0.3)' : entry.status === 'done' ? 'rgba(34,197,94,0.2)' : 'rgba(234,179,8,0.2)'}`, background: 'rgba(255,255,255,0.02)' }}>
+                  <div className="flex items-center gap-2 px-3 py-2" style={{ background: entry.status === 'error' ? 'rgba(239,68,68,0.08)' : entry.status === 'done' ? 'rgba(34,197,94,0.06)' : 'rgba(234,179,8,0.06)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                    <span className="text-[12px]">{entry.type === 'edit' ? '✏️' : '➕'}</span>
+                    <span className="text-[12px] font-semibold" style={{ color: entry.status === 'error' ? '#f87171' : '#e2e8f0' }}>{entry.table}</span>
+                    {entry.file && <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(100,116,139,0.15)', color: 'var(--text-muted)' }}>{entry.file}</span>}
+                    <span className="ml-auto text-[10px]" style={{ color: entry.status === 'done' ? '#22c55e' : entry.status === 'error' ? '#f87171' : '#eab308' }}>
+                      {entry.status === 'done' ? (entry.type === 'edit' ? `${entry.cellsModified ?? 0}셀 변경` : `+${entry.rowsAdded ?? 0}행`) : entry.status === 'error' ? '오류' : '처리중...'}
+                    </span>
+                  </div>
+                  {entry.error && <div className="px-3 py-2 text-[11px]" style={{ color: '#f87171' }}>{entry.error}</div>}
+                </div>
+              ))}
+            </div>
+            {/* 하단: 저장 + 다운로드 + Push */}
+            {btPanel.isComplete && (
+              <div className="px-4 py-3 space-y-2 flex-shrink-0" style={{ borderTop: '1px solid rgba(234,179,8,0.15)', background: 'rgba(234,179,8,0.03)' }}>
+                {btPendingEdits.length > 0 && (
+                  <button
+                    disabled={btSaving}
+                    onClick={async () => {
+                      if (!btPanel.jobId) return;
+                      setBtSaving(true);
+                      try {
+                        const grouped = new Map<string, BtPendingEdit[]>();
+                        for (const e of btPendingEdits) {
+                          const key = `${e.file}|||${e.sheet}`;
+                          if (!grouped.has(key)) grouped.set(key, []);
+                          grouped.get(key)!.push(e);
+                        }
+                        for (const [key, edits] of grouped) {
+                          const [file, sheet] = key.split('|||');
+                          await fetch(`/api/bible-tabling/update-cells/${btPanel.jobId}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ file, sheet, updates: edits.map(e => ({ row: e.row, column: e.column, value: e.value })) }),
+                          });
+                        }
+                        setBtPendingEdits([]);
+                        const previewResp = await fetch(`/api/bible-tabling/preview/${btPanel.jobId}`);
+                        if (previewResp.ok) {
+                          const data = await previewResp.json() as { files?: BtPreviewFile[] };
+                          if (data.files) setBtPanel(prev => prev ? { ...prev, previewData: data.files } : prev);
+                        }
+                      } catch (e) { alert(`저장 실패: ${String(e)}`); }
+                      finally { setBtSaving(false); }
+                    }}
+                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-[12px] font-semibold"
+                    style={{ background: 'rgba(96,165,250,0.15)', color: '#60a5fa', border: '1px solid rgba(96,165,250,0.3)', cursor: btSaving ? 'wait' : 'pointer', opacity: btSaving ? 0.6 : 1 }}
+                  >
+                    {btSaving ? '저장 중...' : `💾 저장 (${btPendingEdits.length}건 수정)`}
+                  </button>
+                )}
+                <div className="flex items-center gap-2">
+                  {btPanel.downloadUrl && (
+                    <button
+                      onClick={() => bibleTablingDownload(btPanel.downloadUrl!, btPanel.downloadFilename || 'download.xlsx')}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-semibold"
+                      style={{ background: 'rgba(234,179,8,0.12)', color: '#eab308', border: '1px solid rgba(234,179,8,0.25)', cursor: 'pointer' }}
+                    >
+                      📥 다운로드
+                    </button>
+                  )}
+                  {!btPanel.pushed ? (
+                    <button
+                      disabled={btPanel.pushLoading || btPendingEdits.length > 0}
+                      onClick={async () => {
+                        if (!btPanel.jobId) return;
+                        const files = btPanel.previewData?.map(f => f.filename).join(', ') ?? '';
+                        if (!confirm(`${files}을(를) 원본에 반영합니다.\n(원본은 자동 백업됩니다)\n\n계속하시겠습니까?`)) return;
+                        setBtPanel(prev => prev ? { ...prev, pushLoading: true } : prev);
+                        try {
+                          const resp = await fetch(`/api/bible-tabling/push/${btPanel.jobId}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ backup: true }),
+                          });
+                          if (!resp.ok) throw new Error(await resp.text());
+                          setBtPanel(prev => prev ? { ...prev, pushed: true, pushLoading: false } : prev);
+                        } catch (e) {
+                          alert(`Push 실패: ${String(e)}`);
+                          setBtPanel(prev => prev ? { ...prev, pushLoading: false } : prev);
+                        }
+                      }}
+                      className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-[12px] font-bold"
+                      style={{
+                        background: btPendingEdits.length > 0 ? 'rgba(100,116,139,0.1)' : 'rgba(34,197,94,0.15)',
+                        color: btPendingEdits.length > 0 ? '#64748b' : '#22c55e',
+                        border: `1px solid ${btPendingEdits.length > 0 ? 'rgba(100,116,139,0.2)' : 'rgba(34,197,94,0.3)'}`,
+                        cursor: btPanel.pushLoading || btPendingEdits.length > 0 ? 'not-allowed' : 'pointer',
+                        opacity: btPanel.pushLoading ? 0.6 : 1,
+                      }}
+                    >
+                      {btPanel.pushLoading ? '반영 중...' : btPendingEdits.length > 0 ? '먼저 저장하세요' : '🚀 Push (원본 반영)'}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setBtPanel(prev => prev ? { ...prev, pushed: false } : prev)}
+                      className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-[12px] font-bold"
+                      style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.2)', cursor: 'pointer' }}
+                      title="클릭하면 추가 수정 후 다시 Push 가능"
+                    >
+                      ✅ 반영 완료 — 셀 클릭으로 추가 수정
+                    </button>
+                  )}
+                </div>
+                <div className="text-[9px] text-center" style={{ color: 'var(--text-muted)' }}>
+                  {btPanel.entries.length}개 테이블 · {btPanel.entries.filter(e => e.status === 'done').length}개 완료
+                  {btPanel.pushed && ' · 노란색=AI / 파란색=사용자 편집'}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : artifactPanel ? (
           <div className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
             <ArtifactSidePanel
               html={artifactPanel.html}
@@ -9644,7 +10116,6 @@ export default function ChatPage() {
                 );
               }}
               onEditRequest={(prompt) => {
-                // 원본 HTML: finalTc.html → panel.html → _artBuf.html 순 fallback
                 const currentHtml = artifactPanel?.finalTc?.html
                   || artifactPanel?.html
                   || _artBuf.html
@@ -9655,9 +10126,7 @@ export default function ChatPage() {
                   return;
                 }
                 console.log(`[EditRequest] 원본 HTML ${currentHtml.length}자, title="${title}"`);
-                // 스타일/스크립트 제거 → 입력 토큰 대폭 절약
                 const compressedHtml = compressHtmlForEdit(currentHtml);
-                // Claude에게 전달할 컨텍스트 — find는 원본 HTML 기준으로 작성하도록 강조
                 const fullMessage =
                   `[아티팩트 수정 요청]\n` +
                   `제목: ${title}\n\n` +
@@ -9670,7 +10139,6 @@ export default function ChatPage() {
                   `- 변경 필요한 최소 부분만 find/replace\n` +
                   `- style/script 태그는 수정하지 마세요 (제거됨)\n` +
                   `- HTML 전체 재생성 금지`;
-                // 채팅에는 사용자가 입력한 텍스트만 표시
                 const displayText = `✏️ [${title}] ${prompt}`;
                 sendMessage(fullMessage, displayText);
               }}

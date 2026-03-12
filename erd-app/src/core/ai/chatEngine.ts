@@ -546,12 +546,15 @@ export interface BibleTablingEditResult {
   jobId: string;
   downloadUrl: string;
   downloadFilename: string;
-  files: Array<{ filename: string; url: string }>;  // 개별 파일 목록
+  files: Array<{ filename: string; url: string }>;
   filesModified: number;
   totalRowsMatched: number;
   totalCellsModified: number;
   tables: string[];
+  details?: Array<{ table: string; file?: string; rows_matched?: number; cells_modified?: number; changes?: Array<Record<string, unknown>> }>;
   error?: string;
+  partial?: boolean;
+  errorCount?: number;
   duration?: number;
 }
 
@@ -563,6 +566,9 @@ export interface BibleTablingAddRowsResult {
   downloadUrl: string;
   downloadFilename: string;
   rowsAdded: number;
+  inputRows?: Array<Record<string, unknown>>;
+  overrideColumns?: string[];
+  sampleRows?: Array<Record<string, string>>;
   error?: string;
   duration?: number;
 }
@@ -615,6 +621,7 @@ export const TOOL_META: ToolMeta[] = [
   { name: 'update_jira_issue_status', label: 'Jira 상태 변경',   emoji: '🔄', dataSources: ['jira'] },
   { name: 'search_confluence',      label: 'Confluence 검색',    emoji: '📚', dataSources: ['confluence'] },
   { name: 'get_confluence_page',    label: 'Confluence 페이지',   emoji: '📚', dataSources: ['confluence'] },
+  { name: 'add_confluence_comment', label: 'Confluence 댓글 작성', emoji: '💬', dataSources: ['confluence'] },
   { name: 'save_knowledge',         label: '널리지 저장',         emoji: '🧠', dataSources: ['knowledge'] },
   { name: 'read_knowledge',         label: '널리지 읽기',         emoji: '🧠', dataSources: ['knowledge'] },
   { name: 'save_validation_rule',   label: '검증 룰 등록',       emoji: '🛡️', dataSources: ['knowledge'] },
@@ -1023,7 +1030,7 @@ const TOOLS = [
   },
   {
     name: 'add_jira_comment',
-    description: '⭐ Jira 이슈에 댓글을 직접 작성합니다. 이슈 키(AEGIS-1234) 또는 전체 URL을 issueKey로 전달하세요. comment는 마크다운 형식으로 작성하면 됩니다.',
+    description: '⭐ Jira 이슈에 댓글을 직접 작성합니다. 이슈 키(AEGIS-1234) 또는 전체 URL을 issueKey로 전달하세요. ⚠️ Confluence URL은 add_confluence_comment를 사용하세요.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1031,6 +1038,18 @@ const TOOLS = [
         comment: { type: 'string', description: '작성할 댓글 내용 (마크다운 지원)' },
       },
       required: ['issueKey', 'comment'],
+    },
+  },
+  {
+    name: 'add_confluence_comment',
+    description: '⭐ Confluence 페이지에 댓글을 직접 작성합니다. 페이지 ID 또는 전체 URL(예: https://xxx.atlassian.net/wiki/spaces/AEGIS/pages/926910300/M2)을 전달하세요.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pageIdOrUrl: { type: 'string', description: 'Confluence 페이지 ID(숫자) 또는 전체 URL' },
+        comment: { type: 'string', description: '작성할 댓글 내용 (마크다운/텍스트 지원)' },
+      },
+      required: ['pageIdOrUrl', 'comment'],
     },
   },
   {
@@ -1078,11 +1097,23 @@ const TOOLS = [
 ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편집하세요.
 편집된 셀은 노란색 하이라이트로 표시됩니다. 결과는 다운로드 링크로 제공됩니다.
 
+⭐⭐⭐ 중요: 같은 xlsx 파일의 여러 시트를 수정할 때 (예: Character.xlsx → Character, CharacterStat, SkillSet 시트)
+→ 반드시 하나의 edit_game_data 호출에 edit_plan 배열로 모든 시트를 한번에 포함하세요!
+→ 각 항목에 table, sheet, file을 명시하세요.
+→ 여러 번 분리 호출하면 이전 편집이 유실됩니다!
+
 편집 순서 규칙:
 1. ERD에서 FK 관계를 확인하여 부모 테이블(참조되는 쪽)부터 편집
 2. 부모 테이블의 PK 값이 변경되면 자식 테이블의 FK도 반드시 업데이트
 3. order 필드로 편집 순서 지정 (낮은 숫자 = 먼저 편집)
 4. 연관 테이블이 있으면 반드시 함께 편집 계획에 포함
+
+⚡ 성능 최적화 — csv_set 포맷 (대량 set 편집 시 강력 권장!):
+- 여러 행의 값을 set으로 변경할 때 csv_set 사용 → 토큰 70% 절약, PK 룩업으로 처리 속도 향상
+- 형식: 첫 행=헤더(첫 열=PK필터열, 나머지=변경열), 이후 행=값
+- 예: csv_set: "id,hp,mp,atk\\nCHR001,1000,500,120\\nCHR002,600,1200,80"
+- csv_set을 쓰면 filters/changes는 생략
+- multiply/add/subtract/append가 필요하면 기존 filters+changes 사용
 
 필터 op: eq, neq, gt, gte, lt, lte, in, contains, starts_with, ends_with
 변경 action: set(값 설정), multiply(곱하기), add(더하기), subtract(빼기), append(텍스트 추가)`,
@@ -1093,16 +1124,18 @@ ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편
         reason: { type: 'string', description: '편집 사유' },
         edit_plan: {
           type: 'array',
-          description: '편집 계획 배열 — order 순서대로 실행됨',
+          description: '편집 계획 배열 — 같은 파일의 여러 시트 편집은 반드시 하나의 배열에! order 순서대로 실행됨',
           items: {
             type: 'object',
             properties: {
               order: { type: 'number', description: '편집 순서 (1=가장 먼저, 부모 테이블에 낮은 번호)' },
               table: { type: 'string', description: '테이블(시트) 이름' },
-              file: { type: 'string', description: '엑셀 파일명 (예: Character.xlsx). 생략 시 테이블명.xlsx' },
+              sheet: { type: 'string', description: '시트 이름 (같은 xlsx에 여러 시트가 있을 때 명시. 생략 시 table 값 사용)' },
+              file: { type: 'string', description: '엑셀 파일명 (예: Character.xlsx). 같은 파일의 다른 시트를 편집할 때 반드시 지정' },
+              csv_set: { type: 'string', description: '⚡ CSV 대량 set 편집 (권장!). 첫 행=헤더(첫 열=PK필터, 나머지=set 컬럼), 이후 행=값. 예: "id,hp,mp\\nCHR001,1000,500\\nCHR002,600,1200". 이 필드 사용 시 filters/changes 생략.' },
               filters: {
                 type: 'array',
-                description: '대상 행 필터. 비어있으면 전체 행.',
+                description: '대상 행 필터. csv_set 미사용 시에만. 비어있으면 전체 행.',
                 items: {
                   type: 'object',
                   properties: {
@@ -1116,7 +1149,7 @@ ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편
               },
               changes: {
                 type: 'array',
-                description: '적용할 변경 목록',
+                description: '적용할 변경 목록. csv_set 미사용 시에만.',
                 items: {
                   type: 'object',
                   properties: {
@@ -1128,7 +1161,7 @@ ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편
                 },
               },
             },
-            required: ['table', 'changes'],
+            required: ['table'],
           },
         },
       },
@@ -1137,9 +1170,22 @@ ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편
   },
   {
     name: 'add_game_data_rows',
-    description: `⭐ 게임 데이터 Excel 테이블에 새 행을 추가합니다 (바이블테이블링).
-추가된 셀은 노란색 하이라이트로 표시됩니다.
-ERD를 참고하여 상위 테이블에 먼저 추가한 후 하위 테이블에 추가하세요.`,
+    description: `게임 데이터 Excel 테이블에 새 행을 추가합니다 (바이블테이블링).
+
+🔴🔴🔴 필수 규칙: 기존 데이터를 복제/복사/참고하여 추가할 때는 반드시 clone_source를 사용하세요!
+절대로 기존 데이터를 query한 후 rows/csv로 하나하나 다시 타이핑하지 마세요!
+
+■ clone_source 모드 (기존 행 복제 — 1초 소요):
+  clone_source: {column:"character_id", value:"2001"}, override_csv: "character_id\\n3001\\n3002"
+  → Python이 2001의 모든 행을 찾아 3001용/3002용으로 각각 자동 복제. 바꿀 컬럼만 override_csv로 지정.
+  → 원본 M행 × override N세트 = M×N행 자동 생성. 나머지 컬럼은 원본에서 그대로 복사.
+
+■ csv 모드 (완전히 새로운 데이터):
+  csv: "id,name,hp\\nCHR100,전사,1000"
+
+■ rows 모드 (1~2행 소량 추가 전용):
+  rows: [{"id":"CHR100","name":"전사"}]
+  ❌ 3행 이상 추가 시 rows 사용 금지! csv 또는 clone_source 사용.`,
     input_schema: {
       type: 'object',
       properties: {
@@ -1147,16 +1193,27 @@ ERD를 참고하여 상위 테이블에 먼저 추가한 후 하위 테이블에
         reason: { type: 'string', description: '추가 사유' },
         table: { type: 'string', description: '테이블(시트) 이름' },
         file: { type: 'string', description: '엑셀 파일명 (생략 시 테이블명.xlsx)' },
+        clone_source: {
+          type: 'object',
+          description: '🔴 기존 행 복제 시 필수! query_game_data로 조회한 데이터를 rows/csv로 재입력하지 말고 clone_source 사용. Python이 원본 행을 전부 복사하고 override_csv 컬럼만 교체.',
+          properties: {
+            column: { type: 'string', description: '필터 컬럼명 (예: "character_id")' },
+            value: { type: 'string', description: '필터 값 (예: "2001")' },
+          },
+          required: ['column', 'value'],
+        },
+        override_csv: { type: 'string', description: 'clone_source와 함께 사용. 바꿀 컬럼만 CSV. 첫 행=헤더, 이후=값. 예: "character_id,name\\n3001,새캐릭\\n3002,또다른캐릭". override_csv의 각 행마다 원본 전체가 복제됨.' },
+        csv: { type: 'string', description: 'CSV 포맷 (완전히 새로운 데이터만). 첫 행=헤더, 이후=값. ❌ 기존 데이터 복제 시 사용 금지 → clone_source 사용.' },
         rows: {
           type: 'array',
-          description: '추가할 행 데이터 배열',
+          description: '❌ 3행 이상 또는 기존 데이터 복제 시 사용 금지. 1~2행 소량 신규 추가 전용.',
           items: {
             type: 'object',
             description: '각 행: { "컬럼명": "값", ... }',
           },
         },
       },
-      required: ['table', 'rows'],
+      required: ['table'],
     },
   },
 ];
@@ -1181,15 +1238,15 @@ const TOOL_GROUPS: Record<string, { tools: string[]; keywords: RegExp }> = {
   },
   artifact: {
     tools: ['create_artifact', 'patch_artifact', 'search_published_artifacts', 'get_published_artifact'],
-    keywords: /아티팩트|문서|보고서|시트|기획서|정리해|작성해|만들어|릴리즈|분석|프로파일|수정.*요청|\[아티팩트|기존.*문서|이전.*문서|출판/i,
+    keywords: /아티팩트|문서로.*만들|보고서.*만들|시트.*만들|기획서|정리해줘|작성해줘|만들어줘|릴리즈.*노트|수정.*요청|\[아티팩트|기존.*문서|이전.*문서|출판/i,
   },
   jira: {
     tools: ['search_jira', 'get_jira_issue', 'create_jira_issue', 'add_jira_comment', 'update_jira_issue_status'],
     keywords: /지라|jira|이슈|일감|티켓|스프린트|aegis-|버그.*등록|댓글|코멘트/i,
   },
   confluence: {
-    tools: ['search_confluence', 'get_confluence_page'],
-    keywords: /컨플루언스|컨플|confluence|위키|기획.*문서|스펙.*문서|회의록|기획서|디자인.*문서|기획.*페이지|문서.*찾|문서.*검색/i,
+    tools: ['search_confluence', 'get_confluence_page', 'add_confluence_comment'],
+    keywords: /컨플루언스|컨플|confluence|위키|기획.*문서|스펙.*문서|회의록|기획서|디자인.*문서|기획.*페이지|문서.*찾|문서.*검색|\/wiki\/|\/pages\/\d+|댓글.*컨플|컨플.*댓글|코멘트.*컨플|컨플.*코멘트/i,
   },
   character: {
     tools: ['build_character_profile'],
@@ -1200,7 +1257,7 @@ const TOOL_GROUPS: Record<string, { tools: string[]; keywords: RegExp }> = {
     keywords: /검색|웹|url|http|사이트|레퍼런스|참고.*자료|외부/i,
   },
 };
-const ALWAYS_TOOLS = ['read_knowledge', 'save_knowledge', 'read_guide', 'query_game_data', 'show_table_schema', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule', 'search_confluence', 'get_confluence_page'];
+const ALWAYS_TOOLS = ['read_knowledge', 'save_knowledge', 'read_guide', 'query_game_data', 'show_table_schema', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule', 'search_confluence', 'get_confluence_page', 'add_confluence_comment'];
 
 function selectToolsForQuery(query: string, existingFilter?: string[]): typeof TOOLS {
   if (existingFilter) return TOOLS.filter(t => existingFilter.includes(t.name));
@@ -1224,9 +1281,8 @@ function selectToolsForQuery(query: string, existingFilter?: string[]): typeof T
     matched.add('find_resource_image');
   }
 
-  // 데이터 질문이면 아티팩트도 포함 (결과를 문서로 만들 수 있으므로)
+  // 데이터 질문 시 기존 아티팩트 수정 도구만 포함 (create_artifact는 사용자가 명시적으로 요청할 때만)
   if (matched.has('query_game_data')) {
-    matched.add('create_artifact');
     matched.add('patch_artifact');
   }
 
@@ -1238,6 +1294,16 @@ function selectToolsForQuery(query: string, existingFilter?: string[]): typeof T
   if (matched.has('query_git_history')) {
     matched.add('show_table_schema');
     matched.add('query_game_data');
+  }
+
+  // 댓글/코멘트 키워드 + Confluence URL → confluence 도구 보장
+  if (/댓글|코멘트|comment/i.test(query) && /\/wiki\/|\/pages\/\d+|confluence|컨플/i.test(query)) {
+    for (const t of TOOL_GROUPS.confluence.tools) matched.add(t);
+  }
+  // 댓글/코멘트 키워드 → Jira + Confluence 도구 모두 포함
+  if (/댓글|코멘트|comment/i.test(query)) {
+    for (const t of TOOL_GROUPS.jira.tools) matched.add(t);
+    matched.add('add_confluence_comment');
   }
 
   const selected = TOOLS.filter(t => matched.has(t.name));
@@ -1344,7 +1410,7 @@ function buildSystemPrompt(
   lines.push('');
   lines.push('## ⚡ 최적 호출 패턴 (이터레이션 최소화)');
   lines.push('- **데이터 조회**: 위 사전주입 스키마가 있으면 → 바로 query_game_data(sql). show_table_schema 생략.');
-  lines.push('- **데이터 수정**: query_game_data(현재값 확인) → edit_game_data. 최소 2회.');
+  lines.push('- **데이터 수정**: show_table_schema + query_game_data 동시 호출(스키마 알면 생략) → edit_game_data. 최소 1~2회!');
   lines.push('- **변경 이력**: query_git_history(repo=data) + query_git_history(repo=aegis) 병렬 호출 → show_revision_diff(hash).');
   lines.push('- **단순 질문**: 스키마/데이터를 이미 알고 있으면 도구 없이 바로 텍스트 응답. 불필요한 확인 호출 금지.');
   lines.push('');
@@ -1352,19 +1418,93 @@ function buildSystemPrompt(
   // ── 바이블테이블링 규칙: edit_game_data/add_game_data_rows 포함 시에만 ──
   if (hasTools(['edit_game_data', 'add_game_data_rows'])) {
     lines.push('## 📝 바이블테이블링 (Excel 편집)');
-    lines.push('데이터 수정/편집/추가 요청 시 반드시 사용. query_game_data로 현재값 조회 → show_table_schema로 컬럼 확인 → edit_game_data/add_game_data_rows 호출.');
-    lines.push('edit_plan: [{order, table, file?, filters:[{column, op, value}], changes:[{column, action, value}]}]. ERD FK 순서대로. 결과 다운로드 링크 공유 필수.');
+    lines.push('데이터 수정/편집/추가 요청 시 반드시 사용.');
+    lines.push('');
+    lines.push('⚡ 속도 최적화 — 2~3 이터레이션으로 끝내기!');
+    lines.push('⭐ 스키마를 이미 알면(사전주입/이전 턴) → 바로 edit_game_data!');
+    lines.push('⭐ 모르면 → show_table_schema + query_game_data를 한번에 동시 호출 (1 이터레이션)');
+    lines.push('→ 다음 이터레이션에서 바로 edit_game_data/add_game_data_rows 호출');
+    lines.push('⚠️ 컬럼명 추측 금지! #메모 컬럼(#effect_memo 등)에는 한글 설명 텍스트를 채워주세요!');
+    lines.push('');
+    lines.push('### ⚡⚡⚡ CSV 포맷 (대량 편집/추가 시 필수!)');
+    lines.push('토큰 50~70% 절약 + PK 룩업으로 처리 속도 향상. 2행 이상 편집/추가 시 반드시 CSV 사용!');
+    lines.push('');
+    lines.push('**edit_game_data — csv_set**: 여러 행의 값을 set으로 변경할 때');
+    lines.push('```');
+    lines.push('edit_plan: [{ table: "CharStat", file: "Character.xlsx", sheet: "CharStat",');
+    lines.push('  csv_set: "id,hp,mp,atk\\nCHR001,1000,500,120\\nCHR002,600,1200,80" }]');
+    lines.push('```');
+    lines.push('첫 열=PK필터(eq), 나머지=set 값. filters/changes 생략.');
+    lines.push('multiply/add/subtract/append 필요 시에만 기존 filters+changes 사용.');
+    lines.push('');
+    lines.push('**add_game_data_rows — csv**: 여러 행 추가할 때');
+    lines.push('```');
+    lines.push('{ table: "CharStat", csv: "id,name,hp,mp\\nCHR100,새전사,1000,500\\nCHR101,새마법사,600,1200" }');
+    lines.push('```');
+    lines.push('첫 행=헤더, 이후=값. rows 배열 대신 사용.');
+    lines.push('');
+    lines.push('edit_plan: [{order, table, sheet?, file?, csv_set? | (filters, changes)}]');
+    lines.push('⭐ 같은 xlsx 여러 시트 → 하나의 edit_game_data에 edit_plan 배열로 모두 포함!');
+    lines.push('⭐ add_game_data_rows: 기존 데이터 패턴에 맞춰서, ID 중복 없게!');
+    lines.push('');
+    lines.push('### 🔴🔴🔴 복제 모드 (clone_source) — 기존 데이터 기반 추가 시 반드시 사용!');
+    lines.push('아래 상황에서는 무조건 clone_source를 사용하세요:');
+    lines.push('- "카야 스탯 복제", "기존 캐릭터 기반으로 추가", "동일하게 복사", "N행 추가"');
+    lines.push('- query_game_data로 기존 데이터를 조회한 후, 그 데이터를 기반으로 행을 추가할 때');
+    lines.push('- 기존 캐릭터의 스탯/스킬/아이템을 새 캐릭터에게 복사할 때');
+    lines.push('');
+    lines.push('❌ 절대 금지: query로 데이터를 조회한 뒤 rows[]나 csv로 하나하나 재입력');
+    lines.push('❌ 절대 금지: 10행 이상의 데이터를 rows 배열로 직접 생성');
+    lines.push('✅ 올바른 방법: clone_source로 원본 지정 → Python이 자동 복사 (1초 완료)');
+    lines.push('');
+    lines.push('예시 1: 카야(2001)의 CharacterStat을 새 캐릭터 3001, 3002에게 복제');
+    lines.push('```');
+    lines.push('add_game_data_rows({');
+    lines.push('  table: "CharacterStat",');
+    lines.push('  clone_source: { column: "character_id", value: "2001" },');
+    lines.push('  override_csv: "character_id\\n3001\\n3002"');
+    lines.push('})');
+    lines.push('```');
+    lines.push('→ 2001의 스탯 행이 10개면, 3001용 10행 + 3002용 10행 = 총 20행 자동 생성');
+    lines.push('');
+    lines.push('예시 2: 동일 캐릭터에게 기존 스탯을 그대로 10행 더 추가');
+    lines.push('```');
+    lines.push('add_game_data_rows({');
+    lines.push('  table: "CharacterStat",');
+    lines.push('  clone_source: { column: "character_id", value: "2001" }');
+    lines.push('  // override_csv 생략 → 원본 그대로 1회 복제');
+    lines.push('})');
+    lines.push('```');
+    lines.push('');
+    lines.push('🔴🔴🔴 절대 금지: 테이블/데이터 생략!');
+    lines.push('- 데이터가 많다는 이유로 테이블을 생략하거나 "~는 생략합니다" 금지!');
+    lines.push('- 데이터가 많으면 → 여러 번 나눠서 호출! (예: 1~5레벨 + 6~10레벨)');
+    lines.push('- 사용자가 요청한 테이블은 100% 전부 편집/추가. 하나라도 빠지면 실패.');
+    lines.push('');
+    lines.push('📌 바이블테이블링 응답 스타일 (텍스트로 중계! 아티팩트 만들지 마!):');
+    lines.push('- ❌❌❌ 바이블테이블링 후 create_artifact 절대 호출 금지!');
+    lines.push('- ❌❌❌ 바이블테이블링 결과를 "정리/요약/종합" 명목으로 아티팩트 만드는 것도 금지!');
+    lines.push('- 도구 호출 전: 수정/추가할 테이블 목록과 계획을 텍스트로 설명');
+    lines.push('- 도구 호출 후: 결과를 텍스트+마크다운 표로 요약 (아티팩트 아닌 일반 텍스트!)');
+    lines.push('- ⭐ 텍스트 응답 마지막에 다운로드 링크 포함! 예: "📥 [Character.xlsx](URL)"');
+    lines.push('- ❌ "N행 추가됨"만 나열 금지. 실제 세팅된 주요 값을 보여줄 것.');
     lines.push('');
   }
 
   // ── 아티팩트 규칙: artifact 도구 포함 시에만 ──
   if (hasTools(['create_artifact', 'patch_artifact'])) {
     lines.push('## 아티팩트 생성 프로토콜');
-    lines.push('⭐ 아티팩트 생성 전에 **반드시** search_published_artifacts로 유사한 기존 문서를 먼저 검색하세요!');
+    lines.push('🔴 아티팩트는 사용자가 명시적으로 요청할 때만 생성하세요!');
+    lines.push('- "정리해줘", "문서로 만들어줘", "보고서 작성해줘", "시트 만들어줘", "아티팩트" 등 → create_artifact');
+    lines.push('- 사용자가 명시적으로 요청하지 않은 경우 → 텍스트+마크다운 표로 응답. 아티팩트 만들지 마세요!');
+    lines.push('- 질문에 대한 답변, 데이터 조회 결과 등은 텍스트로 충분합니다. 선제적으로 아티팩트를 만들지 마세요.');
+    lines.push('');
+    lines.push('⭐ 아티팩트 생성 시에는 **반드시** search_published_artifacts로 유사한 기존 문서를 먼저 검색하세요!');
     lines.push('- 유사한 기존 아티팩트가 있으면 → **반드시 [문서제목](/api/p/아티팩트_id) 형식 인라인 링크 포함**하여 사용자에게 제안');
     lines.push('- 예: "기존에 [AEGIS 캐릭터 종합 데이터 시트](/api/p/aegis_character_sheet) 문서가 있습니다. 갱신할까요?"');
     lines.push('- 사용자가 "갱신/수정/업데이트" 요청 시 → get_published_artifact로 기존 HTML 가져와서 create_artifact로 수정본 생성');
     lines.push('- 사용자가 기존 아티팩트를 언급/링크하면 → get_published_artifact로 가져와서 수정');
+    lines.push('- 🔴 예외: edit_game_data / add_game_data_rows (바이블테이블링) 결과는 절대 아티팩트로 만들지 마세요! "정리/요약" 명목도 금지! 다운로드 링크가 결과물.');
     lines.push('<<<ARTIFACT_START>>> + HTML(body만, 다크테마 bg:#0f1117 text:#e2e8f0 accent:#6366f1) + <<<ARTIFACT_END>>> → create_artifact(title). 수정은 patch_artifact만.');
     lines.push('임베드: data-embed="schema|query|relations|graph|diff|csv|scene|prefab|fbx-anim" 속성 사용. [[TableName]]→스키마 팝업.');
     lines.push('이미지: find_resource_image로 검색한 결과의 url 필드(전체 URL)를 <img src="...">에 사용. /api/images/... 상대경로 금지!');
@@ -1373,10 +1513,13 @@ function buildSystemPrompt(
   }
 
   // ── Jira 규칙: jira 도구 포함 시에만 ──
-  if (hasTools(['search_jira', 'get_jira_issue', 'create_jira_issue', 'add_jira_comment'])) {
+  if (hasTools(['search_jira', 'get_jira_issue', 'create_jira_issue', 'add_jira_comment']) || hasTools(['add_confluence_comment'])) {
     lines.push('## Jira/Confluence');
     lines.push('프로젝트: AEGIS. JQL 날짜필터 자동추가 금지. AEGIS-1234 언급→get_jira_issue 즉시 호출.');
-    lines.push('이슈 생성: create_jira_issue(summary). 댓글: add_jira_comment(issueKey, comment). 상태변경: update_jira_issue_status. "쓰기 불가" 절대 금지.');
+    lines.push('이슈 생성: create_jira_issue(summary). Jira 댓글: add_jira_comment(issueKey, comment). 상태변경: update_jira_issue_status.');
+    lines.push('⭐⭐⭐ Confluence 댓글: add_confluence_comment(pageIdOrUrl, comment) — Confluence 페이지에 댓글을 직접 작성할 수 있습니다!');
+    lines.push('- URL 구분: /browse/KEY-123 = Jira 이슈 → add_jira_comment, /wiki/spaces/.../pages/ID = Confluence → add_confluence_comment');
+    lines.push('- "쓰기 불가", "API가 없다", "직접 할 수 없다" 절대 금지! 두 도구 모두 즉시 사용 가능!');
     lines.push('### Confluence 검색 패턴');
     lines.push('- **자연어 검색**: search_confluence(query: "캐릭터 밸런스") → 자동 CQL 변환');
     lines.push('- **Space 필터**: search_confluence(query: "기획서", space: "AEGIS")');
@@ -2260,7 +2403,7 @@ const KIND_TO_TOOL: Record<string, string> = {
   prefab_preview: 'preview_prefab', fbx_animation: 'preview_fbx_animation',
   jira_search: 'search_jira', jira_issue: 'get_jira_issue',
   jira_create: 'create_jira_issue', jira_comment: 'add_jira_comment', jira_status: 'update_jira_issue_status',
-  confluence_search: 'search_confluence', confluence_page: 'get_confluence_page',
+  confluence_search: 'search_confluence', confluence_page: 'get_confluence_page', confluence_comment: 'add_confluence_comment',
   web_search: 'web_search', web_read: 'read_url',
   bible_tabling_edit: 'edit_game_data', bible_tabling_add_rows: 'add_game_data_rows',
 };
@@ -2318,9 +2461,12 @@ export interface ThinkingStep {
 
 export interface TokenUsageSummary {
   iterations: Array<{ iteration: number; input_tokens: number; output_tokens: number; cache_creation?: number; cache_read?: number }>;
+  /** API가 보고한 input_tokens 합계 (캐시 미포함, 과금용) */
   total_input: number;
   total_output: number;
   total_tokens: number;
+  /** 캐시 포함 실제 논리적 입력 토큰 = input_tokens + cache_read + cache_creation */
+  total_input_logical: number;
   system_prompt_estimate: number;
 }
 
@@ -2831,8 +2977,15 @@ export async function sendChatMessage(
   console.log(`[Chat] 토큰 추정: system=${Math.round(sysChars/3)}t, history=${Math.round(msgChars/3)}t, 합계≈${Math.round((sysChars+msgChars)/3)}t (${rawHistoryMsgs.length}개 메시지)`);
 
   // ── 멀티턴 대화 캐싱: 히스토리 끝에 cache_control 브레이크포인트 ──
-  // 히스토리가 충분히 길면 (4턴+) 마지막 히스토리 메시지에 캐시 마커를 넣어
-  // 이전 대화 전체가 캐시되도록 함 → 매 턴마다 히스토리 재전송 비용 절감
+  // 먼저 기존 cache_control을 모두 제거 (rawMessages 재사용 시 중복 방지, API 최대 4개 제한)
+  for (const msg of rawHistoryMsgs) {
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content as Array<Record<string, unknown>>) {
+        delete block.cache_control;
+      }
+    }
+  }
+  // 히스토리가 충분히 길면 마지막 메시지에 캐시 마커 1개만 추가 (system + tools + history = 최대 3개)
   if (rawHistoryMsgs.length >= 4) {
     const lastHistMsg = rawHistoryMsgs[rawHistoryMsgs.length - 1];
     if (lastHistMsg.role === 'assistant' && Array.isArray(lastHistMsg.content)) {
@@ -2843,7 +2996,6 @@ export async function sendChatMessage(
       }
     } else if (lastHistMsg.role === 'user') {
       if (typeof lastHistMsg.content === 'string') {
-        // string content → content block 배열로 변환하여 cache_control 추가
         (lastHistMsg as Record<string, unknown>).content = [
           { type: 'text', text: lastHistMsg.content, cache_control: { type: 'ephemeral' } },
         ];
@@ -2862,7 +3014,7 @@ export async function sendChatMessage(
   ];
 
   const allToolCalls: ToolCallResult[] = [];
-  const MAX_ITERATIONS = 12;
+  const MAX_ITERATIONS = 20;
   let accumulatedText = '';
   let totalText = ''; // max_tokens 자동 계속 시 누적 텍스트
   let continuationCount = 0; // 자동 계속 횟수
@@ -2898,11 +3050,30 @@ export async function sendChatMessage(
 
   // 토큰 사용량 추적
   const tokenIterations: TokenUsageSummary['iterations'] = [];
-  const systemPromptEstimate = Math.ceil(systemPrompt.length / 3.5); // 대략적 토큰 수 추정
+  const systemPromptEstimate = Math.ceil(systemPrompt.length / 3.5);
 
-  // ── 동적 max_tokens: 아티팩트 요청이면 16384, 일반 대화면 4096 ──
-  const ARTIFACT_KEYWORDS = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|캐릭터.*시트|릴리즈.*노트|분석|작성해줘/;
-  const dynamicMaxTokens = ARTIFACT_KEYWORDS.test(userMessage) ? 16384 : 4096;
+  const buildTokenSummary = (): TokenUsageSummary => {
+    const total_input = tokenIterations.reduce((s, t) => s + t.input_tokens, 0);
+    const total_output = tokenIterations.reduce((s, t) => s + t.output_tokens, 0);
+    const total_cache_read = tokenIterations.reduce((s, t) => s + (t.cache_read ?? 0), 0);
+    const total_cache_creation = tokenIterations.reduce((s, t) => s + (t.cache_creation ?? 0), 0);
+    const total_input_logical = total_input + total_cache_read + total_cache_creation;
+    return {
+      iterations: [...tokenIterations],
+      total_input,
+      total_output,
+      total_tokens: total_input_logical + total_output,
+      total_input_logical,
+      system_prompt_estimate: systemPromptEstimate,
+    };
+  };
+
+  // ── 동적 max_tokens: 아티팩트/바이블테이블링이면 16384, 일반 대화면 4096 ──
+  const ARTIFACT_KEYWORDS = /정리해줘|문서로.*만들|보고서.*만들|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|릴리즈.*노트|작성해줘/;
+  const BT_KEYWORDS = /바이블|테이블링|편집해|추가해|수정해|데이터.*넣|행.*추가|값.*변경|만들어줘.*캐릭|세팅해|밸런스|스탯|스킬.*추가|레벨.*추가|이어서.*생성/;
+  const hasBtTools = filteredTools.some(t => t.name === 'edit_game_data' || t.name === 'add_game_data_rows');
+  const needsLargeTokens = ARTIFACT_KEYWORDS.test(userMessage) || BT_KEYWORDS.test(userMessage) || hasBtTools;
+  const dynamicMaxTokens = needsLargeTokens ? 16384 : 4096;
 
   // ── Anthropic Prompt Caching: 시스템 프롬프트 + 도구 정의를 캐싱하여 TTFT 대폭 감소 ──
   const cachedTools = filteredTools.map((tool, idx) =>
@@ -3001,13 +3172,7 @@ export async function sendChatMessage(
         cache_creation: data.usage.cache_creation_input_tokens,
         cache_read: data.usage.cache_read_input_tokens,
       });
-      const summary: TokenUsageSummary = {
-        iterations: [...tokenIterations],
-        total_input: tokenIterations.reduce((s, t) => s + t.input_tokens, 0),
-        total_output: tokenIterations.reduce((s, t) => s + t.output_tokens, 0),
-        total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
-        system_prompt_estimate: systemPromptEstimate,
-      };
+      const summary = buildTokenSummary();
       onTokenUsage?.(summary);
     }
 
@@ -3032,7 +3197,7 @@ export async function sendChatMessage(
       const ARTIFACT_INTENT = /생성하겠습니다|만들겠습니다|작성하겠습니다|뽑겠습니다|정리하겠습니다/;
       const hasArtifactIntent = ARTIFACT_INTENT.test(text);
       const alreadyHasArtifact = allToolCalls.some(tc => tc.kind === 'artifact');
-      const userWantsArtifact = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘/.test(
+      const userWantsArtifact = /정리해줘|문서로.*만들|보고서.*만들|시트.*만들|뽑아줘|만들어줘|아티팩트/.test(
         messages.find(m => m.role === 'user')?.content as string ?? ''
       );
 
@@ -3070,13 +3235,7 @@ export async function sendChatMessage(
         continue;
       }
 
-      const tokenUsage: TokenUsageSummary = {
-        iterations: tokenIterations,
-        total_input: tokenIterations.reduce((s, t) => s + t.input_tokens, 0),
-        total_output: tokenIterations.reduce((s, t) => s + t.output_tokens, 0),
-        total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
-        system_prompt_estimate: systemPromptEstimate,
-      };
+      const tokenUsage = buildTokenSummary();
       useRagTraceStore.getState().pushTrace(buildRagTrace(userMessage, allToolCalls, tokenUsage));
       return { content: finalText, toolCalls: allToolCalls, tokenUsage };
     }
@@ -3135,7 +3294,13 @@ export async function sendChatMessage(
         get_published_artifact: '📄 기존 문서 가져오기',
       };
 
-      await Promise.all(toolBlocks.map(async (tb) => {
+      // 바이블테이블링 도구는 같은 xlsx 파일의 여러 시트를 순차 편집해야 하므로
+      // prev_job_id 체이닝을 위해 순차 실행. 나머지 도구는 병렬 실행.
+      const BT_TOOLS = new Set(['edit_game_data', 'add_game_data_rows']);
+      const btBlocks = toolBlocks.filter(tb => BT_TOOLS.has(tb.name));
+      const nonBtBlocks = toolBlocks.filter(tb => !BT_TOOLS.has(tb.name));
+
+      const executeToolBlock = async (tb: typeof toolBlocks[0]) => {
         const inp = tb.input as Record<string, unknown>;
         let resultStr = '';
         let tc: ToolCallResult;
@@ -3425,9 +3590,9 @@ export async function sendChatMessage(
                 // 0-a: 숫자형 비교 (PK가 INT인 경우)
                 if (isNumericId) {
                   try {
-                    const r = await executeDataSQL(
+                    const r = executeDataSQL(
                       `SELECT * FROM "${charTable.name}" WHERE ${pkCol} = ${Number(directCharId)} LIMIT 1`,
-                      tableData,
+                      tableData, resolvedSchema,
                     );
                     if (r.rows.length > 0) character = r.rows[0] as Record<string, unknown>;
                   } catch { /* skip */ }
@@ -3435,9 +3600,9 @@ export async function sendChatMessage(
                 // 0-b: 문자열 비교 (PK가 VARCHAR인 경우)
                 if (!character) {
                   try {
-                    const r = await executeDataSQL(
+                    const r = executeDataSQL(
                       `SELECT * FROM "${charTable.name}" WHERE ${pkCol} = '${directCharId.replace(/'/g, "''")}' LIMIT 1`,
-                      tableData,
+                      tableData, resolvedSchema,
                     );
                     if (r.rows.length > 0) character = r.rows[0] as Record<string, unknown>;
                   } catch { /* skip */ }
@@ -3445,7 +3610,7 @@ export async function sendChatMessage(
                 // 0-c: JS 전체 탐색 폴백 (타입 불일치 최후 수단)
                 if (!character) {
                   try {
-                    const allRows = await executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 500`, tableData);
+                    const allRows = executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 500`, tableData, resolvedSchema);
                     const found = allRows.rows.find(row =>
                       Object.values(row as Record<string, unknown>).some(v => String(v) === directCharId),
                     );
@@ -3464,9 +3629,9 @@ export async function sendChatMessage(
                 const safeInput = charName.replace(/'/g, "''");
                 for (const nc of nameColumns) {
                   try {
-                    const r = await executeDataSQL(
+                    const r = executeDataSQL(
                       `SELECT * FROM "${charTable.name}" WHERE LOWER(${nc}) LIKE LOWER('%${safeInput}%') LIMIT 1`,
-                      tableData,
+                      tableData, resolvedSchema,
                     );
                     if (r.rows.length > 0) { character = r.rows[0] as Record<string, unknown>; break; }
                   } catch { /* 비문자열 컬럼 스킵 */ }
@@ -3477,9 +3642,9 @@ export async function sendChatMessage(
                   const allColumns = charTable.columns.map(c => c.name.toLowerCase());
                   for (const nc of allColumns) {
                     try {
-                      const r = await executeDataSQL(
+                      const r = executeDataSQL(
                         `SELECT * FROM "${charTable.name}" WHERE LOWER(${nc}) LIKE LOWER('%${safeInput}%') LIMIT 1`,
-                        tableData,
+                        tableData, resolvedSchema,
                       );
                       if (r.rows.length > 0) { character = r.rows[0] as Record<string, unknown>; break; }
                     } catch { /* skip */ }
@@ -3489,7 +3654,7 @@ export async function sendChatMessage(
                 // 전략 3: JS 측 완전 탐색 (인코딩/특수문자 차이 대비)
                 if (!character) {
                   try {
-                    const allRows = await executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 500`, tableData);
+                    const allRows = executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 500`, tableData, resolvedSchema);
                     const lowerInput = charName.toLowerCase();
                     const found = allRows.rows.find(row =>
                       Object.values(row as Record<string, unknown>).some(v =>
@@ -3504,7 +3669,7 @@ export async function sendChatMessage(
               if (!character) {
                 // 실패 시 — 전체 캐릭터 목록 반환 (Claude가 재호출할 수 있도록)
                 try {
-                  const allChars = await executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 100`, tableData);
+                  const allChars = executeDataSQL(`SELECT * FROM "${charTable.name}" LIMIT 100`, tableData, resolvedSchema);
                   const charList = allChars.rows.map((row, i) => {
                     const r = row as Record<string, unknown>;
                     return `[${i + 1}] ${Object.entries(r).slice(0, 6).map(([k, v]) => `${k}=${v}`).join(', ')}`;
@@ -3538,9 +3703,9 @@ export async function sendChatMessage(
                   const fkCol = ref.fromColumns[0].toLowerCase(); // 소문자
 
                   try {
-                    const res = await executeDataSQL(
+                    const res = executeDataSQL(
                       `SELECT * FROM "${connTable.name}" WHERE ${fkCol} = ${charIdLiteral} LIMIT 5`,
-                      tableData,
+                      tableData, resolvedSchema,
                     );
                     totalRelated += res.rowCount;
 
@@ -3559,9 +3724,9 @@ export async function sendChatMessage(
                           return !isNaN(Number(v)) && v.trim() !== '' ? v : `'${v.replace(/'/g, "''")}'`;
                         }).join(',');
                         try {
-                          const subRes = await executeDataSQL(
+                          const subRes = executeDataSQL(
                             `SELECT COUNT(*) as cnt FROM "${subTable.name}" WHERE ${subFk} IN (${ids})`,
-                            tableData,
+                            tableData, resolvedSchema,
                           );
                           const cnt = Number((subRes.rows[0] as Record<string, unknown>)?.cnt ?? 0);
                           if (cnt > 0) subChildren.push({ tableName: subTable.name, fkColumn: subFk, rowCount: cnt });
@@ -4087,7 +4252,13 @@ function showTab(id){
           const t0 = performance.now();
           const duration = performance.now() - t0;
 
-          if (allToolCalls.some(tc => tc.kind === 'artifact')) {
+          // 🔴 바이블테이블링 후 아티팩트 생성 차단 (코드 레벨 강제)
+          const hadBibleTabling = allToolCalls.some(tc => tc.kind === 'bible_tabling_edit' || tc.kind === 'bible_tabling_add_rows');
+          if (hadBibleTabling) {
+            tc = { kind: 'artifact', title, description, html: '', duration } as ArtifactResult;
+            resultStr = `🔴 바이블테이블링 결과는 아티팩트로 만들지 마세요! 다운로드 링크가 결과물입니다. 텍스트 응답으로 요약하세요.`;
+            console.log(`[Chat] create_artifact 차단: 바이블테이블링 후 아티팩트 생성 시도 → 거부 ("${title}")`);
+          } else if (allToolCalls.some(tc => tc.kind === 'artifact')) {
             // ── 중복 호출 방지: 이미 아티팩트가 있으면 무시 ──
             tc = { kind: 'artifact', title, description, html, duration } as ArtifactResult;
             resultStr = `⚠️ 이미 아티팩트가 성공적으로 생성되었습니다. 재생성 불필요합니다. 대화를 이어가세요.`;
@@ -4329,33 +4500,94 @@ function showTab(id){
           }
         }
 
-        // ── add_jira_comment ──
+        // ── add_jira_comment (Confluence URL 자동 리다이렉트 포함) ──
         else if (tb.name === 'add_jira_comment') {
           const rawKey = String(inp.issueKey ?? inp.issueKeyOrUrl ?? '').trim();
           const comment = String(inp.comment ?? inp.commentBody ?? '').trim();
-          // URL에서 이슈 키 추출
-          const issueKey = rawKey.match(/[A-Z]+-\d+/)?.[0] ?? rawKey;
+          const t0 = performance.now();
+          // Confluence URL 감지 → 자동으로 Confluence 댓글 API 호출
+          if (/\/wiki\/spaces\/|\/pages\/\d+/i.test(rawKey)) {
+            const pageIdMatch = rawKey.match(/\/pages\/(\d+)/);
+            const pageId = pageIdMatch ? pageIdMatch[1] : '';
+            if (!pageId) {
+              resultStr = `Confluence URL에서 페이지 ID를 추출할 수 없습니다: "${rawKey}"`;
+              tc = { kind: 'confluence_comment', error: resultStr, duration: 0 } as unknown as ToolCallResult;
+            } else {
+              try {
+                const resp = await fetch('/api/confluence/comment', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ pageId, comment }),
+                });
+                const data2 = await resp.json() as Record<string, unknown>;
+                const duration = performance.now() - t0;
+                if (!resp.ok) {
+                  resultStr = `Confluence 댓글 작성 실패 (${resp.status}): ${String(data2.error ?? data2)}`;
+                  tc = { kind: 'confluence_comment', pageId, error: resultStr, duration } as unknown as ToolCallResult;
+                } else {
+                  const commentId = String(data2.commentId ?? '');
+                  const pageUrl = String(data2.pageUrl ?? '');
+                  resultStr = `✅ Confluence 댓글 작성 완료!\n페이지 ID: ${pageId}${pageUrl ? ` (${pageUrl})` : ''}\n댓글 ID: ${commentId}\n작성 내용:\n${comment}`;
+                  tc = { kind: 'confluence_comment', pageId, commentId, pageUrl, comment, duration } as unknown as ToolCallResult;
+                }
+              } catch (e) {
+                resultStr = `Confluence 댓글 작성 오류: ${String(e)}`;
+                tc = { kind: 'confluence_comment', pageId, error: String(e), duration: 0 } as unknown as ToolCallResult;
+              }
+            }
+          } else {
+            const issueKey = rawKey.match(/[A-Z]+-\d+/)?.[0] ?? rawKey;
+            try {
+              const resp = await fetch('/api/jira/comment', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ issueKey, comment }),
+              });
+              const data2 = await resp.json() as Record<string, unknown>;
+              const duration = performance.now() - t0;
+              if (!resp.ok) {
+                resultStr = `Jira 댓글 작성 실패 (${resp.status}): ${String(data2.error ?? data2)}`;
+                tc = { kind: 'jira_comment', issueKey, error: resultStr, duration } as unknown as ToolCallResult;
+              } else {
+                const commentId = String(data2.commentId ?? '');
+                const issueUrl = String(data2.issueUrl ?? '');
+                resultStr = `✅ 댓글 작성 완료!\n이슈: ${issueKey}${issueUrl ? ` (${issueUrl})` : ''}\n댓글 ID: ${commentId}\n작성 내용:\n${comment}`;
+                tc = { kind: 'jira_comment', issueKey, commentId, issueUrl, comment, duration } as unknown as ToolCallResult;
+              }
+            } catch (e) {
+              resultStr = `Jira 댓글 작성 오류: ${String(e)}`;
+              tc = { kind: 'jira_comment', issueKey, error: String(e), duration: 0 } as unknown as ToolCallResult;
+            }
+          }
+        }
+
+        // ── add_confluence_comment ──
+        else if (tb.name === 'add_confluence_comment') {
+          const rawPageRef = String(inp.pageIdOrUrl ?? inp.pageId ?? '').trim();
+          const comment = String(inp.comment ?? '').trim();
+          const pageIdMatch = rawPageRef.match(/\/pages\/(\d+)/);
+          const pageId = pageIdMatch ? pageIdMatch[1] : rawPageRef.replace(/\D/g, '');
           const t0 = performance.now();
           try {
-            const resp = await fetch('/api/jira/comment', {
+            const resp = await fetch('/api/confluence/comment', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ issueKey, comment }),
+              body: JSON.stringify({ pageId, comment }),
             });
             const data2 = await resp.json() as Record<string, unknown>;
             const duration = performance.now() - t0;
             if (!resp.ok) {
-              resultStr = `Jira 댓글 작성 실패 (${resp.status}): ${String(data2.error ?? data2)}`;
-              tc = { kind: 'jira_comment', issueKey, error: resultStr, duration } as unknown as ToolCallResult;
+              resultStr = `Confluence 댓글 작성 실패 (${resp.status}): ${String(data2.error ?? data2)}`;
+              tc = { kind: 'confluence_comment', pageId, error: resultStr, duration } as unknown as ToolCallResult;
             } else {
               const commentId = String(data2.commentId ?? '');
-              const issueUrl = String(data2.issueUrl ?? '');
-              resultStr = `✅ 댓글 작성 완료!\n이슈: ${issueKey}${issueUrl ? ` (${issueUrl})` : ''}\n댓글 ID: ${commentId}\n작성 내용:\n${comment}`;
-              tc = { kind: 'jira_comment', issueKey, commentId, issueUrl, comment, duration } as unknown as ToolCallResult;
+              const pageUrl = String(data2.pageUrl ?? '');
+              resultStr = `✅ Confluence 댓글 작성 완료!\n페이지 ID: ${pageId}${pageUrl ? ` (${pageUrl})` : ''}\n댓글 ID: ${commentId}\n작성 내용:\n${comment}`;
+              tc = { kind: 'confluence_comment', pageId, commentId, pageUrl, comment, duration } as unknown as ToolCallResult;
             }
           } catch (e) {
-            resultStr = `Jira 댓글 작성 오류: ${String(e)}`;
-            tc = { kind: 'jira_comment', issueKey, error: String(e), duration: 0 } as unknown as ToolCallResult;
+            resultStr = `Confluence 댓글 작성 오류: ${String(e)}`;
+            tc = { kind: 'confluence_comment', pageId, error: String(e), duration: 0 } as unknown as ToolCallResult;
           }
         }
 
@@ -4492,7 +4724,24 @@ function showTab(id){
             } else {
               const body = (data2.body as Record<string,unknown>)?.storage as Record<string,unknown>
               const rawHtml = String(body?.value ?? '');
-              const htmlContent = rawHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 3000)
+              const CONF_MAX = 50_000;
+              let htmlContent = rawHtml
+                .replace(/<br\s*\/?>/gi, '\n')
+                .replace(/<\/?(p|div|h[1-6]|li|tr|section|article)[^>]*>/gi, '\n')
+                .replace(/<\/?(td|th)[^>]*>/gi, ' | ')
+                .replace(/<[^>]+>/g, '')
+                .replace(/&nbsp;/g, ' ')
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/[ \t]+/g, ' ')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+              const fullContentLength = htmlContent.length;
+              if (htmlContent.length > CONF_MAX) {
+                htmlContent = htmlContent.slice(0, CONF_MAX) + `\n\n⚠️ 내용이 ${fullContentLength.toLocaleString()}자로 길어 ${CONF_MAX.toLocaleString()}자까지만 표시됩니다.`;
+              }
               const space = (data2.space as Record<string,unknown>)?.key ?? ''
               // Confluence 페이지 URL 생성: _links.base + _links.webui
               const confLinks = (data2._links ?? {}) as Record<string,unknown>;
@@ -4849,89 +5098,194 @@ function showTab(id){
           } // end else (일반 URL)
         }
 
-        // ── edit_game_data (바이블테이블링 — 데이터 편집) ──
+        // ── edit_game_data (바이블테이블링 — 데이터 편집, SSE 스트리밍) ──
         else if (tb.name === 'edit_game_data') {
           const BIBLE_TABLING_URL = ''; // Vite 프록시 경유 (/api/bible-tabling/ → localhost:8100)
           const title = String(inp.title ?? '바이블테이블링');
           const reason = inp.reason ? String(inp.reason) : '';
           const t0 = Date.now();
           try {
-            const resp = await fetch(`${BIBLE_TABLING_URL}/api/bible-tabling/edit`, {
+            const resp = await fetch(`${BIBLE_TABLING_URL}/api/bible-tabling/edit-stream`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 title,
                 reason,
                 edit_plan: inp.edit_plan as unknown[],
-                prev_job_id: lastBibleTablingJobId,  // 이전 job 파일 이어받기
+                prev_job_id: lastBibleTablingJobId,
               }),
             });
-            const duration = Date.now() - t0;
             if (!resp.ok) {
+              const duration = Date.now() - t0;
               const errText = await resp.text();
               resultStr = `바이블테이블링 오류 (${resp.status}): ${errText}`;
               tc = { kind: 'bible_tabling_edit', title, reason, jobId: '', downloadUrl: '', downloadFilename: '', files: [], filesModified: 0, totalRowsMatched: 0, totalCellsModified: 0, tables: [], error: resultStr, duration };
             } else {
-              const data = await resp.json() as Record<string, unknown>;
-              const summary = data.summary as Record<string, unknown>;
-              const details = (summary.details as Array<Record<string, unknown>>) || [];
-              const jobId = String(data.job_id ?? '');
-              const downloadUrl = `${BIBLE_TABLING_URL}${data.download_url}`;
-              const downloadFilename = String(data.download_filename ?? '');
+              // SSE 스트리밍으로 실시간 진행 상태 수신
+              const reader = resp.body!.getReader();
+              const decoder = new TextDecoder();
+              let sseBuffer = '';
+              let doneEvent: Record<string, unknown> | null = null;
+              let fatalError: string | null = null;
 
-              // 개별 파일 목록:
-              // downloadUrl이 .zip이면 여러 Excel → 각 파일 개별 링크 제공
-              // downloadUrl이 .xlsx이면 하나의 Excel (시트가 여러 개여도) → 개별 링크 없음
-              const isZip = downloadUrl.endsWith('.zip');
-              const seenFiles = new Set<string>();
-              const files: Array<{ filename: string; url: string }> = [];
-              if (isZip) {
-                for (const d of details) {
-                  const fname = String(d.file ?? '');
-                  if (fname && !seenFiles.has(fname)) {
-                    seenFiles.add(fname);
-                    files.push({
-                      filename: fname,
-                      url: `${BIBLE_TABLING_URL}/api/bible-tabling/download/${jobId}/${fname}`,
+              while (true) {
+                const { done: streamDone, value } = await reader.read();
+                if (streamDone) break;
+                sseBuffer += decoder.decode(value, { stream: true });
+                const lines = sseBuffer.split('\n');
+                sseBuffer = lines.pop()!;
+
+                for (const line of lines) {
+                  if (!line.startsWith('data: ')) continue;
+                  let evt: Record<string, unknown>;
+                  try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+
+                  if (evt.type === 'file_open') {
+                    onThinkingUpdate?.({
+                      type: 'tool_start', iteration: i + 1, maxIterations: MAX_ITERATIONS,
+                      toolName: 'edit_game_data', toolLabel: '📂 파일 열기',
+                      detail: `${evt.file} (${evt.sheets}시트, ${evt.load_sec}s)`,
+                      timestamp: Date.now(),
                     });
+                  } else if (evt.type === 'edit_done') {
+                    const r = evt.result as Record<string, unknown>;
+                    onThinkingUpdate?.({
+                      type: 'tool_start', iteration: i + 1, maxIterations: MAX_ITERATIONS,
+                      toolName: 'edit_game_data', toolLabel: `📝 편집 ${evt.step}/${evt.total}`,
+                      detail: `${r.table}: ${r.rows_matched}행 ${r.cells_modified}셀 ✅`,
+                      timestamp: Date.now(),
+                    });
+                  } else if (evt.type === 'edit_error') {
+                    const r = evt.result as Record<string, unknown>;
+                    onThinkingUpdate?.({
+                      type: 'tool_start', iteration: i + 1, maxIterations: MAX_ITERATIONS,
+                      toolName: 'edit_game_data', toolLabel: `📝 편집 ${evt.step}/${evt.total}`,
+                      detail: `${r.table}: ❌ ${r.error}`,
+                      timestamp: Date.now(),
+                    });
+                  } else if (evt.type === 'file_saved') {
+                    onThinkingUpdate?.({
+                      type: 'tool_start', iteration: i + 1, maxIterations: MAX_ITERATIONS,
+                      toolName: 'edit_game_data', toolLabel: '💾 저장',
+                      detail: `${evt.file} (${evt.save_sec}s)`,
+                      timestamp: Date.now(),
+                    });
+                  } else if (evt.type === 'done') {
+                    doneEvent = evt;
+                  } else if (evt.type === 'fatal_error') {
+                    fatalError = String(evt.error ?? '알 수 없는 오류');
                   }
                 }
               }
 
-              let resultText = `✅ 바이블테이블링 편집 완료\n`;
-              resultText += `제목: ${summary.title}\n`;
-              if (summary.reason) resultText += `사유: ${summary.reason}\n`;
-              resultText += `파일: ${summary.files_modified}개 | 행: ${summary.total_rows_matched}개 매치 | 셀: ${summary.total_cells_modified}개 변경\n`;
-              resultText += `테이블: ${(summary.tables as string[]).join(', ')}\n\n`;
+              const duration = Date.now() - t0;
 
-              for (const d of details) {
-                resultText += `📊 ${d.table} (${d.file}): ${d.rows_matched}행 매치, ${d.cells_modified}셀 변경\n`;
-                const changes = (d.changes as Array<Record<string, unknown>>) || [];
-                for (const c of changes.slice(0, 10)) {
-                  resultText += `  [${c.pk}] ${c.column}: "${c.old}" → "${c.new}"\n`;
+              if (fatalError) {
+                resultStr = `바이블테이블링 오류: ${fatalError}`;
+                tc = { kind: 'bible_tabling_edit', title, reason, jobId: '', downloadUrl: '', downloadFilename: '', files: [], filesModified: 0, totalRowsMatched: 0, totalCellsModified: 0, tables: [], error: resultStr, duration };
+              } else if (doneEvent) {
+                const summary = doneEvent.summary as Record<string, unknown>;
+                const details = (summary.details as Array<Record<string, unknown>>) || [];
+                const jobId = String(doneEvent.job_id ?? '');
+                const downloadUrl = `${BIBLE_TABLING_URL}${doneEvent.download_url}`;
+                const downloadFilename = String(doneEvent.download_filename ?? '');
+                const isPartial = !!doneEvent.partial;
+                const errorCount = Number(summary.error_count ?? 0);
+
+                const isZip = downloadUrl.endsWith('.zip');
+                const seenFiles = new Set<string>();
+                const files: Array<{ filename: string; url: string }> = [];
+                if (isZip) {
+                  for (const d of details) {
+                    const fname = String(d.file ?? '');
+                    if (fname && !seenFiles.has(fname)) {
+                      seenFiles.add(fname);
+                      files.push({
+                        filename: fname,
+                        url: `${BIBLE_TABLING_URL}/api/bible-tabling/download/${jobId}/${fname}`,
+                      });
+                    }
+                  }
                 }
-                if (changes.length > 10) resultText += `  ... 외 ${changes.length - 10}건\n`;
+
+                let resultText = isPartial
+                  ? `⚠️ 바이블테이블링 부분 완료 (${errorCount}건 오류)\n`
+                  : `✅ 바이블테이블링 편집 완료\n`;
+                resultText += `제목: ${summary.title}\n`;
+                if (summary.reason) resultText += `사유: ${summary.reason}\n`;
+                resultText += `파일: ${summary.files_modified}개 | 행: ${summary.total_rows_matched}개 매치 | 셀: ${summary.total_cells_modified}개 변경\n`;
+                resultText += `테이블: ${(summary.tables as string[]).join(', ')}\n\n`;
+
+                for (const d of details) {
+                  if (d.error) {
+                    resultText += `❌ ${d.table} (${d.file}): 오류 — ${d.error}\n`;
+                    continue;
+                  }
+                  resultText += `📊 ${d.table} (${d.file}): ${d.rows_matched}행 매치, ${d.cells_modified}셀 변경\n`;
+                  const changes = (d.changes as Array<Record<string, unknown>>) || [];
+                  if (changes.length > 0) {
+                    const uniqueCols = [...new Set(changes.map(c => String(c.column)))];
+                    const dispCols = uniqueCols.slice(0, 8);
+                    const colHeaders = ['PK', ...dispCols.map(c => c.length > 12 ? c.slice(0, 10) + '..' : c)];
+                    resultText += `| ${colHeaders.join(' | ')} |\n`;
+                    resultText += `| ${colHeaders.map(() => '---').join(' | ')} |\n`;
+                    const byPk = new Map<string, Record<string, { old: string; new: string }>>();
+                    for (const c of changes) {
+                      const pk = String(c.pk ?? '');
+                      if (!byPk.has(pk)) byPk.set(pk, {});
+                      byPk.get(pk)![String(c.column)] = { old: String(c.old ?? ''), new: String(c.new ?? '') };
+                    }
+                    let rowCount = 0;
+                    for (const [pk, cols] of byPk) {
+                      if (rowCount >= 10) { resultText += `... 외 ${byPk.size - 10}행\n`; break; }
+                      const vals = dispCols.map(col => {
+                        const ch = cols[col];
+                        if (!ch) return '-';
+                        const o = ch.old.length > 8 ? ch.old.slice(0, 6) + '..' : ch.old;
+                        const n = ch.new.length > 8 ? ch.new.slice(0, 6) + '..' : ch.new;
+                        return `~~${o}~~ → **${n}**`;
+                      });
+                      resultText += `| ${pk} | ${vals.join(' | ')} |\n`;
+                      rowCount++;
+                    }
+                    resultText += '\n';
+                  }
+                }
+
+                if (isPartial) {
+                  resultText += `\n⚠️ 일부 편집이 실패했지만 성공한 편집은 보존되었습니다.\n`;
+                  resultText += `실패한 테이블만 다시 편집하면 됩니다 (prev_job_id: ${jobId}).\n`;
+                }
+                resultText += `📥 다운로드: ${downloadUrl}\n`;
+                resultText += `(노란색 하이라이트 = AI 편집 셀)`;
+
+                resultStr = resultText;
+                lastBibleTablingJobId = jobId;
+                tc = {
+                  kind: 'bible_tabling_edit',
+                  title,
+                  reason,
+                  jobId,
+                  downloadUrl,
+                  downloadFilename,
+                  files,
+                  filesModified: Number(summary.files_modified ?? 0),
+                  totalRowsMatched: Number(summary.total_rows_matched ?? 0),
+                  totalCellsModified: Number(summary.total_cells_modified ?? 0),
+                  tables: (summary.tables as string[]) || [],
+                  details: details.map(d => ({
+                    table: String(d.table ?? ''), file: d.file ? String(d.file) : undefined,
+                    rows_matched: Number(d.rows_matched ?? 0), cells_modified: Number(d.cells_modified ?? 0),
+                    changes: (d.changes as Array<Record<string, unknown>> ?? []).slice(0, 50),
+                  })),
+                  partial: isPartial,
+                  errorCount,
+                  duration,
+                };
+              } else {
+                resultStr = '바이블테이블링: SSE 스트림이 완료 이벤트 없이 종료됨';
+                tc = { kind: 'bible_tabling_edit', title, reason, jobId: '', downloadUrl: '', downloadFilename: '', files: [], filesModified: 0, totalRowsMatched: 0, totalCellsModified: 0, tables: [], error: resultStr, duration };
               }
-
-              resultText += `\n📥 다운로드: ${downloadUrl}\n`;
-              resultText += `(노란색 하이라이트 = AI 편집 셀)`;
-
-              resultStr = resultText;
-              lastBibleTablingJobId = jobId; // 다음 job의 prev_job_id로 사용
-              tc = {
-                kind: 'bible_tabling_edit',
-                title,
-                reason,
-                jobId,
-                downloadUrl,
-                downloadFilename,
-                files,
-                filesModified: Number(summary.files_modified ?? 0),
-                totalRowsMatched: Number(summary.total_rows_matched ?? 0),
-                totalCellsModified: Number(summary.total_cells_modified ?? 0),
-                tables: (summary.tables as string[]) || [],
-                duration,
-              };
             }
           } catch (e) {
             const duration = Date.now() - t0;
@@ -4946,31 +5300,48 @@ function showTab(id){
           const reason = inp.reason ? String(inp.reason) : '';
           const table = String(inp.table ?? '');
           const file = inp.file ? String(inp.file) : undefined;
+          const csvData = inp.csv ? String(inp.csv) : undefined;
+          const cloneSource = inp.clone_source as { column: string; value: string } | undefined;
+          const overrideCsv = inp.override_csv ? String(inp.override_csv) : undefined;
           // rows가 문자열로 직렬화된 경우 파싱 (AI가 JSON string으로 넘기는 케이스 대응)
           let rows: unknown[] = [];
-          try {
-            const rawRows = inp.rows;
-            if (typeof rawRows === 'string') {
-              rows = JSON.parse(rawRows);
-            } else if (Array.isArray(rawRows)) {
-              rows = rawRows;
+          if (!csvData && !cloneSource) {
+            try {
+              const rawRows = inp.rows;
+              if (typeof rawRows === 'string') {
+                rows = JSON.parse(rawRows);
+              } else if (Array.isArray(rawRows)) {
+                rows = rawRows;
+              }
+            } catch {
+              rows = [];
             }
-          } catch {
-            rows = [];
           }
+
+          // rows 3행 이상 차단 — clone_source 또는 csv 사용 강제
+          if (!cloneSource && !csvData && rows.length >= 3) {
+            resultStr = `🔴 rows에 ${rows.length}행이 포함되어 있습니다. 3행 이상은 rows로 직접 추가할 수 없습니다.\n`
+              + `기존 데이터를 복제하는 경우 → clone_source: {column:"PK컬럼명", value:"원본값"}, override_csv: "바꿀컬럼\\n새값1\\n새값2" 사용\n`
+              + `완전히 새로운 데이터인 경우 → csv: "컬럼1,컬럼2\\n값1,값2\\n값3,값4" 사용\n`
+              + `clone_source는 Python이 원본을 자동 복사하므로 1초 만에 완료됩니다. rows/csv로 재입력하지 마세요!`;
+            tc = { kind: 'bible_tabling_add_rows', table, jobId: '', downloadUrl: '', downloadFilename: '', rowsAdded: 0, error: resultStr };
+          } else {
+
           const t0 = Date.now();
           try {
+            const bodyPayload: Record<string, unknown> = { title, reason, table, file, prev_job_id: lastBibleTablingJobId };
+            if (cloneSource) {
+              bodyPayload.clone_source = cloneSource;
+              if (overrideCsv) bodyPayload.override_csv = overrideCsv;
+            } else if (csvData) {
+              bodyPayload.csv = csvData;
+            } else {
+              bodyPayload.rows = rows;
+            }
             const resp = await fetch(`${BIBLE_TABLING_URL}/api/bible-tabling/add-rows`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                title,
-                reason,
-                table,
-                file,
-                rows,
-                prev_job_id: lastBibleTablingJobId,  // 이전 job 파일 이어받기
-              }),
+              body: JSON.stringify(bodyPayload),
             });
             const duration = Date.now() - t0;
             if (!resp.ok) {
@@ -4986,8 +5357,40 @@ function showTab(id){
 
               let resultText = `✅ 바이블테이블링 행 추가 완료\n`;
               resultText += `테이블: ${summary.table} (${summary.file})\n`;
-              resultText += `추가된 행: ${summary.rows_added}개\n`;
-              resultText += `\n📥 다운로드: ${downloadUrl}\n`;
+              resultText += `추가된 행: ${summary.rows_added}개`;
+              if (summary.source_rows) resultText += ` (원본 ${summary.source_rows}행 × ${summary.override_sets}세트 복제)`;
+              resultText += '\n';
+              if (summary.override_columns && (summary.override_columns as string[]).length > 0) {
+                resultText += `변경 컬럼: ${(summary.override_columns as string[]).join(', ')}\n`;
+              }
+              resultText += '\n';
+
+              // clone 결과의 sample_rows 또는 입력된 rows 데이터를 마크다운 테이블로 표시
+              const sampleRows = (summary.sample_rows as Array<Record<string, string>>) ?? [];
+              const inputRows = sampleRows.length > 0
+                ? sampleRows
+                : (Array.isArray(rows) ? rows : []) as Array<Record<string, unknown>>;
+              if (inputRows.length > 0) {
+                const allCols = new Set<string>();
+                for (const r of inputRows) for (const k of Object.keys(r)) allCols.add(k);
+                const cols = [...allCols].slice(0, 12);
+                const colHeaders = cols.map(c => c.length > 15 ? c.slice(0, 13) + '..' : c);
+                resultText += `📋 ${sampleRows.length > 0 ? '변경된 컬럼 값' : '추가된 데이터'}:\n`;
+                resultText += `| ${colHeaders.join(' | ')} |\n`;
+                resultText += `| ${cols.map(() => '---').join(' | ')} |\n`;
+                const showRows = inputRows.slice(0, 15);
+                for (const row of showRows) {
+                  const vals = cols.map(c => {
+                    const v = String((row as Record<string, unknown>)[c] ?? '');
+                    return v.length > 18 ? v.slice(0, 16) + '..' : v;
+                  });
+                  resultText += `| ${vals.join(' | ')} |\n`;
+                }
+                if (inputRows.length > 15) resultText += `... 외 ${inputRows.length - 15}행\n`;
+                resultText += '\n';
+              }
+
+              resultText += `📥 다운로드: ${downloadUrl}\n`;
               resultText += `(노란색 하이라이트 = AI 추가 셀)`;
 
               resultStr = resultText;
@@ -5000,6 +5403,11 @@ function showTab(id){
                 downloadUrl,
                 downloadFilename,
                 rowsAdded: Number(summary.rows_added ?? 0),
+                inputRows: sampleRows.length > 0
+                  ? sampleRows.slice(0, 20)
+                  : (Array.isArray(rows) ? rows : []).slice(0, 20) as Array<Record<string, unknown>>,
+                overrideColumns: (summary.override_columns as string[]) ?? [],
+                sampleRows: sampleRows.slice(0, 20),
                 duration,
               };
             }
@@ -5008,6 +5416,7 @@ function showTab(id){
             resultStr = `바이블테이블링 연결 실패: ${String(e)}\nstart.bat을 실행하여 바이블테이블링 서버를 시작하세요.`;
             tc = { kind: 'bible_tabling_add_rows', table, file, jobId: '', downloadUrl: '', downloadFilename: '', rowsAdded: 0, error: resultStr, duration };
           }
+          } // rows 차단 else 블록 닫기
         }
 
         else {
@@ -5016,7 +5425,14 @@ function showTab(id){
 
         toolCallsMap.set(tb.id, tc!);
         toolResultsMap.set(tb.id, resultStr);
-      }));
+      };
+
+      // 비-BT 도구: 병렬 실행
+      await Promise.all(nonBtBlocks.map(executeToolBlock));
+      // BT 도구: 순차 실행 (prev_job_id 체이닝을 위해)
+      for (const tb of btBlocks) {
+        await executeToolBlock(tb);
+      }
 
       // 원래 순서대로 결과 수집 및 콜백 호출
       for (const tb of toolBlocks) {
@@ -5045,13 +5461,7 @@ function showTab(id){
         if (continuationCount > 0) finalText = stripHtmlFromChatText(totalText) + finalText;
 
         console.log(`[Chat] ✅ 아티팩트/패치 생성 완료 → 즉시 반환 (불필요한 재시도 방지), text=${finalText.length}자`);
-        const tokenUsage: TokenUsageSummary = {
-          iterations: tokenIterations,
-          total_input: tokenIterations.reduce((s, t) => s + t.input_tokens, 0),
-          total_output: tokenIterations.reduce((s, t) => s + t.output_tokens, 0),
-          total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
-          system_prompt_estimate: systemPromptEstimate,
-        };
+        const tokenUsage = buildTokenSummary();
         useRagTraceStore.getState().pushTrace(buildRagTrace(userMessage, allToolCalls, tokenUsage));
         return {
           content: finalText || '아티팩트가 사이드 패널에 생성되었습니다.',
@@ -5141,14 +5551,25 @@ function showTab(id){
         onToolCall?.(autoTc, allToolCalls.length - 1);
       }
 
-      // 데이터 수집 완료 & 아티팩트 미생성 → create_artifact 재촉
-      if (hasFetchedData && !hasArtifact && !artHtmlTruncated) {
+      // 데이터 수집 완료 & 아티팩트 미생성 → create_artifact 재촉 (단, 바이블테이블링이면 제외!)
+      const hadBibleTabling = allToolCalls.some(tc => tc.kind === 'bible_tabling_edit' || tc.kind === 'bible_tabling_add_rows');
+      if (hasFetchedData && !hasArtifact && !artHtmlTruncated && !hadBibleTabling) {
         console.log('[Chat] max_tokens 감지: 데이터 수집 완료, 아티팩트 자동 재시도');
         messages.push({
           role: 'user',
           content:
             '수집한 데이터를 바탕으로 <<<ARTIFACT_START>>>HTML<<<ARTIFACT_END>>> 형식으로 HTML을 먼저 출력한 후, create_artifact(title=...) 를 호출하세요. ' +
             '추가 데이터 조회 없이 현재 데이터만으로 바로 만들어주세요. 핵심 내용을 간결하게 500줄 이내로.',
+        });
+      } else if (hadBibleTabling && !artHtmlTruncated) {
+        // 바이블테이블링 중 max_tokens → 데이터를 줄여서 재시도 안내
+        console.log('[Chat] max_tokens 감지: 바이블테이블링 중 잘림 → 분할 호출 재시도');
+        messages.push({
+          role: 'user',
+          content:
+            '바이블테이블링 도구 호출이 max_tokens로 잘렸습니다. 데이터 양을 줄여서 다시 호출하세요.\n' +
+            '⚠️ rows 배열을 절반으로 나눠서 2번에 걸쳐 호출하세요. (예: 10행 → 5행씩 2번)\n' +
+            '❌ create_artifact 절대 금지! edit_game_data/add_game_data_rows만 사용하세요.',
         });
       } else if (!artHtmlTruncated) {
         // 일반 텍스트 잘림 → 누적 후 자동 계속
@@ -5166,8 +5587,9 @@ function showTab(id){
       continue;
     }
 
-    // ★ 마지막 이터레이션: 잘린 아티팩트라도 누적된 HTML로 생성
-    if (artHtmlTruncated && !hasArtifact) {
+    // ★ 마지막 이터레이션: 잘린 아티팩트라도 누적된 HTML로 생성 (바이블테이블링이면 제외)
+    const hadBT = allToolCalls.some(tc => tc.kind === 'bible_tabling_edit' || tc.kind === 'bible_tabling_add_rows');
+    if (artHtmlTruncated && !hasArtifact && !hadBT) {
       const finalArtHtml = artifactAccumulatedHtml + streamedArtifactHtml!;
       console.log(`[Chat] ⚡ 마지막 이터레이션 자동 아티팩트 생성: HTML ${finalArtHtml.length}자 (잘린 상태)`);
       const autoTitle = truncatedText.match(/^#+\s*(.+)/m)?.[1] ?? '문서 (미완성)';
@@ -5180,13 +5602,7 @@ function showTab(id){
     pushAssistantWithOrphanFix(messages);
     const finalTruncatedText = stripHtmlFromChatText(continuationCount > 0 ? totalText + truncatedText : truncatedText);
     console.log('[Chat] max_tokens: 최대 이터레이션 도달, rawMessages 저장');
-    const tokenUsage: TokenUsageSummary = {
-      iterations: tokenIterations,
-      total_input: tokenIterations.reduce((s, t) => s + t.input_tokens, 0),
-      total_output: tokenIterations.reduce((s, t) => s + t.output_tokens, 0),
-      total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
-      system_prompt_estimate: systemPromptEstimate,
-    };
+    const tokenUsage = buildTokenSummary();
     useRagTraceStore.getState().pushTrace(buildRagTrace(userMessage, allToolCalls, tokenUsage));
     return {
       content: finalTruncatedText || '(응답이 잘렸습니다)',
@@ -5197,20 +5613,15 @@ function showTab(id){
   }
 
   // ── MAX_ITERATIONS 모두 소진 → rawMessages 포함하여 '계속하기' 지원 ──
-  const tokenUsage: TokenUsageSummary = {
-    iterations: tokenIterations,
-    total_input: tokenIterations.reduce((s, t) => s + t.input_tokens, 0),
-    total_output: tokenIterations.reduce((s, t) => s + t.output_tokens, 0),
-    total_tokens: tokenIterations.reduce((s, t) => s + t.input_tokens + t.output_tokens, 0),
-    system_prompt_estimate: systemPromptEstimate,
-  };
+  const tokenUsage = buildTokenSummary();
   useRagTraceStore.getState().pushTrace(buildRagTrace(userMessage, allToolCalls, tokenUsage));
 
   // 조회된 데이터가 있으면 rawMessages를 보존하여 계속하기 버튼 지원
   const hasCollectedData = allToolCalls.length > 0;
   const dataToolCount = allToolCalls.filter(
     (tc) => tc.kind === 'data_query' || tc.kind === 'schema_card' || tc.kind === 'character_profile' ||
-            tc.kind === 'git_history' || tc.kind === 'jira_search' || tc.kind === 'confluence_page',
+            tc.kind === 'git_history' || tc.kind === 'jira_search' || tc.kind === 'confluence_page' ||
+            tc.kind === 'bible_tabling_edit' || tc.kind === 'bible_tabling_add_rows',
   ).length;
 
   if (hasCollectedData) {

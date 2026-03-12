@@ -1180,8 +1180,9 @@ async function handleMessage({ message, say, client, event }) {
       return false;
     }
     
-    // 출판용 콘텐츠: 진행 텍스트 필터링 적용
-    const publishContent = stripProgressText(rawContent);
+    // 출판용 콘텐츠: 진행 텍스트 필터링 적용 (단, 필터 후 너무 짧으면 원본 사용)
+    const _stripped = stripProgressText(rawContent);
+    const publishContent = _stripped.length >= 50 ? _stripped : rawContent;
     
     // 구조화된 내용 판별 (대화형 텍스트가 아닌 실제 데이터/문서 내용인지)
     const hasTable = /\|.+\|.+\|/.test(publishContent) && publishContent.split('\n').filter(l => l.includes('|')).length > 2;
@@ -1298,12 +1299,8 @@ async function handleMessage({ message, say, client, event }) {
       // 짧은 응답: 진행 텍스트("~하겠습니다" 등) 제거 후 Slack mrkdwn으로 표시
       let slackText = mdToSlack(publishContent);
       
-      // 필터링 후 실질적 내용이 없으면 → 도구 결과 요약으로 대체
-      if ((!slackText.trim() || isConversationalOnly(publishContent)) && result.toolCalls.length > 0) {
-        const toolSummary = result.toolCalls.map(tc => formatToolResultForSlack(tc)).join('\n');
-        slackText = toolSummary || mdToSlack(rawContent);
-      } else if (!slackText.trim()) {
-        // 도구도 없고 필터 후 빈 경우 → 원본 fallback
+      // 필터링 후 빈 경우 → 원본 rawContent fallback (도구 요약으로 대체하지 않음)
+      if (!slackText.trim()) {
         slackText = mdToSlack(rawContent);
       }
       

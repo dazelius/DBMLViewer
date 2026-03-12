@@ -10,7 +10,7 @@ export type RuleCondition =
   | { type: 'regex'; column: string; pattern: string }
   | { type: 'compare_columns'; left: string; op: '<' | '<=' | '==' | '!=' | '>=' | '>'; right: string }
   | { type: 'conditional'; when: { column: string; op: string; value: string }; then: { column: string; op: string; value: string } }
-  | { type: 'unique'; column: string }
+  | { type: 'unique'; column: string; group_by?: string }
   | { type: 'expression'; expr: string };
 
 export interface ValidationRule {
@@ -338,20 +338,43 @@ function checkRule(
     }
     case 'unique': {
       if (!headers.includes(cond.column)) break;
-      const seen = new Map<string, string>();
-      for (const row of rows) {
-        const val = String(row[cond.column] ?? '');
-        if (!val) continue;
-        const rowId = String(row[pk] ?? '');
-        if (seen.has(val)) {
-          violations.push({
-            ruleId: rule.id, ruleName: rule.name, table: tableName,
-            severity: rule.severity, rowId,
-            details: `${cond.column}="${val}" 중복 (기존: id=${seen.get(val)})`,
-          });
-          if (violations.length >= MAX_VIOLATIONS_PER_RULE) return violations;
-        } else {
-          seen.set(val, rowId);
+      const groupBy = (cond as { group_by?: string }).group_by;
+      if (groupBy && headers.includes(groupBy)) {
+        const groups = new Map<string, Map<string, string>>();
+        for (const row of rows) {
+          const groupVal = String(row[groupBy] ?? '');
+          const val = String(row[cond.column] ?? '');
+          if (!val) continue;
+          const rowId = String(row[pk] ?? '');
+          if (!groups.has(groupVal)) groups.set(groupVal, new Map());
+          const seen = groups.get(groupVal)!;
+          if (seen.has(val)) {
+            violations.push({
+              ruleId: rule.id, ruleName: rule.name, table: tableName,
+              severity: rule.severity, rowId,
+              details: `${groupBy}=${groupVal} 내 ${cond.column}="${val}" 중복 (기존: id=${seen.get(val)})`,
+            });
+            if (violations.length >= MAX_VIOLATIONS_PER_RULE) return violations;
+          } else {
+            seen.set(val, rowId);
+          }
+        }
+      } else {
+        const seen = new Map<string, string>();
+        for (const row of rows) {
+          const val = String(row[cond.column] ?? '');
+          if (!val) continue;
+          const rowId = String(row[pk] ?? '');
+          if (seen.has(val)) {
+            violations.push({
+              ruleId: rule.id, ruleName: rule.name, table: tableName,
+              severity: rule.severity, rowId,
+              details: `${cond.column}="${val}" 중복 (기존: id=${seen.get(val)})`,
+            });
+            if (violations.length >= MAX_VIOLATIONS_PER_RULE) return violations;
+          } else {
+            seen.set(val, rowId);
+          }
         }
       }
       break;

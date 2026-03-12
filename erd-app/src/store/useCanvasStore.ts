@@ -68,7 +68,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   tableData: new Map(),
   anomalyReport: null,
   validationResult: null,
-  claudeModel: (() => { const s = localStorage.getItem('tm_claude_model'); return CLAUDE_MODELS.some(m => m.id === s) ? s as ClaudeModelId : 'claude-haiku-4-5-20251001'; })(),
+  claudeModel: (() => { const s = localStorage.getItem('tm_claude_model'); return CLAUDE_MODELS.some(m => m.id === s) ? s as ClaudeModelId : 'claude-sonnet-4-6'; })(),
 
   setNodes: (nodes) => set({ nodes: new Map(nodes) }),
 

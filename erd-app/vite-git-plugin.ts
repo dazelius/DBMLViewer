@@ -4293,6 +4293,56 @@ function createGitMiddleware(options: GitPluginOptions) {
           return
         }
 
+        // ── POST /api/confluence/comment  →  Confluence 페이지에 댓글 작성 ──
+        if (req.url.startsWith('/api/confluence/comment') && req.method === 'POST') {
+          const body = await readBody(req)
+          let parsed: Record<string, unknown> = {}
+          try { parsed = JSON.parse(body) } catch { /* ignore */ }
+          const pageId = String(parsed.pageId ?? '').trim()
+          const commentText = String(parsed.comment ?? '').trim()
+          if (!pageId) { sendJson(res, 400, { error: 'pageId 필요' }); return }
+          if (!commentText) { sendJson(res, 400, { error: 'comment 필요' }); return }
+
+          const storageValue = commentText
+            .split(/\n{2,}/)
+            .map(p => `<p>${p.trim().replace(/\n/g, '<br/>')}</p>`)
+            .filter(Boolean)
+            .join('')
+
+          const apiUrl = `${confluenceUrl}/wiki/api/v2/footer-comments`
+          try {
+            const apiResp = await fetch(apiUrl, {
+              method: 'POST',
+              headers: { Authorization: confAuthHeader, Accept: 'application/json', 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                pageId,
+                body: { representation: 'storage', value: storageValue },
+              }),
+            })
+            let data: Record<string, unknown> = {}
+            const ct = apiResp.headers.get('content-type') || ''
+            if (ct.includes('json')) {
+              data = await apiResp.json() as Record<string, unknown>
+            } else {
+              const text = (await apiResp.text()).slice(0, 300)
+              data = { _html: text }
+            }
+            if (!apiResp.ok) {
+              const errMsg = String(data?.message ?? data?.title ?? JSON.stringify(data).slice(0, 200))
+              sendJson(res, apiResp.status, { error: errMsg, raw: data })
+            } else {
+              sendJson(res, 200, {
+                commentId: String(data.id ?? ''),
+                pageId,
+                pageUrl: `${confluenceUrl}/wiki/pages/${pageId}`,
+              })
+            }
+          } catch (e) {
+            sendJson(res, 500, { error: `Confluence 댓글 작성 오류: ${e instanceof Error ? e.message : String(e)}` })
+          }
+          return
+        }
+
         // ── POST /api/jira/issue  →  새 이슈 생성 ────────────────────────────
         if (req.url === '/api/jira/issue' && req.method === 'POST') {
           const body = await readBody(req)
@@ -4350,7 +4400,7 @@ function createGitMiddleware(options: GitPluginOptions) {
           return
         }
 
-        // ── POST /api/jira/comment  →  이슈에 댓글 작성 ───────────────────────
+        // ── POST /api/jira/comment  →  이슈에 댓글 작성 (Confluence URL 자동 리다이렉트) ───
         if (req.url.startsWith('/api/jira/comment') && req.method === 'POST') {
           const body = await readBody(req)
           let parsed: Record<string, unknown> = {}
@@ -4359,6 +4409,49 @@ function createGitMiddleware(options: GitPluginOptions) {
           const commentMd = String(parsed.comment ?? '').trim()
           if (!issueKey) { sendJson(res, 400, { error: 'issueKey 필요' }); return }
           if (!commentMd) { sendJson(res, 400, { error: 'comment 필요' }); return }
+
+          // Confluence URL 감지 → 자동으로 Confluence 댓글 API로 리다이렉트
+          if (/\/wiki\/spaces\/|\/pages\/\d+/i.test(issueKey)) {
+            const pageIdMatch = issueKey.match(/\/pages\/(\d+)/)
+            const pageId = pageIdMatch ? pageIdMatch[1] : ''
+            if (!pageId) { sendJson(res, 400, { error: `Confluence URL에서 페이지 ID를 추출할 수 없습니다: "${issueKey}"` }); return }
+            sLog('INFO', `[jira/comment] Confluence URL 감지 → /api/confluence/comment 자동 리다이렉트 (pageId: ${pageId})`)
+            const storageValue = commentMd
+              .split(/\n{2,}/)
+              .map(p => `<p>${p.trim().replace(/\n/g, '<br/>')}</p>`)
+              .filter(Boolean)
+              .join('')
+            try {
+              const confApiUrl = `${confluenceUrl}/wiki/api/v2/footer-comments`
+              const confResp = await fetch(confApiUrl, {
+                method: 'POST',
+                headers: { Authorization: confAuthHeader, Accept: 'application/json', 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pageId, body: { representation: 'storage', value: storageValue } }),
+              })
+              let confData: Record<string, unknown> = {}
+              const confCt = confResp.headers.get('content-type') || ''
+              if (confCt.includes('json')) {
+                confData = await confResp.json() as Record<string, unknown>
+              } else {
+                const text = (await confResp.text()).slice(0, 300)
+                confData = { _html: text }
+              }
+              if (!confResp.ok) {
+                const errMsg = String(confData?.message ?? confData?.title ?? JSON.stringify(confData).slice(0, 200))
+                sendJson(res, confResp.status, { error: `Confluence 댓글 작성 실패: ${errMsg}` })
+              } else {
+                sendJson(res, 200, {
+                  commentId: String(confData.id ?? ''),
+                  issueKey: `confluence:${pageId}`,
+                  issueUrl: `${confluenceUrl}/wiki/pages/${pageId}`,
+                  confluenceRedirect: true,
+                })
+              }
+            } catch (e) {
+              sendJson(res, 500, { error: `Confluence 댓글 작성 오류: ${e instanceof Error ? e.message : String(e)}` })
+            }
+            return
+          }
 
           // Markdown → Jira ADF 변환 (단순 paragraph 분할)
           function mdToAdf(md: string): Record<string, unknown> {
@@ -4379,6 +4472,12 @@ function createGitMiddleware(options: GitPluginOptions) {
             headers: { Authorization: authHeader, Accept: 'application/json', 'Content-Type': 'application/json' },
             body: JSON.stringify({ body: adfBody }),
           })
+          const ct = apiResp.headers.get('content-type') || ''
+          if (!ct.includes('json')) {
+            const htmlSnippet = (await apiResp.text()).slice(0, 200)
+            sendJson(res, apiResp.status || 502, { error: `Jira API가 JSON이 아닌 HTML을 반환했습니다 (status ${apiResp.status}). 이슈 키 "${issueKey}"가 올바른지 확인하세요.`, htmlSnippet })
+            return
+          }
           const data = await apiResp.json() as Record<string, unknown>
           if (!apiResp.ok) {
             const errMsg = (data?.errorMessages as string[])?.[0] ?? JSON.stringify(data?.errors ?? data).slice(0, 200)
@@ -5234,8 +5333,8 @@ function estimateTokens(messages: Array<{ role: string; content: unknown }>): nu
   return Math.ceil(chars / 2.5)
 }
 
-/** tool 결과 크기 제한 — 10KB 초과 시 앞부분만 유지 */
-const TOOL_RESULT_MAX_CHARS = 10_000
+/** tool 결과 크기 제한 — 기본 60KB (Confluence 전문 등 긴 문서 허용) */
+const TOOL_RESULT_MAX_CHARS = 60_000
 
 function truncateToolResult(content: string): string {
   if (content.length <= TOOL_RESULT_MAX_CHARS) return content
@@ -5278,13 +5377,15 @@ function applyContextWindow(messages: Array<{ role: string; content: unknown }>)
     while (trimmed.length > 1 && trimmed[0].role !== 'user') trimmed.shift()
   }
 
-  // 3) 그래도 초과하면 → 가장 큰 tool_result 내용을 압축
+  // 3) 그래도 초과하면 → 가장 큰 tool_result 내용을 압축 (최근 1턴 제외)
   if (trimmed.length > 1 && estimateTokens(trimmed) > msgBudget) {
-    for (const m of trimmed) {
+    const preserveCount = 2
+    for (let mi = 0; mi < trimmed.length - preserveCount; mi++) {
+      const m = trimmed[mi]
       if (m.role !== 'user' || !Array.isArray(m.content)) continue
       for (const block of m.content as Array<{ type: string; content?: string }>) {
-        if (block.type === 'tool_result' && typeof block.content === 'string' && block.content.length > 3000) {
-          block.content = block.content.slice(0, 2000) + '\n...(truncated for context limit)'
+        if (block.type === 'tool_result' && typeof block.content === 'string' && block.content.length > 5000) {
+          block.content = block.content.slice(0, 4000) + '\n...(truncated for context limit)'
         }
       }
     }
@@ -5508,8 +5609,20 @@ function _vCheckRule(rule: VRule, headers: string[], rows: Record<string, string
     }
     case 'unique': {
       if (!c.column || !headers.includes(c.column)) break
-      const seen = new Map<string, string>()
-      for (const row of rows) { const v = String(row[c.column!] ?? ''); if (!v) continue; const rid = String(row[pk] ?? ''); if (seen.has(v)) { if (push(rid, `${c.column}="${v}" 중복 (기존: id=${seen.get(v)})`)) return vs } else { seen.set(v, rid) } } break
+      const groupBy = (c as Record<string, unknown>).group_by as string | undefined
+      if (groupBy && headers.includes(groupBy)) {
+        const groups = new Map<string, Map<string, string>>()
+        for (const row of rows) {
+          const gv = String(row[groupBy] ?? ''); const v = String(row[c.column!] ?? ''); if (!v) continue; const rid = String(row[pk] ?? '')
+          if (!groups.has(gv)) groups.set(gv, new Map())
+          const seen = groups.get(gv)!
+          if (seen.has(v)) { if (push(rid, `${groupBy}=${gv} 내 ${c.column}="${v}" 중복 (기존: id=${seen.get(v)})`)) return vs } else { seen.set(v, rid) }
+        }
+      } else {
+        const seen = new Map<string, string>()
+        for (const row of rows) { const v = String(row[c.column!] ?? ''); if (!v) continue; const rid = String(row[pk] ?? ''); if (seen.has(v)) { if (push(rid, `${c.column}="${v}" 중복 (기존: id=${seen.get(v)})`)) return vs } else { seen.set(v, rid) } }
+      }
+      break
     }
   }
   return vs
@@ -6047,10 +6160,23 @@ const API_TOOLS = [
       required: ['id'],
     },
   },
+  // ── Confluence 쓰기 ──
+  {
+    name: 'add_confluence_comment',
+    description: 'Confluence 페이지에 댓글(footer comment)을 작성합니다. pageId 또는 Confluence 페이지 URL(예: https://xxx.atlassian.net/wiki/spaces/AEGIS/pages/926910300/M2) 중 하나를 pageIdOrUrl로 전달하세요.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pageIdOrUrl: { type: 'string', description: 'Confluence 페이지 ID(숫자) 또는 전체 URL' },
+        comment: { type: 'string', description: '작성할 댓글 내용 (마크다운/텍스트 지원)' },
+      },
+      required: ['pageIdOrUrl', 'comment'],
+    },
+  },
   // ── Jira 쓰기 ──
   {
     name: 'add_jira_comment',
-    description: '지정한 Jira 이슈에 댓글을 작성합니다. 이슈 키(예: AEGIS-1234) 또는 Jira 이슈 URL(예: https://jira.example.com/browse/AEGIS-1234) 중 하나를 issueKeyOrUrl로 전달하세요. comment는 마크다운 형식으로 작성하면 자동으로 Jira 형식으로 변환됩니다.',
+    description: '지정한 Jira 이슈에 댓글을 작성합니다. ⚠️ Confluence URL이 아닌 Jira 이슈 키(예: AEGIS-1234) 또는 Jira 이슈 URL(예: https://jira.example.com/browse/AEGIS-1234) 전용입니다. Confluence 페이지 댓글은 add_confluence_comment를 사용하세요.',
     input_schema: {
       type: 'object',
       properties: {
@@ -6275,7 +6401,8 @@ ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편
             properties: {
               order: { type: 'number', description: '편집 순서 (1=가장 먼저, 부모 테이블에 낮은 번호)' },
               table: { type: 'string', description: '테이블(시트) 이름' },
-              file: { type: 'string', description: '엑셀 파일명 (예: Character.xlsx). 생략 시 테이블명.xlsx' },
+              sheet: { type: 'string', description: '시트 이름 (같은 xlsx에 여러 시트가 있을 때 명시. 생략 시 table 값 사용)' },
+              file: { type: 'string', description: '엑셀 파일명 (예: Character.xlsx). 같은 파일의 다른 시트를 편집할 때 반드시 지정' },
               filters: {
                 type: 'array',
                 description: '대상 행 필터. 비어있으면 전체 행.',
@@ -6314,8 +6441,11 @@ ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편
   {
     name: 'add_game_data_rows',
     description: `게임 데이터 Excel 테이블에 새 행을 추가합니다 (바이블테이블링).
-추가된 셀은 노란색 하이라이트로 표시됩니다.
-ERD를 참고하여 상위 테이블에 먼저 추가한 후 하위 테이블에 추가하세요.`,
+
+🔴 필수: 기존 데이터 복제/복사/참고 시 → clone_source 사용! rows/csv로 재입력 금지!
+■ clone_source: {column:"character_id", value:"2001"}, override_csv: "character_id\\n3001\\n3002"
+  → Python이 원본 행을 자동 복사, 바꿀 컬럼만 교체. 1초 완료.
+■ csv: 완전히 새로운 데이터만. ■ rows: 1~2행 소량 전용.`,
     input_schema: {
       type: 'object',
       properties: {
@@ -6323,16 +6453,27 @@ ERD를 참고하여 상위 테이블에 먼저 추가한 후 하위 테이블에
         reason: { type: 'string', description: '추가 사유' },
         table: { type: 'string', description: '테이블(시트) 이름' },
         file: { type: 'string', description: '엑셀 파일명 (생략 시 테이블명.xlsx)' },
+        clone_source: {
+          type: 'object',
+          description: '🔴 기존 행 복제 시 필수! Python이 원본 행을 전부 복사하고 override_csv 컬럼만 교체.',
+          properties: {
+            column: { type: 'string', description: '필터 컬럼명' },
+            value: { type: 'string', description: '필터 값' },
+          },
+          required: ['column', 'value'],
+        },
+        override_csv: { type: 'string', description: 'clone_source와 함께 사용. 바꿀 컬럼만 CSV. 각 행마다 원본 전체 복제.' },
+        csv: { type: 'string', description: 'CSV 포맷 (완전히 새로운 데이터만). ❌ 기존 데이터 복제 시 사용 금지.' },
         rows: {
           type: 'array',
-          description: '추가할 행 데이터 배열',
+          description: '❌ 3행 이상 또는 기존 데이터 복제 시 사용 금지. 1~2행 소량 신규 추가 전용.',
           items: {
             type: 'object',
             description: '각 행: { "컬럼명": "값", ... }',
           },
         },
       },
-      required: ['table', 'rows'],
+      required: ['table'],
     },
   },
 ]
@@ -7089,12 +7230,16 @@ async function serverExecuteToolAsync(
   // 슬랙에 전달할 다운로드 링크 베이스: Vite 프록시 서버 URL (외부에서 접근 가능)
   const BIBLE_TABLING_LINK_BASE = options.tableMasterUrl || process.env.TABLEMASTER_URL || `http://${getLocalIp()}:5173`
 
+  // 대화 턴 내 바이블테이블링 편집 체이닝: 이전 job_id를 자동 전달하여 변경사항 누적
+  const prevJobId = (options as unknown as Record<string, unknown>)._btPrevJobId as string | undefined
+
   if (toolName === 'edit_game_data') {
     try {
       const payload = JSON.stringify({
         title: String(input.title ?? '바이블테이블링'),
         reason: String(input.reason ?? ''),
         edit_plan: input.edit_plan as unknown[],
+        prev_job_id: prevJobId || undefined,
       })
       const btRes = await fetch(`${BIBLE_TABLING_API_URL}/api/bible-tabling/edit`, {
         method: 'POST',
@@ -7108,7 +7253,10 @@ async function serverExecuteToolAsync(
       const data = await btRes.json() as Record<string, unknown>
       const summary = data.summary as Record<string, unknown>
       const details = (summary.details as Array<Record<string, unknown>>) || []
-      const jobId = String(data.job_id ?? '')
+      const jobId = String(data.job_id ?? '');
+
+      // 다음 호출에서 이 job의 결과를 이어받을 수 있도록 저장
+      (options as unknown as Record<string, unknown>)._btPrevJobId = jobId
 
       let resultText = `✅ 바이블테이블링 편집 완료\n`
       resultText += `제목: ${summary.title}\n`
@@ -7119,10 +7267,34 @@ async function serverExecuteToolAsync(
       for (const d of details) {
         resultText += `📊 ${d.table} (${d.file}): ${d.rows_matched}행 매치, ${d.cells_modified}셀 변경\n`
         const changes = (d.changes as Array<Record<string, unknown>>) || []
-        for (const c of changes.slice(0, 10)) {
-          resultText += `  [${c.pk}] ${c.column}: "${c.old}" → "${c.new}"\n`
+        if (changes.length > 0) {
+          // 변경 전/후를 마크다운 테이블로 표시
+          const uniqueCols = [...new Set(changes.map(c => String(c.column)))]
+          const colHeaders = ['PK', ...uniqueCols.slice(0, 8).map(c => c.length > 12 ? c.slice(0, 10) + '..' : c)]
+          resultText += `| ${colHeaders.join(' | ')} |\n`
+          resultText += `| ${colHeaders.map(() => '---').join(' | ')} |\n`
+          // PK별로 그룹핑
+          const byPk = new Map<string, Record<string, { old: string; new: string }>>()
+          for (const c of changes) {
+            const pk = String(c.pk ?? '')
+            if (!byPk.has(pk)) byPk.set(pk, {})
+            byPk.get(pk)![String(c.column)] = { old: String(c.old ?? ''), new: String(c.new ?? '') }
+          }
+          let rowCount = 0
+          for (const [pk, cols] of byPk) {
+            if (rowCount >= 10) { resultText += `... 외 ${byPk.size - 10}행\n`; break }
+            const vals = uniqueCols.slice(0, 8).map(col => {
+              const ch = cols[col]
+              if (!ch) return '-'
+              const o = ch.old.length > 8 ? ch.old.slice(0, 6) + '..' : ch.old
+              const n = ch.new.length > 8 ? ch.new.slice(0, 6) + '..' : ch.new
+              return `~~${o}~~ → **${n}**`
+            })
+            resultText += `| ${pk} | ${vals.join(' | ')} |\n`
+            rowCount++
+          }
+          resultText += '\n'
         }
-        if (changes.length > 10) resultText += `  ... 외 ${changes.length - 10}건\n`
       }
 
       // download_url이 .zip이면 여러 Excel → 개별 링크 + ZIP
@@ -7152,14 +7324,39 @@ async function serverExecuteToolAsync(
   }
 
   if (toolName === 'add_game_data_rows') {
+    const cloneSource = input.clone_source as { column: string; value: string } | undefined
+    const overrideCsv = input.override_csv ? String(input.override_csv) : undefined
+    const csvData = input.csv ? String(input.csv) : undefined
+    const rawRows = Array.isArray(input.rows) ? input.rows as unknown[] : []
+
+    // rows 3행 이상 차단 — clone_source 또는 csv 사용 강제
+    if (!cloneSource && !csvData && rawRows.length >= 3) {
+      return {
+        result: `🔴 rows에 ${rawRows.length}행이 포함되어 있습니다. 3행 이상은 rows로 직접 추가할 수 없습니다.\n`
+          + `기존 데이터 복제 → clone_source: {column:"PK컬럼명", value:"원본값"}, override_csv: "바꿀컬럼\\n새값1\\n새값2"\n`
+          + `새 데이터 → csv: "컬럼1,컬럼2\\n값1,값2"\n`
+          + `clone_source는 Python이 원본을 자동 복사하므로 1초 만에 완료됩니다.`,
+      }
+    }
+
     try {
-      const payload = JSON.stringify({
+      const bodyPayload: Record<string, unknown> = {
         title: String(input.title ?? '바이블테이블링 — 행 추가'),
         reason: String(input.reason ?? ''),
         table: String(input.table ?? ''),
         file: input.file ? String(input.file) : undefined,
-        rows: input.rows as unknown[],
-      })
+        sheet: input.sheet ? String(input.sheet) : undefined,
+        prev_job_id: prevJobId || undefined,
+      }
+      if (cloneSource) {
+        bodyPayload.clone_source = cloneSource
+        if (overrideCsv) bodyPayload.override_csv = overrideCsv
+      } else if (csvData) {
+        bodyPayload.csv = csvData
+      } else {
+        bodyPayload.rows = rawRows
+      }
+      const payload = JSON.stringify(bodyPayload)
       const btRes = await fetch(`${BIBLE_TABLING_API_URL}/api/bible-tabling/add-rows`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -7171,11 +7368,38 @@ async function serverExecuteToolAsync(
       }
       const data = await btRes.json() as Record<string, unknown>
       const summary = data.summary as Record<string, unknown>
+      const jobId = String(data.job_id ?? '');
+
+      // 다음 호출에서 이 job의 결과를 이어받을 수 있도록 저장
+      (options as unknown as Record<string, unknown>)._btPrevJobId = jobId
 
       let resultText = `✅ 바이블테이블링 행 추가 완료\n`
       resultText += `테이블: ${summary.table} (${summary.file})\n`
-      resultText += `추가된 행: ${summary.rows_added}개\n`
-      resultText += `\n📥 다운로드: ${BIBLE_TABLING_LINK_BASE}${data.download_url}\n`
+      resultText += `추가된 행: ${summary.rows_added}개\n\n`
+
+      // 입력된 행 데이터를 마크다운 테이블로 표시
+      const inputRows = (Array.isArray(input.rows) ? input.rows : []) as Array<Record<string, unknown>>
+      if (inputRows.length > 0) {
+        const allCols = new Set<string>()
+        for (const r of inputRows) for (const k of Object.keys(r)) allCols.add(k)
+        const cols = [...allCols].slice(0, 12)
+        const colHeaders = cols.map(c => c.length > 15 ? c.slice(0, 13) + '..' : c)
+        resultText += `📋 추가된 데이터:\n`
+        resultText += `| ${colHeaders.join(' | ')} |\n`
+        resultText += `| ${cols.map(() => '---').join(' | ')} |\n`
+        const showRows = inputRows.slice(0, 15)
+        for (const row of showRows) {
+          const vals = cols.map(c => {
+            const v = String(row[c] ?? '')
+            return v.length > 18 ? v.slice(0, 16) + '..' : v
+          })
+          resultText += `| ${vals.join(' | ')} |\n`
+        }
+        if (inputRows.length > 15) resultText += `... 외 ${inputRows.length - 15}행\n`
+        resultText += '\n'
+      }
+
+      resultText += `📥 다운로드: ${BIBLE_TABLING_LINK_BASE}${data.download_url}\n`
       resultText += `(노란색 하이라이트 = AI 추가 셀)`
 
       return { result: resultText, data }
@@ -7449,24 +7673,90 @@ async function serverExecuteToolAsync(
         if (!resp.ok) return { result: `Confluence 페이지 조회 실패: ${(data?.message as string) ?? resp.status}` }
         const body = (data.body as Record<string,unknown>)?.storage as Record<string,unknown>
         const rawHtml = String(body?.value ?? '')
-        const htmlContent = rawHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 3000)
+        // HTML → 텍스트 변환 (태그 제거, 구조 보존)
+        const CONF_MAX = 50_000
+        let htmlContent = rawHtml
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<\/?(p|div|h[1-6]|li|tr|section|article)[^>]*>/gi, '\n')
+          .replace(/<\/?(td|th)[^>]*>/gi, ' | ')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/[ \t]+/g, ' ')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim()
+        const fullLength = htmlContent.length
+        let truncatedNote = ''
+        if (htmlContent.length > CONF_MAX) {
+          htmlContent = htmlContent.slice(0, CONF_MAX)
+          truncatedNote = `\n\n⚠️ 내용이 ${fullLength.toLocaleString()}자로 길어 ${CONF_MAX.toLocaleString()}자까지만 표시됩니다.`
+        }
         const space = String((data.space as Record<string,unknown>)?.key ?? '')
         const confLinks = (data._links ?? {}) as Record<string,unknown>
         const confWebui = String(confLinks.webui ?? '')
         const confPageUrl = confluenceBase && confWebui ? `${confluenceBase}${confWebui}` : ''
         return {
-          result: `Confluence 페이지: ${data.title ?? ''}\nURL: ${confPageUrl}\nSpace: ${space}\n내용:\n${htmlContent}`,
-          data: { pageId, title: String(data.title ?? ''), space, url: confPageUrl, contentLength: htmlContent.length }
+          result: `Confluence 페이지: ${data.title ?? ''}\nURL: ${confPageUrl}\nSpace: ${space}\n전체 길이: ${fullLength.toLocaleString()}자\n내용:\n${htmlContent}${truncatedNote}`,
+          data: { pageId, title: String(data.title ?? ''), space, url: confPageUrl, contentLength: fullLength, truncated: fullLength > CONF_MAX }
         }
       } catch (e) { return { result: `Confluence 페이지 조회 오류: ${e instanceof Error ? e.message : String(e)}` } }
     }
 
-    // ── add_jira_comment ──
+    // ── add_confluence_comment ──
+    case 'add_confluence_comment': {
+      const rawPageRef = String(input.pageIdOrUrl ?? input.pageId ?? '')
+      const comment = String(input.comment ?? '')
+      if (!rawPageRef) return { result: 'pageIdOrUrl이 필요합니다.' }
+      if (!comment.trim()) return { result: '댓글 내용이 비어 있습니다.' }
+      if (!confToken || !confluenceBase) return { result: 'Confluence 연결 정보가 설정되지 않았습니다 (.env 확인).' }
+      const pageIdMatch = rawPageRef.match(/\/pages\/(\d+)/)
+      const pageId = pageIdMatch ? pageIdMatch[1] : rawPageRef.replace(/\D/g, '')
+      if (!pageId) return { result: `페이지 ID를 추출할 수 없습니다: "${rawPageRef}"` }
+      const storageHtml = comment
+        .split(/\n{2,}/)
+        .map(p => `<p>${p.trim().replace(/\n/g, '<br/>')}</p>`)
+        .filter(Boolean)
+        .join('')
+      try {
+        const apiUrl = `${confluenceBase}/wiki/api/v2/footer-comments`
+        const resp = await fetch(apiUrl, {
+          method: 'POST',
+          headers: { Authorization: confAuthHeader, Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pageId, body: { representation: 'storage', value: storageHtml } }),
+        })
+        const ct = resp.headers.get('content-type') || ''
+        if (!ct.includes('json')) {
+          const htmlSnippet = (await resp.text()).slice(0, 200)
+          return { result: `Confluence API가 JSON이 아닌 응답 반환 (status ${resp.status}). pageId "${pageId}" 확인 필요.\n${htmlSnippet}` }
+        }
+        const data = await resp.json() as Record<string, unknown>
+        if (!resp.ok) {
+          const errMsg = String(data?.message ?? data?.title ?? JSON.stringify(data).slice(0, 200))
+          return { result: `Confluence 댓글 작성 실패 (${resp.status}): ${errMsg}` }
+        }
+        const commentId = String(data.id ?? '')
+        const pageUrl = `${confluenceBase}/wiki/pages/${pageId}`
+        return {
+          result: `✅ Confluence 댓글 작성 완료!\n페이지 ID: ${pageId}\n페이지 URL: ${pageUrl}\n댓글 ID: ${commentId}`,
+          data: { pageId, commentId, pageUrl },
+        }
+      } catch (e) { return { result: `Confluence 댓글 작성 오류: ${e instanceof Error ? e.message : String(e)}` } }
+    }
+
+    // ── add_jira_comment (Confluence URL 자동 리다이렉트) ──
     case 'add_jira_comment': {
       const rawKey = String(input.issueKeyOrUrl ?? '')
       const comment = String(input.comment ?? '')
       if (!rawKey) return { result: 'issueKeyOrUrl이 필요합니다.' }
       if (!comment.trim()) return { result: '댓글 내용이 비어 있습니다.' }
+      // Confluence URL 감지 → 자동으로 Confluence 댓글 작성
+      if (/\/wiki\/spaces\/|\/pages\/\d+/i.test(rawKey)) {
+        sLog('INFO', `[add_jira_comment] Confluence URL 감지 → add_confluence_comment 자동 실행`)
+        return serverExecuteTool('add_confluence_comment', { pageIdOrUrl: rawKey, comment }, options)
+      }
       if (!jiraToken || !jiraBase) return { result: 'Jira 연결 정보가 설정되지 않았습니다 (.env 확인).' }
       const issueKey = parseIssueKey(rawKey)
       try {
@@ -7477,6 +7767,11 @@ async function serverExecuteToolAsync(
           headers: { Authorization: authHeader, Accept: 'application/json', 'Content-Type': 'application/json' },
           body: JSON.stringify({ body: adfBody }),
         })
+        const ct2 = resp.headers.get('content-type') || ''
+        if (!ct2.includes('json')) {
+          const htmlSnippet = (await resp.text()).slice(0, 200)
+          return { result: `Jira API가 JSON이 아닌 HTML을 반환했습니다 (status ${resp.status}). 이슈 키 "${issueKey}"가 올바른지 확인하세요.\n${htmlSnippet}` }
+        }
         const data = await resp.json() as Record<string, unknown>
         if (!resp.ok) {
           const errMsg = (data?.errorMessages as string[])?.[0]
@@ -8141,6 +8436,142 @@ function buildPublishedPage(title: string, contentHtml: string): string {
 </html>`
 }
 
+// ── 데이터 조회 FastPath 헬퍼 ──────────────────────────────────────────────────
+// "카야 스킬 데이터 보여줘" → 테이블 자동 매칭 + WHERE 필터 + SQL 실행
+function _fpResolveDataQuery(rawKeyword: string, queryType: string, options: GitPluginOptions): string | null {
+  loadServerData(options.localDir)
+  if (_serverTableList.length === 0) return null
+
+  const keyword = rawKeyword.replace(/[의\s]+$/g, '').trim()
+  if (!keyword) return null
+  const kw = keyword.toLowerCase()
+  const qt = queryType.toLowerCase()
+
+  // 한글→영문 테이블 유형 매핑
+  const TYPE_MAP: Record<string, string> = {
+    '스킬': 'skill', '스텟': 'stat', '스탯': 'stat', '능력치': 'stat',
+    '아이템': 'item', '장비': 'equip', '무기': 'weapon', '퀘스트': 'quest',
+    '버프': 'buff', '디버프': 'debuff', '몬스터': 'monster', '효과': 'effect',
+  }
+  const engType = TYPE_MAP[qt] || qt
+
+  // ── 테이블 매칭 전략 ──
+  // 1) 전체 키워드가 테이블명과 직접 매칭
+  let table = _serverTableList.find(t => t.name.toLowerCase() === kw)
+
+  // 2) 키워드+타입 조합 (예: "character" + "skill" → "CharacterSkill")
+  if (!table && engType) {
+    table = _serverTableList.find(t => {
+      const tn = t.name.toLowerCase()
+      return tn.includes(kw) && tn.includes(engType)
+    })
+  }
+
+  // 3) 키워드 부분 매칭
+  if (!table) table = _serverTableList.find(t => t.name.toLowerCase().includes(kw) || kw.includes(t.name.toLowerCase()))
+
+  // 4) 키워드가 테이블명이 아닌 데이터 값일 수 있음 (예: "카야" = 캐릭터 이름)
+  //    이 경우 타입 키워드로 테이블을 찾고 WHERE로 필터
+  let filterValue = ''
+  if (!table && engType) {
+    // 타입으로 테이블 검색
+    table = _serverTableList.find(t => t.name.toLowerCase().includes(engType))
+    if (!table) table = _serverTableList.find(t => t.name.toLowerCase().startsWith(engType))
+    if (table) filterValue = keyword
+  }
+
+  // 5) 여전히 못 찾으면: 키워드의 단어를 분할해서 시도 (예: "카야 스킬" → "카야" + "스킬")
+  if (!table) {
+    const words = keyword.split(/\s+/)
+    if (words.length >= 2) {
+      const lastWord = words[words.length - 1].toLowerCase()
+      const engLast = TYPE_MAP[lastWord] || lastWord
+      const entityWords = words.slice(0, -1).join(' ')
+      const entityKw = entityWords.toLowerCase()
+
+      // 마지막 단어를 테이블 유형으로 사용
+      table = _serverTableList.find(t => {
+        const tn = t.name.toLowerCase()
+        return tn.includes(engLast)
+      })
+      // 앞 단어를 값 필터로 사용
+      if (table) filterValue = entityWords
+
+      // 아직 없으면 앞 단어로 테이블명 매칭
+      if (!table) {
+        table = _serverTableList.find(t => t.name.toLowerCase().includes(entityKw))
+        if (table) filterValue = ''
+      }
+    }
+  }
+
+  if (!table) return null
+
+  // ── SQL 생성 ──
+  let sql = ''
+  if (filterValue) {
+    // 값 필터: 첫 번째 문자열 컬럼들에서 LIKE 검색
+    const td = _serverTableData.get(table.name.toLowerCase())
+    if (!td || td.rows.length === 0) {
+      sql = `SELECT * FROM \`${table.name}\` LIMIT 30`
+    } else {
+      // 이름/Name/ID 등 검색 가능한 컬럼 탐지
+      const nameCols = td.headers.filter(h => {
+        const hl = h.toLowerCase()
+        return hl.includes('name') || hl.includes('id') || hl === 'key' || hl.includes('title') || hl.includes('이름')
+      })
+      if (nameCols.length > 0) {
+        const conditions = nameCols.map(c => `LOWER(\`${c}\`) LIKE '%${filterValue.toLowerCase()}%'`).join(' OR ')
+        sql = `SELECT * FROM \`${table.name}\` WHERE ${conditions} LIMIT 30`
+      } else {
+        // 검색 컬럼 없으면 전체 조회
+        sql = `SELECT * FROM \`${table.name}\` LIMIT 30`
+      }
+    }
+  } else {
+    sql = `SELECT * FROM \`${table.name}\` LIMIT 30`
+  }
+
+  const qr = serverExecuteSQL(sql)
+  if (qr.error) return null
+
+  // 필터 결과가 0행이면 WHERE 없이 재시도
+  if (qr.rowCount === 0 && filterValue) {
+    const fallbackSql = `SELECT * FROM \`${table.name}\` LIMIT 30`
+    const qr2 = serverExecuteSQL(fallbackSql)
+    if (qr2.error || qr2.rowCount === 0) return `📋 \`${table.name}\` 테이블에서 "${filterValue}" 관련 데이터를 찾을 수 없습니다.`
+
+    const lines: string[] = []
+    lines.push(`📋 **${table.name}** — "${filterValue}" 직접 매칭 없음, 전체 ${qr2.rowCount}행 표시\n`)
+    return _fpFormatTable(lines, qr2)
+  }
+
+  if (qr.rowCount === 0) return `📋 \`${table.name}\` 테이블에 데이터가 없습니다.`
+
+  const lines: string[] = []
+  const header = filterValue
+    ? `📋 **${table.name}** — "${filterValue}" 검색 결과: ${qr.rowCount}행`
+    : `📋 **${table.name}** — ${qr.rowCount}행`
+  lines.push(header + (qr.rowCount > 30 ? ` (표시: 30행)` : '') + '\n')
+  return _fpFormatTable(lines, qr)
+}
+
+function _fpFormatTable(lines: string[], qr: { columns: string[]; rows: Record<string, unknown>[]; rowCount: number }): string {
+  const displayRows = qr.rows.slice(0, 30)
+  let displayCols = qr.columns
+  if (qr.columns.length > 8) {
+    displayCols = qr.columns.slice(0, 8)
+    lines.push(`> 컬럼 ${qr.columns.length}개 중 8개 표시. 전체: \`${qr.columns.join('`, `')}\`\n`)
+  }
+  lines.push(`| ${displayCols.join(' | ')} |`)
+  lines.push(`| ${displayCols.map(() => '---').join(' | ')} |`)
+  for (const row of displayRows) {
+    lines.push(`| ${displayCols.map(c => String(row[c] ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ').slice(0, 40)).join(' | ')} |`)
+  }
+  if (qr.rowCount > 30) lines.push(`\n... 외 ${qr.rowCount - 30}행`)
+  return lines.join('\n')
+}
+
 // ── 서버 사이드 FastPath — Claude 없이 즉시 응답 ──────────────────────────────
 function serverFastPath(msg: string, options: GitPluginOptions): string | null {
   const m = msg.trim()
@@ -8220,10 +8651,49 @@ function serverFastPath(msg: string, options: GitPluginOptions): string | null {
     return lines.join('\n')
   }
 
+  // ── 데이터 조회 FastPath: "XXX 데이터/스킬/스탯 보여줘" ──
+  const dataQueryMatch = m.match(
+    /^(.+?)\s*(데이터|스킬|스탯|스텟|정보|능력치|목록|리스트|수치|현황|테이블)\s*(보여줘|보여|알려줘|알려|줘|뭐야|조회|검색|가져와|확인)?[.!?~]*$/i
+  )
+  if (dataQueryMatch) {
+    const fastTable = _fpResolveDataQuery(dataQueryMatch[1].trim(), dataQueryMatch[2] || '', options)
+    if (fastTable) return fastTable
+  }
+
+  // ── "XXX 보여줘" 단순 패턴 (키워드가 테이블명과 직접 매칭) ──
+  const simpleShow = m.match(/^(.+?)\s*(보여줘|보여|알려줘|가져와|조회|검색)[.!?~]*$/i)
+  if (simpleShow) {
+    const fastTable = _fpResolveDataQuery(simpleShow[1].trim(), '', options)
+    if (fastTable) return fastTable
+  }
+
+  // ── SQL 직접 실행 FastPath: "SELECT ..." ──
+  if (/^\s*SELECT\s+/i.test(m) && !m.includes('\n')) {
+    loadServerData(options.localDir)
+    const qr = serverExecuteSQL(m)
+    if (qr.error) return `❌ SQL 오류: ${qr.error}`
+    if (qr.rowCount === 0) return '결과 없음 (0행)'
+
+    const displayRows = qr.rows.slice(0, 30)
+    const lines: string[] = [`📋 **SQL 결과** — ${qr.rowCount}행\n`]
+    let displayCols = qr.columns
+    if (qr.columns.length > 10) {
+      displayCols = qr.columns.slice(0, 10)
+      lines.push(`> 컬럼 ${qr.columns.length}개 중 10개만 표시\n`)
+    }
+    lines.push(`| ${displayCols.join(' | ')} |`)
+    lines.push(`| ${displayCols.map(() => '---').join(' | ')} |`)
+    for (const row of displayRows) {
+      lines.push(`| ${displayCols.map(c => String(row[c] ?? '').replace(/\|/g, '\\|').slice(0, 40)).join(' | ')} |`)
+    }
+    if (qr.rowCount > 30) lines.push(`\n... 외 ${qr.rowCount - 30}행`)
+    return lines.join('\n')
+  }
+
   return null
 }
 
-function buildServerSystemPrompt(_userQuery?: string): string {
+function buildServerSystemPrompt(_userQuery?: string, isSlack = false): string {
   const lines: string[] = []
 
   // ── 널리지 목차 주입 (전문은 read_knowledge 도구로 필요 시 읽기) ──
@@ -8266,7 +8736,8 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   lines.push('- read_code_file: 특정 .cs 파일 전체 내용 읽기. search_code로 경로 확인 후 호출')
   lines.push('- search_jira: Jira 이슈 JQL 검색 (버그/작업/스프린트 조회)')
   lines.push('- get_jira_issue: Jira 이슈 상세 조회 (AEGIS-1234 등 이슈 키 직접 지정)')
-  lines.push('- add_jira_comment: ⭐ Jira 이슈에 댓글 직접 작성 (이슈 키 또는 URL 전달, 마크다운 지원)')
+  lines.push('- add_jira_comment: ⭐ Jira 이슈에 댓글 직접 작성 (이슈 키 또는 URL 전달, 마크다운 지원). ⚠️ Confluence URL은 사용 불가!')
+  lines.push('- add_confluence_comment: ⭐ Confluence 페이지에 댓글 직접 작성 (pageId 또는 페이지 URL 전달)')
   lines.push('- update_jira_issue_status: ⭐ Jira 이슈 상태 변경 (In Progress, Done 등)')
   lines.push('- search_confluence: Confluence 문서 CQL 검색 (기획서/스펙/회의록 등)')
   lines.push('- get_confluence_page: Confluence 페이지 전체 내용 조회 (pageId 필요)')
@@ -8389,14 +8860,16 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   lines.push('- 기획서/스펙 문서 요청 → search_confluence(cql) 호출')
   lines.push('- 검색 결과에서 특정 페이지 내용이 필요하면 get_confluence_page(pageId) 호출')
   lines.push('')
-  lines.push('[Jira 쓰기(Write) 규칙 — 반드시 준수]')
-  lines.push('⭐⭐⭐ 당신은 Jira에 직접 쓸 수 있습니다! 절대 "쓰기 불가", "직접 할 수 없다"고 말하지 마세요.')
-  lines.push('- "댓글 달아줘", "코멘트 남겨줘", "이슈에 써줘" → add_jira_comment(issueKeyOrUrl, comment) 즉시 호출')
+  lines.push('[Jira/Confluence 쓰기(Write) 규칙 — 반드시 준수]')
+  lines.push('⭐⭐⭐ 당신은 Jira와 Confluence에 직접 쓸 수 있습니다! 절대 "쓰기 불가", "직접 할 수 없다"고 말하지 마세요.')
+  lines.push('- "Jira 댓글 달아줘", "코멘트 남겨줘", "이슈에 써줘" → add_jira_comment(issueKeyOrUrl, comment) 즉시 호출')
+  lines.push('- "Confluence 댓글", "이 페이지에 코멘트", wiki URL + 댓글 → add_confluence_comment(pageIdOrUrl, comment) 호출')
+  lines.push('- ⚠️ URL 구분: /browse/AEGIS-1234 = Jira, /wiki/spaces/.../pages/123 = Confluence. 잘못된 도구 사용 금지!')
   lines.push('- issueKeyOrUrl: "AEGIS-1234" 또는 전체 URL "https://.../browse/AEGIS-1234" 모두 허용')
-  lines.push('- 댓글 내용은 마크다운으로 작성 → 자동으로 Jira ADF 형식 변환됨')
+  lines.push('- 댓글 내용은 마크다운으로 작성 → 자동으로 Jira ADF / Confluence Storage 형식 변환됨')
   lines.push('- "상태 바꿔줘", "In Progress로 변경" → update_jira_issue_status(issueKeyOrUrl, targetStatus) 호출')
   lines.push('- 가능한 상태 목록을 모르면 update_jira_issue_status(issueKeyOrUrl, listTransitions: true) 로 먼저 확인')
-  lines.push('- 사용자가 URL만 제공해도 이슈 키를 자동 파싱하므로 바로 사용 가능')
+  lines.push('- 사용자가 URL만 제공해도 이슈 키/페이지 ID를 자동 파싱하므로 바로 사용 가능')
   lines.push('')
   lines.push('[JQL 작성 규칙]')
   lines.push('- 기본: "project = AEGIS ORDER BY updated DESC"')
@@ -8430,55 +8903,93 @@ function buildServerSystemPrompt(_userQuery?: string): string {
   lines.push('⭐⭐⭐ 사용자가 게임 데이터 수정/편집/변경/추가/업데이트를 요청하면 반드시 바이블테이블링 도구를 사용하세요!')
   lines.push('"바이블테이블링", "엑셀 편집", "데이터 수정", "값 변경", "행 추가", "테이블에 추가", "밸런스 조정" 등의 요청 시 즉시 사용.')
   lines.push('')
+  lines.push('⚡ 바이블테이블링 속도 최적화 — 이터레이션 최소화!')
+  lines.push('⭐ 이미 현재 대화에서 스키마/데이터를 조회했으면 다시 조회하지 마세요!')
+  lines.push('⭐ 사전주입 스키마가 있거나 이전 턴에서 스키마를 확인했으면 → 바로 edit_game_data!')
+  lines.push('⭐ 처음 보는 테이블이면 → show_table_schema + query_game_data를 한 번에 동시 호출!')
+  lines.push('  예: show_table_schema("Character") + show_table_schema("CharacterStat") + query_game_data("SELECT * FROM Character WHERE id=5001") 를 한 이터레이션에!')
+  lines.push('→ 스키마 확인 + 데이터 조회 = 1 이터레이션, 편집 = 1 이터레이션. 총 2~3 이터레이션이 목표!')
+  lines.push('')
+  lines.push('⚠️ 스키마를 모르는 상태에서 컬럼명 추측은 금지! (조회 후 편집)')
+  lines.push('📝 #으로 시작하는 메모/주석 컬럼(예: #effect_memo, #skill_memo)에도 설명 텍스트를 채워주세요!')
+  lines.push('  - 새 행 추가 시: 해당 데이터가 무엇인지 알아보기 쉬운 한글 설명 작성')
+  lines.push('  - 기존 행 편집 시: 변경 내용을 반영한 메모 업데이트')
+  lines.push('')
   lines.push('📌 edit_game_data (기존 데이터 수정):')
-  lines.push('- 용도: 기존 행의 셀 값을 변경 (밸런스 수치 조정, 이름 변경, 속성값 수정 등)')
-  lines.push('- 반드시 read_guide("_DB_OVERVIEW")로 테이블 구조를 먼저 파악한 후 편집')
-  lines.push('- ERD FK 관계를 확인하여 부모 테이블(참조되는 쪽)부터 편집 (order 필드 사용)')
+  lines.push('- 용도: 기존 행의 셀 값을 변경')
+  lines.push('- ERD FK 관계를 확인하여 부모 테이블부터 편집 (order 필드 사용)')
   lines.push('- 부모 PK 변경 시 자식 FK도 반드시 함께 수정')
-  lines.push('- 파라미터:')
-  lines.push('  title: 작업 제목 (예: "워리어 스킬 밸런스 조정")')
-  lines.push('  reason: 편집 사유')
-  lines.push('  edit_plan: [{order, table, file?, filters:[{column, op, value}], changes:[{column, action, value}]}, ...]')
+  lines.push('- edit_plan: [{order, table, sheet?, file?, filters:[{column, op, value}], changes:[{column, action, value}]}, ...]')
   lines.push('  - filters.op: eq, neq, gt, gte, lt, lte, in, contains, starts_with, ends_with')
   lines.push('  - changes.action: set(값 교체), multiply(곱하기), add(더하기), subtract(빼기), append(텍스트 이어붙이기)')
-  lines.push('- 예시: 워리어(id=1001)의 공격력을 150으로 변경')
-  lines.push('  edit_plan: [{order:0, table:"Character", filters:[{column:"id", op:"eq", value:"1001"}], changes:[{column:"attack", action:"set", value:150}]}]')
+  lines.push('  - ⚠️ value는 반드시 스키마의 타입에 맞게 지정! 숫자 컬럼은 숫자값, 문자열은 문자열')
+  lines.push('')
+  lines.push('⭐⭐⭐ 중요: 같은 xlsx 파일 안에 여러 시트가 있을 때!')
+  lines.push('→ 반드시 하나의 edit_game_data 호출에 모든 시트 편집을 edit_plan 배열에 포함하세요!')
+  lines.push('→ edit_plan 항목마다 table(=시트명), file(=xlsx 파일명), sheet(=시트명)을 명시하세요!')
   lines.push('')
   lines.push('📌 add_game_data_rows (새 행 추가):')
-  lines.push('- 용도: 테이블에 새로운 데이터 행 추가 (새 캐릭터, 새 스킬, 새 아이템 등)')
-  lines.push('- 파라미터:')
-  lines.push('  table: 테이블명, file?: 엑셀 파일명(생략 시 테이블명.xlsx)')
-  lines.push('  rows: [{"컬럼명":"값", ...}, ...]')
-  lines.push('- 예시: 새 스킬 추가')
-  lines.push('  table: "Skill", rows: [{"id":"5001", "name":"파이어볼", "damage":"200", "cooldown":"5"}]')
+  lines.push('🔴🔴🔴 기존 데이터 복제/복사/참고 시 → 반드시 clone_source 사용!')
+  lines.push('- 절대로 query 결과를 rows[]나 csv로 재입력하지 마세요!')
+  lines.push('- clone_source: {column:"character_id", value:"2001"}, override_csv: "character_id\\n3001\\n3002"')
+  lines.push('  → Python이 원본 행을 자동 복사, 바꿀 컬럼만 교체. 1초 완료.')
+  lines.push('- 완전히 새로운 데이터만 csv 또는 rows 사용')
+  lines.push('- ⚠️ ID 값은 기존 ID 범위를 확인하고 중복되지 않게 할당하세요')
+  lines.push('- ⚠️ FK 컬럼은 부모 테이블의 실존하는 PK 값을 참조해야 합니다')
   lines.push('')
-  lines.push('📌 워크플로우:')
-  lines.push('1. read_guide("_DB_OVERVIEW")로 대상 테이블 구조 파악')
-  lines.push('2. query_game_data로 현재 데이터 확인 (어떤 값을 바꿀지 미리 조회)')
-  lines.push('3. show_table_schema로 컬럼 이름/타입 정확히 확인')
-  lines.push('4. edit_game_data 또는 add_game_data_rows 호출')
-  lines.push('5. 결과에 포함된 다운로드 링크를 사용자에게 안내')
+  lines.push('📌 워크플로우 (2~3 이터레이션으로 끝내기!):')
+  lines.push('이터레이션1: 필요한 모든 show_table_schema + query_game_data를 **한번에 동시 호출** (스키마를 이미 알면 생략)')
+  lines.push('이터레이션2: edit_game_data / add_game_data_rows 호출 + 결과 요약 텍스트')
+  lines.push('→ 계획 설명은 edit 호출 전에 같은 응답에서 텍스트로 짧게 쓰면 됨 (별도 이터레이션 불필요)')
   lines.push('')
-  lines.push('⚠️ 편집 결과로 Excel 다운로드 링크가 제공됩니다. 반드시 사용자에게 링크를 공유하세요.')
-  lines.push('⚠️ 편집된 셀은 노란색 하이라이트로 표시되어 AI가 변경한 부분을 쉽게 식별할 수 있습니다.')
+  lines.push('⚠️ 편집된 셀은 노란색 하이라이트로 표시됩니다.')
+  lines.push('⚠️ 여러 파일을 수정하면 (예: Character.xlsx + Skill.xlsx) 결과는 ZIP으로 제공됩니다.')
+  lines.push('')
+  lines.push('🔴🔴🔴 절대 금지: 테이블/데이터 생략!')
+  lines.push('- 데이터가 많다는 이유로 테이블을 생략하거나 "~는 생략합니다"라고 하면 안 됩니다!')
+  lines.push('- 데이터가 많으면 → edit_game_data / add_game_data_rows를 **여러 번 나눠서 호출**하세요!')
+  lines.push('- 예: 10레벨 분량의 CharacterStat → 1~5레벨 호출 + 6~10레벨 호출로 분리')
+  lines.push('- 예: 연관 테이블 12개 → 6개씩 2번 호출')
+  lines.push('- 사용자가 요청한 테이블은 **100% 전부** 편집/추가해야 합니다. 하나라도 빠지면 실패입니다.')
+  lines.push('')
+  lines.push('📌 바이블테이블링 응답 스타일 (텍스트로 중계! 아티팩트 만들지 마!):')
+  lines.push('- ❌❌❌ 바이블테이블링(edit_game_data/add_game_data_rows) 후에 create_artifact 절대 호출 금지!')
+  lines.push('- ❌❌❌ 바이블테이블링 과정/결과를 아티팩트로 정리하는 것도 금지! 텍스트 응답만!')
+  lines.push('- ❌❌❌ "정리합니다", "요약합니다" 명목으로 아티팩트를 만드는 것도 금지!')
+  lines.push('- 도구 호출 전: 어떤 테이블에 무엇을 할지 텍스트로 설명')
+  lines.push('- 도구 호출 후: 결과를 텍스트+마크다운 표로 요약 (아티팩트가 아닌 일반 텍스트!)')
+  lines.push('- ⭐ 텍스트 응답 마지막에 반드시 다운로드 링크를 포함하세요!')
+  lines.push('  예: "📥 다운로드: [Character.xlsx](다운로드URL)"')
+  lines.push('  도구 결과의 download_url을 그대로 텍스트에 넣으면 채팅에서 클릭 가능합니다.')
+  lines.push('- ❌ 단순히 "N행 추가됨"만 나열하지 마세요. 실제 세팅된 주요 데이터를 보여주세요.')
   lines.push('')
 
   // ── 아티팩트 생성 규칙 ──
-  lines.push('[아티팩트 생성 규칙 — ⭐⭐⭐ 최우선]')
-  lines.push('⭐ 아티팩트 생성 전에 **반드시** search_published_artifacts로 유사한 기존 문서를 먼저 검색하세요!')
+  if (isSlack) {
+    lines.push('[아티팩트 생성 규칙 — Slack ⭐⭐⭐]')
+    lines.push('Slack에서는 텍스트만으로 복잡한 결과를 보여주기 어려우므로, 도구를 사용하여 데이터/코드/정보를 조사/분석했으면 → create_artifact 호출하여 결과물을 시각적으로 정리하세요.')
+    lines.push('- 🔴 예외: edit_game_data / add_game_data_rows (바이블테이블링) 결과는 절대 아티팩트로 만들지 마세요!')
+    lines.push('- 단순 "몇 행 조회됨" 텍스트로 끝내지 말 것! 조사 결과를 아티팩트로 만들어야 사용자가 볼 수 있음')
+    lines.push('- 2개 이상의 도구를 사용했거나, 테이블 데이터가 있으면 반드시 아티팩트로! (단, 바이블테이블링 제외)')
+    lines.push('- 데이터 수집이 끝나면 즉시 create_artifact를 호출 (선언 없이)')
+    lines.push('- 아티팩트 생성 후 짧은 요약 텍스트도 반드시 함께 보내야 함 (Slack에서 미리보기 표시)')
+  } else {
+    lines.push('[아티팩트 생성 규칙]')
+    lines.push('🔴 아티팩트는 사용자가 명시적으로 요청할 때만 생성하세요!')
+    lines.push('- "정리해줘", "문서로 만들어줘", "보고서 작성해줘", "시트 만들어줘", "아티팩트" 등 명시적 요청 → create_artifact')
+    lines.push('- 사용자가 명시적으로 요청하지 않은 경우 → 텍스트+마크다운 표로 응답. 아티팩트 만들지 마세요!')
+    lines.push('- 질문에 대한 답변, 데이터 조회 결과, 분석 등은 텍스트로 충분합니다. 선제적으로 아티팩트를 만들지 마세요.')
+    lines.push('- 🔴 edit_game_data / add_game_data_rows (바이블테이블링) 결과는 절대 아티팩트로 만들지 마세요!')
+  }
+  lines.push('')
+  lines.push('아티팩트 생성 시:')
+  lines.push('⭐ 생성 전에 **반드시** search_published_artifacts로 유사한 기존 문서를 먼저 검색하세요!')
   lines.push('- 유사한 기존 아티팩트가 있으면 → 사용자에게 링크와 함께 "기존 문서를 갱신할까요, 새로 만들까요?" 제안')
   lines.push('- 사용자가 "갱신", "수정", "업데이트" 등 요청 시 → get_published_artifact로 기존 HTML 가져와서 수정본 create_artifact')
   lines.push('- 사용자가 기존 아티팩트를 언급/링크하면 → get_published_artifact로 가져와서 수정')
-  lines.push('')
-  lines.push('- 도구를 사용하여 데이터/코드/정보를 조사했으면 → **반드시** create_artifact 호출하여 결과물을 시각적으로 정리')
-  lines.push('- 단순 "몇 행 조회됨" 텍스트로 끝내지 말 것! 조사 결과를 아티팩트로 만들어야 사용자가 볼 수 있음')
-  lines.push('- 텍스트 응답만으로 끝내는 것은 금지. 2개 이상의 도구를 사용했거나, 테이블 데이터가 있으면 반드시 아티팩트로!')
-  lines.push('- "정리해줘", "보여줘", "문서로", "보고서", "시트", "정보" 등 요청 시 무조건 create_artifact')
-  lines.push('- 데이터 수집이 끝나면 즉시 create_artifact를 호출 (선언 없이)')
   lines.push('- html 파라미터: 완전한 HTML 콘텐츠. 다크 테마(배경 #0f1117, 텍스트 #e2e8f0, 포인트 #6366f1) 스타일 권장')
   lines.push('- CSV 데이터 제공 시: <div data-embed="csv" data-filename="파일명.csv">헤더1,헤더2\\n값1,값2\\n...</div> 사용 → 다운로드+테이블+검색+정렬+복사 자동!')
-  lines.push('- 데이터를 표 형태로 제공해야할 때, DB 쿼리가 불가능하면 CSV embed를 사용하여 인터랙티브 테이블로 제공')
-  lines.push('- 아티팩트 생성 후 짧은 요약 텍스트도 함께 보내야 함 (Slack 등 외부 클라이언트에서 미리보기 제공)')
+  lines.push('- 아티팩트 생성 후 짧은 요약 텍스트도 함께 보내야 함')
   lines.push('- ⚠️ 이미지 삽입 시 find_resource_image 결과의 url(전체 URL)을 <img src="...">에 그대로 사용')
   lines.push('- 상대경로(/api/images/...)는 금지! 반드시 http://로 시작하는 전체 URL 사용 (외부에서 접근 가능하도록)')
   lines.push('')
@@ -8706,12 +9217,13 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       }
 
       const MODEL = 'claude-sonnet-4-6'
-      const MAX_ITERATIONS = 12
-      // ── 동적 max_tokens: 슬랙/아티팩트 요청이면 16384, 일반 대화면 8192 ──
+      const MAX_ITERATIONS = 20
+      // ── 동적 max_tokens: 슬랙/아티팩트/바이블테이블링이면 16384, 일반 대화면 8192 ──
       const ARTIFACT_KEYWORDS = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|캐릭터.*시트|릴리즈.*노트|분석|작성해줘|보여줘|프로필|비교|현황|리스트|목록|전체/
+      const BT_KEYWORDS = /바이블|테이블링|편집해|추가해|수정해|데이터.*넣|행.*추가|값.*변경|만들어줘.*캐릭|세팅해|밸런스|스탯|스킬.*추가|레벨.*추가|이어서.*생성/
       const isSlackSource = userMessage.includes('[Slack 사용자:') || (body as Record<string, unknown>).source === 'slack'
-      const MAX_TOKENS = (isSlackSource || ARTIFACT_KEYWORDS.test(userMessage)) ? 16384 : 8192
-      const systemPrompt = buildServerSystemPrompt(userMessage) // ← 쿼리 전달로 스마트 주입
+      const MAX_TOKENS = (isSlackSource || ARTIFACT_KEYWORDS.test(userMessage) || BT_KEYWORDS.test(userMessage)) ? 16384 : 8192
+      const systemPrompt = buildServerSystemPrompt(userMessage, isSlackSource)
 
       // ── 동시 요청 중복 방지 ──
       if (isRequestActive(session.id)) {
@@ -8732,6 +9244,8 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       }
 
       const allToolCalls: Array<{ tool: string; input: unknown; result: unknown; summary?: string }> = []
+      // 대화 턴 시작 시 바이블테이블링 job 체이닝 상태 초기화
+      delete (options as unknown as Record<string, unknown>)._btPrevJobId
 
       if (isStream) {
         // ── SSE 스트리밍 모드 ──
@@ -8846,6 +9360,18 @@ function createChatApiMiddleware(options: GitPluginOptions) {
                   }
                 }, 15_000) // 15초마다
                 
+                // 🔴 바이블테이블링 후 create_artifact 차단 (코드 레벨 강제)
+                const hadBT = allToolCalls.some((tc: { tool: string }) => tc.tool === 'edit_game_data' || tc.tool === 'add_game_data_rows')
+                if (tb.name === 'create_artifact' && hadBT) {
+                  sLog('WARN', `[chatApi] create_artifact 차단: 바이블테이블링 후 아티팩트 생성 시도 거부`)
+                  const blockResult = '🔴 바이블테이블링 결과는 아티팩트로 만들지 마세요! 다운로드 링크가 결과물입니다. 텍스트 응답으로 요약하세요.'
+                  allToolCalls.push({ tool: tb.name!, input: tb.input, result: blockResult, summary: blockResult })
+                  toolResults.push({ type: 'tool_result', tool_use_id: tb.id!, content: blockResult })
+                  if (!res.writableEnded) try { res.write(`event: tool_done\ndata: ${JSON.stringify({ tool: tb.name, summary: blockResult })}\n\n`) } catch { /* ignore */ }
+                  clearInterval(heartbeat)
+                  continue
+                }
+
                 let rawResult: string, toolData: unknown
                 try {
                   const toolOut = await serverExecuteToolAsync(tb.name!, tb.input ?? {}, options)
@@ -9008,6 +9534,15 @@ function createChatApiMiddleware(options: GitPluginOptions) {
             const toolResults: Array<{ type: string; tool_use_id: string; content: string }> = []
 
             for (const tb of toolBlocks) {
+              // 🔴 바이블테이블링 후 create_artifact 차단
+              const hadBT = allToolCalls.some((tc: { tool: string }) => tc.tool === 'edit_game_data' || tc.tool === 'add_game_data_rows')
+              if (tb.name === 'create_artifact' && hadBT) {
+                sLog('WARN', `[chatApi/non-stream] create_artifact 차단: 바이블테이블링 후 아티팩트 생성 거부`)
+                const blockResult = '🔴 바이블테이블링 결과는 아티팩트로 만들지 마세요! 다운로드 링크가 결과물입니다.'
+                allToolCalls.push({ tool: tb.name!, input: tb.input, result: blockResult, summary: blockResult })
+                toolResults.push({ type: 'tool_result', tool_use_id: tb.id!, content: blockResult })
+                continue
+              }
               const { result: rawResult, data: toolData } = await serverExecuteToolAsync(tb.name!, tb.input ?? {}, options)
               const result = truncateToolResult(rawResult)  // ← tool 결과 크기 제한
               allToolCalls.push({ tool: tb.name!, input: tb.input, result: toolData ?? result, summary: result.slice(0, 300) })
@@ -9310,8 +9845,26 @@ function createBibleTablingProxy() {
         res.setHeader('Access-Control-Allow-Origin', '*')
         res.setHeader('Access-Control-Allow-Methods', '*')
         res.setHeader('Access-Control-Allow-Headers', '*')
-        res.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers)
-        proxyRes.pipe(res, { end: true })
+        const isSSE = String(proxyRes.headers['content-type'] ?? '').includes('text/event-stream')
+        if (isSSE) {
+          res.writeHead(proxyRes.statusCode ?? 200, {
+            ...proxyRes.headers,
+            'Cache-Control': 'no-cache, no-store, no-transform',
+            'X-Accel-Buffering': 'no',
+          })
+          if (res.socket) { res.socket.setNoDelay(true); res.socket.setTimeout(0) }
+          res.flushHeaders()
+          proxyRes.on('data', (chunk: Buffer) => {
+            if (res.socket) res.socket.cork()
+            res.write(chunk)
+            if (res.socket) process.nextTick(() => res.socket!.uncork())
+          })
+          proxyRes.on('end', () => res.end())
+          proxyRes.on('error', () => res.end())
+        } else {
+          res.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers)
+          proxyRes.pipe(res, { end: true })
+        }
       }
     )
     proxyReq.on('error', () => {
