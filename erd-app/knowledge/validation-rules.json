@@ -840,5 +840,137 @@
     "scope": "team",
     "createdAt": 1773284975399,
     "updatedAt": 1773284975399
+  },
+  {
+    "id": "rule_1773286794909",
+    "name": "Gear 이름 필수",
+    "table": "Gear",
+    "severity": "error",
+    "condition": {
+      "type": "not_null",
+      "column": "name_id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773286794909,
+    "updatedAt": 1773286794909
+  },
+  {
+    "id": "rule_1773286794914",
+    "name": "ConsumableItem 타입 Enum 유효성",
+    "table": "ConsumableItem",
+    "severity": "error",
+    "condition": {
+      "type": "in",
+      "column": "consumable_type",
+      "values": [
+        "AccountExp",
+        "CharacterExp",
+        "AchievementExp",
+        "Currency",
+        "Module",
+        "ConsumableItem"
+      ]
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773286794914,
+    "updatedAt": 1773286794914
+  },
+  {
+    "id": "rule_1773286794918",
+    "name": "ConsumableItem ID 고유값",
+    "table": "ConsumableItem",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "consumable_id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773286794918,
+    "updatedAt": 1773286794918
+  },
+  {
+    "id": "rule_1773286794921",
+    "name": "ModuleItem ID 고유값",
+    "table": "ModuleItem",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773286794921,
+    "updatedAt": 1773286794921
+  },
+  {
+    "id": "rule_1773286794925",
+    "name": "ModuleItem 타입 Enum 유효성",
+    "table": "ModuleItem",
+    "severity": "error",
+    "condition": {
+      "type": "in",
+      "column": "module_type",
+      "values": [
+        "Perk",
+        "Passive"
+      ]
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773286794925,
+    "updatedAt": 1773286794925
+  },
+  {
+    "id": "rule_1773286794929",
+    "name": "Gear rarity 유효성",
+    "table": "Gear",
+    "severity": "warning",
+    "condition": {
+      "type": "in",
+      "column": "rarity",
+      "values": [
+        "Common",
+        "Uncommon",
+        "Rare",
+        "Epic",
+        "Legendary"
+      ]
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773286794929,
+    "updatedAt": 1773286794929
+  },
+  {
+    "id": "rule_1773286794934",
+    "name": "Gear max_stack 양수 필수",
+    "table": "Gear",
+    "severity": "error",
+    "condition": {
+      "type": "range",
+      "column": "max_stack",
+      "min": 1
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773286794934,
+    "updatedAt": 1773286794934
+  },
+  {
+    "id": "rule_1773286794938",
+    "name": "Reward item_id 필수",
+    "table": "Reward",
+    "severity": "error",
+    "condition": {
+      "type": "not_null",
+      "column": "item_id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773286794938,
+    "updatedAt": 1773286794938
   }
 ]
