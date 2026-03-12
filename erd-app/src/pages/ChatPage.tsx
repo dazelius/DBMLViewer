@@ -8497,6 +8497,87 @@ export default function ChatPage() {
   const [btSaving, setBtSaving] = useState(false);
   const [btRevisionInput, setBtRevisionInput] = useState('');
 
+  // ── BT Push 전 검증: 자료형 / FK / Enum / NotNull ──
+  interface BtValidationIssue {
+    severity: 'error' | 'warning';
+    category: 'type' | 'fk' | 'enum' | 'notnull';
+    table: string;
+    column: string;
+    row: number;
+    value: string;
+    message: string;
+  }
+  const btValidationIssues = useMemo<BtValidationIssue[]>(() => {
+    if (!btPanel?.previewData || !schema) return [];
+    const issues: BtValidationIssue[] = [];
+    const enumByName = new Map(schema.enums.map(e => [e.name.toLowerCase(), e]));
+    const nameById = new Map(schema.tables.map(t => [t.id, t.name]));
+    const pkValues = new Map<string, Set<string>>();
+    for (const [tblName, tblData] of tableData) {
+      const pk = schema.tables.find(t => t.name.toLowerCase() === tblName.toLowerCase())?.columns.find(c => c.isPrimaryKey);
+      if (pk) {
+        const vals = new Set(tblData.rows.map(r => String(r[pk.name] ?? '').toLowerCase()));
+        pkValues.set(tblName.toLowerCase(), vals);
+      }
+    }
+
+    for (const file of btPanel.previewData) {
+      for (const sheet of file.sheets) {
+        const st = schema.tables.find(t => t.name.toLowerCase() === sheet.name.toLowerCase());
+        if (!st) continue;
+        for (const row of sheet.rows) {
+          for (const col of st.columns) {
+            const cell = row.cells[col.name];
+            if (!cell) continue;
+            const val = cell.value != null ? String(cell.value) : '';
+
+            // NotNull
+            if (col.isNotNull && !col.isPrimaryKey && (!val || !val.trim())) {
+              issues.push({ severity: 'error', category: 'notnull', table: sheet.name, column: col.name, row: row.rowIndex, value: '(빈값)', message: `NOT NULL 컬럼에 빈값` });
+            }
+            if (!val || !val.trim()) continue;
+
+            // Type
+            const typeLower = col.type.toLowerCase();
+            const isNumeric = ['int', 'integer', 'bigint', 'smallint', 'tinyint', 'float', 'double', 'decimal', 'numeric', 'real', 'long'].some(t => typeLower.includes(t));
+            if (isNumeric && isNaN(Number(val))) {
+              issues.push({ severity: 'warning', category: 'type', table: sheet.name, column: col.name, row: row.rowIndex, value: val, message: `"${val}" → ${col.type} 타입 불일치` });
+            }
+
+            // Enum
+            const enumDef = enumByName.get(col.type.toLowerCase());
+            if (enumDef) {
+              const validVals = new Set(enumDef.values.map(v => v.name.toLowerCase()));
+              if (!validVals.has(val.toLowerCase())) {
+                issues.push({ severity: 'error', category: 'enum', table: sheet.name, column: col.name, row: row.rowIndex, value: val,
+                  message: `"${val}" → ${col.type} 에 없는 Enum 값 (허용: ${enumDef.values.slice(0, 4).map(v => v.name).join(', ')}${enumDef.values.length > 4 ? '...' : ''})` });
+              }
+            }
+
+            // FK
+            if (col.isForeignKey) {
+              const ref = schema.refs.find(r => {
+                const fromTbl = nameById.get(r.fromTable);
+                return fromTbl?.toLowerCase() === sheet.name.toLowerCase() && r.fromColumns.includes(col.name);
+              });
+              if (ref) {
+                const toTblName = nameById.get(ref.toTable);
+                if (toTblName) {
+                  const targetPks = pkValues.get(toTblName.toLowerCase());
+                  if (targetPks && !targetPks.has(val.toLowerCase())) {
+                    issues.push({ severity: 'error', category: 'fk', table: sheet.name, column: col.name, row: row.rowIndex, value: val,
+                      message: `"${val}" → ${toTblName} 테이블에 존재하지 않는 FK 참조` });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return issues;
+  }, [btPanel?.previewData, schema, tableData]);
+
   const buildBtRevisionContext = (panel: NonNullable<typeof btPanel>, request: string): string => {
     const doneEntries = panel.entries.filter(en => en.status === 'done');
     const tables = doneEntries.map(en => en.table).join(', ');
@@ -10430,6 +10511,25 @@ export default function ChatPage() {
                     {btSaving ? '저장 중...' : `💾 저장 (${btPendingEdits.length}건 수정)`}
                   </button>
                 )}
+                {/* 검증 결과 표시 */}
+                {btValidationIssues.length > 0 && (
+                  <div className="rounded-lg text-[11px] overflow-hidden" style={{ border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.06)' }}>
+                    <div className="px-3 py-1.5 font-bold flex items-center gap-1.5" style={{ color: '#ef4444', borderBottom: '1px solid rgba(239,68,68,0.15)' }}>
+                      ⚠️ Push 전 검증 ({btValidationIssues.filter(i => i.severity === 'error').length}개 오류, {btValidationIssues.filter(i => i.severity === 'warning').length}개 경고)
+                    </div>
+                    <div className="px-3 py-1.5 space-y-0.5 max-h-[120px] overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
+                      {btValidationIssues.slice(0, 15).map((issue, i) => (
+                        <div key={i} className="flex items-start gap-1" style={{ color: issue.severity === 'error' ? '#f87171' : '#fbbf24' }}>
+                          <span className="flex-shrink-0">{issue.severity === 'error' ? '🔴' : '🟡'}</span>
+                          <span><b>{issue.table}.{issue.column}</b> (행{issue.row}): {issue.message}</span>
+                        </div>
+                      ))}
+                      {btValidationIssues.length > 15 && (
+                        <div style={{ color: '#94a3b8' }}>... 외 {btValidationIssues.length - 15}건</div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   {btPanel.downloadUrl && (
                     <button
@@ -10445,6 +10545,12 @@ export default function ChatPage() {
                       disabled={btPanel.pushLoading || btPendingEdits.length > 0}
                       onClick={async () => {
                         if (!btPanel.jobId) return;
+                        // 검증 오류가 있으면 경고
+                        const errors = btValidationIssues.filter(i => i.severity === 'error');
+                        if (errors.length > 0) {
+                          const summary = errors.slice(0, 5).map(e => `  • ${e.table}.${e.column}: ${e.message}`).join('\n');
+                          if (!confirm(`⚠️ ${errors.length}개 검증 오류가 있습니다!\n\n${summary}${errors.length > 5 ? `\n  ... 외 ${errors.length - 5}건` : ''}\n\n그래도 Push 하시겠습니까?`)) return;
+                        }
                         const files = btPanel.previewData?.map(f => f.filename).join(', ') ?? '';
                         const hasLocalDir = !!localDirHandle;
 
