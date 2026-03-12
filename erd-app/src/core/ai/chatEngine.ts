@@ -628,7 +628,7 @@ export const TOOL_META: ToolMeta[] = [
   { name: 'list_validation_rules',  label: '검증 룰 목록',       emoji: '🛡️', dataSources: ['knowledge'] },
   { name: 'delete_validation_rule', label: '검증 룰 삭제',       emoji: '🛡️', dataSources: ['knowledge'] },
   { name: 'web_search',             label: '웹 검색',             emoji: '🌐', dataSources: ['web'] },
-  { name: 'edit_game_data',         label: '바이블테이블링',       emoji: '📝', dataSources: ['excel'] },
+  { name: 'edit_game_data',         label: '바이브테이블링',       emoji: '📝', dataSources: ['excel'] },
   { name: 'add_game_data_rows',     label: '데이터 행 추가',       emoji: '➕', dataSources: ['excel'] },
   { name: 'read_url',               label: '웹페이지 읽기',       emoji: '🌐', dataSources: ['web'] },
 ];
@@ -847,12 +847,7 @@ const TOOLS = [
   },
   {
     name: 'create_artifact',
-    description:
-      '아티팩트(HTML 문서)를 등록합니다. ' +
-      '⚠️ 필수: 이 도구 호출 직전에 텍스트로 HTML을 먼저 출력하세요! ' +
-      '형식: <<<ARTIFACT_START>>> 다음에 HTML 코드, <<<ARTIFACT_END>>> 으로 종료. ' +
-      '그 후 이 도구를 title로만 호출하면 됩니다. html 파라미터 불필요. ' +
-      '⚠️ [아티팩트 수정 요청]에는 patch_artifact를 사용하세요.',
+    description: '아티팩트(HTML 문서) 등록. 호출 직전에 <<<ARTIFACT_START>>>HTML<<<ARTIFACT_END>>> 형식으로 출력 후 title만으로 호출. 수정 시에는 patch_artifact 사용.',
     input_schema: {
       type: 'object',
       properties: {
@@ -871,10 +866,7 @@ const TOOLS = [
   // ── 출판 아티팩트 검색/가져오기 ──────────────────────────────────────────
   {
     name: 'search_published_artifacts',
-    description:
-      '기존에 출판된 아티팩트(문서/보고서)를 검색합니다. ' +
-      '아티팩트 생성 전에 반드시 호출하여 유사한 기존 문서가 있는지 확인하세요. ' +
-      '비슷한 문서가 있으면 사용자에게 링크를 제안하고, 수정/갱신 여부를 물어보세요.',
+    description: '출판된 아티팩트(문서/보고서) 검색. 아티팩트 생성 전 반드시 호출하여 유사 기존 문서 확인.',
     input_schema: {
       type: 'object',
       properties: {
@@ -886,10 +878,7 @@ const TOOLS = [
   },
   {
     name: 'get_published_artifact',
-    description:
-      '기존 출판된 아티팩트의 HTML 전체 내용을 가져옵니다. ' +
-      '기존 문서를 수정/갱신하거나, 내용을 참고하여 새 문서를 만들 때 사용하세요. ' +
-      '가져온 HTML을 기반으로 patch_artifact 또는 create_artifact로 수정본을 만들 수 있습니다.',
+    description: '출판된 아티팩트 HTML 전체 가져오기. 수정/갱신 시 사용.',
     input_schema: {
       type: 'object',
       properties: {
@@ -924,14 +913,14 @@ const TOOLS = [
   },
   {
     name: 'search_confluence',
-    description: 'Confluence 문서 검색. query(자연어)를 주면 자동으로 CQL 변환됨. 직접 CQL을 쓸 수도 있음.',
+    description: 'Confluence 문서 검색. query→자동 CQL 변환. cql로 직접 지정 가능.',
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: '검색 키워드 (자연어, 예: "캐릭터 밸런스 기획서"). 자동으로 CQL text~"..." 변환됨.' },
-        cql: { type: 'string', description: '직접 CQL 쿼리 (예: "type=page AND text~\\"캐릭터\\"", "space=AEGIS AND title~\\"기획서\\""). query보다 우선.' },
-        space: { type: 'string', description: 'Confluence Space 키 필터 (예: "AEGIS")' },
-        limit: { type: 'number', description: '최대 건수 (기본 10)' },
+        query: { type: 'string', description: '검색 키워드' },
+        cql: { type: 'string', description: '직접 CQL (query보다 우선)' },
+        space: { type: 'string', description: 'Space 키' },
+        limit: { type: 'number' },
       },
       required: [],
     },
@@ -973,7 +962,7 @@ const TOOLS = [
   // ── 검증 룰 도구 ──────────────────────────────────────────────────────────
   {
     name: 'save_validation_rule',
-    description: '데이터 유효성 검증 룰을 등록/수정합니다. "HP는 0보다 커야 해", "쿨타임은 0.1~300" 같은 요청 시 사용. 자연어를 구조화된 룰로 변환하여 저장.',
+    description: '검증 룰 등록/수정. 자연어→구조화 룰 변환.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1012,7 +1001,7 @@ const TOOLS = [
   // ── Jira 쓰기 툴 ──────────────────────────────────────────────────────────
   {
     name: 'create_jira_issue',
-    description: '⭐ 새 Jira 이슈(일감)를 생성합니다. 버그/작업/스토리 등 issuetype을 지정하세요.',
+    description: '새 Jira 이슈 생성.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1030,7 +1019,7 @@ const TOOLS = [
   },
   {
     name: 'add_jira_comment',
-    description: '⭐ Jira 이슈에 댓글을 직접 작성합니다. 이슈 키(AEGIS-1234) 또는 전체 URL을 issueKey로 전달하세요. ⚠️ Confluence URL은 add_confluence_comment를 사용하세요.',
+    description: 'Jira 이슈에 댓글 작성. issueKey 또는 URL.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1042,7 +1031,7 @@ const TOOLS = [
   },
   {
     name: 'add_confluence_comment',
-    description: '⭐ Confluence 페이지에 댓글을 직접 작성합니다. 페이지 ID 또는 전체 URL(예: https://xxx.atlassian.net/wiki/spaces/AEGIS/pages/926910300/M2)을 전달하세요.',
+    description: 'Confluence 페이지에 댓글 작성. pageId 또는 URL.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1054,7 +1043,7 @@ const TOOLS = [
   },
   {
     name: 'update_jira_issue_status',
-    description: '⭐ Jira 이슈의 상태를 변경합니다. 가능한 상태 목록을 모르면 listTransitions: true로 먼저 조회하세요.',
+    description: 'Jira 이슈 상태 변경. listTransitions:true로 가능한 상태 조회.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1068,94 +1057,75 @@ const TOOLS = [
   // ── 웹 검색 / URL 읽기 ──
   {
     name: 'web_search',
-    description: '🌐 웹에서 정보를 검색합니다. 외부 레퍼런스, 기술 문서, 게임 메카니즘 비교, 용어 정의 등을 찾을 때 사용합니다.',
+    description: '웹 검색. 외부 레퍼런스/기술 문서/용어 검색.',
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: '검색할 키워드 또는 질문 (영문/한글 모두 가능)' },
-        count: { type: 'number', description: '검색 결과 수 (기본 5, 최대 10)' },
+        query: { type: 'string', description: '검색 키워드' },
+        count: { type: 'number', description: '결과 수 (기본 5)' },
       },
       required: ['query'],
     },
   },
   {
     name: 'read_url',
-    description: '🌐 지정한 URL의 웹페이지 내용을 읽어옵니다. web_search 결과 URL의 상세 내용을 확인하거나, 사용자가 제공한 URL의 내용을 읽을 때 사용합니다.',
+    description: 'URL 웹페이지 내용 읽기.',
     input_schema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: '읽을 웹페이지 URL (https://...)' },
-        maxLength: { type: 'number', description: '추출할 최대 텍스트 길이 (기본 15000자)' },
+        url: { type: 'string', description: 'URL' },
+        maxLength: { type: 'number', description: '최대 길이 (기본 15000)' },
       },
       required: ['url'],
     },
   },
-  // ── 바이블테이블링 (Excel 편집) ──
+  // ── 바이브테이블링 (Excel 편집) ──
   {
     name: 'edit_game_data',
-    description: `⭐ 게임 데이터 Excel 파일을 편집합니다 (바이블테이블링).
-ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편집하세요.
-편집된 셀은 노란색 하이라이트로 표시됩니다. 결과는 다운로드 링크로 제공됩니다.
-
-⭐⭐⭐ 중요: 같은 xlsx 파일의 여러 시트를 수정할 때 (예: Character.xlsx → Character, CharacterStat, SkillSet 시트)
-→ 반드시 하나의 edit_game_data 호출에 edit_plan 배열로 모든 시트를 한번에 포함하세요!
-→ 각 항목에 table, sheet, file을 명시하세요.
-→ 여러 번 분리 호출하면 이전 편집이 유실됩니다!
-
-편집 순서 규칙:
-1. ERD에서 FK 관계를 확인하여 부모 테이블(참조되는 쪽)부터 편집
-2. 부모 테이블의 PK 값이 변경되면 자식 테이블의 FK도 반드시 업데이트
-3. order 필드로 편집 순서 지정 (낮은 숫자 = 먼저 편집)
-4. 연관 테이블이 있으면 반드시 함께 편집 계획에 포함
-
-⚡ 성능 최적화 — csv_set 포맷 (대량 set 편집 시 강력 권장!):
-- 여러 행의 값을 set으로 변경할 때 csv_set 사용 → 토큰 70% 절약, PK 룩업으로 처리 속도 향상
-- 형식: 첫 행=헤더(첫 열=PK필터열, 나머지=변경열), 이후 행=값
-- 예: csv_set: "id,hp,mp,atk\\nCHR001,1000,500,120\\nCHR002,600,1200,80"
-- csv_set을 쓰면 filters/changes는 생략
-- multiply/add/subtract/append가 필요하면 기존 filters+changes 사용
-
-필터 op: eq, neq, gt, gte, lt, lte, in, contains, starts_with, ends_with
-변경 action: set(값 설정), multiply(곱하기), add(더하기), subtract(빼기), append(텍스트 추가)`,
+    description: `게임 데이터 Excel 기존 셀 편집 (바이브테이블링). 편집된 셀은 노란색 하이라이트.
+⭐ 같은 xlsx 여러 시트 수정 시 → 하나의 edit_game_data에 edit_plan 배열로 모두 포함! 분리 호출 시 이전 편집 유실!
+edit_plan: [{order(부모먼저), table, sheet?, file?, csv_set? 또는 filters+changes}]
+csv_set: 대량 set 편집 권장. "id,hp,mp\\nCHR001,1000,500" (첫열=PK필터eq, 나머지=set값). multiply/add/subtract/append는 filters+changes 사용.
+op: eq/neq/gt/gte/lt/lte/in/contains/starts_with/ends_with. action: set/multiply/add/subtract/append.`,
     input_schema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: '편집 작업 제목 (예: "전사 캐릭터 HP 밸런스 조정")' },
-        reason: { type: 'string', description: '편집 사유' },
+        title: { type: 'string', description: '구체적 작업 제목 (예: "캐릭터5001 스탯 수정"). "바이브테이블링" 같은 일반 제목 금지!' },
+        reason: { type: 'string', description: '사유' },
         edit_plan: {
           type: 'array',
-          description: '편집 계획 배열 — 같은 파일의 여러 시트 편집은 반드시 하나의 배열에! order 순서대로 실행됨',
+          description: '편집 계획 배열. order 순서대로 실행',
           items: {
             type: 'object',
             properties: {
-              order: { type: 'number', description: '편집 순서 (1=가장 먼저, 부모 테이블에 낮은 번호)' },
-              table: { type: 'string', description: '테이블(시트) 이름' },
-              sheet: { type: 'string', description: '시트 이름 (같은 xlsx에 여러 시트가 있을 때 명시. 생략 시 table 값 사용)' },
-              file: { type: 'string', description: '엑셀 파일명 (예: Character.xlsx). 같은 파일의 다른 시트를 편집할 때 반드시 지정' },
-              csv_set: { type: 'string', description: '⚡ CSV 대량 set 편집 (권장!). 첫 행=헤더(첫 열=PK필터, 나머지=set 컬럼), 이후 행=값. 예: "id,hp,mp\\nCHR001,1000,500\\nCHR002,600,1200". 이 필드 사용 시 filters/changes 생략.' },
+              order: { type: 'number', description: '실행 순서' },
+              table: { type: 'string', description: '시트명' },
+              sheet: { type: 'string', description: '시트명 (생략 시 table)' },
+              file: { type: 'string', description: 'xlsx 파일명' },
+              csv_set: { type: 'string', description: 'CSV set편집. 첫열=PK필터,나머지=set값' },
               filters: {
                 type: 'array',
-                description: '대상 행 필터. csv_set 미사용 시에만. 비어있으면 전체 행.',
+                description: '행 필터 (csv_set 미사용 시)',
                 items: {
                   type: 'object',
                   properties: {
-                    column: { type: 'string', description: '필터 컬럼명' },
-                    op: { type: 'string', enum: ['eq','neq','gt','gte','lt','lte','in','contains','starts_with','ends_with'], description: '비교 연산자' },
-                    value: { type: 'string', description: '비교값 (eq/neq/gt 등)' },
-                    values: { type: 'array', items: { type: 'string' }, description: 'in 연산자용 값 목록' },
+                    column: { type: 'string' },
+                    op: { type: 'string', enum: ['eq','neq','gt','gte','lt','lte','in','contains','starts_with','ends_with'] },
+                    value: { type: 'string' },
+                    values: { type: 'array', items: { type: 'string' } },
                   },
                   required: ['column', 'op'],
                 },
               },
               changes: {
                 type: 'array',
-                description: '적용할 변경 목록. csv_set 미사용 시에만.',
+                description: '변경 목록 (csv_set 미사용 시)',
                 items: {
                   type: 'object',
                   properties: {
-                    column: { type: 'string', description: '변경할 컬럼명' },
-                    action: { type: 'string', enum: ['set','multiply','add','subtract','append'], description: '변경 액션' },
-                    value: { description: '변경값 (set=새값, multiply=배수, add/subtract=증감값, append=추가텍스트)' },
+                    column: { type: 'string' },
+                    action: { type: 'string', enum: ['set','multiply','add','subtract','append'] },
+                    value: { description: '값' },
                   },
                   required: ['column', 'action', 'value'],
                 },
@@ -1170,47 +1140,32 @@ ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편
   },
   {
     name: 'add_game_data_rows',
-    description: `게임 데이터 Excel 테이블에 새 행을 추가합니다 (바이블테이블링).
-
-🔴🔴🔴 필수 규칙: 기존 데이터를 복제/복사/참고하여 추가할 때는 반드시 clone_source를 사용하세요!
-절대로 기존 데이터를 query한 후 rows/csv로 하나하나 다시 타이핑하지 마세요!
-
-■ clone_source 모드 (기존 행 복제 — 1초 소요):
-  clone_source: {column:"character_id", value:"2001"}, override_csv: "character_id\\n3001\\n3002"
-  → Python이 2001의 모든 행을 찾아 3001용/3002용으로 각각 자동 복제. 바꿀 컬럼만 override_csv로 지정.
-  → 원본 M행 × override N세트 = M×N행 자동 생성. 나머지 컬럼은 원본에서 그대로 복사.
-
-■ csv 모드 (완전히 새로운 데이터):
-  csv: "id,name,hp\\nCHR100,전사,1000"
-
-■ rows 모드 (1~2행 소량 추가 전용):
-  rows: [{"id":"CHR100","name":"전사"}]
-  ❌ 3행 이상 추가 시 rows 사용 금지! csv 또는 clone_source 사용.`,
+    description: `게임 데이터 Excel 새 행 추가 (바이브테이블링). 추가된 셀은 노란색 하이라이트.
+🔴 기존 데이터 복제/복사 시 → clone_source 필수! query 결과를 rows/csv로 재입력 절대 금지!
+clone_source: {column, value} + override_csv → Python이 원본 복사, 바꿀 컬럼만 교체. 원본 M행 × override N세트 = M×N행 자동생성.
+csv: 완전히 새로운 데이터만. rows: 1~2행 소량 전용 (3행 이상 금지).`,
     input_schema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: '작업 제목' },
-        reason: { type: 'string', description: '추가 사유' },
-        table: { type: 'string', description: '테이블(시트) 이름' },
-        file: { type: 'string', description: '엑셀 파일명 (생략 시 테이블명.xlsx)' },
+        title: { type: 'string', description: '구체적 작업 제목 (예: "캐릭터5001 스탯 10행 추가"). 일반 제목 금지!' },
+        reason: { type: 'string' },
+        table: { type: 'string', description: '시트명' },
+        file: { type: 'string', description: 'xlsx 파일명' },
         clone_source: {
           type: 'object',
-          description: '🔴 기존 행 복제 시 필수! query_game_data로 조회한 데이터를 rows/csv로 재입력하지 말고 clone_source 사용. Python이 원본 행을 전부 복사하고 override_csv 컬럼만 교체.',
+          description: '기존 행 복제. Python이 원본 복사+override 적용',
           properties: {
-            column: { type: 'string', description: '필터 컬럼명 (예: "character_id")' },
-            value: { type: 'string', description: '필터 값 (예: "2001")' },
+            column: { type: 'string' },
+            value: { type: 'string' },
           },
           required: ['column', 'value'],
         },
-        override_csv: { type: 'string', description: 'clone_source와 함께 사용. 바꿀 컬럼만 CSV. 첫 행=헤더, 이후=값. 예: "character_id,name\\n3001,새캐릭\\n3002,또다른캐릭". override_csv의 각 행마다 원본 전체가 복제됨.' },
-        csv: { type: 'string', description: 'CSV 포맷 (완전히 새로운 데이터만). 첫 행=헤더, 이후=값. ❌ 기존 데이터 복제 시 사용 금지 → clone_source 사용.' },
+        override_csv: { type: 'string', description: 'clone_source용. 바꿀 컬럼 CSV' },
+        csv: { type: 'string', description: '새 데이터 CSV' },
         rows: {
           type: 'array',
-          description: '❌ 3행 이상 또는 기존 데이터 복제 시 사용 금지. 1~2행 소량 신규 추가 전용.',
-          items: {
-            type: 'object',
-            description: '각 행: { "컬럼명": "값", ... }',
-          },
+          description: '1~2행 소량 추가 전용',
+          items: { type: 'object' },
         },
       },
       required: ['table'],
@@ -1415,9 +1370,9 @@ function buildSystemPrompt(
   lines.push('- **단순 질문**: 스키마/데이터를 이미 알고 있으면 도구 없이 바로 텍스트 응답. 불필요한 확인 호출 금지.');
   lines.push('');
 
-  // ── 바이블테이블링 규칙: edit_game_data/add_game_data_rows 포함 시에만 ──
+  // ── 바이브테이블링 규칙: edit_game_data/add_game_data_rows 포함 시에만 ──
   if (hasTools(['edit_game_data', 'add_game_data_rows'])) {
-    lines.push('## 📝 바이블테이블링 (Excel 편집)');
+    lines.push('## 📝 바이브테이블링 (Excel 편집)');
     lines.push('데이터 수정/편집/추가 요청 시 반드시 사용.');
     lines.push('');
     lines.push('⚡ 속도 최적화 — 2~3 이터레이션으로 끝내기!');
@@ -1425,6 +1380,7 @@ function buildSystemPrompt(
     lines.push('⭐ 모르면 → show_table_schema + query_game_data를 한번에 동시 호출 (1 이터레이션)');
     lines.push('→ 다음 이터레이션에서 바로 edit_game_data/add_game_data_rows 호출');
     lines.push('⚠️ 컬럼명 추측 금지! #메모 컬럼(#effect_memo 등)에는 한글 설명 텍스트를 채워주세요!');
+    lines.push('🔴 NotNull(!) 컬럼은 빈값/null 절대 금지! 반드시 적절한 값을 채워야 합니다. 빈값 → 크래시 발생!');
     lines.push('');
     lines.push('### ⚡⚡⚡ CSV 포맷 (대량 편집/추가 시 필수!)');
     lines.push('토큰 50~70% 절약 + PK 룩업으로 처리 속도 향상. 2행 이상 편집/추가 시 반드시 CSV 사용!');
@@ -1481,9 +1437,9 @@ function buildSystemPrompt(
     lines.push('- 데이터가 많으면 → 여러 번 나눠서 호출! (예: 1~5레벨 + 6~10레벨)');
     lines.push('- 사용자가 요청한 테이블은 100% 전부 편집/추가. 하나라도 빠지면 실패.');
     lines.push('');
-    lines.push('📌 바이블테이블링 응답 스타일 (텍스트로 중계! 아티팩트 만들지 마!):');
-    lines.push('- ❌❌❌ 바이블테이블링 후 create_artifact 절대 호출 금지!');
-    lines.push('- ❌❌❌ 바이블테이블링 결과를 "정리/요약/종합" 명목으로 아티팩트 만드는 것도 금지!');
+    lines.push('📌 바이브테이블링 응답 스타일 (텍스트로 중계! 아티팩트 만들지 마!):');
+    lines.push('- ❌❌❌ 바이브테이블링 후 create_artifact 절대 호출 금지!');
+    lines.push('- ❌❌❌ 바이브테이블링 결과를 "정리/요약/종합" 명목으로 아티팩트 만드는 것도 금지!');
     lines.push('- 도구 호출 전: 수정/추가할 테이블 목록과 계획을 텍스트로 설명');
     lines.push('- 도구 호출 후: 결과를 텍스트+마크다운 표로 요약 (아티팩트 아닌 일반 텍스트!)');
     lines.push('- ⭐ 텍스트 응답 마지막에 다운로드 링크 포함! 예: "📥 [Character.xlsx](URL)"');
@@ -1504,7 +1460,7 @@ function buildSystemPrompt(
     lines.push('- 예: "기존에 [AEGIS 캐릭터 종합 데이터 시트](/api/p/aegis_character_sheet) 문서가 있습니다. 갱신할까요?"');
     lines.push('- 사용자가 "갱신/수정/업데이트" 요청 시 → get_published_artifact로 기존 HTML 가져와서 create_artifact로 수정본 생성');
     lines.push('- 사용자가 기존 아티팩트를 언급/링크하면 → get_published_artifact로 가져와서 수정');
-    lines.push('- 🔴 예외: edit_game_data / add_game_data_rows (바이블테이블링) 결과는 절대 아티팩트로 만들지 마세요! "정리/요약" 명목도 금지! 다운로드 링크가 결과물.');
+    lines.push('- 🔴 예외: edit_game_data / add_game_data_rows (바이브테이블링) 결과는 절대 아티팩트로 만들지 마세요! "정리/요약" 명목도 금지! 다운로드 링크가 결과물.');
     lines.push('<<<ARTIFACT_START>>> + HTML(body만, 다크테마 bg:#0f1117 text:#e2e8f0 accent:#6366f1) + <<<ARTIFACT_END>>> → create_artifact(title). 수정은 patch_artifact만.');
     lines.push('임베드: data-embed="schema|query|relations|graph|diff|csv|scene|prefab|fbx-anim" 속성 사용. [[TableName]]→스키마 팝업.');
     lines.push('이미지: find_resource_image로 검색한 결과의 url 필드(전체 URL)를 <img src="...">에 사용. /api/images/... 상대경로 금지!');
@@ -1641,20 +1597,24 @@ function buildSystemPrompt(
     });
     if (mentionedTables.length > 0 && mentionedTables.length <= 5) {
       const nameById = new Map(schema.tables.map(t => [t.id, t.name]));
-      lines.push(`## 🎯 질문 관련 테이블 스키마 (사전 주입 — show_table_schema 불필요, 바로 query_game_data 호출 가능)`);
+      lines.push(`## 🎯 질문 관련 테이블 스키마 (사전주입 — 바로 query_game_data 가능)`);
       for (const t of mentionedTables) {
         const cols = t.columns.map(c => {
-          const flags = [c.isPrimaryKey && 'PK', c.isForeignKey && 'FK', c.isNotNull && 'NN'].filter(Boolean).join(',');
-          return `${c.name}:${c.type}${flags ? `[${flags}]` : ''}`;
-        }).join(', ');
+          let s = c.name;
+          if (c.isPrimaryKey) s += '*';
+          else if (c.isForeignKey) s += '^';
+          if (c.isNotNull && !c.isPrimaryKey) s += '!';
+          return s;
+        }).join(',');
         const fks = schema.refs
           .filter(r => r.fromTable === t.id)
-          .map(r => `${r.fromColumns[0]}→${nameById.get(r.toTable) ?? r.toTable}`)
-          .join(', ');
+          .map(r => `${r.fromColumns[0]}>${nameById.get(r.toTable) ?? r.toTable}`)
+          .join(',');
         const rowCount = tableData.get(t.name)?.rows.length ?? '?';
-        const reservedNote = RESERVED_TABLE_NAMES.has(t.name.toUpperCase()) ? ` ⚠️SQL: FROM __u_${t.name}` : '';
-        lines.push(`**${t.name}** (${rowCount}행${reservedNote}): ${cols}${fks ? ` | FK: ${fks}` : ''}`);
+        const reservedNote = RESERVED_TABLE_NAMES.has(t.name.toUpperCase()) ? ` SQL:__u_${t.name}` : '';
+        lines.push(`${t.name}(${rowCount}${reservedNote}):${cols}${fks ? `|FK:${fks}` : ''}`);
       }
+      lines.push('(*=PK ^=FK !=NotNull)');
       lines.push('');
     }
   }
@@ -2870,11 +2830,24 @@ export async function sendChatMessage(
    * - assistant text: 아티팩트 마커 내 HTML → 한 줄 요약
    * - 오래된 메시지(idx < half): 더 공격적 압축 (800자)
    */
+  /** 마크다운 테이블의 데이터 행을 maxRows개로 자르고 나머지는 요약 */
+  function truncateMarkdownTable(text: string, maxRows: number): string {
+    return text.replace(
+      /((?:\|[^\n]+\|\n)(?:\|[-: ]+\|\n))((?:\|[^\n]+\|\n?)+)/g,
+      (_match, header: string, body: string) => {
+        const rows = body.split('\n').filter((r: string) => r.trim());
+        if (rows.length <= maxRows) return header + body;
+        const kept = rows.slice(0, maxRows).join('\n');
+        return header + kept + `\n| ... 외 ${rows.length - maxRows}행 생략 |\n`;
+      }
+    );
+  }
+
   function compressHistory(msgs: ClaudeMsg[]): ClaudeMsg[] {
     const halfIdx = Math.floor(msgs.length / 2);
     const thirdIdx = Math.floor(msgs.length / 3);
 
-    return msgs.map((m, msgIdx) => {
+    const compressed = msgs.map((m, msgIdx) => {
       const isVeryOld = msgIdx < thirdIdx;
       const isOld = msgIdx < halfIdx;
       const THRESHOLD = isVeryOld ? 300 : isOld ? 800 : 1500;
@@ -2883,28 +2856,33 @@ export async function sendChatMessage(
       if (m.role === 'user' && Array.isArray(m.content)) {
         const content = (m.content as Array<Record<string, unknown>>).map(b => {
           if (b.type !== 'tool_result' || typeof b.content !== 'string') return b;
-          const c = b.content as string;
+          let c = b.content as string;
 
-          // 매우 오래된 턴: tool_result 극단적 압축 (어시스턴트가 이미 요약했으므로)
+          // 마크다운 테이블 행 축소: 오래된 턴은 2행, 최근은 5행
+          if (/\|[^\n]+\|/.test(c)) {
+            c = truncateMarkdownTable(c, isVeryOld ? 2 : isOld ? 3 : 5);
+          }
+
+          // 매우 오래된 턴: tool_result 극단적 압축
           if (isVeryOld && c.length > 300) {
             return { ...b, content: c.slice(0, 200) + `\n...(${c.length}자, 이전 대화 요약 참조)` };
           }
 
-          if (c.length <= THRESHOLD) return b;
+          if (c.length <= THRESHOLD) return { ...b, content: c };
 
           if (/<[a-zA-Z]/.test(c)) {
-            const compressed = compressHtmlRows(c);
-            if (compressed.length < c.length * 0.7) {
+            const htmlCompressed = compressHtmlRows(c);
+            if (htmlCompressed.length < c.length * 0.7) {
               const limit = isOld ? 600 : 1500;
-              return { ...b, content: compressed.slice(0, limit) + `\n...(HTML ${c.length}자→${Math.min(compressed.length, limit)}자)` };
+              return { ...b, content: htmlCompressed.slice(0, limit) + `\n...(HTML ${c.length}자→${Math.min(htmlCompressed.length, limit)}자)` };
             }
           }
 
           if (c.startsWith('{') || c.startsWith('[')) {
-            const compressed = compressJsonData(c);
-            if (compressed.length <= THRESHOLD) return { ...b, content: compressed };
+            const jsonCompressed = compressJsonData(c);
+            if (jsonCompressed.length <= THRESHOLD) return { ...b, content: jsonCompressed };
             const limit = isVeryOld ? 200 : isOld ? 600 : 1500;
-            return { ...b, content: compressed.slice(0, limit) + `\n...(JSON ${c.length}자)` };
+            return { ...b, content: jsonCompressed.slice(0, limit) + `\n...(JSON ${c.length}자)` };
           }
 
           const limit = isVeryOld ? 200 : isOld ? 500 : 1200;
@@ -2913,7 +2891,7 @@ export async function sendChatMessage(
         return { ...m, content } as ClaudeMsg;
       }
 
-      // ── assistant 메시지: tool_use/아티팩트 HTML 압축 ──
+      // ── assistant 메시지: tool_use/아티팩트 HTML/마크다운 테이블 압축 ──
       if (m.role === 'assistant' && Array.isArray(m.content)) {
         const content = (m.content as ContentBlock[]).map(b => {
           if (b.type === 'tool_use') {
@@ -2929,10 +2907,10 @@ export async function sendChatMessage(
             if (typeof inp.sql === 'string' && (inp.sql as string).length > 500) {
               return { ...tb, input: { ...inp, sql: (inp.sql as string).slice(0, 300) + '...' } };
             }
-            // 매우 오래된 턴: 모든 tool_use input 축소
-            if (isVeryOld) {
+            // 오래된 턴: edit_plan/rows/csv 등 큰 입력 축소
+            if (isOld) {
               const inputStr = JSON.stringify(inp);
-              if (inputStr.length > 300) {
+              if (inputStr.length > (isVeryOld ? 300 : 800)) {
                 const keys = Object.keys(inp).join(', ');
                 return { ...tb, input: { _summary: `(${keys}, ${inputStr.length}자 생략)` } };
               }
@@ -2942,17 +2920,21 @@ export async function sendChatMessage(
 
           if (b.type === 'text') {
             const tb = b as TextBlock;
-            if (tb.text.includes('<<<ARTIFACT_START>>>')) {
-              const collapsed = tb.text.replace(
+            let text = tb.text;
+            if (text.includes('<<<ARTIFACT_START>>>')) {
+              text = text.replace(
                 /<<<ARTIFACT_START>>>([\s\S]*?)<<<ARTIFACT_END>>>/g,
                 (_m, html: string) => `<<<ARTIFACT_START>>>(아티팩트 HTML ${html.length}자 생략)<<<ARTIFACT_END>>>`
               );
-              return { ...b, text: collapsed } as TextBlock;
             }
-            // 매우 오래된 턴의 긴 텍스트도 축소
-            if (isVeryOld && tb.text.length > 1000) {
-              return { ...b, text: tb.text.slice(0, 800) + `\n...(${tb.text.length}자)` } as TextBlock;
+            // 마크다운 테이블 행 축소 (오래된 턴)
+            if (isOld && /\|[^\n]+\|/.test(text)) {
+              text = truncateMarkdownTable(text, isVeryOld ? 2 : 3);
             }
+            if (isVeryOld && text.length > 1000) {
+              text = text.slice(0, 800) + `\n...(${text.length}자)`;
+            }
+            if (text !== tb.text) return { ...b, text } as TextBlock;
           }
 
           return b;
@@ -2962,6 +2944,49 @@ export async function sendChatMessage(
 
       return m;
     });
+
+    // ── 연속 동일 도구 호출 결과 병합 (오래된 턴에서) ──
+    if (compressed.length > 6) {
+      for (let i = 0; i < Math.min(halfIdx, compressed.length); i++) {
+        const m = compressed[i];
+        if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+        const blocks = m.content as ContentBlock[];
+        const toolUses = blocks.filter(b => b.type === 'tool_use') as ToolUseBlock[];
+        if (toolUses.length < 3) continue;
+
+        // 동일 도구 연속 호출 횟수 세기
+        const toolCounts = new Map<string, number>();
+        for (const tu of toolUses) toolCounts.set(tu.name, (toolCounts.get(tu.name) ?? 0) + 1);
+
+        for (const [toolName, count] of toolCounts) {
+          if (count < 3) continue;
+          // 마지막 호출만 유지, 나머지는 제거
+          let seen = 0;
+          const newContent = blocks.filter(b => {
+            if (b.type === 'tool_use' && (b as ToolUseBlock).name === toolName) {
+              seen++;
+              if (seen < count) return false;
+              // 마지막 하나만 유지, input에 요약 추가
+              (b as ToolUseBlock).input = { _summary: `${toolName} ${count}회 호출, 마지막 결과만 유지` };
+            }
+            return true;
+          });
+          (m as { content: ContentBlock[] }).content = newContent as ContentBlock[];
+
+          // 대응하는 user 메시지(i+1)의 tool_result도 정리
+          if (i + 1 < compressed.length && compressed[i + 1].role === 'user' && Array.isArray(compressed[i + 1].content)) {
+            const userBlocks = compressed[i + 1].content as Array<Record<string, unknown>>;
+            const removedIds = new Set(
+              toolUses.filter(tu => tu.name === toolName).slice(0, count - 1).map(tu => tu.id)
+            );
+            (compressed[i + 1] as { content: Array<Record<string, unknown>> }).content =
+              userBlocks.filter(b => b.type !== 'tool_result' || !removedIds.has(b.tool_use_id as string));
+          }
+        }
+      }
+    }
+
+    return compressed;
   }
 
   let rawHistoryMsgs = historyToMessages(history);
@@ -3068,7 +3093,7 @@ export async function sendChatMessage(
     };
   };
 
-  // ── 동적 max_tokens: 아티팩트/바이블테이블링이면 16384, 일반 대화면 4096 ──
+  // ── 동적 max_tokens: 아티팩트/바이브테이블링이면 16384, 일반 대화면 4096 ──
   const ARTIFACT_KEYWORDS = /정리해줘|문서로.*만들|보고서.*만들|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|릴리즈.*노트|작성해줘/;
   const BT_KEYWORDS = /바이블|테이블링|편집해|추가해|수정해|데이터.*넣|행.*추가|값.*변경|만들어줘.*캐릭|세팅해|밸런스|스탯|스킬.*추가|레벨.*추가|이어서.*생성/;
   const hasBtTools = filteredTools.some(t => t.name === 'edit_game_data' || t.name === 'add_game_data_rows');
@@ -3288,13 +3313,13 @@ export async function sendChatMessage(
         delete_validation_rule: '🛡️ 검증 룰 삭제',
         web_search: '🌐 웹 검색',
         read_url: '🌐 웹페이지 읽기',
-        edit_game_data: '📝 바이블테이블링',
+        edit_game_data: '📝 바이브테이블링',
         add_game_data_rows: '➕ 데이터 행 추가',
         search_published_artifacts: '🔍 기존 문서 검색',
         get_published_artifact: '📄 기존 문서 가져오기',
       };
 
-      // 바이블테이블링 도구는 같은 xlsx 파일의 여러 시트를 순차 편집해야 하므로
+      // 바이브테이블링 도구는 같은 xlsx 파일의 여러 시트를 순차 편집해야 하므로
       // prev_job_id 체이닝을 위해 순차 실행. 나머지 도구는 병렬 실행.
       const BT_TOOLS = new Set(['edit_game_data', 'add_game_data_rows']);
       const btBlocks = toolBlocks.filter(tb => BT_TOOLS.has(tb.name));
@@ -4252,12 +4277,12 @@ function showTab(id){
           const t0 = performance.now();
           const duration = performance.now() - t0;
 
-          // 🔴 바이블테이블링 후 아티팩트 생성 차단 (코드 레벨 강제)
+          // 🔴 바이브테이블링 후 아티팩트 생성 차단 (코드 레벨 강제)
           const hadBibleTabling = allToolCalls.some(tc => tc.kind === 'bible_tabling_edit' || tc.kind === 'bible_tabling_add_rows');
           if (hadBibleTabling) {
             tc = { kind: 'artifact', title, description, html: '', duration } as ArtifactResult;
-            resultStr = `🔴 바이블테이블링 결과는 아티팩트로 만들지 마세요! 다운로드 링크가 결과물입니다. 텍스트 응답으로 요약하세요.`;
-            console.log(`[Chat] create_artifact 차단: 바이블테이블링 후 아티팩트 생성 시도 → 거부 ("${title}")`);
+            resultStr = `🔴 바이브테이블링 결과는 아티팩트로 만들지 마세요! 다운로드 링크가 결과물입니다. 텍스트 응답으로 요약하세요.`;
+            console.log(`[Chat] create_artifact 차단: 바이브테이블링 후 아티팩트 생성 시도 → 거부 ("${title}")`);
           } else if (allToolCalls.some(tc => tc.kind === 'artifact')) {
             // ── 중복 호출 방지: 이미 아티팩트가 있으면 무시 ──
             tc = { kind: 'artifact', title, description, html, duration } as ArtifactResult;
@@ -5098,10 +5123,10 @@ function showTab(id){
           } // end else (일반 URL)
         }
 
-        // ── edit_game_data (바이블테이블링 — 데이터 편집, SSE 스트리밍) ──
+        // ── edit_game_data (바이브테이블링 — 데이터 편집, SSE 스트리밍) ──
         else if (tb.name === 'edit_game_data') {
           const BIBLE_TABLING_URL = ''; // Vite 프록시 경유 (/api/bible-tabling/ → localhost:8100)
-          const title = String(inp.title ?? '바이블테이블링');
+          const title = String(inp.title ?? '바이브테이블링');
           const reason = inp.reason ? String(inp.reason) : '';
           const t0 = Date.now();
           try {
@@ -5118,7 +5143,7 @@ function showTab(id){
             if (!resp.ok) {
               const duration = Date.now() - t0;
               const errText = await resp.text();
-              resultStr = `바이블테이블링 오류 (${resp.status}): ${errText}`;
+              resultStr = `바이브테이블링 오류 (${resp.status}): ${errText}`;
               tc = { kind: 'bible_tabling_edit', title, reason, jobId: '', downloadUrl: '', downloadFilename: '', files: [], filesModified: 0, totalRowsMatched: 0, totalCellsModified: 0, tables: [], error: resultStr, duration };
             } else {
               // SSE 스트리밍으로 실시간 진행 상태 수신
@@ -5181,7 +5206,7 @@ function showTab(id){
               const duration = Date.now() - t0;
 
               if (fatalError) {
-                resultStr = `바이블테이블링 오류: ${fatalError}`;
+                resultStr = `바이브테이블링 오류: ${fatalError}`;
                 tc = { kind: 'bible_tabling_edit', title, reason, jobId: '', downloadUrl: '', downloadFilename: '', files: [], filesModified: 0, totalRowsMatched: 0, totalCellsModified: 0, tables: [], error: resultStr, duration };
               } else if (doneEvent) {
                 const summary = doneEvent.summary as Record<string, unknown>;
@@ -5209,8 +5234,8 @@ function showTab(id){
                 }
 
                 let resultText = isPartial
-                  ? `⚠️ 바이블테이블링 부분 완료 (${errorCount}건 오류)\n`
-                  : `✅ 바이블테이블링 편집 완료\n`;
+                  ? `⚠️ 바이브테이블링 부분 완료 (${errorCount}건 오류)\n`
+                  : `✅ 바이브테이블링 편집 완료\n`;
                 resultText += `제목: ${summary.title}\n`;
                 if (summary.reason) resultText += `사유: ${summary.reason}\n`;
                 resultText += `파일: ${summary.files_modified}개 | 행: ${summary.total_rows_matched}개 매치 | 셀: ${summary.total_cells_modified}개 변경\n`;
@@ -5283,20 +5308,20 @@ function showTab(id){
                   duration,
                 };
               } else {
-                resultStr = '바이블테이블링: SSE 스트림이 완료 이벤트 없이 종료됨';
+                resultStr = '바이브테이블링: SSE 스트림이 완료 이벤트 없이 종료됨';
                 tc = { kind: 'bible_tabling_edit', title, reason, jobId: '', downloadUrl: '', downloadFilename: '', files: [], filesModified: 0, totalRowsMatched: 0, totalCellsModified: 0, tables: [], error: resultStr, duration };
               }
             }
           } catch (e) {
             const duration = Date.now() - t0;
-            resultStr = `바이블테이블링 연결 실패: ${String(e)}\nstart.bat을 실행하여 바이블테이블링 서버를 시작하세요.`;
+            resultStr = `바이브테이블링 연결 실패: ${String(e)}\nstart.bat을 실행하여 바이브테이블링 서버를 시작하세요.`;
             tc = { kind: 'bible_tabling_edit', title, reason, jobId: '', downloadUrl: '', downloadFilename: '', files: [], filesModified: 0, totalRowsMatched: 0, totalCellsModified: 0, tables: [], error: resultStr, duration };
           }
         }
-        // ── add_game_data_rows (바이블테이블링 — 행 추가) ──
+        // ── add_game_data_rows (바이브테이블링 — 행 추가) ──
         else if (tb.name === 'add_game_data_rows') {
           const BIBLE_TABLING_URL = ''; // Vite 프록시 경유 (/api/bible-tabling/ → localhost:8100)
-          const title = String(inp.title ?? '바이블테이블링 — 행 추가');
+          const title = String(inp.title ?? '바이브테이블링 — 행 추가');
           const reason = inp.reason ? String(inp.reason) : '';
           const table = String(inp.table ?? '');
           const file = inp.file ? String(inp.file) : undefined;
@@ -5346,7 +5371,7 @@ function showTab(id){
             const duration = Date.now() - t0;
             if (!resp.ok) {
               const errText = await resp.text();
-              resultStr = `바이블테이블링 행 추가 오류 (${resp.status}): ${errText}`;
+              resultStr = `바이브테이블링 행 추가 오류 (${resp.status}): ${errText}`;
               tc = { kind: 'bible_tabling_add_rows', table, file, jobId: '', downloadUrl: '', downloadFilename: '', rowsAdded: 0, error: resultStr, duration };
             } else {
               const data = await resp.json() as Record<string, unknown>;
@@ -5355,7 +5380,7 @@ function showTab(id){
               const downloadUrl = `${BIBLE_TABLING_URL}${data.download_url}`;
               const downloadFilename = String(data.download_filename ?? '');
 
-              let resultText = `✅ 바이블테이블링 행 추가 완료\n`;
+              let resultText = `✅ 바이브테이블링 행 추가 완료\n`;
               resultText += `테이블: ${summary.table} (${summary.file})\n`;
               resultText += `추가된 행: ${summary.rows_added}개`;
               if (summary.source_rows) resultText += ` (원본 ${summary.source_rows}행 × ${summary.override_sets}세트 복제)`;
@@ -5413,7 +5438,7 @@ function showTab(id){
             }
           } catch (e) {
             const duration = Date.now() - t0;
-            resultStr = `바이블테이블링 연결 실패: ${String(e)}\nstart.bat을 실행하여 바이블테이블링 서버를 시작하세요.`;
+            resultStr = `바이브테이블링 연결 실패: ${String(e)}\nstart.bat을 실행하여 바이브테이블링 서버를 시작하세요.`;
             tc = { kind: 'bible_tabling_add_rows', table, file, jobId: '', downloadUrl: '', downloadFilename: '', rowsAdded: 0, error: resultStr, duration };
           }
           } // rows 차단 else 블록 닫기
@@ -5551,7 +5576,7 @@ function showTab(id){
         onToolCall?.(autoTc, allToolCalls.length - 1);
       }
 
-      // 데이터 수집 완료 & 아티팩트 미생성 → create_artifact 재촉 (단, 바이블테이블링이면 제외!)
+      // 데이터 수집 완료 & 아티팩트 미생성 → create_artifact 재촉 (단, 바이브테이블링이면 제외!)
       const hadBibleTabling = allToolCalls.some(tc => tc.kind === 'bible_tabling_edit' || tc.kind === 'bible_tabling_add_rows');
       if (hasFetchedData && !hasArtifact && !artHtmlTruncated && !hadBibleTabling) {
         console.log('[Chat] max_tokens 감지: 데이터 수집 완료, 아티팩트 자동 재시도');
@@ -5562,12 +5587,12 @@ function showTab(id){
             '추가 데이터 조회 없이 현재 데이터만으로 바로 만들어주세요. 핵심 내용을 간결하게 500줄 이내로.',
         });
       } else if (hadBibleTabling && !artHtmlTruncated) {
-        // 바이블테이블링 중 max_tokens → 데이터를 줄여서 재시도 안내
-        console.log('[Chat] max_tokens 감지: 바이블테이블링 중 잘림 → 분할 호출 재시도');
+        // 바이브테이블링 중 max_tokens → 데이터를 줄여서 재시도 안내
+        console.log('[Chat] max_tokens 감지: 바이브테이블링 중 잘림 → 분할 호출 재시도');
         messages.push({
           role: 'user',
           content:
-            '바이블테이블링 도구 호출이 max_tokens로 잘렸습니다. 데이터 양을 줄여서 다시 호출하세요.\n' +
+            '바이브테이블링 도구 호출이 max_tokens로 잘렸습니다. 데이터 양을 줄여서 다시 호출하세요.\n' +
             '⚠️ rows 배열을 절반으로 나눠서 2번에 걸쳐 호출하세요. (예: 10행 → 5행씩 2번)\n' +
             '❌ create_artifact 절대 금지! edit_game_data/add_game_data_rows만 사용하세요.',
         });
@@ -5587,7 +5612,7 @@ function showTab(id){
       continue;
     }
 
-    // ★ 마지막 이터레이션: 잘린 아티팩트라도 누적된 HTML로 생성 (바이블테이블링이면 제외)
+    // ★ 마지막 이터레이션: 잘린 아티팩트라도 누적된 HTML로 생성 (바이브테이블링이면 제외)
     const hadBT = allToolCalls.some(tc => tc.kind === 'bible_tabling_edit' || tc.kind === 'bible_tabling_add_rows');
     if (artHtmlTruncated && !hasArtifact && !hadBT) {
       const finalArtHtml = artifactAccumulatedHtml + streamedArtifactHtml!;

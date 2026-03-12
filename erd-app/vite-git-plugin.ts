@@ -5490,17 +5490,11 @@ function loadServerData(gitRepoDir: string) {
       _serverTableList.push({ name: originalName, columns: headers, rowCount: rows.length })
     }
 
-    // 스키마 설명 텍스트 빌드 (_serverTableList 사용 — 중복 제거됨)
-    const lines: string[] = ['사용 가능한 게임 데이터 테이블:']
+    // 스키마 설명 텍스트 빌드 — 압축 형태 (토큰 절약)
+    const lines: string[] = ['[DB Tables]']
     for (const t of _serverTableList) {
-      lines.push(`\n${t.name} (${t.rowCount}행)`)
-      lines.push(`  컬럼: ${t.columns.join(', ')}`)
-      const tableEntry = _serverTableData.get(t.name.toLowerCase())
-      if (tableEntry && tableEntry.rows.length > 0) {
-        const sample = tableEntry.rows[0]
-        const sampleStr = t.columns.slice(0, 6).map(h => `${h}=${JSON.stringify(sample[h] ?? '')}`).join(', ')
-        lines.push(`  샘플: ${sampleStr}${t.columns.length > 6 ? ' ...' : ''}`)
-      }
+      // 형태: TableName(N행):col1,col2,col3,...
+      lines.push(`${t.name}(${t.rowCount}):${t.columns.join(',')}`)
     }
     _serverSchemaDesc = lines.join('\n')
     _serverDataLoaded = true
@@ -5983,24 +5977,24 @@ const API_TOOLS = [
   // ── 코드 검색/읽기 ──
   {
     name: 'search_code',
-    description: '게임 클라이언트 C# 소스코드를 검색합니다. type="class"로 클래스명 검색, type="method"로 메서드 검색, type="content"로 파일 내용 전문 검색.',
+    description: 'C# 소스코드 검색. type: class/method/file/content.',
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: '검색 키워드 (클래스명, 메서드명, 변수명 등)' },
-        type: { type: 'string', enum: ['class', 'method', 'file', 'content', ''], description: '검색 타입' },
-        scope: { type: 'string', description: '검색 범위 (폴더/파일 제한)' },
+        query: { type: 'string', description: '키워드' },
+        type: { type: 'string', enum: ['class', 'method', 'file', 'content', ''] },
+        scope: { type: 'string' },
       },
       required: ['query'],
     },
   },
   {
     name: 'read_code_file',
-    description: '특정 C# 소스 파일의 전체 내용을 읽습니다. search_code로 경로를 찾은 후 호출하세요.',
+    description: 'C# 파일 읽기.',
     input_schema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '파일 상대 경로 (예: "Combat/DamageSystem.cs")' },
+        path: { type: 'string', description: '파일 경로' },
       },
       required: ['path'],
     },
@@ -6071,14 +6065,14 @@ const API_TOOLS = [
   // ── 애니메이션 프리뷰 ──
   {
     name: 'preview_fbx_animation',
-    description: 'FBX 캐릭터 모델에 애니메이션 FBX를 적용하여 3D 뷰어에서 실시간 재생합니다.',
+    description: 'FBX 3D 애니메이션 재생.',
     input_schema: {
       type: 'object',
       properties: {
-        model_path: { type: 'string', description: 'FBX 모델 파일 경로. 예: "DevAssets(not packed)/_3DModel/musket/base_rig.fbx"' },
-        animation_paths: { type: 'array', items: { type: 'string' }, description: '재생할 애니메이션 FBX 파일 경로 배열 (비워두면 자동 검색)' },
-        categories: { type: 'array', items: { type: 'string' }, description: '필요한 카테고리만 필터. 예: ["idle","combat"]. 값: idle, walk, locomotion, jump, combat, skill, hit, dodge, reload, interaction' },
-        label: { type: 'string', description: '뷰어에 표시할 이름' },
+        model_path: { type: 'string', description: 'FBX 모델 경로' },
+        animation_paths: { type: 'array', items: { type: 'string' } },
+        categories: { type: 'array', items: { type: 'string' } },
+        label: { type: 'string' },
       },
       required: ['model_path'],
     },
@@ -6128,7 +6122,7 @@ const API_TOOLS = [
   },
   {
     name: 'save_validation_rule',
-    description: '데이터 유효성 검증 룰을 등록/수정합니다. "HP는 0보다 커야 해" 같은 요청 시 사용.',
+    description: '검증 룰 등록/수정.',
     input_schema: {
       type: 'object',
       properties: {
@@ -6163,7 +6157,7 @@ const API_TOOLS = [
   // ── Confluence 쓰기 ──
   {
     name: 'add_confluence_comment',
-    description: 'Confluence 페이지에 댓글(footer comment)을 작성합니다. pageId 또는 Confluence 페이지 URL(예: https://xxx.atlassian.net/wiki/spaces/AEGIS/pages/926910300/M2) 중 하나를 pageIdOrUrl로 전달하세요.',
+    description: 'Confluence 페이지에 댓글 작성. pageId 또는 URL.',
     input_schema: {
       type: 'object',
       properties: {
@@ -6176,7 +6170,7 @@ const API_TOOLS = [
   // ── Jira 쓰기 ──
   {
     name: 'add_jira_comment',
-    description: '지정한 Jira 이슈에 댓글을 작성합니다. ⚠️ Confluence URL이 아닌 Jira 이슈 키(예: AEGIS-1234) 또는 Jira 이슈 URL(예: https://jira.example.com/browse/AEGIS-1234) 전용입니다. Confluence 페이지 댓글은 add_confluence_comment를 사용하세요.',
+    description: 'Jira 이슈에 댓글 작성. issueKey 또는 URL.',
     input_schema: {
       type: 'object',
       properties: {
@@ -6188,7 +6182,7 @@ const API_TOOLS = [
   },
   {
     name: 'update_jira_issue_status',
-    description: 'Jira 이슈의 상태를 변경합니다 (예: "In Progress", "Done", "To Do"). 가능한 상태 목록은 이슈마다 다르므로, 정확한 상태명을 모르면 listTransitions: true를 설정하여 목록을 먼저 확인하세요.',
+    description: 'Jira 이슈 상태 변경. listTransitions:true로 목록 조회.',
     input_schema: {
       type: 'object',
       properties: {
@@ -6202,24 +6196,24 @@ const API_TOOLS = [
   // ── 웹 검색 / URL 읽기 ──
   {
     name: 'web_search',
-    description: '웹에서 정보를 검색합니다. 외부 레퍼런스, 기술 문서, 게임 메카니즘 비교, 용어 정의 등을 찾을 때 사용합니다.',
+    description: '웹 검색.',
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: '검색할 키워드 또는 질문 (영문/한글 모두 가능)' },
-        count: { type: 'number', description: '검색 결과 수 (기본 5, 최대 10)' },
+        query: { type: 'string', description: '검색 키워드' },
+        count: { type: 'number', description: '결과 수 (기본 5)' },
       },
       required: ['query'],
     },
   },
   {
     name: 'read_url',
-    description: '지정한 URL의 웹페이지 내용을 읽어옵니다. 검색 결과에서 찾은 URL의 상세 내용을 확인하거나, 사용자가 제공한 URL의 내용을 읽을 때 사용합니다.',
+    description: 'URL 웹페이지 내용 읽기.',
     input_schema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: '읽을 웹페이지 URL (https://...)' },
-        maxLength: { type: 'number', description: '추출할 최대 텍스트 길이 (기본 15000자)' },
+        url: { type: 'string', description: 'URL' },
+        maxLength: { type: 'number', description: '최대 길이 (기본 15000)' },
       },
       required: ['url'],
     },
@@ -6227,7 +6221,7 @@ const API_TOOLS = [
   // ── Git Diff ──
   {
     name: 'show_revision_diff',
-    description: '특정 커밋의 실제 변경 내용(DIFF)을 조회합니다. query_git_history로 커밋 hash를 먼저 확인하세요.',
+    description: '커밋 DIFF 조회.',
     input_schema: {
       type: 'object',
       properties: {
@@ -6241,11 +6235,11 @@ const API_TOOLS = [
   // ── 프리팹 뷰 ──
   {
     name: 'preview_prefab',
-    description: 'Unity 프리팹 파일을 3D 뷰어로 미리봅니다. 경로를 지정하면 뷰어 URL을 반환합니다.',
+    description: '프리팹 3D 미리보기.',
     input_schema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '프리팹 경로 (예: "GameContents/Character/Player/PC_01.prefab")' },
+        path: { type: 'string', description: '프리팹 경로' },
       },
       required: ['path'],
     },
@@ -6253,7 +6247,7 @@ const API_TOOLS = [
   // ── 씬 데이터 ──
   {
     name: 'read_scene_yaml',
-    description: 'Unity 씬 파일(.unity)의 YAML 데이터를 읽어 게임오브젝트 구조를 파악합니다.',
+    description: 'Unity 씬 YAML 읽기.',
     input_schema: {
       type: 'object',
       properties: {
@@ -6266,7 +6260,7 @@ const API_TOOLS = [
   // ── 아티팩트 수정 ──
   {
     name: 'patch_artifact',
-    description: '기존 아티팩트(HTML 문서)를 수정합니다. find로 변경 부분을 찾고 replace로 교체합니다.',
+    description: '아티팩트 수정 (find/replace 패치).',
     input_schema: {
       type: 'object',
       properties: {
@@ -6306,23 +6300,23 @@ const API_TOOLS = [
   // ── 널리지 CRUD ──
   {
     name: 'save_knowledge',
-    description: '지식을 널리지 베이스에 저장합니다. 규칙, 스타일, 참고사항 등을 영구 저장하여 이후 대화에서 활용합니다.',
+    description: '널리지 저장.',
     input_schema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: '지식 파일명 (영문 snake_case, 예: "jira_comment_style")' },
-        content: { type: 'string', description: '저장할 지식 내용 (마크다운)' },
+        name: { type: 'string', description: '파일명 (snake_case)' },
+        content: { type: 'string', description: '마크다운 내용' },
       },
       required: ['name', 'content'],
     },
   },
   {
     name: 'read_knowledge',
-    description: '널리지 베이스에서 특정 지식 파일을 읽어옵니다. name이 비어있으면 전체 목록을 반환합니다.',
+    description: '널리지 읽기. ""=목록.',
     input_schema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: '읽을 지식 파일명 (비워두면 전체 목록)' },
+        name: { type: 'string' },
       },
       required: [],
     },
@@ -6349,9 +6343,7 @@ const API_TOOLS = [
   },
   {
     name: 'search_published_artifacts',
-    description: `기존에 출판된 아티팩트(문서/보고서)를 검색합니다.
-아티팩트 생성 전에 반드시 호출하여 유사한 기존 문서가 있는지 확인하세요.
-비슷한 문서가 있으면 사용자에게 링크를 제안하고, 수정/갱신 여부를 물어보세요.`,
+    description: '출판된 아티팩트(문서/보고서) 검색. 생성 전 반드시 호출하여 유사 기존 문서 확인.',
     input_schema: {
       type: 'object',
       properties: {
@@ -6363,9 +6355,7 @@ const API_TOOLS = [
   },
   {
     name: 'get_published_artifact',
-    description: `기존 출판된 아티팩트의 HTML 전체 내용을 가져옵니다.
-기존 문서를 수정/갱신하거나, 내용을 참고하여 새 문서를 만들 때 사용하세요.
-가져온 HTML을 기반으로 patch_artifact 또는 create_artifact로 수정본을 만들 수 있습니다.`,
+    description: '출판된 아티팩트 HTML 가져오기. 수정/갱신용.',
     input_schema: {
       type: 'object',
       properties: {
@@ -6376,56 +6366,43 @@ const API_TOOLS = [
   },
   {
     name: 'edit_game_data',
-    description: `게임 데이터 Excel 파일을 편집합니다 (바이블테이블링).
-ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편집하세요.
-편집된 셀은 노란색 하이라이트로 표시됩니다. 결과는 다운로드 링크로 제공됩니다.
-
-편집 순서 규칙:
-1. ERD에서 FK 관계를 확인하여 부모 테이블(참조되는 쪽)부터 편집
-2. 부모 테이블의 PK 값이 변경되면 자식 테이블의 FK도 반드시 업데이트
-3. order 필드로 편집 순서 지정 (낮은 숫자 = 먼저 편집)
-4. 연관 테이블이 있으면 반드시 함께 편집 계획에 포함
-
-필터 op: eq, neq, gt, gte, lt, lte, in, contains, starts_with, ends_with
-변경 action: set(값 설정), multiply(곱하기), add(더하기), subtract(빼기), append(텍스트 추가)`,
+    description: `게임 데이터 Excel 기존 셀 편집 (바이브테이블링). 같은 xlsx 여러 시트 → 하나의 edit_plan 배열에 모두 포함! 분리 호출 시 유실. edit_plan: [{order(부모먼저), table, sheet?, file?, filters+changes}]. op: eq/neq/gt/gte/lt/lte/in/contains/starts_with/ends_with. action: set/multiply/add/subtract/append.`,
     input_schema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: '편집 작업 제목 (예: "전사 캐릭터 HP 밸런스 조정")' },
-        reason: { type: 'string', description: '편집 사유' },
+        title: { type: 'string', description: '구체적 작업 제목 (예: "캐릭터5001 스탯 수정", "보상 테이블 드랍률 변경"). "바이브테이블링" 같은 일반 제목 금지!' },
+        reason: { type: 'string' },
         edit_plan: {
           type: 'array',
-          description: '편집 계획 배열 — order 순서대로 실행됨',
+          description: '편집 계획. order 순서대로 실행',
           items: {
             type: 'object',
             properties: {
-              order: { type: 'number', description: '편집 순서 (1=가장 먼저, 부모 테이블에 낮은 번호)' },
-              table: { type: 'string', description: '테이블(시트) 이름' },
-              sheet: { type: 'string', description: '시트 이름 (같은 xlsx에 여러 시트가 있을 때 명시. 생략 시 table 값 사용)' },
-              file: { type: 'string', description: '엑셀 파일명 (예: Character.xlsx). 같은 파일의 다른 시트를 편집할 때 반드시 지정' },
+              order: { type: 'number' },
+              table: { type: 'string', description: '시트명' },
+              sheet: { type: 'string' },
+              file: { type: 'string', description: 'xlsx 파일명' },
               filters: {
                 type: 'array',
-                description: '대상 행 필터. 비어있으면 전체 행.',
                 items: {
                   type: 'object',
                   properties: {
-                    column: { type: 'string', description: '필터 컬럼명' },
-                    op: { type: 'string', enum: ['eq','neq','gt','gte','lt','lte','in','contains','starts_with','ends_with'], description: '비교 연산자' },
-                    value: { type: 'string', description: '비교값 (eq/neq/gt 등)' },
-                    values: { type: 'array', items: { type: 'string' }, description: 'in 연산자용 값 목록' },
+                    column: { type: 'string' },
+                    op: { type: 'string', enum: ['eq','neq','gt','gte','lt','lte','in','contains','starts_with','ends_with'] },
+                    value: { type: 'string' },
+                    values: { type: 'array', items: { type: 'string' } },
                   },
                   required: ['column', 'op'],
                 },
               },
               changes: {
                 type: 'array',
-                description: '적용할 변경 목록',
                 items: {
                   type: 'object',
                   properties: {
-                    column: { type: 'string', description: '변경할 컬럼명' },
-                    action: { type: 'string', enum: ['set','multiply','add','subtract','append'], description: '변경 액션' },
-                    value: { description: '변경값 (set=새값, multiply=배수, add/subtract=증감값, append=추가텍스트)' },
+                    column: { type: 'string' },
+                    action: { type: 'string', enum: ['set','multiply','add','subtract','append'] },
+                    value: { description: '값' },
                   },
                   required: ['column', 'action', 'value'],
                 },
@@ -6440,43 +6417,117 @@ ERD의 FK 관계를 참고하여 상위 테이블(부모)부터 순서대로 편
   },
   {
     name: 'add_game_data_rows',
-    description: `게임 데이터 Excel 테이블에 새 행을 추가합니다 (바이블테이블링).
-
-🔴 필수: 기존 데이터 복제/복사/참고 시 → clone_source 사용! rows/csv로 재입력 금지!
-■ clone_source: {column:"character_id", value:"2001"}, override_csv: "character_id\\n3001\\n3002"
-  → Python이 원본 행을 자동 복사, 바꿀 컬럼만 교체. 1초 완료.
-■ csv: 완전히 새로운 데이터만. ■ rows: 1~2행 소량 전용.`,
+    description: `게임 데이터 Excel 새 행 추가 (바이브테이블링). 기존 데이터 복제 시 → clone_source 필수! query 결과를 rows/csv로 재입력 금지. clone_source: {column, value} + override_csv → 원본 자동 복사. csv: 새 데이터만. rows: 1~2행 전용.`,
     input_schema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: '작업 제목' },
-        reason: { type: 'string', description: '추가 사유' },
-        table: { type: 'string', description: '테이블(시트) 이름' },
-        file: { type: 'string', description: '엑셀 파일명 (생략 시 테이블명.xlsx)' },
+        title: { type: 'string', description: '구체적 작업 제목 (예: "캐릭터5001 10레벨 스탯 추가", "보상 아이템 3종 추가"). 일반 제목 금지!' },
+        reason: { type: 'string' },
+        table: { type: 'string', description: '시트명' },
+        file: { type: 'string', description: 'xlsx 파일명' },
         clone_source: {
           type: 'object',
-          description: '🔴 기존 행 복제 시 필수! Python이 원본 행을 전부 복사하고 override_csv 컬럼만 교체.',
+          description: '기존 행 복제',
           properties: {
-            column: { type: 'string', description: '필터 컬럼명' },
-            value: { type: 'string', description: '필터 값' },
+            column: { type: 'string' },
+            value: { type: 'string' },
           },
           required: ['column', 'value'],
         },
-        override_csv: { type: 'string', description: 'clone_source와 함께 사용. 바꿀 컬럼만 CSV. 각 행마다 원본 전체 복제.' },
-        csv: { type: 'string', description: 'CSV 포맷 (완전히 새로운 데이터만). ❌ 기존 데이터 복제 시 사용 금지.' },
+        override_csv: { type: 'string', description: 'clone_source용 변경 CSV' },
+        csv: { type: 'string', description: '새 데이터 CSV' },
         rows: {
           type: 'array',
-          description: '❌ 3행 이상 또는 기존 데이터 복제 시 사용 금지. 1~2행 소량 신규 추가 전용.',
-          items: {
-            type: 'object',
-            description: '각 행: { "컬럼명": "값", ... }',
-          },
+          description: '1~2행 소량 추가 전용',
+          items: { type: 'object' },
         },
       },
       required: ['table'],
     },
   },
 ]
+
+// ── 서버사이드 동적 도구 선택 (클라이언트 selectToolsForQuery 미러) ──
+const SERVER_TOOL_GROUPS: Record<string, { tools: string[]; keywords: RegExp }> = {
+  data: {
+    tools: ['query_game_data', 'show_table_schema', 'edit_game_data', 'add_game_data_rows'],
+    keywords: /데이터|테이블|스키마|sql|조회|수정|편집|밸런스|엑셀|바이블|바이브|컬럼|행\s*추가|값\s*변경|select|where|insert|update|query/i,
+  },
+  git: {
+    tools: ['query_git_history', 'show_revision_diff'],
+    keywords: /커밋|깃|git|히스토리|변경.*이력|diff|리비전|수정됐|언제.*바뀌|수정점|변경점|변경사항|바뀐\s*거|뭐\s*바뀌|뭐\s*수정|최근.*변경|최근.*수정|패치.*노트|업데이트.*내역|누가.*바꿨|누가.*수정/i,
+  },
+  asset: {
+    tools: ['find_resource_image', 'search_assets', 'read_scene_yaml', 'preview_prefab', 'preview_fbx_animation'],
+    keywords: /에셋|리소스|이미지|fbx|프리팹|씬|모델|애니메이션|3d|png|wav|오디오|사운드|텍스처|unity/i,
+  },
+  code: {
+    tools: ['search_code', 'read_code_file'],
+    keywords: /코드|c#|클래스|메서드|스크립트|함수|소스|구현|로직/i,
+  },
+  artifact: {
+    tools: ['create_artifact', 'patch_artifact', 'search_published_artifacts', 'get_published_artifact'],
+    keywords: /아티팩트|문서로.*만들|보고서.*만들|시트.*만들|기획서|정리해줘|작성해줘|만들어줘|릴리즈.*노트|수정.*요청|\[아티팩트|기존.*문서|이전.*문서|출판/i,
+  },
+  jira: {
+    tools: ['search_jira', 'get_jira_issue', 'create_jira_issue', 'add_jira_comment', 'update_jira_issue_status'],
+    keywords: /지라|jira|이슈|일감|티켓|스프린트|aegis-|버그.*등록|댓글|코멘트/i,
+  },
+  confluence: {
+    tools: ['search_confluence', 'get_confluence_page', 'add_confluence_comment'],
+    keywords: /컨플루언스|컨플|confluence|위키|기획.*문서|스펙.*문서|회의록|기획서|디자인.*문서|기획.*페이지|문서.*찾|문서.*검색|\/wiki\/|\/pages\/\d+|댓글.*컨플|컨플.*댓글|코멘트.*컨플|컨플.*코멘트/i,
+  },
+  character: {
+    tools: ['build_character_profile'],
+    keywords: /캐릭터|프로파일|프로필|인물|영웅|전사|마법사|궁수/i,
+  },
+  web: {
+    tools: ['web_search', 'read_url'],
+    keywords: /검색|웹|url|http|사이트|레퍼런스|참고.*자료|외부/i,
+  },
+}
+const SERVER_ALWAYS_TOOLS = ['read_knowledge', 'save_knowledge', 'read_guide', 'query_game_data', 'show_table_schema', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule', 'search_confluence', 'get_confluence_page', 'add_confluence_comment']
+
+function selectServerTools(query: string): typeof API_TOOLS {
+  const matched = new Set<string>(SERVER_ALWAYS_TOOLS)
+  let anyGroupMatched = false
+
+  for (const group of Object.values(SERVER_TOOL_GROUPS)) {
+    if (group.keywords.test(query)) {
+      for (const t of group.tools) matched.add(t)
+      anyGroupMatched = true
+    }
+  }
+
+  if (!anyGroupMatched) return API_TOOLS
+
+  if (matched.has('patch_artifact') || matched.has('create_artifact')) {
+    for (const t of SERVER_TOOL_GROUPS.data.tools) matched.add(t)
+    matched.add('build_character_profile')
+    matched.add('find_resource_image')
+  }
+
+  if (matched.has('query_game_data')) {
+    matched.add('patch_artifact')
+  }
+
+  if (matched.has('query_game_data') && /수정|변경|바뀌|업데이트|패치|최근/i.test(query)) {
+    for (const t of SERVER_TOOL_GROUPS.git.tools) matched.add(t)
+  }
+  if (matched.has('query_git_history')) {
+    matched.add('show_table_schema')
+    matched.add('query_game_data')
+  }
+
+  if (/댓글|코멘트|comment/i.test(query)) {
+    for (const t of SERVER_TOOL_GROUPS.jira.tools) matched.add(t)
+    matched.add('add_confluence_comment')
+  }
+
+  const selected = API_TOOLS.filter((t: Record<string, unknown>) => matched.has(t.name as string))
+  console.log(`[Server] 🎯 동적 도구 선택: ${selected.length}/${API_TOOLS.length}개`)
+  return selected
+}
 
 // ── 서버사이드 Tool 실행 ──
 function serverExecuteTool(
@@ -7224,19 +7275,19 @@ async function serverExecuteToolAsync(
     'run_validation', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule']
   if (syncTools.includes(toolName)) return serverExecuteTool(toolName, input, options)
 
-  // ── 바이블테이블링 (Python 백엔드 호출) ──
+  // ── 바이브테이블링 (Python 백엔드 호출) ──
   // fetch는 서버→서버 직통(localhost:8100), 다운로드 링크는 Vite 프록시 경유(5173)
   const BIBLE_TABLING_API_URL = process.env.BIBLE_TABLING_URL || 'http://localhost:8100'
   // 슬랙에 전달할 다운로드 링크 베이스: Vite 프록시 서버 URL (외부에서 접근 가능)
   const BIBLE_TABLING_LINK_BASE = options.tableMasterUrl || process.env.TABLEMASTER_URL || `http://${getLocalIp()}:5173`
 
-  // 대화 턴 내 바이블테이블링 편집 체이닝: 이전 job_id를 자동 전달하여 변경사항 누적
+  // 대화 턴 내 바이브테이블링 편집 체이닝: 이전 job_id를 자동 전달하여 변경사항 누적
   const prevJobId = (options as unknown as Record<string, unknown>)._btPrevJobId as string | undefined
 
   if (toolName === 'edit_game_data') {
     try {
       const payload = JSON.stringify({
-        title: String(input.title ?? '바이블테이블링'),
+        title: String(input.title ?? '바이브테이블링'),
         reason: String(input.reason ?? ''),
         edit_plan: input.edit_plan as unknown[],
         prev_job_id: prevJobId || undefined,
@@ -7248,7 +7299,7 @@ async function serverExecuteToolAsync(
       })
       if (!btRes.ok) {
         const errText = await btRes.text()
-        return { result: `바이블테이블링 오류 (${btRes.status}): ${errText}` }
+        return { result: `바이브테이블링 오류 (${btRes.status}): ${errText}` }
       }
       const data = await btRes.json() as Record<string, unknown>
       const summary = data.summary as Record<string, unknown>
@@ -7258,11 +7309,18 @@ async function serverExecuteToolAsync(
       // 다음 호출에서 이 job의 결과를 이어받을 수 있도록 저장
       (options as unknown as Record<string, unknown>)._btPrevJobId = jobId
 
-      let resultText = `✅ 바이블테이블링 편집 완료\n`
+      let resultText = `✅ 바이브테이블링 편집 완료\n`
       resultText += `제목: ${summary.title}\n`
       if (summary.reason) resultText += `사유: ${summary.reason}\n`
       resultText += `파일: ${summary.files_modified}개 | 행: ${summary.total_rows_matched}개 매치 | 셀: ${summary.total_cells_modified}개 변경\n`
       resultText += `테이블: ${(summary.tables as string[]).join(', ')}\n\n`
+
+      // 모든 detail에서 NotNull 경고 수집
+      const allNnWarnings: string[] = []
+      for (const d of details) {
+        const dw = (d.notnull_warnings as string[]) ?? []
+        allNnWarnings.push(...dw)
+      }
 
       for (const d of details) {
         resultText += `📊 ${d.table} (${d.file}): ${d.rows_matched}행 매치, ${d.cells_modified}셀 변경\n`
@@ -7297,6 +7355,14 @@ async function serverExecuteToolAsync(
         }
       }
 
+      // NotNull 경고 표시
+      if (allNnWarnings.length > 0) {
+        resultText += `\n⚠️ NotNull 위반 경고 (${allNnWarnings.length}건) — 빈값이 들어간 컬럼이 있습니다!\n`
+        for (const w of allNnWarnings.slice(0, 10)) resultText += `  - ${w}\n`
+        if (allNnWarnings.length > 10) resultText += `  ... 외 ${allNnWarnings.length - 10}건\n`
+        resultText += `🔴 이 컬럼들에 빈값이 들어가면 게임 크래시가 발생할 수 있습니다!\n\n`
+      }
+
       // download_url이 .zip이면 여러 Excel → 개별 링크 + ZIP
       // download_url이 .xlsx이면 단일 Excel (시트 여러 개여도) → 링크 하나만
       const isZip = String(data.download_url).endsWith('.zip')
@@ -7319,7 +7385,7 @@ async function serverExecuteToolAsync(
 
       return { result: resultText, data }
     } catch (e) {
-      return { result: `바이블테이블링 연결 실패: ${e instanceof Error ? e.message : String(e)}\nstart.bat을 실행하여 바이블테이블링 서버를 시작하세요.` }
+      return { result: `바이브테이블링 연결 실패: ${e instanceof Error ? e.message : String(e)}\nstart.bat을 실행하여 바이브테이블링 서버를 시작하세요.` }
     }
   }
 
@@ -7341,7 +7407,7 @@ async function serverExecuteToolAsync(
 
     try {
       const bodyPayload: Record<string, unknown> = {
-        title: String(input.title ?? '바이블테이블링 — 행 추가'),
+        title: String(input.title ?? '바이브테이블링 — 행 추가'),
         reason: String(input.reason ?? ''),
         table: String(input.table ?? ''),
         file: input.file ? String(input.file) : undefined,
@@ -7364,7 +7430,7 @@ async function serverExecuteToolAsync(
       })
       if (!btRes.ok) {
         const errText = await btRes.text()
-        return { result: `바이블테이블링 행 추가 오류 (${btRes.status}): ${errText}` }
+        return { result: `바이브테이블링 행 추가 오류 (${btRes.status}): ${errText}` }
       }
       const data = await btRes.json() as Record<string, unknown>
       const summary = data.summary as Record<string, unknown>
@@ -7373,7 +7439,7 @@ async function serverExecuteToolAsync(
       // 다음 호출에서 이 job의 결과를 이어받을 수 있도록 저장
       (options as unknown as Record<string, unknown>)._btPrevJobId = jobId
 
-      let resultText = `✅ 바이블테이블링 행 추가 완료\n`
+      let resultText = `✅ 바이브테이블링 행 추가 완료\n`
       resultText += `테이블: ${summary.table} (${summary.file})\n`
       resultText += `추가된 행: ${summary.rows_added}개\n\n`
 
@@ -7399,12 +7465,21 @@ async function serverExecuteToolAsync(
         resultText += '\n'
       }
 
+      // NotNull 경고 표시
+      const nnWarnings = (summary as Record<string, unknown>).notnull_warnings as string[] | undefined
+      if (nnWarnings && nnWarnings.length > 0) {
+        resultText += `\n⚠️ NotNull 위반 경고 (${nnWarnings.length}건) — 빈값이 들어간 컬럼이 있습니다!\n`
+        for (const w of nnWarnings.slice(0, 10)) resultText += `  - ${w}\n`
+        if (nnWarnings.length > 10) resultText += `  ... 외 ${nnWarnings.length - 10}건\n`
+        resultText += `🔴 이 컬럼들은 기존 데이터에서 항상 값이 존재합니다. 빈값은 게임 크래시를 유발할 수 있습니다!\n\n`
+      }
+
       resultText += `📥 다운로드: ${BIBLE_TABLING_LINK_BASE}${data.download_url}\n`
       resultText += `(노란색 하이라이트 = AI 추가 셀)`
 
       return { result: resultText, data }
     } catch (e) {
-      return { result: `바이블테이블링 연결 실패: ${e instanceof Error ? e.message : String(e)}` }
+      return { result: `바이브테이블링 연결 실패: ${e instanceof Error ? e.message : String(e)}` }
     }
   }
 
@@ -8693,7 +8768,8 @@ function serverFastPath(msg: string, options: GitPluginOptions): string | null {
   return null
 }
 
-function buildServerSystemPrompt(_userQuery?: string, isSlack = false): string {
+function buildServerSystemPrompt(_userQuery?: string, isSlack = false, selectedToolNames?: Set<string>): string {
+  const hasTool = (name: string) => !selectedToolNames || selectedToolNames.has(name)
   const lines: string[] = []
 
   // ── 널리지 목차 주입 (전문은 read_knowledge 도구로 필요 시 읽기) ──
@@ -8724,38 +8800,53 @@ function buildServerSystemPrompt(_userQuery?: string, isSlack = false): string {
     console.warn('[ChatAPI] 널리지 로드 실패 (무시):', e)
   }
 
-  // ── 역할 및 도구 설명 ──
+  // ── 역할 및 도구 설명 (선택된 도구만 포함) ──
   lines.push('당신은 이 게임의 모든 데이터를 꿰뚫고 있는 전문 게임 데이터 어시스턴트입니다.')
   lines.push('사용자의 질문에 답하기 위해 아래 도구들을 적극 활용하세요:')
-  lines.push('- query_game_data: 실제 게임 데이터를 SQL로 조회')
-  lines.push('- show_table_schema: 테이블의 스키마 구조(컬럼, 타입, 행 수) 조회')
-  lines.push('- query_git_history: Git 변경 이력 조회. repo="data"(aegisdata 데이터 저장소, 기본값) 또는 repo="aegis"(aegis 코드 저장소)')
-  lines.push('- show_revision_diff: ⭐ 특정 커밋의 실제 변경 내용(+추가/-삭제 라인) 조회. "뭐가 바뀌었어?" → query_git_history → show_revision_diff(hash) 순서로 호출')
-  lines.push('- create_artifact: HTML 문서/보고서 생성. 분석 결과를 정리된 문서로 제공할 때 사용')
-  lines.push('- search_code: C# 게임 클라이언트 소스코드 검색 (클래스/메서드/파일명/내용 전문검색). 코드 구현 방식, 로직, 버그 분석 시 사용')
-  lines.push('- read_code_file: 특정 .cs 파일 전체 내용 읽기. search_code로 경로 확인 후 호출')
-  lines.push('- search_jira: Jira 이슈 JQL 검색 (버그/작업/스프린트 조회)')
-  lines.push('- get_jira_issue: Jira 이슈 상세 조회 (AEGIS-1234 등 이슈 키 직접 지정)')
-  lines.push('- add_jira_comment: ⭐ Jira 이슈에 댓글 직접 작성 (이슈 키 또는 URL 전달, 마크다운 지원). ⚠️ Confluence URL은 사용 불가!')
-  lines.push('- add_confluence_comment: ⭐ Confluence 페이지에 댓글 직접 작성 (pageId 또는 페이지 URL 전달)')
-  lines.push('- update_jira_issue_status: ⭐ Jira 이슈 상태 변경 (In Progress, Done 등)')
-  lines.push('- search_confluence: Confluence 문서 CQL 검색 (기획서/스펙/회의록 등)')
-  lines.push('- get_confluence_page: Confluence 페이지 전체 내용 조회 (pageId 필요)')
-  lines.push('- web_search: 🌐 웹 검색 (외부 레퍼런스, 기술 문서, 게임 메카니즘 비교, 용어 정의 등)')
-  lines.push('- read_url: 🌐 웹페이지 내용 읽기 (web_search 결과 URL 또는 사용자 제공 URL)')
-  lines.push('- search_assets: Unity 에셋 파일 검색 (FBX 3D 모델, PNG 텍스처, WAV/MP3 사운드 등). ext="fbx"로 3D 모델만 검색 가능')
-  lines.push('- find_resource_image: 게임 리소스 이미지(PNG) 검색 (아이콘, UI 이미지, 스프라이트)')
-  lines.push('- build_character_profile: 캐릭터명 → FK 연결 모든 데이터 자동 수집. 이름 검색 실패 시 전체 목록 반환 → character_id로 재호출')
-  lines.push('- read_guide: ⭐⭐⭐ 최우선 시작점! DB+코드 통합 가이드 MD 읽기. 어떤 질문이든 관련 가이드를 먼저 읽고 답변하세요')
-  lines.push('  → DB/게임 질문: read_guide("_DB_OVERVIEW") → 도메인 가이드(_DB_Character, _DB_Skill 등)')
-  lines.push('  → 코드 질문:   read_guide("_OVERVIEW") → 도메인 가이드(_Skill, _Weapon, _Character 등)')
-  lines.push('  → 가이드 목록: read_guide("") 로 전체 확인')
-  lines.push('- run_validation: 등록된 검증 룰로 전체 데이터 검증 실행. "검증 돌려줘", "밸리데이션 실행" 요청 시 사용')
-  lines.push('- save_validation_rule: 검증 룰 등록/수정. "HP는 0보다 커야 해" 같은 자연어 → 구조화된 룰 변환')
-  lines.push('- list_validation_rules: 등록된 검증 룰 목록 조회')
-  lines.push('- delete_validation_rule: 검증 룰 삭제')
-  lines.push('- edit_game_data: ⭐ 바이블테이블링 — 게임 데이터 Excel 파일의 기존 셀을 편집. 필터 조건으로 대상 행 선택 후 값 변경. 편집된 셀은 노란색 하이라이트. 결과는 다운로드 링크로 제공')
-  lines.push('- add_game_data_rows: ⭐ 바이블테이블링 — 게임 데이터 Excel 테이블에 새 행 추가. 추가된 셀은 노란색 하이라이트. 결과는 다운로드 링크로 제공')
+  const toolDescs: [string, string][] = [
+    ['query_game_data', '실제 게임 데이터를 SQL로 조회'],
+    ['show_table_schema', '테이블의 스키마 구조(컬럼, 타입, 행 수) 조회'],
+    ['query_git_history', 'Git 변경 이력 조회. repo="data"(기본) 또는 repo="aegis"(코드)'],
+    ['show_revision_diff', '⭐ 특정 커밋의 변경 내용 조회. query_git_history → show_revision_diff(hash)'],
+    ['create_artifact', 'HTML 문서/보고서 생성'],
+    ['patch_artifact', '기존 아티팩트 수정'],
+    ['search_published_artifacts', '출판된 아티팩트 검색'],
+    ['get_published_artifact', '출판된 아티팩트 내용 가져오기'],
+    ['search_code', 'C# 소스코드 검색 (클래스/메서드/내용 전문검색)'],
+    ['read_code_file', '.cs 파일 읽기. search_code로 경로 확인 후 호출'],
+    ['search_jira', 'Jira 이슈 JQL 검색'],
+    ['get_jira_issue', 'Jira 이슈 상세 조회 (AEGIS-1234 등)'],
+    ['add_jira_comment', '⭐ Jira 이슈에 댓글 작성 (마크다운 지원)'],
+    ['update_jira_issue_status', '⭐ Jira 이슈 상태 변경'],
+    ['search_confluence', 'Confluence 문서 CQL 검색'],
+    ['get_confluence_page', 'Confluence 페이지 내용 조회'],
+    ['add_confluence_comment', '⭐ Confluence 페이지에 댓글 작성'],
+    ['web_search', '🌐 웹 검색 (레퍼런스, 기술 문서 등)'],
+    ['read_url', '🌐 웹페이지 내용 읽기'],
+    ['search_assets', 'Unity 에셋 파일 검색 (FBX, PNG, WAV 등)'],
+    ['find_resource_image', '게임 리소스 이미지(PNG) 검색'],
+    ['preview_prefab', 'Unity 프리팹 미리보기'],
+    ['preview_fbx_animation', 'FBX 애니메이션 미리보기'],
+    ['read_scene_yaml', 'Unity 씬 YAML 읽기'],
+    ['build_character_profile', '캐릭터명 → FK 연결 모든 데이터 자동 수집'],
+    ['read_guide', '⭐⭐⭐ 최우선! DB+코드 통합 가이드 읽기'],
+    ['read_knowledge', '널리지 전문 읽기'],
+    ['save_knowledge', '널리지 저장'],
+    ['run_validation', '검증 룰 실행'],
+    ['save_validation_rule', '검증 룰 등록/수정'],
+    ['list_validation_rules', '검증 룰 목록 조회'],
+    ['delete_validation_rule', '검증 룰 삭제'],
+    ['edit_game_data', '⭐ 바이브테이블링 — 기존 셀 편집'],
+    ['add_game_data_rows', '⭐ 바이브테이블링 — 새 행 추가'],
+  ]
+  for (const [name, desc] of toolDescs) {
+    if (hasTool(name)) lines.push(`- ${name}: ${desc}`)
+  }
+  if (hasTool('read_guide')) {
+    lines.push('  → DB 질문: read_guide("_DB_OVERVIEW") → 도메인 가이드')
+    lines.push('  → 코드: read_guide("_OVERVIEW") → 도메인 가이드')
+    lines.push('  → 목록: read_guide("") 로 확인')
+  }
   lines.push('')
 
   // ── 가이드 우선 원칙 ──
@@ -8842,135 +8933,86 @@ function buildServerSystemPrompt(_userQuery?: string, isSlack = false): string {
     lines.push('')
   }
 
-  // ── 웹 검색 규칙 ──
-  lines.push('[웹 검색 / URL 읽기 규칙]')
-  lines.push('⭐ 당신은 외부 웹 사이트를 검색하고 읽을 수 있습니다!')
-  lines.push('- 사용자가 외부 레퍼런스, 기술 문서, 다른 게임 비교, 용어 정의 등을 요청하면 web_search(query) 호출')
-  lines.push('- web_search 결과에서 특정 URL의 상세 내용이 필요하면 read_url(url) 호출')
-  lines.push('- 사용자가 URL을 직접 제공하면 read_url(url)로 바로 읽기')
-  lines.push('- 검색 키워드: 영문/한글 모두 가능, 구체적일수록 좋음')
-  lines.push('- 검색 결과를 정리하여 출처(URL)를 항상 명시하세요')
-  lines.push('')
+  // ── 웹 검색 규칙 (선택 시에만) ──
+  if (hasTool('web_search') || hasTool('read_url')) {
+    lines.push('[웹 검색 / URL 읽기 규칙]')
+    lines.push('- web_search(query): 외부 레퍼런스, 기술 문서, 용어 정의 검색')
+    lines.push('- read_url(url): 검색 결과 또는 사용자 제공 URL의 내용 읽기')
+    lines.push('- 출처(URL)를 항상 명시')
+    lines.push('')
+  }
 
-  // ── Jira / Confluence 규칙 ──
-  lines.push('[Jira / Confluence 사용 규칙]')
-  lines.push('- 프로젝트 키: AEGIS (cloud.jira.krafton.com)')
-  lines.push('- 버그, 이슈, 작업 조회 요청 → search_jira(jql) 호출')
-  lines.push('- 특정 이슈 번호 언급 (예: AEGIS-1234) → get_jira_issue("AEGIS-1234") 바로 호출')
-  lines.push('- 기획서/스펙 문서 요청 → search_confluence(cql) 호출')
-  lines.push('- 검색 결과에서 특정 페이지 내용이 필요하면 get_confluence_page(pageId) 호출')
-  lines.push('')
-  lines.push('[Jira/Confluence 쓰기(Write) 규칙 — 반드시 준수]')
-  lines.push('⭐⭐⭐ 당신은 Jira와 Confluence에 직접 쓸 수 있습니다! 절대 "쓰기 불가", "직접 할 수 없다"고 말하지 마세요.')
-  lines.push('- "Jira 댓글 달아줘", "코멘트 남겨줘", "이슈에 써줘" → add_jira_comment(issueKeyOrUrl, comment) 즉시 호출')
-  lines.push('- "Confluence 댓글", "이 페이지에 코멘트", wiki URL + 댓글 → add_confluence_comment(pageIdOrUrl, comment) 호출')
-  lines.push('- ⚠️ URL 구분: /browse/AEGIS-1234 = Jira, /wiki/spaces/.../pages/123 = Confluence. 잘못된 도구 사용 금지!')
-  lines.push('- issueKeyOrUrl: "AEGIS-1234" 또는 전체 URL "https://.../browse/AEGIS-1234" 모두 허용')
-  lines.push('- 댓글 내용은 마크다운으로 작성 → 자동으로 Jira ADF / Confluence Storage 형식 변환됨')
-  lines.push('- "상태 바꿔줘", "In Progress로 변경" → update_jira_issue_status(issueKeyOrUrl, targetStatus) 호출')
-  lines.push('- 가능한 상태 목록을 모르면 update_jira_issue_status(issueKeyOrUrl, listTransitions: true) 로 먼저 확인')
-  lines.push('- 사용자가 URL만 제공해도 이슈 키/페이지 ID를 자동 파싱하므로 바로 사용 가능')
-  lines.push('')
-  lines.push('[JQL 작성 규칙]')
-  lines.push('- 기본: "project = AEGIS ORDER BY updated DESC"')
-  lines.push('- ⚠️ 날짜 필터(updated >= -Nd)는 사용자가 명시적으로 "최근 N일"을 요청할 때만 사용')
-  lines.push('- 일반 이슈: "project = AEGIS AND status != Done ORDER BY updated DESC"')
-  lines.push('- 버그: "project = AEGIS AND issuetype = Bug AND status != Done ORDER BY updated DESC"')
-  lines.push('- 진행 중: "project = AEGIS AND status = \\"In Progress\\" ORDER BY updated DESC"')
-  lines.push('- 담당자: "project = AEGIS AND assignee = \\"이름\\" ORDER BY updated DESC"')
-  lines.push('- 텍스트 검색: "project = AEGIS AND text ~ \\"검색어\\" ORDER BY updated DESC"')
-  lines.push('- CQL: "space = \\"AEGIS\\" AND text ~ \\"캐릭터 스킬\\" AND type = page ORDER BY lastModified DESC"')
-  lines.push('')
+  // ── Jira / Confluence 규칙 (선택 시에만) ──
+  if (hasTool('search_jira') || hasTool('get_jira_issue') || hasTool('add_jira_comment') || hasTool('search_confluence') || hasTool('get_confluence_page') || hasTool('add_confluence_comment')) {
+    lines.push('[Jira / Confluence 사용 규칙]')
+    lines.push('- 프로젝트: AEGIS (cloud.jira.krafton.com)')
+    lines.push('- 이슈 조회: search_jira(jql), 상세: get_jira_issue("AEGIS-1234")')
+    lines.push('- 문서: search_confluence(cql) → get_confluence_page(pageId)')
+    lines.push('- 쓰기: add_jira_comment, add_confluence_comment, update_jira_issue_status 지원')
+    lines.push('- URL 구분: /browse/AEGIS-1234=Jira, /wiki/.../pages/123=Confluence')
+    lines.push('- 댓글은 마크다운 → ADF/Storage 자동 변환')
+    lines.push('')
+    lines.push('[JQL 작성 규칙]')
+    lines.push('- 기본: "project = AEGIS ORDER BY updated DESC"')
+    lines.push('- 날짜 필터는 사용자가 "최근 N일" 명시할 때만')
+    lines.push('- CQL: "space = \\"AEGIS\\" AND text ~ \\"검색어\\" AND type = page ORDER BY lastModified DESC"')
+    lines.push('')
+  }
 
-  // ── 코드 분석 규칙 ──
-  lines.push('[C# 코드 분석 규칙]')
-  lines.push('- ⭐ 코드 분석 시작 전: read_guide(name="_OVERVIEW") 로 전체 폴더 구조를 먼저 파악')
-  lines.push('- 특정 시스템: read_guide(name="_Skill"), read_guide(name="_Weapon") 등 도메인 가이드 먼저 읽기')
-  lines.push('- 코드 관련 질문: read_guide → search_code → 필요 시 read_code_file 순서')
-  lines.push('- 클래스 검색: search_code(query="ClassName", type="class")')
-  lines.push('- 메서드 검색: search_code(query="MethodName", type="method")')
-  lines.push('- 내용 전문검색: search_code(query="keyword", type="content")')
-  lines.push('')
+  // ── 코드 분석 규칙 (선택 시에만) ──
+  if (hasTool('search_code') || hasTool('read_code_file')) {
+    lines.push('[C# 코드 분석 규칙]')
+    lines.push('- read_guide("_OVERVIEW") → search_code → read_code_file 순서')
+    lines.push('- 타입: class/method/content')
+    lines.push('')
+  }
 
-  // ── 캐릭터 프로파일 규칙 ──
-  lines.push('[캐릭터 기획서/프로파일 규칙]')
-  lines.push('- "캐릭터 기획서", "프로파일", "캐릭터 카드", "개요" 요청 시: build_character_profile 먼저 → create_artifact 순서')
-  lines.push('- "데이터 다 제공해줘", "모든 데이터 보여줘" 요청도 동일하게 build_character_profile 먼저 호출')
-  lines.push('')
+  // ── 캐릭터 프로파일 규칙 (선택 시에만) ──
+  if (hasTool('build_character_profile')) {
+    lines.push('[캐릭터 프로파일 규칙]')
+    lines.push('- 캐릭터 기획서/프로파일 요청 → build_character_profile 먼저 → create_artifact')
+    lines.push('')
+  }
 
-  // ── 바이블테이블링 (Excel 편집) 규칙 ──
-  lines.push('[📝 바이블테이블링 규칙 — 게임 데이터 Excel 편집/추가]')
-  lines.push('⭐⭐⭐ 사용자가 게임 데이터 수정/편집/변경/추가/업데이트를 요청하면 반드시 바이블테이블링 도구를 사용하세요!')
-  lines.push('"바이블테이블링", "엑셀 편집", "데이터 수정", "값 변경", "행 추가", "테이블에 추가", "밸런스 조정" 등의 요청 시 즉시 사용.')
-  lines.push('')
-  lines.push('⚡ 바이블테이블링 속도 최적화 — 이터레이션 최소화!')
-  lines.push('⭐ 이미 현재 대화에서 스키마/데이터를 조회했으면 다시 조회하지 마세요!')
-  lines.push('⭐ 사전주입 스키마가 있거나 이전 턴에서 스키마를 확인했으면 → 바로 edit_game_data!')
-  lines.push('⭐ 처음 보는 테이블이면 → show_table_schema + query_game_data를 한 번에 동시 호출!')
-  lines.push('  예: show_table_schema("Character") + show_table_schema("CharacterStat") + query_game_data("SELECT * FROM Character WHERE id=5001") 를 한 이터레이션에!')
-  lines.push('→ 스키마 확인 + 데이터 조회 = 1 이터레이션, 편집 = 1 이터레이션. 총 2~3 이터레이션이 목표!')
-  lines.push('')
-  lines.push('⚠️ 스키마를 모르는 상태에서 컬럼명 추측은 금지! (조회 후 편집)')
-  lines.push('📝 #으로 시작하는 메모/주석 컬럼(예: #effect_memo, #skill_memo)에도 설명 텍스트를 채워주세요!')
-  lines.push('  - 새 행 추가 시: 해당 데이터가 무엇인지 알아보기 쉬운 한글 설명 작성')
-  lines.push('  - 기존 행 편집 시: 변경 내용을 반영한 메모 업데이트')
-  lines.push('')
-  lines.push('📌 edit_game_data (기존 데이터 수정):')
-  lines.push('- 용도: 기존 행의 셀 값을 변경')
-  lines.push('- ERD FK 관계를 확인하여 부모 테이블부터 편집 (order 필드 사용)')
-  lines.push('- 부모 PK 변경 시 자식 FK도 반드시 함께 수정')
-  lines.push('- edit_plan: [{order, table, sheet?, file?, filters:[{column, op, value}], changes:[{column, action, value}]}, ...]')
-  lines.push('  - filters.op: eq, neq, gt, gte, lt, lte, in, contains, starts_with, ends_with')
-  lines.push('  - changes.action: set(값 교체), multiply(곱하기), add(더하기), subtract(빼기), append(텍스트 이어붙이기)')
-  lines.push('  - ⚠️ value는 반드시 스키마의 타입에 맞게 지정! 숫자 컬럼은 숫자값, 문자열은 문자열')
-  lines.push('')
-  lines.push('⭐⭐⭐ 중요: 같은 xlsx 파일 안에 여러 시트가 있을 때!')
-  lines.push('→ 반드시 하나의 edit_game_data 호출에 모든 시트 편집을 edit_plan 배열에 포함하세요!')
-  lines.push('→ edit_plan 항목마다 table(=시트명), file(=xlsx 파일명), sheet(=시트명)을 명시하세요!')
-  lines.push('')
-  lines.push('📌 add_game_data_rows (새 행 추가):')
-  lines.push('🔴🔴🔴 기존 데이터 복제/복사/참고 시 → 반드시 clone_source 사용!')
-  lines.push('- 절대로 query 결과를 rows[]나 csv로 재입력하지 마세요!')
-  lines.push('- clone_source: {column:"character_id", value:"2001"}, override_csv: "character_id\\n3001\\n3002"')
-  lines.push('  → Python이 원본 행을 자동 복사, 바꿀 컬럼만 교체. 1초 완료.')
-  lines.push('- 완전히 새로운 데이터만 csv 또는 rows 사용')
-  lines.push('- ⚠️ ID 값은 기존 ID 범위를 확인하고 중복되지 않게 할당하세요')
-  lines.push('- ⚠️ FK 컬럼은 부모 테이블의 실존하는 PK 값을 참조해야 합니다')
-  lines.push('')
-  lines.push('📌 워크플로우 (2~3 이터레이션으로 끝내기!):')
-  lines.push('이터레이션1: 필요한 모든 show_table_schema + query_game_data를 **한번에 동시 호출** (스키마를 이미 알면 생략)')
-  lines.push('이터레이션2: edit_game_data / add_game_data_rows 호출 + 결과 요약 텍스트')
-  lines.push('→ 계획 설명은 edit 호출 전에 같은 응답에서 텍스트로 짧게 쓰면 됨 (별도 이터레이션 불필요)')
-  lines.push('')
-  lines.push('⚠️ 편집된 셀은 노란색 하이라이트로 표시됩니다.')
-  lines.push('⚠️ 여러 파일을 수정하면 (예: Character.xlsx + Skill.xlsx) 결과는 ZIP으로 제공됩니다.')
-  lines.push('')
-  lines.push('🔴🔴🔴 절대 금지: 테이블/데이터 생략!')
-  lines.push('- 데이터가 많다는 이유로 테이블을 생략하거나 "~는 생략합니다"라고 하면 안 됩니다!')
-  lines.push('- 데이터가 많으면 → edit_game_data / add_game_data_rows를 **여러 번 나눠서 호출**하세요!')
-  lines.push('- 예: 10레벨 분량의 CharacterStat → 1~5레벨 호출 + 6~10레벨 호출로 분리')
-  lines.push('- 예: 연관 테이블 12개 → 6개씩 2번 호출')
-  lines.push('- 사용자가 요청한 테이블은 **100% 전부** 편집/추가해야 합니다. 하나라도 빠지면 실패입니다.')
-  lines.push('')
-  lines.push('📌 바이블테이블링 응답 스타일 (텍스트로 중계! 아티팩트 만들지 마!):')
-  lines.push('- ❌❌❌ 바이블테이블링(edit_game_data/add_game_data_rows) 후에 create_artifact 절대 호출 금지!')
-  lines.push('- ❌❌❌ 바이블테이블링 과정/결과를 아티팩트로 정리하는 것도 금지! 텍스트 응답만!')
-  lines.push('- ❌❌❌ "정리합니다", "요약합니다" 명목으로 아티팩트를 만드는 것도 금지!')
-  lines.push('- 도구 호출 전: 어떤 테이블에 무엇을 할지 텍스트로 설명')
-  lines.push('- 도구 호출 후: 결과를 텍스트+마크다운 표로 요약 (아티팩트가 아닌 일반 텍스트!)')
-  lines.push('- ⭐ 텍스트 응답 마지막에 반드시 다운로드 링크를 포함하세요!')
-  lines.push('  예: "📥 다운로드: [Character.xlsx](다운로드URL)"')
-  lines.push('  도구 결과의 download_url을 그대로 텍스트에 넣으면 채팅에서 클릭 가능합니다.')
-  lines.push('- ❌ 단순히 "N행 추가됨"만 나열하지 마세요. 실제 세팅된 주요 데이터를 보여주세요.')
-  lines.push('')
+  // ── 바이브테이블링 규칙 (선택 시에만) ──
+  if (hasTool('edit_game_data') || hasTool('add_game_data_rows')) {
+    lines.push('[📝 바이브테이블링 규칙 — 게임 데이터 Excel 편집/추가]')
+    lines.push('⭐ 데이터 수정/편집/추가 요청 → 바이브테이블링 도구 사용!')
+    lines.push('')
+    lines.push('⚡ 속도 최적화 — 이터레이션 최소화!')
+    lines.push('- 이미 스키마를 알면 다시 조회 안 함. 모르면 show_table_schema + query_game_data 동시 호출')
+    lines.push('- 스키마 확인 1회 + 편집 1회 = 총 2~3 이터레이션 목표')
+    lines.push('- 스키마 모르는 상태에서 컬럼명 추측 금지')
+    lines.push('- #메모 컬럼에도 한글 설명 채우기')
+    lines.push('- 🔴 NotNull(!) 컬럼은 빈값/null/빈문자열 절대 금지! 반드시 적절한 값 입력. 빈값 → 게임 크래시!')
+    lines.push('  → csv/rows로 새 행 추가 시 NotNull 컬럼을 빠뜨리지 마세요. clone_source 사용 시 override에서도 NotNull 유지!')
+    lines.push('- 🔴 title 파라미터에 구체적 작업 내용 기입! (예: "캐릭터5001 HP/ATK 밸런스 수정", "퀘스트 보상 3종 추가")')
+    lines.push('  → "바이브테이블링" 같은 일반 제목 절대 금지. 사용자가 히스토리에서 구분 가능해야 함')
+    lines.push('')
+    lines.push('📌 edit_game_data: 기존 행 셀 값 변경')
+    lines.push('- edit_plan: [{order, table, sheet?, file?, filters:[{column, op, value}], changes:[{column, action, value}]}]')
+    lines.push('- op: eq/neq/gt/gte/lt/lte/in/contains/starts_with/ends_with')
+    lines.push('- action: set/multiply/add/subtract/append')
+    lines.push('- 같은 xlsx 여러 시트 → 하나의 edit_plan 배열에 모두 포함!')
+    lines.push('')
+    lines.push('📌 add_game_data_rows: 새 행 추가')
+    lines.push('🔴 기존 데이터 복제 시 → 반드시 clone_source 사용! query 결과를 rows/csv로 재입력 금지!')
+    lines.push('- clone_source: {column, value} + override_csv → Python이 원본 복사, 바꿀 컬럼만 교체')
+    lines.push('- 완전히 새로운 데이터만 csv/rows 사용')
+    lines.push('')
+    lines.push('🔴 절대 금지: 테이블/데이터 생략! 많으면 여러 번 나눠서 호출')
+    lines.push('- 바이브테이블링 후 create_artifact 절대 금지! 텍스트+마크다운 표로 요약')
+    lines.push('- 텍스트 마지막에 다운로드 링크 포함: "📥 [파일명.xlsx](URL)"')
+    lines.push('')
+  }
 
   // ── 아티팩트 생성 규칙 ──
   if (isSlack) {
     lines.push('[아티팩트 생성 규칙 — Slack ⭐⭐⭐]')
     lines.push('Slack에서는 텍스트만으로 복잡한 결과를 보여주기 어려우므로, 도구를 사용하여 데이터/코드/정보를 조사/분석했으면 → create_artifact 호출하여 결과물을 시각적으로 정리하세요.')
-    lines.push('- 🔴 예외: edit_game_data / add_game_data_rows (바이블테이블링) 결과는 절대 아티팩트로 만들지 마세요!')
+    lines.push('- 🔴 예외: edit_game_data / add_game_data_rows (바이브테이블링) 결과는 절대 아티팩트로 만들지 마세요!')
     lines.push('- 단순 "몇 행 조회됨" 텍스트로 끝내지 말 것! 조사 결과를 아티팩트로 만들어야 사용자가 볼 수 있음')
-    lines.push('- 2개 이상의 도구를 사용했거나, 테이블 데이터가 있으면 반드시 아티팩트로! (단, 바이블테이블링 제외)')
+    lines.push('- 2개 이상의 도구를 사용했거나, 테이블 데이터가 있으면 반드시 아티팩트로! (단, 바이브테이블링 제외)')
     lines.push('- 데이터 수집이 끝나면 즉시 create_artifact를 호출 (선언 없이)')
     lines.push('- 아티팩트 생성 후 짧은 요약 텍스트도 반드시 함께 보내야 함 (Slack에서 미리보기 표시)')
   } else {
@@ -8979,7 +9021,7 @@ function buildServerSystemPrompt(_userQuery?: string, isSlack = false): string {
     lines.push('- "정리해줘", "문서로 만들어줘", "보고서 작성해줘", "시트 만들어줘", "아티팩트" 등 명시적 요청 → create_artifact')
     lines.push('- 사용자가 명시적으로 요청하지 않은 경우 → 텍스트+마크다운 표로 응답. 아티팩트 만들지 마세요!')
     lines.push('- 질문에 대한 답변, 데이터 조회 결과, 분석 등은 텍스트로 충분합니다. 선제적으로 아티팩트를 만들지 마세요.')
-    lines.push('- 🔴 edit_game_data / add_game_data_rows (바이블테이블링) 결과는 절대 아티팩트로 만들지 마세요!')
+    lines.push('- 🔴 edit_game_data / add_game_data_rows (바이브테이블링) 결과는 절대 아티팩트로 만들지 마세요!')
   }
   lines.push('')
   lines.push('아티팩트 생성 시:')
@@ -9218,12 +9260,14 @@ function createChatApiMiddleware(options: GitPluginOptions) {
 
       const MODEL = 'claude-sonnet-4-6'
       const MAX_ITERATIONS = 20
-      // ── 동적 max_tokens: 슬랙/아티팩트/바이블테이블링이면 16384, 일반 대화면 8192 ──
+      // ── 동적 max_tokens: 슬랙/아티팩트/바이브테이블링이면 16384, 일반 대화면 8192 ──
       const ARTIFACT_KEYWORDS = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|캐릭터.*시트|릴리즈.*노트|분석|작성해줘|보여줘|프로필|비교|현황|리스트|목록|전체/
       const BT_KEYWORDS = /바이블|테이블링|편집해|추가해|수정해|데이터.*넣|행.*추가|값.*변경|만들어줘.*캐릭|세팅해|밸런스|스탯|스킬.*추가|레벨.*추가|이어서.*생성/
       const isSlackSource = userMessage.includes('[Slack 사용자:') || (body as Record<string, unknown>).source === 'slack'
       const MAX_TOKENS = (isSlackSource || ARTIFACT_KEYWORDS.test(userMessage) || BT_KEYWORDS.test(userMessage)) ? 16384 : 8192
-      const systemPrompt = buildServerSystemPrompt(userMessage, isSlackSource)
+      const filteredTools = selectServerTools(userMessage)
+      const selectedToolNames = new Set(filteredTools.map((t: Record<string, unknown>) => t.name as string))
+      const systemPrompt = buildServerSystemPrompt(userMessage, isSlackSource, selectedToolNames)
 
       // ── 동시 요청 중복 방지 ──
       if (isRequestActive(session.id)) {
@@ -9244,8 +9288,12 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       }
 
       const allToolCalls: Array<{ tool: string; input: unknown; result: unknown; summary?: string }> = []
-      // 대화 턴 시작 시 바이블테이블링 job 체이닝 상태 초기화
-      delete (options as unknown as Record<string, unknown>)._btPrevJobId
+      // [BT_PREV_JOB:xxx] 마커가 있으면 해당 job을 이어받음
+      // 마커가 없어도 이전 턴의 _btPrevJobId를 유지 (대화 턴 간 체이닝 보존)
+      const btPrevMatch = userMessage.match(/\[BT_PREV_JOB:([^\]]+)\]/)
+      if (btPrevMatch) {
+        ;(options as unknown as Record<string, unknown>)._btPrevJobId = btPrevMatch[1]
+      }
 
       if (isStream) {
         // ── SSE 스트리밍 모드 ──
@@ -9270,7 +9318,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
               apiKey,
                 { model: MODEL, max_tokens: MAX_TOKENS,
                   system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-                  tools: API_TOOLS.map((t: Record<string, unknown>, i: number) => i === API_TOOLS.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t),
+                  tools: filteredTools.map((t: Record<string, unknown>, i: number) => i === filteredTools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t),
                   messages },
               res,
               () => {}, // tool_use 처리는 아래에서
@@ -9360,11 +9408,11 @@ function createChatApiMiddleware(options: GitPluginOptions) {
                   }
                 }, 15_000) // 15초마다
                 
-                // 🔴 바이블테이블링 후 create_artifact 차단 (코드 레벨 강제)
+                // 🔴 바이브테이블링 후 create_artifact 차단 (코드 레벨 강제)
                 const hadBT = allToolCalls.some((tc: { tool: string }) => tc.tool === 'edit_game_data' || tc.tool === 'add_game_data_rows')
                 if (tb.name === 'create_artifact' && hadBT) {
-                  sLog('WARN', `[chatApi] create_artifact 차단: 바이블테이블링 후 아티팩트 생성 시도 거부`)
-                  const blockResult = '🔴 바이블테이블링 결과는 아티팩트로 만들지 마세요! 다운로드 링크가 결과물입니다. 텍스트 응답으로 요약하세요.'
+                  sLog('WARN', `[chatApi] create_artifact 차단: 바이브테이블링 후 아티팩트 생성 시도 거부`)
+                  const blockResult = '🔴 바이브테이블링 결과는 아티팩트로 만들지 마세요! 다운로드 링크가 결과물입니다. 텍스트 응답으로 요약하세요.'
                   allToolCalls.push({ tool: tb.name!, input: tb.input, result: blockResult, summary: blockResult })
                   toolResults.push({ type: 'tool_result', tool_use_id: tb.id!, content: blockResult })
                   if (!res.writableEnded) try { res.write(`event: tool_done\ndata: ${JSON.stringify({ tool: tb.name, summary: blockResult })}\n\n`) } catch { /* ignore */ }
@@ -9478,7 +9526,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
               model: MODEL,
               max_tokens: MAX_TOKENS,
             system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-            tools: API_TOOLS.map((t: Record<string, unknown>, i: number) => i === API_TOOLS.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t),
+            tools: filteredTools.map((t: Record<string, unknown>, i: number) => i === filteredTools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t),
             messages,
           })
           } catch (apiErr) {
@@ -9534,11 +9582,11 @@ function createChatApiMiddleware(options: GitPluginOptions) {
             const toolResults: Array<{ type: string; tool_use_id: string; content: string }> = []
 
             for (const tb of toolBlocks) {
-              // 🔴 바이블테이블링 후 create_artifact 차단
+              // 🔴 바이브테이블링 후 create_artifact 차단
               const hadBT = allToolCalls.some((tc: { tool: string }) => tc.tool === 'edit_game_data' || tc.tool === 'add_game_data_rows')
               if (tb.name === 'create_artifact' && hadBT) {
-                sLog('WARN', `[chatApi/non-stream] create_artifact 차단: 바이블테이블링 후 아티팩트 생성 거부`)
-                const blockResult = '🔴 바이블테이블링 결과는 아티팩트로 만들지 마세요! 다운로드 링크가 결과물입니다.'
+                sLog('WARN', `[chatApi/non-stream] create_artifact 차단: 바이브테이블링 후 아티팩트 생성 거부`)
+                const blockResult = '🔴 바이브테이블링 결과는 아티팩트로 만들지 마세요! 다운로드 링크가 결과물입니다.'
                 allToolCalls.push({ tool: tb.name!, input: tb.input, result: blockResult, summary: blockResult })
                 toolResults.push({ type: 'tool_result', tool_use_id: tb.id!, content: blockResult })
                 continue
@@ -9827,7 +9875,7 @@ for line in resp.iter_lines():
 }
 
 /** async 미들웨어를 안전하게 래핑 — 미처리 예외를 로그 + 500 응답 */
-// ── 바이블테이블링 프록시 미들웨어 (localhost:5173 → localhost:8100) ────────────
+// ── 바이브테이블링 프록시 미들웨어 (localhost:5173 → localhost:8100) ────────────
 function createBibleTablingProxy() {
   return (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     if (!req.url?.startsWith('/api/bible-tabling/')) return next()
@@ -9869,7 +9917,7 @@ function createBibleTablingProxy() {
     )
     proxyReq.on('error', () => {
       res.writeHead(502, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ detail: '바이블테이블링 서버(8100)에 연결할 수 없습니다.' }))
+      res.end(JSON.stringify({ detail: '바이브테이블링 서버(8100)에 연결할 수 없습니다.' }))
     })
     req.pipe(proxyReq, { end: true })
   }

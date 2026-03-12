@@ -1,5 +1,5 @@
 """
-바이블테이블링 (Bible Tabling) — Python Backend
+바이브테이블링 (Bible Tabling) — Python Backend
 
 게임 데이터 Excel 편집 서비스.
 AI 챗봇이 ERD를 참고하여 구조화된 편집 명령을 보내면,
@@ -84,7 +84,7 @@ class TableEdit(BaseModel):
 class EditRequest(BaseModel):
     session_id: Optional[str] = None
     prev_job_id: Optional[str] = None  # 이전 job 출력 파일을 이어서 편집
-    title: str = "바이블테이블링"
+    title: str = "바이브테이블링"
     reason: str = ""
     edit_plan: list[TableEdit]
 
@@ -97,7 +97,7 @@ class CloneSource(BaseModel):
 class AddRowRequest(BaseModel):
     session_id: Optional[str] = None
     prev_job_id: Optional[str] = None  # 이전 job 출력 파일을 이어서 편집
-    title: str = "바이블테이블링 — 행 추가"
+    title: str = "바이브테이블링 — 행 추가"
     reason: str = ""
     table: str
     file: Optional[str] = None
@@ -125,7 +125,7 @@ class AddRowRequest(BaseModel):
 
 # ── FastAPI 앱 ─────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="바이블테이블링 API", version="1.0.0")
+app = FastAPI(title="바이브테이블링 API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -183,6 +183,14 @@ async def edit_data(req: EditRequest):
         prev_job_dir = DOWNLOADS_DIR / req.prev_job_id if req.prev_job_id else None
         if prev_job_dir and not prev_job_dir.is_dir():
             prev_job_dir = None  # 만료된 경우 무시
+
+        # 이전 job의 모든 xlsx 파일을 새 job으로 복사 (누적 변경 보존)
+        # add_rows에서 추가된 행이 포함된 파일도 이어서 편집 가능
+        if prev_job_dir:
+            for prev_file in prev_job_dir.glob("*.xlsx"):
+                dest = job_dir / prev_file.name
+                if not dest.exists():
+                    shutil.copy2(prev_file, dest)
 
         # order 순서로 정렬 (부모 테이블 먼저)
         sorted_edits = sorted(req.edit_plan, key=lambda e: e.order)
@@ -265,6 +273,13 @@ async def edit_data_stream(req: EditRequest):
     prev_job_dir = DOWNLOADS_DIR / req.prev_job_id if req.prev_job_id else None
     if prev_job_dir and not prev_job_dir.is_dir():
         prev_job_dir = None
+
+    # 이전 job의 모든 xlsx 파일을 새 job으로 복사 (누적 변경 보존)
+    if prev_job_dir:
+        for prev_file in prev_job_dir.glob("*.xlsx"):
+            dest = job_dir / prev_file.name
+            if not dest.exists():
+                shutil.copy2(prev_file, dest)
 
     sorted_edits = sorted(req.edit_plan, key=lambda e: e.order)
 
@@ -497,17 +512,26 @@ async def update_cells(job_id: str, req: UpdateCellsRequest):
 
 class PushRequest(BaseModel):
     backup: bool = True
+    target_dir: str | None = None  # 유저별 로컬 폴더 (None이면 공용 GIT_REPO_DATA_DIR)
 
 @app.post("/api/bible-tabling/push/{job_id}")
 async def push_job(job_id: str, req: PushRequest):
-    """job의 편집된 xlsx를 원본 데이터 디렉토리에 반영."""
+    """job의 편집된 xlsx를 대상 디렉토리에 반영."""
     job_dir = DOWNLOADS_DIR / job_id
     if not job_dir.exists() or not job_dir.is_dir():
         raise HTTPException(404, "Job을 찾을 수 없습니다. (만료되었을 수 있음)")
 
-    data_dir = Path(GIT_REPO_DATA_DIR)
-    if not data_dir.exists():
-        raise HTTPException(500, f"원본 데이터 디렉토리 없음: {GIT_REPO_DATA_DIR}")
+    # 대상 디렉토리: 유저 로컬 or 공용 원본
+    if req.target_dir:
+        data_dir = Path(req.target_dir)
+        if not data_dir.exists():
+            raise HTTPException(400, f"지정된 폴더가 존재하지 않습니다: {req.target_dir}")
+        if not data_dir.is_dir():
+            raise HTTPException(400, f"지정된 경로가 폴더가 아닙니다: {req.target_dir}")
+    else:
+        data_dir = Path(GIT_REPO_DATA_DIR)
+        if not data_dir.exists():
+            raise HTTPException(500, f"원본 데이터 디렉토리 없음: {GIT_REPO_DATA_DIR}")
 
     edited_files = list(job_dir.glob("*.xlsx"))
     if not edited_files:
@@ -540,6 +564,23 @@ async def push_job(job_id: str, req: PushRequest):
     }
 
 
+# ── POST /api/bible-tabling/validate-dir ─ 폴더 경로 유효성 검증 ──────────
+
+class ValidateDirRequest(BaseModel):
+    path: str
+
+@app.post("/api/bible-tabling/validate-dir")
+async def validate_dir(req: ValidateDirRequest):
+    """유저가 입력한 폴더 경로가 유효한지 + xlsx 파일이 있는지 확인."""
+    p = Path(req.path)
+    if not p.exists():
+        return {"valid": False, "reason": "폴더가 존재하지 않습니다."}
+    if not p.is_dir():
+        return {"valid": False, "reason": "경로가 폴더가 아닙니다."}
+    xlsx_count = len(list(p.glob("*.xlsx")))
+    return {"valid": True, "xlsx_count": xlsx_count, "path": str(p.resolve())}
+
+
 # ── GET /api/bible-tabling/tables ─ 테이블 목록 ─────────────────────────────
 
 @app.get("/api/bible-tabling/tables")
@@ -567,7 +608,7 @@ if __name__ == "__main__":
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     print(f"""
 +--------------------------------------------------------------+
-|  [바이블테이블링 (Bible Tabling) 서버]                        |
+|  [바이브테이블링 (Bible Tabling) 서버]                        |
 |                                                              |
 |  데이터: {str(GIT_REPO_DATA_DIR)[:48].ljust(48)}|
 |  포트: {str(PORT).ljust(51)}|

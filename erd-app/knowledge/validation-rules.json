@@ -972,5 +972,59 @@
     "scope": "team",
     "createdAt": 1773286794938,
     "updatedAt": 1773286794938
+  },
+  {
+    "id": "rule_1773291006556",
+    "name": "Card 타입 Enum 유효성",
+    "table": "Card",
+    "severity": "error",
+    "condition": {
+      "type": "in",
+      "column": "type",
+      "values": [
+        "None",
+        "Tactical",
+        "Instant",
+        "Enhance"
+      ]
+    },
+    "enabled": true,
+    "scope": "personal",
+    "createdAt": 1773291006556,
+    "updatedAt": 1773291006271
+  },
+  {
+    "id": "rule_1773291006557",
+    "name": "Card 효과타입 Enum 유효성",
+    "table": "Card",
+    "severity": "error",
+    "condition": {
+      "type": "in",
+      "column": "card_effect_type",
+      "values": [
+        "None",
+        "AddPassive",
+        "AddStatusEffect",
+        "AddPerk"
+      ]
+    },
+    "enabled": true,
+    "scope": "personal",
+    "createdAt": 1773291006557,
+    "updatedAt": 1773291006945
+  },
+  {
+    "id": "rule_1773291006558",
+    "name": "Projectile ID 고유값",
+    "table": "Projectile",
+    "severity": "error",
+    "condition": {
+      "type": "unique",
+      "column": "id"
+    },
+    "enabled": true,
+    "scope": "personal",
+    "createdAt": 1773291006558,
+    "updatedAt": 1773291006302
   }
 ]

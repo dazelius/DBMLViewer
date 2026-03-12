@@ -490,7 +490,7 @@ const TOOL_LABELS = {
   preview_prefab:    '🧩 프리팹',
   preview_fbx_animation: '🎬 애니메이션',
   find_resource_image: '🖼️ 이미지 찾기',
-  edit_game_data:      '📝 바이블테이블링',
+  edit_game_data:      '📝 바이브테이블링',
   add_game_data_rows:  '➕ 데이터 행 추가',
   search_published_artifacts: '🔍 기존 문서 검색',
   get_published_artifact:     '📄 기존 문서 가져오기',
@@ -528,7 +528,7 @@ function formatToolResultForSlack(tc) {
     if (fileMatch) return `${label}: \`${fileMatch[1]}\``;
   }
   
-  // 바이블테이블링: 편집 결과 + 다운로드 링크
+  // 바이브테이블링: 편집 결과 + 다운로드 링크
   if (tc.tool === 'edit_game_data') {
     const cellMatch = summary.match(/셀:\s*(\d+)개 변경/);
     const rowMatch = summary.match(/행:\s*(\d+)개 매치/);

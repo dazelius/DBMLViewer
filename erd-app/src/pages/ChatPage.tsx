@@ -1453,6 +1453,76 @@ interface ThinkingStepUI {
 // ── localStorage 캐시 키 ──────────────────────────────────────────────────────
 const CHAT_CACHE_KEY = 'datamaster_chat_history';
 const ARTIFACTS_CACHE_KEY = 'datamaster_saved_artifacts';
+const BT_HISTORY_CACHE_KEY = 'datamaster_bt_history';
+const USER_SETTINGS_KEY = 'datamaster_user_settings';
+const FS_HANDLE_DB = 'datamaster_fs_handles';
+
+interface UserSettings {
+  displayName: string;
+  localDataDir: string;
+}
+
+// ── File System Access API: 로컬 폴더 핸들 영속 저장 (IndexedDB) ──
+async function saveDirectoryHandle(handle: FileSystemDirectoryHandle): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(FS_HANDLE_DB, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore('handles'); };
+    req.onsuccess = () => {
+      const tx = req.result.transaction('handles', 'readwrite');
+      tx.objectStore('handles').put(handle, 'localDataDir');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function loadDirectoryHandle(): Promise<FileSystemDirectoryHandle | null> {
+  return new Promise((resolve) => {
+    const req = indexedDB.open(FS_HANDLE_DB, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore('handles'); };
+    req.onsuccess = () => {
+      const tx = req.result.transaction('handles', 'readonly');
+      const getReq = tx.objectStore('handles').get('localDataDir');
+      getReq.onsuccess = () => resolve(getReq.result ?? null);
+      getReq.onerror = () => resolve(null);
+    };
+    req.onerror = () => resolve(null);
+  });
+}
+
+async function clearDirectoryHandle(): Promise<void> {
+  return new Promise((resolve) => {
+    const req = indexedDB.open(FS_HANDLE_DB, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore('handles'); };
+    req.onsuccess = () => {
+      const tx = req.result.transaction('handles', 'readwrite');
+      tx.objectStore('handles').delete('localDataDir');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    };
+    req.onerror = () => resolve();
+  });
+}
+
+async function verifyPermission(handle: FileSystemDirectoryHandle): Promise<boolean> {
+  const opts = { mode: 'readwrite' } as const;
+  const h = handle as unknown as { queryPermission(o: typeof opts): Promise<string>; requestPermission(o: typeof opts): Promise<string> };
+  if (await h.queryPermission(opts) === 'granted') return true;
+  return await h.requestPermission(opts) === 'granted';
+}
+
+interface BtHistoryEntry {
+  id: string;
+  title: string;
+  createdAt: string;
+  jobId: string;
+  allJobIds: string[];
+  entries: { table: string; file?: string; type: 'edit' | 'add'; status: string; rowsAdded?: number; cellsModified?: number }[];
+  pushed: boolean;
+  fileCount: number;
+  tableCount: number;
+}
 
 // ── 간단 마크다운 렌더러 ──────────────────────────────────────────────────────
 
@@ -2350,7 +2420,7 @@ function inlineMarkdown(text: string): React.ReactNode {
     } else if (italicText !== undefined) {
       segments.push(<em key={key++}>{italicText}</em>);
     } else if (bareUrl !== undefined) {
-      // 바이블테이블링 다운로드 URL → 다운로드 버튼으로 렌더
+      // 바이브테이블링 다운로드 URL → 다운로드 버튼으로 렌더
       if (/\/api\/bible-tabling\/download\//.test(bareUrl)) {
         const filename = bareUrl.split('/').pop() || 'download.xlsx';
         segments.push(
@@ -5282,7 +5352,7 @@ function WebReadCard({ tc }: { tc: WebReadResult }) {
   );
 }
 
-// ── 바이블테이블링 fetch 다운로드 헬퍼 (브라우저 직접 접속 대신 fetch+Blob) ──
+// ── 바이브테이블링 fetch 다운로드 헬퍼 (브라우저 직접 접속 대신 fetch+Blob) ──
 async function bibleTablingDownload(url: string, filename: string) {
   try {
     const resp = await fetch(url);
@@ -5301,7 +5371,7 @@ async function bibleTablingDownload(url: string, filename: string) {
   }
 }
 
-// ── BibleTablingCard — 바이블테이블링 편집 결과 ──────────────────────────────
+// ── BibleTablingCard — 바이브테이블링 편집 결과 ──────────────────────────────
 function BibleTablingCard({ tc }: { tc: BibleTablingEditResult }) {
   const isPartial = !!tc.partial;
   const borderColor = isPartial ? 'rgba(251,146,60,0.4)' : tc.error ? 'rgba(248,113,113,0.3)' : 'rgba(234,179,8,0.3)';
@@ -5312,7 +5382,7 @@ function BibleTablingCard({ tc }: { tc: BibleTablingEditResult }) {
       <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: headerBg, borderBottom: `1px solid ${borderColor}` }}>
         <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `${accentColor}33` }}>{isPartial ? '⚠️' : '📝'}</div>
         <span className="font-semibold text-[13px]" style={{ color: accentColor }}>
-          바이블테이블링 — {isPartial ? '부분 완료' : '데이터 편집'}
+          바이브테이블링 — {isPartial ? '부분 완료' : '데이터 편집'}
         </span>
         {isPartial && tc.errorCount != null && tc.errorCount > 0 && (
           <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(248,113,113,0.15)', color: '#f87171' }}>
@@ -5366,7 +5436,7 @@ function BibleTablingCard({ tc }: { tc: BibleTablingEditResult }) {
   );
 }
 
-// ── BibleTablingAddRowsCard — 바이블테이블링 행 추가 결과 ─────────────────────
+// ── BibleTablingAddRowsCard — 바이브테이블링 행 추가 결과 ─────────────────────
 function BibleTablingAddRowsCard({ tc }: { tc: BibleTablingAddRowsResult }) {
   const [expanded, setExpanded] = React.useState(false);
   const overrideCols = new Set((tc.overrideColumns ?? []).map(c => c.toLowerCase()));
@@ -5384,7 +5454,7 @@ function BibleTablingAddRowsCard({ tc }: { tc: BibleTablingAddRowsResult }) {
     <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(34,197,94,0.3)' }}>
       <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: 'rgba(34,197,94,0.1)', borderBottom: '1px solid rgba(34,197,94,0.18)' }}>
         <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(34,197,94,0.2)' }}>{isClone ? '📋' : '➕'}</div>
-        <span className="font-semibold text-[13px]" style={{ color: '#22c55e' }}>바이블테이블링 — {isClone ? '복제' : '행 추가'}</span>
+        <span className="font-semibold text-[13px]" style={{ color: '#22c55e' }}>바이브테이블링 — {isClone ? '복제' : '행 추가'}</span>
         <span className="text-[11px] px-2 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>+{tc.rowsAdded}행</span>
         <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>{tc.duration ? `${(tc.duration / 1000).toFixed(1)}s` : ''}</span>
       </div>
@@ -7310,12 +7380,14 @@ function CharacterPortrait({
   animate = false,
   cycleSequence,
   className = '',
+  overheat = 0,
 }: {
   expression: ExpressionKey;
   size?: number;
   animate?: boolean;
   cycleSequence?: ExpressionKey[];
   className?: string;
+  overheat?: number;
 }) {
   const activeExpr = useExpressionCycle(expression, cycleSequence, animate);
   const [fade, setFade] = useState(true);
@@ -7334,6 +7406,23 @@ function CharacterPortrait({
   const xPct = expr.col * 25;
   const yPct = expr.row * 50;
 
+  // 오버히트 시각 효과: level 0~1에 따라 인디고→빨강 전환 + 글로우 강화
+  const heatR = Math.round(99 + (255 - 99) * overheat);   // 99→255
+  const heatG = Math.round(102 - 102 * overheat);          // 102→0
+  const heatB = Math.round(241 - 241 * overheat * 0.7);    // 241→72
+
+  const borderColor = overheat > 0.05
+    ? `rgba(${heatR},${heatG},${heatB},${animate ? 0.9 : 0.5 + overheat * 0.3})`
+    : animate ? 'rgba(99,102,241,0.8)' : 'rgba(99,102,241,0.35)';
+
+  const glowAlpha = 0.3 + overheat * 0.5;
+  const glowSpread = 8 + overheat * 20;
+  const heatShadow = overheat > 0.05
+    ? `0 0 ${glowSpread}px rgba(${heatR},${heatG},${heatB},${glowAlpha}), 0 0 ${glowSpread * 0.4}px rgba(${heatR},${heatG},${heatB},${glowAlpha * 0.6}), 0 2px 8px rgba(0,0,0,0.4)`
+    : animate
+      ? '0 0 18px rgba(99,102,241,0.65), 0 0 6px rgba(99,102,241,0.4), 0 2px 8px rgba(0,0,0,0.4)'
+      : '0 2px 8px rgba(0,0,0,0.3)';
+
   return (
     <div
       className={`flex-shrink-0 rounded-full overflow-hidden ${className}`}
@@ -7343,12 +7432,11 @@ function CharacterPortrait({
         backgroundImage: 'url(/TableMaster/portrait.png)',
         backgroundSize: '500% 300%',
         backgroundPosition: `${xPct}% ${yPct}%`,
-        border: animate ? '2px solid rgba(99,102,241,0.8)' : '2px solid rgba(99,102,241,0.35)',
-        boxShadow: animate
-          ? '0 0 18px rgba(99,102,241,0.65), 0 0 6px rgba(99,102,241,0.4), 0 2px 8px rgba(0,0,0,0.4)'
-          : '0 2px 8px rgba(0,0,0,0.3)',
+        border: `2px solid ${borderColor}`,
+        boxShadow: heatShadow,
         opacity: fade ? 1 : 0,
-        transition: 'background-position 0.3s ease, box-shadow 0.3s ease, opacity 0.12s ease, border-color 0.3s ease',
+        transition: 'background-position 0.3s ease, box-shadow 0.5s ease, opacity 0.12s ease, border-color 0.5s ease',
+        animation: overheat >= 0.6 ? `overheat-pulse ${1.5 - overheat * 0.5}s ease-in-out infinite` : undefined,
       }}
       title={expr.label}
     />
@@ -8319,6 +8407,43 @@ export default function ChatPage() {
 
   // 플로팅 포트레이트 표정 사이클 (ChatPage 레벨에서 관리 → 뱃지도 동기화)
   const floatingExpr = useExpressionCycle(currentExpression, globalLoadingCycle, isLoading);
+
+  // ── 오버히트 레벨 계산 (0~1): 컨텍스트 크기 + 세션 누적 비용 ──
+  const overheatInfo = useMemo(() => {
+    const userMsgCount = messages.filter(m => m.role === 'user').length;
+
+    // 세션 누적 총 토큰 (모든 응답의 input+output)
+    const sessionTotalTokens = messages.reduce((sum, m) => sum + (m.tokenUsage?.total_tokens ?? 0), 0);
+
+    // 최근 요청의 논리적 입력 토큰 = 현재 컨텍스트 크기 (가장 중요한 지표)
+    const aiMsgs = messages.filter(m => m.role === 'assistant' && m.tokenUsage);
+    const lastUsage = aiMsgs.length > 0 ? aiMsgs[aiMsgs.length - 1].tokenUsage : null;
+    const currentContextTokens = lastUsage?.total_input_logical ?? 0;
+
+    // 최근 3턴의 평균 입력 토큰 증가율 (컨텍스트 팽창 속도)
+    const recentUsages = aiMsgs.slice(-4).map(m => m.tokenUsage?.total_input_logical ?? 0);
+    const growthRate = recentUsages.length >= 2
+      ? (recentUsages[recentUsages.length - 1] - recentUsages[0]) / recentUsages.length
+      : 0;
+
+    // 컨텍스트 크기: 50K부터 열기 시작, 180K에서 MAX (Claude 200K 한계에 가까움)
+    const contextHeat = Math.min(1, Math.max(0, (currentContextTokens - 50000) / 130000));
+    // 세션 누적: 200K부터 열기 시작, 600K에서 MAX
+    const sessionHeat = Math.min(1, Math.max(0, (sessionTotalTokens - 200000) / 400000));
+    // 턴 수: 20턴부터 열기 시작, 50턴에서 MAX
+    const turnHeat = Math.min(1, Math.max(0, (userMsgCount - 20) / 30));
+
+    // 컨텍스트 크기가 가장 중요 (60%), 세션 누적 (25%), 턴 수 (15%)
+    const level = Math.min(1, contextHeat * 0.6 + sessionHeat * 0.25 + turnHeat * 0.15);
+
+    const label = level >= 0.85 ? '🔥 과열!' : level >= 0.6 ? '🌡️ 고온' : level >= 0.3 ? '🌤️ 따뜻' : level > 0.05 ? '💚 정상' : '';
+    const contextK = (currentContextTokens / 1000).toFixed(0);
+    const sessionK = (sessionTotalTokens / 1000).toFixed(0);
+    const isGrowing = growthRate > 3000;
+
+    return { level, userMsgCount, sessionTotalTokens, currentContextTokens, contextK, sessionK, label, isGrowing };
+  }, [messages]);
+
   const [showRagGraph, setShowRagGraph] = useState(false);
 
   // 아티팩트 사이드 패널 상태
@@ -8334,7 +8459,7 @@ export default function ChatPage() {
   const artifactPanelRef = useRef(artifactPanel);
   useEffect(() => { artifactPanelRef.current = artifactPanel; }, [artifactPanel]);
 
-  // 바이블테이블링 사이드 패널 상태
+  // 바이브테이블링 사이드 패널 상태
   interface BibleTablingPanelEntry {
     table: string;
     file?: string;
@@ -8370,6 +8495,49 @@ export default function ChatPage() {
   const [btEditingCell, setBtEditingCell] = useState<{ file: string; sheet: string; row: number; column: string } | null>(null);
   const [btEditValue, setBtEditValue] = useState('');
   const [btSaving, setBtSaving] = useState(false);
+  const [btRevisionInput, setBtRevisionInput] = useState('');
+
+  const buildBtRevisionContext = (panel: NonNullable<typeof btPanel>, request: string): string => {
+    const doneEntries = panel.entries.filter(en => en.status === 'done');
+    const tables = doneEntries.map(en => en.table).join(', ');
+    const files = [...new Set(doneEntries.map(en => en.file).filter(Boolean))].join(', ');
+
+    // preview 데이터에서 현재 값 요약 (AI가 기존 데이터를 파악하도록)
+    const dataSummary: string[] = [];
+    if (panel.previewData) {
+      for (const pf of panel.previewData) {
+        for (const sheet of pf.sheets) {
+          const cols = sheet.headers.slice(0, 8).join(',');
+          const sampleRows = sheet.rows.slice(0, 3).map(r =>
+            sheet.headers.slice(0, 8).map(h => {
+              const v = r.cells[h]?.value;
+              return v !== undefined && v !== null ? String(v) : '';
+            }).join(',')
+          );
+          dataSummary.push(`[${pf.filename}/${sheet.name}] ${sheet.rows.length}행 | ${cols}`);
+          for (const sr of sampleRows) dataSummary.push(`  ${sr}`);
+        }
+      }
+    }
+
+    return [
+      `[BT_PREV_JOB:${panel.jobId ?? ''}]`,
+      `[바이브테이블링 수정 요청]`,
+      ``,
+      `🔴 중요: 이것은 이전 바이브테이블링 결과에 대한 수정 요청입니다.`,
+      `- 데이터를 새로 조회(query_game_data)하지 마세요! 이미 편집된 파일이 있습니다.`,
+      `- prev_job_id가 자동 설정되어 기존 편집 결과 위에 덮어씁니다.`,
+      `- 바로 edit_game_data를 호출하여 수정하세요.`,
+      ``,
+      `📋 이전 작업 정보:`,
+      `- 테이블: ${tables}`,
+      `- 파일: ${files}`,
+      ...(dataSummary.length > 0 ? [``, `📊 현재 데이터 (수정 전):`, ...dataSummary] : []),
+      ``,
+      `✏️ 수정 요청: ${request}`,
+    ].join('\n');
+  };
+
   const btPanelRef = useRef(btPanel);
   useEffect(() => { btPanelRef.current = btPanel; }, [btPanel]);
 
@@ -8424,6 +8592,38 @@ export default function ChatPage() {
       localStorage.setItem(ARTIFACTS_CACHE_KEY, JSON.stringify(savedArtifacts));
     } catch { /* 용량 초과 등 무시 */ }
   }, [savedArtifacts]);
+
+  // 바이브테이블링 히스토리 (사이드바용) — localStorage 복원
+  const [btHistory, setBtHistory] = useState<BtHistoryEntry[]>(() => {
+    try {
+      const raw = localStorage.getItem(BT_HISTORY_CACHE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
+  useEffect(() => {
+    try {
+      const trimmed = btHistory.slice(0, 30);
+      localStorage.setItem(BT_HISTORY_CACHE_KEY, JSON.stringify(trimmed));
+    } catch { /* 용량 초과 등 무시 */ }
+  }, [btHistory]);
+
+  // 유저 설정 (이름 + 로컬 데이터 폴더)
+  const [userSettings, setUserSettings] = useState<UserSettings>(() => {
+    try {
+      const raw = localStorage.getItem(USER_SETTINGS_KEY);
+      return raw ? JSON.parse(raw) : { displayName: '', localDataDir: '' };
+    } catch { return { displayName: '', localDataDir: '' }; }
+  });
+  const [showUserSettingsDialog, setShowUserSettingsDialog] = useState(false);
+  const [localDirHandle, setLocalDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
+  const saveUserSettings = (s: UserSettings) => {
+    setUserSettings(s);
+    try { localStorage.setItem(USER_SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
+  };
+  // 앱 시작 시 IndexedDB에서 폴더 핸들 복원
+  useEffect(() => {
+    loadDirectoryHandle().then(h => { if (h) setLocalDirHandle(h); });
+  }, []);
 
   // 스키마 로드 시 DB 가이드 자동 생성 (백그라운드)
   useEffect(() => {
@@ -8538,10 +8738,11 @@ export default function ChatPage() {
       _artBuf.html = ''; _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0; _artBuf.rawJson = '';
       _artBuf.baseHtml = '';
     }
-    // 바이블테이블링 패널: ref로 최신 상태 확인 (useCallback stale closure 방지)
+    // 바이브테이블링 패널: ref로 최신 상태 확인 (useCallback stale closure 방지)
     const activeBtPanel = btPanelRef.current;
     const isBtContinuation = activeBtPanel && activeBtPanel.entries.length > 0 && (
       text.includes('이전에 조회한 데이터를 기반으로') || displayText === '▶ 이어서 생성하기'
+      || text.includes('[바이브테이블링 수정 요청]')
     );
     if (isBtContinuation) {
       setBtPanel(prev => prev ? { ...prev, isComplete: false } : prev);
@@ -8551,8 +8752,15 @@ export default function ChatPage() {
       setBtPanel(null);
     }
 
+    // BT 패널에 jobId가 있으면 자동으로 [BT_PREV_JOB:jobId] 마커 주입
+    // 이전 바이브테이블링 결과 위에 이어서 편집할 수 있도록 체이닝 보장
+    let apiText = text.trim();
+    if (activeBtPanel?.jobId && !apiText.includes('[BT_PREV_JOB:')) {
+      apiText = `[BT_PREV_JOB:${activeBtPanel.jobId}] ${apiText}`;
+    }
+
     // ── FastPath: 간단한 질문은 API 호출 없이 즉시 응답 ──
-    const fastResult = await tryFastPath(text.trim(), schema, tableData);
+    const fastResult = await tryFastPath(apiText, schema, tableData);
     if (fastResult) {
       console.log(`[FastPath] ⚡ 즉답 (${fastResult.toolCalls.length}개 도구, ${fastResult.content.length}자)`);
       const assistantMsg: Message = {
@@ -8566,7 +8774,7 @@ export default function ChatPage() {
       setMessages(prev => prev.map(m => m.id === loadingId ? assistantMsg : m));
       historyRef.current = [
         ...historyRef.current,
-        { id: genId(), role: 'user' as const, content: text.trim(), timestamp: new Date() },
+        { id: genId(), role: 'user' as const, content: apiText, timestamp: new Date() },
         { id: genId(), role: 'assistant' as const, content: fastResult.content, toolCalls: fastResult.toolCalls, timestamp: new Date() },
       ];
       setIsLoading(false);
@@ -8579,7 +8787,7 @@ export default function ChatPage() {
 
     try {
       const { content, toolCalls, rawMessages, tokenUsage } = await sendChatMessage(
-        text.trim(),
+        apiText,
         historyRef.current,
         schema,
         tableData,
@@ -8592,7 +8800,7 @@ export default function ChatPage() {
                 : m,
             ),
           );
-          // 바이블테이블링 패널 실시간 업데이트
+          // 바이브테이블링 패널 실시간 업데이트
           if (tc.kind === 'bible_tabling_edit') {
             const btTc = tc as BibleTablingEditResult;
             setBtPanel(prev => {
@@ -8603,7 +8811,7 @@ export default function ChatPage() {
                 changes: d.changes, error: btTc.error,
               }));
               return {
-                title: btTc.title || prev?.title || '바이블테이블링',
+                title: btTc.title || prev?.title || '바이브테이블링',
                 reason: btTc.reason || prev?.reason,
                 isComplete: false,
                 entries: [...(prev?.entries ?? []), ...entries],
@@ -8623,7 +8831,7 @@ export default function ChatPage() {
                 error: btTc.error,
               };
               return {
-                title: prev?.title || '바이블테이블링',
+                title: prev?.title || '바이브테이블링',
                 reason: prev?.reason,
                 isComplete: false,
                 entries: [...(prev?.entries ?? []), entry],
@@ -8733,7 +8941,7 @@ export default function ChatPage() {
       const isTruncated = !!rawMessages; // rawMessages가 있으면 max_tokens로 잘린 응답
       historyRef.current = [
         ...historyRef.current,
-        { id: userMsg.id, role: 'user' as const, content: text.trim(), timestamp: userMsg.timestamp },
+        { id: userMsg.id, role: 'user' as const, content: apiText, timestamp: userMsg.timestamp },
         { id: loadingId, role: 'assistant' as const, content, toolCalls, rawMessages, timestamp: new Date() },
       ].slice(-20); // 최근 20턴만 유지
 
@@ -8751,9 +8959,39 @@ export default function ChatPage() {
         ),
       );
 
-      // 바이블테이블링 패널: 완료 처리 + preview 자동 로딩
+      // 바이브테이블링 패널: 완료 처리 + preview 자동 로딩 + 히스토리 저장
       setBtPanel(prev => prev ? { ...prev, isComplete: true } : prev);
       {
+        const curBt = btPanelRef.current;
+        if (curBt && curBt.entries.length > 0 && curBt.jobId) {
+          const doneEntries = curBt.entries.filter(e => e.status === 'done');
+          if (doneEntries.length > 0) {
+            const tableNames = [...new Set(doneEntries.map(e => e.table))];
+            const isGenericTitle = !curBt.title || curBt.title === '바이브테이블링' || curBt.title.startsWith('바이브테이블링');
+            const autoTitle = isGenericTitle
+              ? (tableNames.length <= 3 ? tableNames.join(', ') : `${tableNames.slice(0, 2).join(', ')} 외 ${tableNames.length - 2}개`)
+                + (doneEntries.some(e => e.type === 'add') ? ' 추가' : ' 수정')
+              : curBt.title;
+            const histEntry: BtHistoryEntry = {
+              id: `bt-${Date.now()}`,
+              title: autoTitle,
+              createdAt: new Date().toISOString(),
+              jobId: curBt.jobId,
+              allJobIds: curBt.allJobIds,
+              entries: doneEntries.map(e => ({
+                table: e.table, file: e.file, type: e.type, status: e.status,
+                rowsAdded: e.rowsAdded, cellsModified: e.cellsModified,
+              })),
+              pushed: false,
+              fileCount: new Set(doneEntries.map(e => e.file).filter(Boolean)).size,
+              tableCount: doneEntries.length,
+            };
+            setBtHistory(prev => {
+              if (prev.some(h => h.jobId === curBt.jobId)) return prev;
+              return [histEntry, ...prev];
+            });
+          }
+        }
         const finalJobId = btPanelRef.current?.jobId;
         if (finalJobId) {
           setBtPanel(prev => prev ? { ...prev, previewLoading: true } : prev);
@@ -9251,6 +9489,11 @@ export default function ChatPage() {
                   </svg>
                 </div>
               )}
+              {btHistory.length > 0 && (
+                <div className="w-8 h-8 flex items-center justify-center rounded-lg" style={{ background: 'rgba(234,179,8,0.1)' }} title={`${btHistory.length}개 테이블링`}>
+                  <span style={{ fontSize: 13 }}>📝</span>
+                </div>
+              )}
               {Object.keys(serviceHealth).length > 0 && (() => {
                 const allOk = Object.values(serviceHealth).every(s => s.ok)
                 const okCount = Object.values(serviceHealth).filter(s => s.ok).length
@@ -9510,6 +9753,56 @@ export default function ChatPage() {
             </div>
           )}
 
+          {/* 바이브테이블링 히스토리 */}
+          {btHistory.length > 0 && (
+            <div className="px-3 pt-3 pb-1" style={{ borderBottom: '1px solid var(--border-color)' }}>
+              <div className="text-[11px] font-semibold uppercase tracking-wider mb-2 px-1" style={{ color: 'var(--text-muted)' }}>
+                바이브테이블링
+              </div>
+              <div className="space-y-1 max-h-48 overflow-y-auto">
+                {btHistory.map((h) => (
+                  <button
+                    key={h.id}
+                    onClick={() => {
+                      const restoredEntries: BibleTablingPanelEntry[] = h.entries.map(e => ({
+                        table: e.table, file: e.file, type: e.type,
+                        status: (e.status === 'done' ? 'done' : 'error') as 'done' | 'error',
+                        rowsAdded: e.rowsAdded, cellsModified: e.cellsModified,
+                      }));
+                      setBtPanel({
+                        title: h.title, isComplete: true,
+                        entries: restoredEntries,
+                        jobId: h.jobId, allJobIds: h.allJobIds,
+                        pushed: h.pushed, previewLoading: true,
+                      });
+                      fetch(`/api/bible-tabling/preview/${h.jobId}`)
+                        .then(r => r.ok ? r.json() : null)
+                        .then((data: { files?: BtPreviewFile[] } | null) => {
+                          setBtPanel(prev => prev ? { ...prev, previewData: data?.files, previewLoading: false } : prev);
+                        })
+                        .catch(() => setBtPanel(prev => prev ? { ...prev, previewLoading: false } : prev));
+                    }}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left interactive group"
+                    style={{ background: btPanel?.jobId === h.jobId ? 'rgba(234,179,8,0.15)' : 'transparent' }}
+                    title={`${h.title}\n${h.tableCount}개 테이블 · ${h.fileCount}개 파일${h.pushed ? ' · 반영 완료' : ''}`}
+                  >
+                    <span style={{ fontSize: 13, flexShrink: 0 }}>{h.pushed ? '✅' : '📝'}</span>
+                    <span className="text-[11px] truncate flex-1" style={{ color: 'var(--text-secondary)' }}>
+                      {h.title}
+                    </span>
+                    <span className="text-[9px] flex-shrink-0" style={{ color: '#eab308' }}>
+                      {h.tableCount}T
+                    </span>
+                    <span className="text-[9px] flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                          style={{ color: 'var(--text-muted)' }}>
+                      {new Date(h.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* 최근 대화 요약 */}
           <div className="flex-1 overflow-y-auto px-3 py-3">
             {messages.filter((m) => !m.isLoading).length > 0 ? (
@@ -9575,6 +9868,33 @@ export default function ChatPage() {
                 문서 목록 지우기
               </button>
             )}
+            {btHistory.length > 0 && (
+              <button
+                onClick={() => {
+                  setBtHistory([]);
+                  localStorage.removeItem(BT_HISTORY_CACHE_KEY);
+                }}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[12px] interactive"
+                style={{ color: 'var(--text-muted)', background: 'var(--bg-hover)' }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                  <path d="M10 11v6m4-6v6"/><path d="M9 6V4h6v2"/>
+                </svg>
+                테이블링 히스토리 지우기
+              </button>
+            )}
+            <button
+              onClick={() => setShowUserSettingsDialog(true)}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[12px] interactive"
+              style={{ color: (localDirHandle || userSettings.localDataDir) ? '#eab308' : 'var(--text-muted)', background: 'var(--bg-hover)' }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              {userSettings.displayName || '내 설정'}
+              {(localDirHandle || userSettings.localDataDir) && <span className="text-[9px]" style={{ color: '#22c55e' }}>● 로컬</span>}
+            </button>
           </div>
           </div>
           )}
@@ -9717,7 +10037,7 @@ export default function ChatPage() {
                     ? () => {
                         const hasBt = btPanelRef.current && btPanelRef.current.entries.length > 0;
                         const continueText = hasBt
-                          ? '이전에 조회한 데이터를 기반으로 이어서 바이블테이블링을 완성해주세요. 아직 편집/추가하지 못한 테이블이 있으면 이어서 edit_game_data/add_game_data_rows를 호출해주세요. create_artifact 사용 금지.'
+                          ? '이전에 조회한 데이터를 기반으로 이어서 바이브테이블링을 완성해주세요. 아직 편집/추가하지 못한 테이블이 있으면 이어서 edit_game_data/add_game_data_rows를 호출해주세요. create_artifact 사용 금지.'
                           : '이전에 조회한 데이터를 기반으로 이어서 답변을 완성해주세요. 추가 데이터 조회 없이 기존에 수집된 데이터만으로 바로 답변해주세요. 필요하다면 create_artifact를 사용해 정리된 결과물을 만들어주세요.';
                         sendMessage(continueText, '▶ 이어서 생성하기');
                       }
@@ -9764,19 +10084,49 @@ export default function ChatPage() {
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
-                gap: 6,
+                gap: 4,
                 zIndex: 10,
                 transition: 'opacity 0.3s ease, transform 0.3s ease',
                 opacity: 1,
                 transform: 'translateY(0)',
               }}
             >
-              {/* cycleSequence 없이 floatingExpr가 이미 사이클링된 표정 */}
               <CharacterPortrait
-                expression={floatingExpr}
+                expression={overheatInfo.level >= 0.85 && !isLoading ? 'panic' : overheatInfo.level >= 0.6 && !isLoading ? 'worried' : floatingExpr}
                 size={96}
                 animate={isLoading}
+                overheat={overheatInfo.level}
               />
+              {/* 오버히트 상태 뱃지 */}
+              {overheatInfo.level > 0.05 && (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: overheatInfo.level >= 0.85 ? '#ff4444' : overheatInfo.level >= 0.6 ? '#ff8c00' : overheatInfo.level >= 0.3 ? '#eab308' : '#86efac',
+                    background: 'rgba(0,0,0,0.7)',
+                    borderRadius: 8,
+                    padding: '3px 10px',
+                    backdropFilter: 'blur(4px)',
+                    whiteSpace: 'nowrap',
+                    transition: 'all 0.5s ease',
+                    animation: overheatInfo.level >= 0.85 ? 'overheat-shake 0.3s ease-in-out infinite' : undefined,
+                    borderLeft: `3px solid ${overheatInfo.level >= 0.85 ? '#ff4444' : overheatInfo.level >= 0.6 ? '#ff8c00' : overheatInfo.level >= 0.3 ? '#eab308' : '#86efac'}`,
+                  }}
+                  title={[
+                    `📊 세션 상태 (${overheatInfo.userMsgCount}턴)`,
+                    `───────────────`,
+                    `현재 컨텍스트: ${overheatInfo.contextK}K 토큰`,
+                    `세션 누적 사용: ${overheatInfo.sessionK}K 토큰`,
+                    overheatInfo.isGrowing ? `⚠️ 컨텍스트가 빠르게 증가 중` : '',
+                    `───────────────`,
+                    overheatInfo.level >= 0.6 ? `⚠️ 컨텍스트가 커서 응답 품질이 저하될 수 있습니다.` : '',
+                    overheatInfo.level >= 0.85 ? `🔥 새 대화 시작을 강력히 권장합니다!` : '',
+                    `💡 새 대화를 시작하면 초기화됩니다.`,
+                  ].filter(Boolean).join('\n')}
+                >
+                  {overheatInfo.label} <span style={{ opacity: 0.7, fontSize: 10 }}>{overheatInfo.contextK}K</span>
+                </div>
+              )}
             </div>
 
             <div className="w-full px-6">
@@ -9860,13 +10210,13 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
-        {/* ── 우측 사이드 패널: 바이블테이블링 > 아티팩트 > RAG Graph (BT 패널이 최우선) ── */}
+        {/* ── 우측 사이드 패널: 바이브테이블링 > 아티팩트 > RAG Graph (BT 패널이 최우선) ── */}
         {btPanel && btPanel.entries.length > 0 ? (
           <div className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0" style={{ background: '#0a0d14', borderLeft: '1px solid rgba(234,179,8,0.2)' }}>
-            {/* 바이블테이블링 패널 헤더 */}
+            {/* 바이브테이블링 패널 헤더 */}
             <div className="flex items-center gap-2 px-4 py-3 flex-shrink-0" style={{ borderBottom: '1px solid rgba(234,179,8,0.15)', background: 'rgba(234,179,8,0.05)' }}>
               <span className="text-[15px]">📝</span>
-              <span className="text-[13px] font-bold flex-1" style={{ color: '#eab308' }}>바이블테이블링</span>
+              <span className="text-[13px] font-bold flex-1" style={{ color: '#eab308' }}>바이브테이블링</span>
               {!btPanel.isComplete && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-semibold" style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308', border: '1px solid rgba(234,179,8,0.3)' }}>
                   <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: '#eab308' }} />
@@ -9996,6 +10346,47 @@ export default function ChatPage() {
                 </div>
               ))}
             </div>
+            {/* 수정 요청 입력란 */}
+            {btPanel.isComplete && !isLoading && (
+              <div className="px-3 py-2 flex-shrink-0" style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    value={btRevisionInput}
+                    onChange={e => setBtRevisionInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey && btRevisionInput.trim()) {
+                        e.preventDefault();
+                        const context = buildBtRevisionContext(btPanel, btRevisionInput.trim());
+                        sendMessage(context, `✏️ ${btRevisionInput.trim()}`);
+                        setBtRevisionInput('');
+                        setBtPanel(prev => prev ? { ...prev, isComplete: false, pushed: false } : prev);
+                      }
+                    }}
+                    placeholder="수정 요청 (예: HP를 1.5배로 올려줘)"
+                    className="flex-1 px-2.5 py-1.5 rounded-lg text-[12px]"
+                    style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: 'var(--text-primary)', outline: 'none' }}
+                  />
+                  <button
+                    disabled={!btRevisionInput.trim()}
+                    onClick={() => {
+                      if (!btRevisionInput.trim()) return;
+                      const context = buildBtRevisionContext(btPanel, btRevisionInput.trim());
+                      sendMessage(context, `✏️ ${btRevisionInput.trim()}`);
+                      setBtRevisionInput('');
+                      setBtPanel(prev => prev ? { ...prev, isComplete: false, pushed: false } : prev);
+                    }}
+                    className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                    style={{
+                      background: btRevisionInput.trim() ? 'rgba(234,179,8,0.2)' : 'rgba(255,255,255,0.04)',
+                      color: btRevisionInput.trim() ? '#eab308' : '#475569',
+                      cursor: btRevisionInput.trim() ? 'pointer' : 'default',
+                    }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                  </button>
+                </div>
+              </div>
+            )}
             {/* 하단: 저장 + 다운로드 + Push */}
             {btPanel.isComplete && (
               <div className="px-4 py-3 space-y-2 flex-shrink-0" style={{ borderTop: '1px solid rgba(234,179,8,0.15)', background: 'rgba(234,179,8,0.03)' }}>
@@ -10051,19 +10442,90 @@ export default function ChatPage() {
                       onClick={async () => {
                         if (!btPanel.jobId) return;
                         const files = btPanel.previewData?.map(f => f.filename).join(', ') ?? '';
-                        if (!confirm(`${files}을(를) 원본에 반영합니다.\n(원본은 자동 백업됩니다)\n\n계속하시겠습니까?`)) return;
-                        setBtPanel(prev => prev ? { ...prev, pushLoading: true } : prev);
-                        try {
-                          const resp = await fetch(`/api/bible-tabling/push/${btPanel.jobId}`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ backup: true }),
-                          });
-                          if (!resp.ok) throw new Error(await resp.text());
-                          setBtPanel(prev => prev ? { ...prev, pushed: true, pushLoading: false } : prev);
-                        } catch (e) {
-                          alert(`Push 실패: ${String(e)}`);
-                          setBtPanel(prev => prev ? { ...prev, pushLoading: false } : prev);
+                        const hasLocalDir = !!localDirHandle;
+
+                        if (hasLocalDir) {
+                          // ── 로컬 Push: File System Access API로 직접 쓰기 ──
+                          const ok = await verifyPermission(localDirHandle!);
+                          if (!ok) { alert('폴더 접근 권한이 거부되었습니다.\n설정에서 폴더를 다시 선택해주세요.'); return; }
+                          if (!confirm(`${files}\n\n📁 내 폴더: ${localDirHandle!.name}\n\n계속하시겠습니까?`)) return;
+                          setBtPanel(prev => prev ? { ...prev, pushLoading: true } : prev);
+                          try {
+                            const previewFiles = btPanel.previewData ?? [];
+                            let writtenCount = 0;
+                            for (const pf of previewFiles) {
+                              const dlUrl = `/api/bible-tabling/download/${btPanel.jobId}/${pf.filename}`;
+                              const resp = await fetch(dlUrl);
+                              if (!resp.ok) throw new Error(`다운로드 실패: ${pf.filename} (${resp.status})`);
+                              const blob = await resp.blob();
+                              const fileHandle = await localDirHandle!.getFileHandle(pf.filename, { create: true });
+                              const writable = await fileHandle.createWritable();
+                              await writable.write(blob);
+                              await writable.close();
+                              writtenCount++;
+                            }
+                            if (writtenCount === 0) throw new Error('저장할 파일이 없습니다.');
+                            setBtPanel(prev => prev ? { ...prev, pushed: true, pushLoading: false } : prev);
+                            setBtHistory(prev => prev.map(h => h.jobId === btPanel.jobId ? { ...h, pushed: true } : h));
+                          } catch (e) {
+                            alert(`로컬 Push 실패: ${String(e)}`);
+                            setBtPanel(prev => prev ? { ...prev, pushLoading: false } : prev);
+                          }
+                        } else {
+                          // ── .bat 스크립트 생성 → 유저 로컬 폴더로 복사 ──
+                          const previewFiles = btPanel.previewData ?? [];
+                          if (previewFiles.length === 0) { alert('다운로드할 파일이 없습니다.'); return; }
+                          const targetDir = userSettings.localDataDir;
+                          if (!targetDir) {
+                            setShowUserSettingsDialog(true);
+                            alert('먼저 [내 설정]에서 로컬 데이터 폴더를 지정해주세요.');
+                            return;
+                          }
+                          if (!confirm(`${files}\n\n📁 대상: ${targetDir}\n\nPush 스크립트를 생성합니다.\n다운로드된 .bat 파일을 실행하면 파일이 복사됩니다.`)) return;
+                          setBtPanel(prev => prev ? { ...prev, pushLoading: true } : prev);
+                          try {
+                            const origin = window.location.origin;
+                            const escapedDir = targetDir.replace(/\//g, '\\');
+                            const lines = [
+                              '@echo off',
+                              'chcp 65001 >nul',
+                              `echo ========================================`,
+                              `echo   바이브테이블링 Push`,
+                              `echo   대상: ${escapedDir}`,
+                              `echo ========================================`,
+                              `echo.`,
+                              `if not exist "${escapedDir}" (`,
+                              `  echo [오류] 폴더가 존재하지 않습니다: ${escapedDir}`,
+                              `  pause`,
+                              `  exit /b 1`,
+                              `)`,
+                            ];
+                            for (const pf of previewFiles) {
+                              const url = `${origin}/api/bible-tabling/download/${btPanel.jobId}/${encodeURIComponent(pf.filename)}`;
+                              const dest = `${escapedDir}\\${pf.filename}`;
+                              lines.push(`echo [다운로드] ${pf.filename} ...`);
+                              lines.push(`curl -s -o "${dest}" "${url}"`);
+                              lines.push(`if errorlevel 1 ( echo   [실패] ${pf.filename} ) else ( echo   [완료] ${pf.filename} )`);
+                            }
+                            lines.push('echo.');
+                            lines.push(`echo ✅ ${previewFiles.length}개 파일 Push 완료!`);
+                            lines.push('pause');
+                            const batContent = lines.join('\r\n');
+                            const blob = new Blob([batContent], { type: 'application/bat' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = `push_${btPanel.jobId?.slice(0, 8) ?? 'sync'}.bat`;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(url);
+                            setBtPanel(prev => prev ? { ...prev, pushed: true, pushLoading: false } : prev);
+                            setBtHistory(prev => prev.map(h => h.jobId === btPanel.jobId ? { ...h, pushed: true } : h));
+                          } catch (e) {
+                            alert(`스크립트 생성 실패: ${String(e)}`);
+                            setBtPanel(prev => prev ? { ...prev, pushLoading: false } : prev);
+                          }
                         }
                       }}
                       className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-[12px] font-bold"
@@ -10075,7 +10537,11 @@ export default function ChatPage() {
                         opacity: btPanel.pushLoading ? 0.6 : 1,
                       }}
                     >
-                      {btPanel.pushLoading ? '반영 중...' : btPendingEdits.length > 0 ? '먼저 저장하세요' : '🚀 Push (원본 반영)'}
+                      {btPanel.pushLoading ? '반영 중...'
+                        : btPendingEdits.length > 0 ? '먼저 저장하세요'
+                        : localDirHandle ? `🚀 Push → ${localDirHandle.name}`
+                        : userSettings.localDataDir ? `🚀 Push → ${userSettings.localDataDir.split('\\').pop()}`
+                        : '⚙️ 폴더 설정 필요'}
                     </button>
                   ) : (
                     <button
@@ -10091,6 +10557,9 @@ export default function ChatPage() {
                 <div className="text-[9px] text-center" style={{ color: 'var(--text-muted)' }}>
                   {btPanel.entries.length}개 테이블 · {btPanel.entries.filter(e => e.status === 'done').length}개 완료
                   {btPanel.pushed && ' · 노란색=AI / 파란색=사용자 편집'}
+                  {btPanel.pushed && (localDirHandle || userSettings.localDataDir) && (
+                    <div className="mt-1" style={{ color: '#22c55e', fontSize: 9 }}>📁 {localDirHandle ? localDirHandle.name : userSettings.localDataDir}</div>
+                  )}
                 </div>
               </div>
             )}
@@ -10214,6 +10683,103 @@ export default function ChatPage() {
           </div>
         </div>
       )}
+
+      {/* 유저 설정 다이얼로그 */}
+      {showUserSettingsDialog && (() => {
+        const _s = { ...userSettings };
+        return (
+          <div className="fixed inset-0 flex items-center justify-center" style={{ zIndex: 9999, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+               onClick={(e) => { if (e.target === e.currentTarget) setShowUserSettingsDialog(false); }}>
+            <div style={{ background: '#1a1f2e', borderRadius: 12, border: '1px solid rgba(234,179,8,0.3)', width: 460, padding: 24, boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+              <div className="flex items-center gap-2 mb-5">
+                <span style={{ fontSize: 18 }}>⚙️</span>
+                <span style={{ fontSize: 15, fontWeight: 700, color: '#eab308' }}>내 설정</span>
+              </div>
+
+              <label className="block mb-4">
+                <span className="text-[12px] font-semibold mb-1 block" style={{ color: 'var(--text-secondary)' }}>표시 이름</span>
+                <input
+                  defaultValue={_s.displayName}
+                  onChange={(e) => { _s.displayName = e.target.value; }}
+                  placeholder="예: 홍길동"
+                  className="w-full px-3 py-2 rounded-lg text-[13px]"
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: 'var(--text-primary)', outline: 'none' }}
+                />
+              </label>
+
+              <div className="mb-2">
+                <span className="text-[12px] font-semibold mb-2 block" style={{ color: 'var(--text-secondary)' }}>
+                  내 로컬 데이터 폴더
+                  <span className="text-[10px] ml-1" style={{ color: 'var(--text-muted)' }}>(바이브테이블링 Push 대상)</span>
+                </span>
+                {localDirHandle ? (
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="flex-1 px-3 py-2 rounded-lg text-[13px]"
+                         style={{ background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.25)', color: '#22c55e' }}>
+                      📁 {localDirHandle.name} <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>(브라우저 직접 쓰기)</span>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        await clearDirectoryHandle();
+                        setLocalDirHandle(null);
+                      }}
+                      className="px-3 py-2 rounded-lg text-[11px]"
+                      style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}
+                    >해제</button>
+                  </div>
+                ) : (
+                  <input
+                    defaultValue={_s.localDataDir}
+                    onChange={(e) => { _s.localDataDir = e.target.value.trim(); }}
+                    placeholder="예: C:\Aegisdata\GameData\Data"
+                    className="w-full px-3 py-2 rounded-lg text-[13px] font-mono mb-1"
+                    style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: 'var(--text-primary)', outline: 'none' }}
+                  />
+                )}
+                {typeof (window as unknown as Record<string, unknown>).showDirectoryPicker === 'function' && !localDirHandle && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        const handle = await (window as unknown as { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker();
+                        await saveDirectoryHandle(handle);
+                        setLocalDirHandle(handle);
+                        _s.localDataDir = handle.name;
+                        saveUserSettings(_s);
+                      } catch (e) {
+                        if ((e as Error).name !== 'AbortError') alert(`폴더 선택 실패: ${String(e)}`);
+                      }
+                    }}
+                    className="w-full px-2 py-1.5 rounded text-[11px] flex items-center justify-center gap-1 mb-1"
+                    style={{ background: 'rgba(234,179,8,0.06)', color: '#eab308', border: '1px dashed rgba(234,179,8,0.3)', cursor: 'pointer' }}
+                  >
+                    📂 또는 폴더 직접 선택 (HTTPS 전용)
+                  </button>
+                )}
+              </div>
+              <p className="text-[10px] mb-5" style={{ color: 'var(--text-muted)' }}>
+                Push 시 편집된 xlsx를 지정한 폴더로 복사하는 스크립트(.bat)를 생성합니다.<br/>
+                다운로드된 스크립트를 실행하면 파일이 바로 해당 폴더에 저장됩니다.
+              </p>
+
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={() => setShowUserSettingsDialog(false)}
+                  className="px-4 py-2 rounded-lg text-[12px]"
+                  style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)', cursor: 'pointer' }}
+                >취소</button>
+                <button
+                  onClick={() => {
+                    saveUserSettings(_s);
+                    setShowUserSettingsDialog(false);
+                  }}
+                  className="px-4 py-2 rounded-lg text-[12px] font-bold"
+                  style={{ background: 'rgba(234,179,8,0.2)', color: '#eab308', border: '1px solid rgba(234,179,8,0.3)', cursor: 'pointer' }}
+                >저장</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* CSS 애니메이션 */}
       <style>{`

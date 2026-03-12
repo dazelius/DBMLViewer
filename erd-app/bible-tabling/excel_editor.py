@@ -1,5 +1,5 @@
 """
-바이블테이블링 — Excel 편집 엔진 (openpyxl 기반)
+바이브테이블링 — Excel 편집 엔진 (openpyxl 기반)
 
 핵심 기능:
 - 게임 데이터 xlsx 파일 읽기/편집
@@ -24,6 +24,23 @@ AI_HIGHLIGHT = PatternFill(start_color='FFFFFF00', end_color='FFFFFF00', fill_ty
 
 # ── 메타 시트 (편집 대상에서 제외) ──
 META_SHEET_NAMES = {'define', 'enum', 'tablegroup', 'ref', 'tabledefine', 'sheet1'}
+
+
+def _extend_excel_tables(ws, new_max_row: int):
+    """워크시트에 Excel 표(Table/ListObject)가 있으면 범위를 new_max_row까지 확장."""
+    if not hasattr(ws, 'tables') or not ws.tables:
+        return
+    for tbl_name in list(ws.tables):
+        tbl = ws.tables[tbl_name]
+        ref = tbl.ref  # e.g. "A1:Z100"
+        if ':' not in ref:
+            continue
+        start, end = ref.split(':')
+        # 끝 셀에서 열 문자와 행 번호 분리
+        end_col = ''.join(c for c in end if c.isalpha())
+        end_row = int(''.join(c for c in end if c.isdigit()))
+        if new_max_row > end_row:
+            tbl.ref = f"{start}:{end_col}{new_max_row}"
 
 
 def _fast_sheet_names(xlsx_path: Path) -> list[str]:
@@ -279,6 +296,7 @@ class BibleTablingEditor:
         cells_modified = 0
         rows_matched = 0
         change_details = []
+        notnull_warnings = []
 
         for csv_row in reader:
             if not csv_row or not csv_row[0].strip():
@@ -296,6 +314,11 @@ class BibleTablingEditor:
                 cell = ws.cell(row=row_idx, column=col_idx)
                 old_val = cell.value
 
+                if (not new_val_str or not new_val_str.strip()) and old_val is not None and str(old_val).strip():
+                    notnull_warnings.append(
+                        f"행{row_idx} '{set_col_names[i]}' 기존값 '{old_val}' → 빈값으로 변경 (NotNull 위험)"
+                    )
+
                 try:
                     v = float(new_val_str)
                     cell.value = int(v) if v == int(v) else round(v, 4)
@@ -312,7 +335,7 @@ class BibleTablingEditor:
                     "new": str(cell.value),
                 })
 
-        return {
+        result = {
             "table": edit.table,
             "file": xlsx_path.name,
             "sheet": sheet_name,
@@ -320,6 +343,9 @@ class BibleTablingEditor:
             "cells_modified": cells_modified,
             "changes": change_details[:100],
         }
+        if notnull_warnings:
+            result["notnull_warnings"] = notnull_warnings[:30]
+        return result
 
     # ── 단일 테이블 편집 (워크북이 이미 열려 있으면 재사용) ─────────────────────
 
@@ -367,6 +393,7 @@ class BibleTablingEditor:
 
         cells_modified = 0
         change_details = []
+        notnull_warnings = []
 
         for row_idx in matched_rows:
             for change in edit.changes:
@@ -376,6 +403,13 @@ class BibleTablingEditor:
 
                 cell = ws.cell(row=row_idx, column=col_idx)
                 old_val = cell.value
+
+                if change.action.lower() == 'set' and (
+                    change.value is None or (isinstance(change.value, str) and not change.value.strip())
+                ) and old_val is not None and str(old_val).strip():
+                    notnull_warnings.append(
+                        f"행{row_idx} '{change.column}' 기존값 '{old_val}' → 빈값으로 변경 (NotNull 위험)"
+                    )
 
                 if self._apply_change(cell, change):
                     cells_modified += 1
@@ -388,7 +422,7 @@ class BibleTablingEditor:
                         "new": str(cell.value),
                     })
 
-        return {
+        result = {
             "table": edit.table,
             "file": xlsx_path.name,
             "sheet": sheet_name,
@@ -396,6 +430,9 @@ class BibleTablingEditor:
             "cells_modified": cells_modified,
             "changes": change_details[:100],
         }
+        if notnull_warnings:
+            result["notnull_warnings"] = notnull_warnings[:30]
+        return result
 
     def apply_edit(self, edit, output_dir: Path, prev_job_dir: Path = None) -> dict:
         """단일 테이블 편집 (하위 호환용 래퍼)"""
@@ -547,6 +584,45 @@ class BibleTablingEditor:
         print(f"[BibleTabling] 전체 완료: {len(results)}개 편집, {total_sec}s")
         yield {"type": "complete", "results": results, "total_sec": total_sec}
 
+    # ── NotNull 검증 유틸 ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _detect_required_columns(ws, header_row: int, header_map: dict, max_col: int, sample_limit: int = 20) -> set[int]:
+        """기존 행을 샘플링하여 항상 값이 채워진 컬럼 인덱스를 반환 (NotNull 추정)."""
+        data_rows = 0
+        always_filled: dict[int, int] = {}
+        for row_idx in range(header_row + 1, ws.max_row + 1):
+            first_cell = ws.cell(row=row_idx, column=1).value
+            if first_cell is None:
+                continue
+            data_rows += 1
+            for col_idx in range(1, max_col + 1):
+                val = ws.cell(row=row_idx, column=col_idx).value
+                if val is not None and str(val).strip():
+                    always_filled[col_idx] = always_filled.get(col_idx, 0) + 1
+            if data_rows >= sample_limit:
+                break
+        if data_rows < 3:
+            return set()
+        return {col_idx for col_idx, count in always_filled.items() if count == data_rows}
+
+    @staticmethod
+    def _check_notnull_violations(ws, header_row: int, header_map: dict, max_col: int,
+                                  required_cols: set[int], new_row_start: int, new_row_end: int) -> list[str]:
+        """새로 추가된 행에서 NotNull 위반 검출. 경고 메시지 리스트 반환."""
+        idx_to_name = {}
+        for name, idx in header_map.items():
+            if name == name:
+                idx_to_name[idx] = name
+        warnings = []
+        for row_idx in range(new_row_start, new_row_end + 1):
+            for col_idx in required_cols:
+                val = ws.cell(row=row_idx, column=col_idx).value
+                if val is None or str(val).strip() == '':
+                    col_name = idx_to_name.get(col_idx, f'col{col_idx}')
+                    warnings.append(f"행{row_idx} '{col_name}' 빈값 (NotNull 추정)")
+        return warnings[:30]
+
     # ── 행 추가 ──────────────────────────────────────────────────────────────
 
     def clone_rows(self, table: str, file_hint: str, sheet_hint: str,
@@ -656,6 +732,14 @@ class BibleTablingEditor:
                 next_row += 1
                 rows_added += 1
 
+        _extend_excel_tables(ws, next_row - 1)
+
+        required_cols = self._detect_required_columns(ws, header_row_idx, header_map, max_col)
+        notnull_warnings = self._check_notnull_violations(
+            ws, header_row_idx, header_map, max_col, required_cols,
+            next_row - rows_added, next_row - 1
+        ) if required_cols and rows_added > 0 else []
+
         wb.save(output_path)
         wb.close()
 
@@ -668,7 +752,7 @@ class BibleTablingEditor:
             except StopIteration:
                 pass
 
-        return {
+        result = {
             "table": table,
             "file": xlsx_path.name,
             "rows_added": rows_added,
@@ -677,6 +761,9 @@ class BibleTablingEditor:
             "override_columns": override_cols,
             "sample_rows": sample_rows,
         }
+        if notnull_warnings:
+            result["notnull_warnings"] = notnull_warnings
+        return result
 
     def add_rows_csv(self, table: str, file_hint: str, sheet_hint: str,
                      csv_data: str, output_dir: Path, prev_job_dir: Path = None) -> dict:
@@ -704,6 +791,9 @@ class BibleTablingEditor:
 
         header_row = self._find_header_row(ws)
         header_map = self._get_header_map(ws, header_row)
+        max_col = max(header_map.values()) if header_map else 0
+
+        required_cols = self._detect_required_columns(ws, header_row, header_map, max_col)
 
         reader = csv.reader(io.StringIO(csv_data.strip()))
         csv_headers = [h.strip() for h in next(reader)]
@@ -713,8 +803,11 @@ class BibleTablingEditor:
             idx = header_map.get(cn) or header_map.get(cn.lower())
             col_indices.append(idx)
 
+        provided_col_set = {idx for idx in col_indices if idx is not None}
+
         rows_added = 0
-        next_row = ws.max_row + 1
+        first_new_row = ws.max_row + 1
+        next_row = first_new_row
 
         for csv_row in reader:
             if not csv_row:
@@ -733,14 +826,32 @@ class BibleTablingEditor:
             next_row += 1
             rows_added += 1
 
+        _extend_excel_tables(ws, next_row - 1)
+
+        notnull_warnings = []
+        if required_cols and rows_added > 0:
+            missing_cols = required_cols - provided_col_set
+            if missing_cols:
+                idx_to_name = {v: k for k, v in header_map.items() if k == k}
+                for col_idx in sorted(missing_cols):
+                    col_name = idx_to_name.get(col_idx, f'col{col_idx}')
+                    notnull_warnings.append(f"CSV에 '{col_name}' 컬럼 누락 (NotNull 추정, {rows_added}행 영향)")
+            notnull_warnings.extend(self._check_notnull_violations(
+                ws, header_row, header_map, max_col, required_cols,
+                first_new_row, next_row - 1
+            ))
+
         wb.save(output_path)
         wb.close()
 
-        return {
+        result = {
             "table": table,
             "file": xlsx_path.name,
             "rows_added": rows_added,
         }
+        if notnull_warnings:
+            result["notnull_warnings"] = notnull_warnings
+        return result
 
     def add_rows(self, table: str, file_hint: str, sheet_hint: str,
                  rows: list[dict], output_dir: Path, prev_job_dir: Path = None) -> dict:
@@ -769,9 +880,13 @@ class BibleTablingEditor:
 
         header_row = self._find_header_row(ws)
         header_map = self._get_header_map(ws, header_row)
+        max_col = max(header_map.values()) if header_map else 0
+
+        required_cols = self._detect_required_columns(ws, header_row, header_map, max_col)
 
         rows_added = 0
-        next_row = ws.max_row + 1
+        first_new_row = ws.max_row + 1
+        next_row = first_new_row
 
         for row_data in rows:
             for col_name, value in row_data.items():
@@ -783,14 +898,24 @@ class BibleTablingEditor:
             next_row += 1
             rows_added += 1
 
+        _extend_excel_tables(ws, next_row - 1)
+
+        notnull_warnings = self._check_notnull_violations(
+            ws, header_row, header_map, max_col, required_cols,
+            first_new_row, next_row - 1
+        ) if required_cols and rows_added > 0 else []
+
         wb.save(output_path)
         wb.close()
 
-        return {
+        result = {
             "table": table,
             "file": xlsx_path.name,
             "rows_added": rows_added,
         }
+        if notnull_warnings:
+            result["notnull_warnings"] = notnull_warnings
+        return result
 
     # ── Preview: AI 하이라이트 행 추출 ────────────────────────────────────────
 
