@@ -8748,6 +8748,10 @@ export default function ChatPage() {
       setBtPanel(prev => prev ? { ...prev, isComplete: false } : prev);
     } else if (!activeBtPanel || activeBtPanel.entries.length === 0) {
       setBtPanel(null);
+    } else if (activeBtPanel.jobId) {
+      // BT 패널에 jobId가 있으면 유지 (이전 작업 위에 누적 편집 가능)
+      // AI 응답에서 BT 도구가 호출되면 기존 entries에 추가됨
+      setBtPanel(prev => prev ? { ...prev, isComplete: false } : prev);
     } else {
       setBtPanel(null);
     }
