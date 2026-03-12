@@ -1,94 +1,152 @@
-# StatusEffectFunction — function_type별 value 의미 가이드
+# StatusEffectFunction 테이블 작업 가이드
+
+> 비율=만분율, 시간=ms, null인 곳만 null 입력 가능
 
 ## 컬럼 구조
-- `function_type`: EStatusEffectFunctionType Enum
-- `function_value1` (v1): 타입별 첫 번째 값
-- `function_value2` (v2): 타입별 두 번째 값
-- `enum_value1`: 값 적용 방식 (PercentAdd=만분율 가산, None=미사용 등)
-- `enum_value2`: 보조 조건 (TimeMax=시간 최대치 제한, None=없음 등)
+| 컬럼 | 타입 | 설명 |
+|---|---|---|
+| id | int32 | PK |
+| function_type | EStatusEffectFunctionType | 함수 타입 |
+| function_value1 | string | 타입별 값1 |
+| function_value2 | string | 타입별 값2 |
+| enum_value1 | EStatusEffectDescValueType | value1 표시 형식 (PercentAdd=만분율 가산, None=미사용) |
+| enum_value2 | EStatusEffectDescValueType | value2 표시 형식 (TimeMax=시간 최대치 제한, None=없음) |
 
-## 📊 Mod 계열 (스탯 변경 — 가장 많이 사용)
-| function_type | v1 | v2 | 설명 |
+## EStatusEffectFunctionType - 값 사용법
+
+### 스탯 비율 변경 (v1=증감율, v2=null)
+| 타입 | 설명 |
+|---|---|
+| ModRateOffence(1) | 공격력 스탯 증감(%) |
+| ModRateDefence(2) | 방어력 스탯 증감(%) |
+| ModRateDamage(3) | 주는 대미지 증감(%) |
+| ModRateDamageHitby(4) | 받는 대미지 증감(%) |
+| ModRateMoveSpeed(5) | 이동 속도 증감(%) |
+| ModRateInteractionSpeed(6) | 인터랙션 속도 증감(%) |
+| ModRateAttackSpeed(15) | 일반 사격 속도 증감(%) |
+| ModRateHealBy(49) | 받는 치유량 증감(%) |
+| ModRateStaminaRecovery(50) | 스태미너 회복 속도 증감(%) |
+| ModCooldownHaste(42) | 쿨다운 가속 스탯 증감 |
+| ModCriticalStrikeDamage(44) | 크리티컬 대미지 스탯 증감 |
+| ModRateHitOptionDelay(68) | hit_option_delay 증감 (1 이상) |
+| ModRateNormalAttackSpeed(70) | 기본 공격 속도 증감(%) |
+| ModRateNormalAttackDamage(72) | 기본 공격 피해량 증감(%) |
+| ModRateSkillDamage(73) | 스킬 피해량 증감(%) |
+| ModRateIncreaseShield(74) | 주는 보호막량 증감(%) |
+| ModRateShieldFromSpell(75) | 받는 보호막 증감(%) |
+| ModRateArmorPenetration(76) | 방어 관통 증감(%) |
+| ModRateIncreaseEnergyGain(77) | 에너지 획득 증감(%) |
+| ModRateFireRate(78) | 사격 속도 증감(%) |
+| ModRateJumpImpulse(79) | 점프 높이 증감(%) |
+| ModRateMoa(84) | 탄착군 범위 증감(%) |
+| ModReloadSpeed(86) | 재장전 속도 증감(%) |
+| ModRateFireDamageBarrierPassed(87) | 방벽 통과 피해 증감(%) |
+| ModHealthRegen(92) | 체력 리젠 |
+| ModRateMaxInnateShield(99) | 최대 고유실드 증감(%) |
+| ModRateFireDamageFromHighGround(100) | 고지대 피해 증감(%) |
+| ModDamageShieldReductionModifier(101) | 보호막이 받는 피해량 감소 증감(%) |
+| ModRateHeal | 주는 치유량 증감(%) |
+| ModRateSpreadRange | 탄착군 범위 증감(%) |
+| ModRateArmor | 방어력 증감(%) |
+| ModRateAttack | 공격력 증감(%) |
+| ModRateMeleeDamage | 근접 물리 피해 증감(%) |
+| ModRateRangedDamage | 원거리 물리 피해 증감(%) |
+
+### 스탯 고정 변경 (v1=증감값, v2=null)
+| 타입 | 설명 |
+|---|---|
+| ModCriticalStrike(43) | 크리티컬 스탯 증감 |
+| ModEnemyCriticalHit(27) | 피격 시 공격자 크리티컬 확률 보정 |
+| ModStrength | 힘 증감 |
+| ModDexterity | 민첩 증감 |
+| ModIntelligence | 지능 증감 |
+| ModWisdom | 지혜 증감 |
+| ModConstitution | 건강 증감 |
+
+### 도트 효과 (v1=값, v2=적용 주기ms)
+| 타입 | 설명 | v1 |
+|---|---|---|
+| DotEffectHPMaxRate(7) | 최대 체력 비율로 지속 증감 | 증감율 |
+| DotEffectSTMaxRate(8) | 최대 스태미너 비율로 지속 증감 | 증감율 |
+| DotEffectHPFixed(9) | 체력 고정 값 지속 증감 | 증감 값 |
+| DotEffect(51) | 시전자 공격력 비례 대미지 (방어력 계산 포함) | 시전자 공격력 배율 |
+| HotEffect(52) | 시전자 공격력 비례 회복 | 시전자 공격력 배율 |
+
+### CC (v2=null)
+| 타입 | 설명 | v1 |
+|---|---|---|
+| Stun(10) | 기절 | null |
+| Silence(14) | 침묵 | null |
+| Freeze(58) | 빙결 | 해제 시 피해 공격력 계수 |
+| Sleep(59) | 수면 | 해제 시 피해 공격력 계수 |
+| Taunt(13) | 도발 (몬스터, PC/용병 제외) | null |
+| TauntMerc(56) | 도발 (용병) | null |
+
+### 보호막
+| 타입 | 설명 | v1 | v2 |
 |---|---|---|---|
-| **ModRateMoveSpeed** | 0 | 변화량(만분율) | 이동속도 비율. 예: v2=2000 → +20% |
-| **ModRateFireRate** | 0 | 변화량(만분율) | 사격속도 비율. 예: v2=-3000 → -30% |
-| **ModRateOffence** | 0 | 변화량(만분율) | 공격력 비율 |
-| **ModRateDamage** | 0 | 변화량(만분율) | 피해량 비율 |
-| **ModDamageReductionRate** | 0 | 변화량(만분율) | 받는 피해 감소율. 예: v2=3000 → 30% 감소 |
-| **ModRateJumpImpulse** | 0 | 변화량(만분율) | 점프력 비율 |
-| **ModRateMoa** | 0 | 변화량(만분율) | 탄퍼짐(MOA) 비율 |
-| **ModRateMaxInnateShield** | 0 | 변화량(만분율) | 최대 보호막 비율 |
-| **ModRateFireDamageBarrierPassed** | 0 | 변화량(만분율) | 배리어 관통 화염 피해 비율 |
-| **ModRateFireDamageFromHighGround** | 0 | 변화량(만분율) | 고지대 화염 피해 비율 |
-| **ModRunningCool** | 0 | 변화량(만분율) | 달리기 쿨다운 비율 |
+| ShieldHPRate(11) | 최대 체력 비례 보호막 | HP 비율 | null |
+| GetShield(80) | 보호막 획득 (고정 수치) | 증감 값 | null |
+| GetTempShield(83) | 임시 보호막 | 보호막 비례 퍼센트 배율 | 고정 수치 |
+| ShieldExecuteDamageToHP(20) | ExecuteEffect 피해 결과만큼 보호막 획득 | ExecuteEffect id | 보호막 전환율 |
+| OverHeal(35) | HP 회복 초과분 → 보호막 전환 | HP 비율 | HP 고정치 |
 
-> **Mod 계열 공통**: v1=0(미사용), v2=만분율 변화량. enum_value1=PercentAdd
-
-## 🛡️ 보호막/HP 계열
-| function_type | v1 | v2 | 설명 |
+### 에너지 (v1=대상 에너지 타입 Enum)
+| 타입 | 설명 | v1 | v2 |
 |---|---|---|---|
-| **GetTempShield** | 0 | 보호막량(절대값) | 임시 보호막 부여. 예: v2=100 → 보호막 100 |
-| **DotEffectHPFixed** | 고정피해량 | 틱간격(ms) | 도트 피해. 예: v1=5, v2=1000 → 매 1초 5 피해 |
-| **HotEffect** | 회복량 | 틱간격(ms) | 도트 힐. 예: v1=10, v2=500 → 매 0.5초 10 회복 |
-| **DeferDamageDotEffect** | 비율(만분율) | 0 | 받은 피해를 도트로 분산 |
-| **DamageAbsorb** | - | - | 피해 흡수 (DB 미사용, Enum만 존재) |
-| **DamageStealHP** | - | - | 피해 흡혈 (DB 미사용, Enum만 존재) |
-| **DeathEndure** | - | - | 사망 방지 (DB 미사용, Enum만 존재) |
-| **InstantDeath** | 0 | 0 | 즉사 |
+| ChangeEnergy(19) | 에너지 고정 변동 | 대상 에너지 타입 Enum | 정수 회복량 |
+| ChangeRateEnergy(60) | 에너지 비율 변동 | 대상 에너지 타입 Enum | 비율 회복량 |
+| ModMaxEnergy(21) | 에너지 최대치 증감 | 대상 에너지 타입 Enum | 증감 값 |
+| ChangeEnergyOverTime(63) | 초당 에너지 변동 (정수) | 대상 에너지 타입 Enum | 정수 회복량 |
+| InfiniteEnergy(64) | 에너지 무한 | null | 0=끝나고 복원 |
+| EnergyBlock(65) | 에너지 현재 값 고정, 증감 불가 | null | null |
+| ChangeEnergyOnHitby(66) | 피격 시 에너지 증감 | 타입 | 증감치 |
+| ChangeEnergyByMaxRate(81) | 에너지 최대 수치에 비례한 에너지 증감 | 대상 에너지 타입 Enum | 비율 변동량 |
+| ChangeAmmo(85) | 탄약 변동 | 비율 변동량 | 정수 변동량 |
 
-## ⚡ 에너지/탄약 계열
-| function_type | v1 | v2 | 설명 |
+### 패시브/상태효과 실행
+| 타입 | 설명 | v1 | v2 |
 |---|---|---|---|
-| **ChangeEnergyByMaxRate** | 에너지타입(Ulti 등) | 비율(만분율) | 최대치 대비 비율로 에너지 변경. 예: v1=Ulti, v2=3000 → 궁극기 30% 충전 |
-| **ChangeEnergyOverTime** | 에너지타입(Ulti 등) | 틱당량(만분율) | 지속적 에너지 변경 |
-| **ChangeRateEnergy** | 에너지타입(Ulti 등) | 충전률변화(만분율) | 에너지 충전 속도 변경 |
-| **ChangeAmmo** | 탄약량(만분율) | 0 | 탄약 변경. 예: v1=10000 → 100% 충전 |
-| **NoWeaponAmmoConsume** | 0 | 0 | 탄약 소모 없음 (존재만으로 발동) |
-| **ChangeStamina** | - | - | 스태미나 변경 |
+| RunPassive(16) | 패시브 적용 | Passive id | null |
+| StackMaxRunStatusEffect(57) | 스택 최대 도달 시 다른 SE 실행 | 상태 효과 ID | 지속 시간 |
+| StackZeroRunStatusEffect(61) | 스택 0 소멸 시 다른 SE 실행 | 상태 효과 ID | 지속 시간 |
+| RunStatusEffectEnemyInAllySight(91) | 아군 시야 내 적에게 SE 적용 | StatusEffect ID | null |
 
-## 🔒 CC (군중제어) 계열
-| function_type | v1 | v2 | 설명 |
+### 피해 변환
+| 타입 | 설명 | v1 | v2 |
 |---|---|---|---|
-| **Stun** | 0 | 0 | 기절 (존재만으로 발동, duration은 SE 테이블에서) |
-| **Silence** | 0 | 0 | 침묵 (스킬 사용 불가) |
-| **Freeze** | 0 | 0 | 빙결 (DB 미사용, Enum만 존재) |
-| **Taunt** | 0 | 0 | 도발 |
+| ReflectDamage(26) | 대미지 반사 (방어력 무시) | 비율 반사량 | 정수 반사량 |
+| DamageStealHP(25) | 입힌 대미지 일부 회복 | 비율 회복량 | 정수 회복량 |
+| DamageAbsorb(36) | 받은 대미지 비율만큼 회복 (대미지 상쇄) | 비율 회복량 | null |
+| DeferDamageDotEffect(88) | 피해 지연 도트 | 비율 | 시간(ms) |
+| IncreaseArmorLowHp(23) | HP 손실률 × 계수 방어력 증감(%) | 계수 | null |
+| IncreaseAttackLowHp(22) | HP 손실률 × 계수 공격력 증감(%) | 계수 | null |
+| IncreaseDamageHitByLowHp(82) | HP 손실률 × 계수만큼 받는 대미지 증감(%) | 계수 | null |
 
-> **CC 계열 공통**: v1=0, v2=0. 값 없이 존재 자체로 효과 발동. 지속시간은 StatusEffect.duration 또는 PassiveEffect.val1에서 결정.
-
-## 👁️ 유틸리티 계열
-| function_type | v1 | v2 | 설명 |
+### 쿨다운
+| 타입 | 설명 | v1 | v2 |
 |---|---|---|---|
-| **Stealth** | 0 | 0 | 은신 (존재만으로 발동) |
-| **Tracked** | 0 | 0 | 추적됨 (위치 노출) |
-| **Immune** | 0 | 0 | 면역 (피해 무효) |
-| **CollisionSwitch** | - | - | 충돌 전환 |
-| **BlockInteraction** | - | - | 상호작용 차단 (DB 미사용) |
-| **DenyUseItem** | - | - | 아이템 사용 불가 (DB 미사용) |
-| **RemoveSkillWeapon** | 0 | 0 | 스킬 무기 제거 |
-| **RunStatusEffectEnemyInAllySight** | SE_ID | 0 | 아군 시야 내 적에게 SE 부여 |
+| ModRunningCool(42) | 특정 슬롯 액티브의 돌고 있는 쿨다운 증감 | 쿨다운 증감 값 | 슬롯 번호 (1~4번) |
 
-## 🔫 기타 특수 계열
-| function_type | v1 | v2 | 설명 |
+### 스킬 수정 (target_id별)
+| 타입 | 설명 | v1 | v2 |
 |---|---|---|---|
-| **AddExecuteEffectByAttackDamage** | - | - | 공격 피해 기반 실행 효과 추가 |
-| **ShieldExecuteDamageToHP** | - | - | 보호막 피해를 HP로 전환 (코드 참조 확인) |
+| SwapExecuteValue | Execute값 교체 | 교체ID | null |
+| SwapExecuteRangeValue | 범위값 교체 | 교체값 | null |
+| SwapExecuteRangeId | 범위ID 교체 | 교체RangeID | null |
+| SwapExecuteResultDisplayId | 결과표시ID 교체 | 교체DisplayID | null |
+| SwapExecuteEffectValue | 효과값 교체 | 교체값 | null |
+| SwapExecuteEffectPartHitId | 파트히트ID 교체 | 교체PartHitID | null |
+| ModExecuteEffectValue | 효과값 수정 | 수정값 | null |
 
-## 📌 enum_value1 / enum_value2 해석
-### enum_value1 (값 적용 방식)
-- `None`: 미사용 또는 절대값
-- `PercentAdd`: 만분율 가산 (10000=100%)
-
-### enum_value2 (보조 조건)
-- `None`: 없음
-- `TimeMax`: 시간 최대치 제한 (DotEffectHPFixed 등에서 사용)
-
-## ⚠️ 무기 모듈에서 자주 사용하는 조합
-| 모듈 효과 | function_type | v1 | v2 예시 |
+### 기타 유틸리티
+| 타입 | 설명 | v1 | v2 |
 |---|---|---|---|
-| 임시 보호막 100 | GetTempShield | 0 | 100 |
-| 이동속도 +20% | ModRateMoveSpeed | 0 | 2000 |
-| 사격속도 -30% | ModRateFireRate | 0 | -3000 |
-| 은신 | Stealth | 0 | 0 |
-| 궁극기 10% 충전 | ChangeEnergyByMaxRate | Ulti | 1000 |
-| 받는 피해 -20% | ModDamageReductionRate | 0 | 2000 |
+| Stealth | 은신 (존재만으로 발동) | 0 | 0 |
+| Tracked | 추적됨 (위치 노출) | 0 | 0 |
+| Immune | 면역 (피해 무효) | 0 | 0 |
+| InstantDeath | 즉사 | 0 | 0 |
+| NoWeaponAmmoConsume | 탄약 소모 없음 | 0 | 0 |
+| RemoveSkillWeapon | 스킬 무기 제거 | 0 | 0 |
+| CollisionSwitch | 충돌 전환 | - | - |
+| DeathEndure | 사망 방지 | - | - |
