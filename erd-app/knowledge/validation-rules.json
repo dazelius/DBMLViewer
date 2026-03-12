@@ -825,20 +825,5 @@
     "scope": "team",
     "createdAt": 1773207551465,
     "updatedAt": 1773207551465
-  },
-  {
-    "id": "rule_1773280168111",
-    "name": "Reward 동일 reward_id 내 item_id 중복 금지",
-    "table": "Reward",
-    "severity": "warning",
-    "condition": {
-      "type": "unique",
-      "column": "item_id",
-      "group_by": "reward_id"
-    },
-    "enabled": true,
-    "scope": "team",
-    "createdAt": 1773280168111,
-    "updatedAt": 1773280168111
   }
 ]
