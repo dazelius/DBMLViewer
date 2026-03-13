@@ -713,7 +713,22 @@ new ResizeObserver(()=>{
 const loader = new FBXLoader();
 overlayMsg.textContent = '모델 로딩 중...';
 
-loader.load('${modelUrl}', fbx=>{
+// Texture loading from material index
+async function loadMaterials() {
+  try {
+    const fbxPath = '${modelUrl}'.replace(/.*[?&]path=/, '').replace(/%([0-9A-F]{2})/gi, (_,h) => String.fromCharCode(parseInt(h,16)));
+    const r = await fetch('/api/assets/materials?fbxPath=' + encodeURIComponent(fbxPath));
+    if (!r.ok) return {};
+    const d = await r.json();
+    const map = {};
+    for (const m of (d.materials || [])) map[m.name || '_default'] = m;
+    return map;
+  } catch { return {}; }
+}
+
+const matMapPromise = loadMaterials();
+
+loader.load('${modelUrl}', async fbx=>{
   const box = new THREE.Box3().setFromObject(fbx);
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
@@ -740,6 +755,31 @@ loader.load('${modelUrl}', fbx=>{
     controlsEl.classList.add('visible');
     animNameEl.textContent = clip.name;
   }
+
+  // Apply textures
+  const matMap = await matMapPromise;
+  const texLoader = new THREE.TextureLoader();
+  const keys = Object.keys(matMap);
+  const matValues = Object.values(matMap);
+  let meshIdx = 0;
+  fbx.traverse(child => {
+    if (!child.isMesh) return;
+    child.castShadow = true; child.receiveShadow = true;
+    const mn = child.name.toLowerCase();
+    const existMat = Array.isArray(child.material) ? child.material[0] : child.material;
+    const existMatName = (existMat && existMat.name || '').toLowerCase();
+    const entry = keys.find(k => { const kl = k.toLowerCase(); return (existMatName && (existMatName.includes(kl) || kl.includes(existMatName))) || mn.includes(kl) || kl.includes(mn); });
+    const curIdx = meshIdx++;
+    const m = entry ? matMap[entry] : (matValues[curIdx % matValues.length] || matValues[0]);
+    const mat = new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, roughness: 0.75, metalness: 0.1 });
+    if (m && m.albedo) {
+      texLoader.load(m.albedo, t => { t.colorSpace = THREE.SRGBColorSpace; t.flipY = true; mat.map = t; mat.needsUpdate = true; });
+    } else { mat.color.set(0x8899bb); }
+    if (m && m.normal) {
+      texLoader.load(m.normal, t => { t.colorSpace = THREE.NoColorSpace; t.flipY = true; mat.normalMap = t; mat.normalScale.set(1,-1); mat.needsUpdate = true; });
+    }
+    child.material = mat;
+  });
 
   scene.add(fbx);
   overlay.classList.add('hidden');
@@ -4813,24 +4853,26 @@ function buildViewer(container, fbxUrl, label) {
       ctrl.target.set(0,0,0); ctrl.maxDistance = dist * 5; ctrl.update();
 
       const texLoader = new THREE.TextureLoader();
-      // TGA: TGALoader가 내부적으로 방향 처리 → flipY=false
-      // PNG/JPG 등: TextureLoader 표준 → flipY=true
+      // Server converts TGA→PNG, so always use TextureLoader
       const loadTex = (url, onLoad) => {
-        const isTga = /\.tga$/i.test(url);
-        const loader = isTga ? tgaLoader : texLoader;
-        loader.load(url, (t) => {
-          t.flipY = !isTga; // TGA=false, 나머지=true
+        texLoader.load(url, (t) => {
+          t.flipY = true;
           onLoad(t);
         }, undefined, (e) => console.warn('tex load fail:', url, e));
       };
 
+      let meshIdx = 0;
+      const matValues = Object.values(matMap);
       fbx.traverse(child => {
         if (!child.isMesh) return;
         child.castShadow = true; child.receiveShadow = true;
         const keys = Object.keys(matMap);
         const mn = child.name.toLowerCase();
-        const entry = keys.find(k => mn.includes(k.toLowerCase()) || k.toLowerCase().includes(mn));
-        const m = entry ? matMap[entry] : Object.values(matMap)[0];
+        const existMat = Array.isArray(child.material) ? child.material[0] : child.material;
+        const existMatName = (existMat && existMat.name || '').toLowerCase();
+        const entry = keys.find(k => { const kl = k.toLowerCase(); return (existMatName && (existMatName.includes(kl) || kl.includes(existMatName))) || mn.includes(kl) || kl.includes(mn); });
+        const curIdx = meshIdx++;
+        const m = entry ? matMap[entry] : (matValues[curIdx % matValues.length] || matValues[0]);
         const mat = new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, roughness: 0.75, metalness: 0.1 });
         if (m && m.albedo) {
           loadTex(m.albedo, t => { t.colorSpace = THREE.SRGBColorSpace; mat.map = t; mat.needsUpdate = true; });
@@ -5250,6 +5292,8 @@ interface ServerTableData {
 
 // ── 서버사이드 데이터 캐시 ──
 let _serverDataLoaded = false
+let _serverDataLoadedAt = 0
+const SERVER_DATA_TTL = 120_000 // 2분 후 자동 갱신
 let _serverTableData: Map<string, ServerTableData> = new Map()
 let _serverSchemaDesc = '' // 테이블/컬럼 설명 텍스트 (Claude 프롬프트용)
 let _serverTableList: Array<{ name: string; columns: string[]; rowCount: number }> = []
@@ -5419,8 +5463,29 @@ function serverFindHeaderRow(raw: unknown[][]): number {
 
 const META_SHEET_NAMES = new Set(['define', 'enum', 'tablegroup', 'ref', 'tabledefine', 'sheet1'])
 
+function _gitResetToClean(gitRepoDir: string) {
+  const gitDir = resolve(gitRepoDir)
+  const dotGit = join(gitDir, '.git')
+  if (!existsSync(dotGit)) return
+  try {
+    execSync('git checkout -- .', { cwd: gitDir, encoding: 'utf-8', timeout: 15000, stdio: 'pipe' })
+    execSync('git clean -fd -- GameData/Data', { cwd: gitDir, encoding: 'utf-8', timeout: 15000, stdio: 'pipe' })
+    execSync('git pull --no-rebase --no-edit', { cwd: gitDir, encoding: 'utf-8', timeout: 30000, stdio: 'pipe' })
+    console.log('[ChatAPI] git checkout+clean+pull 완료')
+  } catch (e) {
+    console.log(`[ChatAPI] git reset warning: ${e}`)
+  }
+}
+
 function loadServerData(gitRepoDir: string) {
-  if (_serverDataLoaded) return
+  if (_serverDataLoaded && (Date.now() - _serverDataLoadedAt) < SERVER_DATA_TTL) return
+  _gitResetToClean(gitRepoDir)
+  if (_serverDataLoaded) {
+    console.log('[ChatAPI] 데이터 캐시 만료 → 리로드')
+    _serverTableData = new Map()
+    _serverTableList = []
+    _serverSchemaDesc = ''
+  }
   console.log('[ChatAPI] 서버사이드 데이터 로딩 시작...')
   const t0 = Date.now()
   try {
@@ -5452,6 +5517,16 @@ function loadServerData(gitRepoDir: string) {
           const validHeaders = headerRow.filter(Boolean)
           if (validHeaders.length === 0) continue
 
+          // DataGroup 행에서 실제 테이블명 추출 (Row0: ["DataGroup", "실제이름"])
+          let dataGroupName = ''
+          if (headerIdx > 0) {
+            const row0 = (raw[0] as unknown[]) ?? []
+            const cell0 = String(row0[0] ?? '').trim().toLowerCase()
+            if (cell0 === 'datagroup' && row0[1]) {
+              dataGroupName = String(row0[1]).trim()
+            }
+          }
+
           // 데이터 행 파싱
           const rows: Record<string, string>[] = []
           for (let i = headerIdx + 1; i < raw.length; i++) {
@@ -5466,9 +5541,8 @@ function loadServerData(gitRepoDir: string) {
           }
           if (rows.length === 0) continue
 
-          // 테이블명: 시트명 그대로 사용 (웹 UI와 동일)
-          // 동일 시트명이 여러 파일에 있을 경우 행 수 더 많은 쪽 우선
-          const tableName = sheetName
+          // 테이블명: DataGroup 값 우선, 없으면 시트명 사용
+          const tableName = dataGroupName || sheetName
           const lowerKey = tableName.toLowerCase()
           const existing = _serverTableData.get(lowerKey)
           if (!existing || rows.length > existing.rows.length) {
@@ -5498,6 +5572,7 @@ function loadServerData(gitRepoDir: string) {
     }
     _serverSchemaDesc = lines.join('\n')
     _serverDataLoaded = true
+    _serverDataLoadedAt = Date.now()
     console.log(`[ChatAPI] 데이터 로딩 완료: ${_serverTableList.length}개 테이블, ${_serverTableList.reduce((s, t) => s + t.rowCount, 0)}행 (${Date.now() - t0}ms)`)
   } catch (e) {
     console.error('[ChatAPI] 데이터 로딩 실패:', e)
@@ -5562,7 +5637,7 @@ function _vFindPK(headers: string[]): string {
   return headers.find(h => /^id$/i.test(h)) ?? headers[0] ?? '?'
 }
 
-function _vCheckRule(rule: VRule, headers: string[], rows: Record<string, string>[], tableName: string): VViolation[] {
+function _vCheckRule(rule: VRule, headers: string[], rows: Record<string, string>[], tableName: string, allTableData?: Map<string, ServerTableData>): VViolation[] {
   const vs: VViolation[] = []
   const c = rule.condition
   const pk = _vFindPK(headers)
@@ -5599,7 +5674,35 @@ function _vCheckRule(rule: VRule, headers: string[], rows: Record<string, string
     }
     case 'conditional': {
       if (!c.when || !c.then || !headers.includes(c.when.column) || !headers.includes(c.then.column)) break
-      for (const row of rows) { const wv = String(row[c.when!.column] ?? ''); if (!_vCompare(wv, c.when!.op, c.when!.value)) continue; const tv = String(row[c.then!.column] ?? ''); if (!_vCompare(tv, c.then!.op, c.then!.value)) { if (push(String(row[pk] ?? ''), `${c.when!.column}=${wv}일 때 ${c.then!.column}=${tv} (기대: ${c.then!.op} ${c.then!.value})`)) return vs } } break
+      const thenType = (c.then as Record<string, unknown>).type as string | undefined
+      if (thenType === 'range') {
+        const tMin = (c.then as Record<string, unknown>).min as number | undefined
+        const tMax = (c.then as Record<string, unknown>).max as number | undefined
+        for (const row of rows) {
+          const wv = String(row[c.when!.column] ?? ''); if (!_vCompare(wv, c.when!.op, c.when!.value)) continue
+          const n = _vParseNum(row[c.then!.column]); if (n === null) continue
+          if ((tMin !== undefined && n < tMin) || (tMax !== undefined && n > tMax)) {
+            if (push(String(row[pk] ?? ''), `${c.when!.column}=${wv}일 때 ${c.then!.column}=${n} (범위: ${tMin ?? ''}~${tMax ?? ''})`)) return vs
+          }
+        }
+      } else if (thenType === 'not_null') {
+        for (const row of rows) {
+          const wv = String(row[c.when!.column] ?? ''); if (!_vCompare(wv, c.when!.op, c.when!.value)) continue
+          const tv = row[c.then!.column]; if (tv == null || tv === '' || tv === 'null' || tv === 'NULL') {
+            if (push(String(row[pk] ?? ''), `${c.when!.column}=${wv}일 때 ${c.then!.column}이(가) 비어있음`)) return vs
+          }
+        }
+      } else if (thenType === 'in') {
+        const allowed = new Set(((c.then as Record<string, unknown>).values as string[] | undefined)?.map(v => v.toLowerCase()) ?? [])
+        for (const row of rows) {
+          const wv = String(row[c.when!.column] ?? ''); if (!_vCompare(wv, c.when!.op, c.when!.value)) continue
+          const tv = String(row[c.then!.column] ?? '').toLowerCase()
+          if (tv && !allowed.has(tv)) { if (push(String(row[pk] ?? ''), `${c.when!.column}=${wv}일 때 ${c.then!.column}="${row[c.then!.column]}" (허용값 아님)`)) return vs }
+        }
+      } else {
+        for (const row of rows) { const wv = String(row[c.when!.column] ?? ''); if (!_vCompare(wv, c.when!.op, c.when!.value)) continue; const tv = String(row[c.then!.column] ?? ''); if (!_vCompare(tv, c.then!.op, c.then!.value)) { if (push(String(row[pk] ?? ''), `${c.when!.column}=${wv}일 때 ${c.then!.column}=${tv} (기대: ${c.then!.op} ${c.then!.value})`)) return vs } }
+      }
+      break
     }
     case 'unique': {
       if (!c.column || !headers.includes(c.column)) break
@@ -5618,6 +5721,27 @@ function _vCheckRule(rule: VRule, headers: string[], rows: Record<string, string
       }
       break
     }
+    case 'fk_ref': {
+      if (!c.column || !headers.includes(c.column) || !allTableData) break
+      const refCol = (c as Record<string, unknown>).ref_column as string | undefined ?? 'id'
+      const refTable = (c as Record<string, unknown>).ref_table as string | undefined
+      if (!refTable) break
+      const refKey = [...allTableData.keys()].find(k => k.toLowerCase() === refTable.toLowerCase())
+      if (!refKey) break
+      const refData = allTableData.get(refKey)
+      if (!refData) break
+      const validPks = new Set(refData.rows.map(r => String(r[refCol] ?? '').toLowerCase()))
+      const allowSentinel = (c as Record<string, unknown>).allow_sentinel !== false
+      for (const row of rows) {
+        const val = String(row[c.column] ?? '').trim()
+        if (!val || val === '' || val === 'null' || val === 'NULL') continue
+        if (allowSentinel) { const nv = Number(val); if (val === '-1' || val === '0' || (Number.isFinite(nv) && nv <= 0)) continue }
+        if (!validPks.has(val.toLowerCase())) {
+          if (push(String(row[pk] ?? ''), `${c.column}="${val}" → ${refTable}.${refCol}에 존재하지 않음`)) return vs
+        }
+      }
+      break
+    }
   }
   return vs
 }
@@ -5633,7 +5757,7 @@ function serverRunValidation(tableData: Map<string, ServerTableData>, rules: VRu
     for (const [tableName, { headers, rows }] of tableData) {
       if (!_vMatchTable(rule.table, tableName)) continue
       ruleChecked = true
-      violations.push(..._vCheckRule(rule, headers, rows, tableName))
+      violations.push(..._vCheckRule(rule, headers, rows, tableName, tableData))
     }
     if (ruleChecked) checkedRules++
   }
@@ -7094,10 +7218,47 @@ function serverExecuteTool(
       summary += vResult.violations.length === 0
         ? '✅ 위반 없음'
         : `⚠️ ${vResult.violations.length}건 위반 (error ${errors.length}, warning ${warnings.length})\n\n`
-      for (const v of vResult.violations.slice(0, 30)) {
+      for (const v of vResult.violations.slice(0, 15)) {
         summary += `${v.severity === 'error' ? '🔴' : '🟡'} ${v.ruleName} — ${v.table} id=${v.rowId}: ${v.details}\n`
       }
-      if (vResult.violations.length > 30) summary += `\n... 외 ${vResult.violations.length - 30}건`
+      if (vResult.violations.length > 15) {
+        summary += `\n... 외 ${vResult.violations.length - 15}건 — 전체 리포트는 아래 문서를 확인하세요.\n`
+        summary += `\n🔴 중요: 위반 건수가 많으므로 반드시 아티팩트로 전체 검증 리포트를 생성하세요!`
+        summary += `\n아래 HTML을 아티팩트로 출력하세요:\n\n`
+        // 테이블별로 그룹화
+        const byTable = new Map<string, typeof vResult.violations>()
+        for (const v of vResult.violations) {
+          if (!byTable.has(v.table)) byTable.set(v.table, [])
+          byTable.get(v.table)!.push(v)
+        }
+        let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>데이터 검증 리포트</title><style>`
+        html += `*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0d1117;color:#e6edf3;padding:24px}`
+        html += `h1{font-size:20px;margin-bottom:8px;color:#f0f6fc}h2{font-size:15px;margin:20px 0 8px;color:#8b949e;border-bottom:1px solid #21262d;padding-bottom:6px}`
+        html += `.summary{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:16px}`
+        html += `.stat{display:inline-block;margin-right:16px;font-size:13px}.stat b{font-size:18px}`
+        html += `table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px}`
+        html += `th{text-align:left;padding:6px 8px;background:#161b22;border-bottom:1px solid #30363d;color:#8b949e;font-weight:500}`
+        html += `td{padding:5px 8px;border-bottom:1px solid #21262d}tr:hover td{background:#161b22}`
+        html += `.err{color:#f85149}.warn{color:#d29922}.badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600}`
+        html += `.badge.error{background:rgba(248,81,73,0.15);color:#f85149}.badge.warning{background:rgba(210,153,34,0.15);color:#d29922}`
+        html += `</style></head><body>`
+        html += `<h1>🛡️ 데이터 검증 리포트</h1>`
+        html += `<div class="summary"><div class="stat">전체 룰: <b>${vResult.totalRules}</b>개</div>`
+        html += `<div class="stat">검증됨: <b>${vResult.checkedRules}</b>개</div>`
+        html += `<div class="stat">🔴 오류: <b>${errors.length}</b>건</div>`
+        html += `<div class="stat">🟡 경고: <b>${warnings.length}</b>건</div>`
+        html += `<div class="stat">⏱️ <b>${vResult.durationMs}</b>ms</div></div>`
+        for (const [tbl, vs] of byTable) {
+          html += `<h2>${tbl} (${vs.length}건)</h2><table><tr><th>심각도</th><th>룰</th><th>ID</th><th>상세</th></tr>`
+          for (const v of vs) {
+            const cls = v.severity === 'error' ? 'err' : 'warn'
+            html += `<tr><td><span class="badge ${v.severity}">${v.severity}</span></td><td>${v.ruleName}</td><td class="${cls}">${v.rowId}</td><td>${v.details}</td></tr>`
+          }
+          html += `</table>`
+        }
+        html += `</body></html>`
+        summary += `<artifact type="text/html" title="검증 리포트 (${vResult.violations.length}건)">\n${html}\n</artifact>`
+      }
       return { result: summary, data: vResult }
     }
 
@@ -7283,6 +7444,7 @@ async function serverExecuteToolAsync(
 
   // 대화 턴 내 바이브테이블링 편집 체이닝: 이전 job_id를 자동 전달하여 변경사항 누적
   const prevJobId = (options as unknown as Record<string, unknown>)._btPrevJobId as string | undefined
+  const allJobsCsv = (options as unknown as Record<string, unknown>)._btAllJobs as string | undefined
 
   if (toolName === 'edit_game_data') {
     try {
@@ -7291,6 +7453,7 @@ async function serverExecuteToolAsync(
         reason: String(input.reason ?? ''),
         edit_plan: input.edit_plan as unknown[],
         prev_job_id: prevJobId || undefined,
+        all_jobs: allJobsCsv || undefined,
       })
       const btRes = await fetch(`${BIBLE_TABLING_API_URL}/api/bible-tabling/edit`, {
         method: 'POST',
@@ -7307,7 +7470,9 @@ async function serverExecuteToolAsync(
       const jobId = String(data.job_id ?? '');
 
       // 다음 호출에서 이 job의 결과를 이어받을 수 있도록 저장
-      (options as unknown as Record<string, unknown>)._btPrevJobId = jobId
+      ;(options as unknown as Record<string, unknown>)._btPrevJobId = jobId
+      const prevAll = (options as unknown as Record<string, unknown>)._btAllJobs as string | undefined
+      ;(options as unknown as Record<string, unknown>)._btAllJobs = prevAll ? `${prevAll},${jobId}` : jobId
 
       let resultText = `✅ 바이브테이블링 편집 완료\n`
       resultText += `제목: ${summary.title}\n`
@@ -7413,6 +7578,7 @@ async function serverExecuteToolAsync(
         file: input.file ? String(input.file) : undefined,
         sheet: input.sheet ? String(input.sheet) : undefined,
         prev_job_id: prevJobId || undefined,
+        all_jobs: allJobsCsv || undefined,
       }
       if (cloneSource) {
         bodyPayload.clone_source = cloneSource
@@ -7437,7 +7603,9 @@ async function serverExecuteToolAsync(
       const jobId = String(data.job_id ?? '');
 
       // 다음 호출에서 이 job의 결과를 이어받을 수 있도록 저장
-      (options as unknown as Record<string, unknown>)._btPrevJobId = jobId
+      ;(options as unknown as Record<string, unknown>)._btPrevJobId = jobId
+      const prevAll2 = (options as unknown as Record<string, unknown>)._btAllJobs as string | undefined
+      ;(options as unknown as Record<string, unknown>)._btAllJobs = prevAll2 ? `${prevAll2},${jobId}` : jobId
 
       let resultText = `✅ 바이브테이블링 행 추가 완료\n`
       resultText += `테이블: ${summary.table} (${summary.file})\n`
@@ -8680,12 +8848,52 @@ function serverFastPath(msg: string, options: GitPluginOptions): string | null {
     } else {
       lines.push(`- ⚠️ **${result.violations.length}건 위반** (🔴 error ${errors.length}, 🟡 warning ${warnings.length})`)
       lines.push('')
-      for (const v of result.violations.slice(0, 30)) {
+      const INLINE_LIMIT = 15
+      for (const v of result.violations.slice(0, INLINE_LIMIT)) {
         const icon = v.severity === 'error' ? '🔴' : '🟡'
         lines.push(`${icon} **${v.ruleName}** — \`${v.table}\` id=${v.rowId}: ${v.details}`)
       }
-      if (result.violations.length > 30) {
-        lines.push(`\n... 외 ${result.violations.length - 30}건`)
+      if (result.violations.length > INLINE_LIMIT) {
+        lines.push(`\n... 외 ${result.violations.length - INLINE_LIMIT}건 — 전체 내용은 아래 리포트 문서에서 확인하세요.`)
+        // 테이블별로 그룹화한 HTML 아티팩트 생성
+        const byTable = new Map<string, typeof result.violations>()
+        for (const v of result.violations) {
+          if (!byTable.has(v.table)) byTable.set(v.table, [])
+          byTable.get(v.table)!.push(v)
+        }
+        let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>데이터 검증 리포트</title><style>`
+        html += `*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0d1117;color:#e6edf3;padding:24px;max-width:960px;margin:0 auto}`
+        html += `h1{font-size:20px;margin-bottom:8px;color:#f0f6fc}h2{font-size:15px;margin:20px 0 8px;color:#8b949e;border-bottom:1px solid #21262d;padding-bottom:6px}`
+        html += `.summary{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:16px;display:flex;gap:20px;flex-wrap:wrap}`
+        html += `.stat{font-size:13px}.stat b{font-size:18px}`
+        html += `table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px}`
+        html += `th{text-align:left;padding:6px 8px;background:#161b22;border-bottom:1px solid #30363d;color:#8b949e;font-weight:500;position:sticky;top:0}`
+        html += `td{padding:5px 8px;border-bottom:1px solid #21262d}tr:hover td{background:#161b22}`
+        html += `.err{color:#f85149}.warn{color:#d29922}`
+        html += `.badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600}`
+        html += `.badge.error{background:rgba(248,81,73,0.15);color:#f85149}.badge.warning{background:rgba(210,153,34,0.15);color:#d29922}`
+        html += `</style></head><body>`
+        html += `<h1>🛡️ 데이터 검증 리포트</h1>`
+        html += `<div class="summary">`
+        html += `<div class="stat">전체 룰: <b>${result.totalRules}</b>개</div>`
+        html += `<div class="stat">검증됨: <b>${result.checkedRules}</b>개</div>`
+        html += `<div class="stat">🔴 오류: <b>${errors.length}</b>건</div>`
+        html += `<div class="stat">🟡 경고: <b>${warnings.length}</b>건</div>`
+        html += `<div class="stat">⏱️ <b>${result.durationMs}</b>ms</div></div>`
+        for (const [tbl, vs] of byTable) {
+          const tblErrors = vs.filter(v => v.severity === 'error').length
+          const tblWarns = vs.length - tblErrors
+          html += `<h2>${tbl} (${vs.length}건 — 🔴${tblErrors} 🟡${tblWarns})</h2>`
+          html += `<table><tr><th style="width:60px">심각도</th><th style="width:200px">룰</th><th style="width:80px">ID</th><th>상세</th></tr>`
+          for (const v of vs) {
+            html += `<tr><td><span class="badge ${v.severity}">${v.severity === 'error' ? '🔴 error' : '🟡 warn'}</span></td>`
+            html += `<td>${v.ruleName}</td><td><code>${v.rowId}</code></td><td>${v.details}</td></tr>`
+          }
+          html += `</table>`
+        }
+        html += `</body></html>`
+        lines.push('')
+        lines.push(`<artifact type="text/html" title="검증 리포트 — ${result.violations.length}건 위반">\n${html}\n</artifact>`)
       }
     }
     return lines.join('\n')
@@ -9015,6 +9223,32 @@ function buildServerSystemPrompt(_userQuery?: string, isSlack = false, selectedT
     lines.push('- 2개 이상의 도구를 사용했거나, 테이블 데이터가 있으면 반드시 아티팩트로! (단, 바이브테이블링 제외)')
     lines.push('- 데이터 수집이 끝나면 즉시 create_artifact를 호출 (선언 없이)')
     lines.push('- 아티팩트 생성 후 짧은 요약 텍스트도 반드시 함께 보내야 함 (Slack에서 미리보기 표시)')
+    lines.push('')
+    lines.push('[📊 아티팩트 내 차트 삽입 — <viz-chart> 태그 ⭐⭐⭐]')
+    lines.push('Slack에서는 인라인 시각화(:::visualizer)가 표시되지 않습니다!')
+    lines.push('대신 아티팩트 HTML 안에 <viz-chart> 태그를 사용하면 38종 차트 템플릿이 자동 렌더링됩니다.')
+    lines.push('사용자가 "비교해줘", "차트로", "시각화", "분석해줘", "그래프" 등 요청하면 → 아티팩트 + <viz-chart> 조합으로!')
+    lines.push('')
+    lines.push('형식: <viz-chart type="타입" title="제목">데이터</viz-chart>')
+    lines.push('데이터 형식은 파이프(|) 구분 텍스트로 매우 간단합니다.')
+    lines.push('')
+    lines.push('📈 수치: bar(세로막대), hbar(가로), stack(스택), pie(파이), donut(도넛+중앙합계), line(꺾은선), area(영역), radar(레이더), scatter(산점도), bubble(버블), gauge(게이지), treemap(트리맵), funnel(퍼널), waterfall(워터폴), histogram(히스토그램), bullet(목표대비실적)')
+    lines.push('📊 비교: compare(카드비교), stat(KPI카드), matrix(히트맵매트릭스), quadrant(사분면), progress(진행률), dumbbell(전후비교), diff(변경전후+증감률), table(조건부서식테이블)')
+    lines.push('🔀 구조: flow(플로우), swimlane(스윔레인), hierarchy(트리), mindmap(마인드맵), process(단계프로세스), relation(관계도)')
+    lines.push('📅 기타: timeline(타임라인), kanban(칸반), changelog(패치노트)')
+    lines.push('🎮 게임: tier(티어리스트), itemcard(캐릭터/아이템카드+이미지), gallery(이미지갤러리), calendar(캘린더히트맵), gantt(간트차트)')
+    lines.push('')
+    lines.push('예시 — 데이터 분석 아티팩트:')
+    lines.push('<viz-chart type="bar" title="캐릭터 HP">프리드벨|2500\\n카야|1800\\n엔젤|1200</viz-chart>')
+    lines.push('<viz-chart type="diff" title="패치 변경">스탯|이전|이후\\n공격력|250|280\\n방어력|120|100</viz-chart>')
+    lines.push('<viz-chart type="tier" title="시즌 티어">S: 프리드벨, 카야\\nA: 엔젤\\nB: 슬라임킹</viz-chart>')
+    lines.push('<viz-chart type="itemcard" title="캐릭터 정보">이름: 프리드벨\\n이미지: URL\\n등급: SSR\\nHP: 2500\\nATK: 120</viz-chart>')
+    lines.push('')
+    lines.push('⭐ 규칙:')
+    lines.push('- 차트/그래프 필요하면 반드시 <viz-chart> 사용! JS/Canvas/Chart.js 직접 작성 금지!')
+    lines.push('- 하나의 아티팩트에 텍스트 설명 + 여러 <viz-chart> 자유롭게 혼합')
+    lines.push('- 적극적으로 활용: 데이터 조회 결과 → 막대/파이 차트, 밸런스 비교 → diff/dumbbell, 캐릭터 정보 → itemcard, 일정 → gantt/timeline')
+    lines.push('- find_resource_image URL을 itemcard의 이미지 필드나 gallery에 바로 사용 가능')
   } else {
     lines.push('[아티팩트 생성 규칙]')
     lines.push('🔴 아티팩트는 사용자가 명시적으로 요청할 때만 생성하세요!')
@@ -9088,6 +9322,17 @@ function createChatApiMiddleware(options: GitPluginOptions) {
     if (path === '/api/v1/tables' && req.method === 'GET') {
       loadServerData(options.localDir)
       sendJson(res, 200, { tables: _serverTableList, total: _serverTableList.length })
+      return
+    }
+
+    // ── GET /api/v1/tables/data : 전체 테이블 데이터 (검증용) ──
+    if (path === '/api/v1/tables/data' && req.method === 'GET') {
+      loadServerData(options.localDir)
+      const result: Record<string, { headers: string[]; rows: Record<string, string>[]; rowCount: number }> = {}
+      for (const [name, data] of _serverTableData) {
+        result[name] = { headers: data.headers, rows: data.rows, rowCount: data.rows.length }
+      }
+      sendJson(res, 200, { tables: result })
       return
     }
 
@@ -9293,6 +9538,10 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       const btPrevMatch = userMessage.match(/\[BT_PREV_JOB:([^\]]+)\]/)
       if (btPrevMatch) {
         ;(options as unknown as Record<string, unknown>)._btPrevJobId = btPrevMatch[1]
+      }
+      const btAllMatch = userMessage.match(/\[BT_ALL_JOBS:([^\]]+)\]/)
+      if (btAllMatch) {
+        ;(options as unknown as Record<string, unknown>)._btAllJobs = btAllMatch[1]
       }
 
       if (isStream) {
@@ -9880,6 +10129,8 @@ function createBibleTablingProxy() {
   return (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     if (!req.url?.startsWith('/api/bible-tabling/')) return next()
 
+    const isPush = req.url.includes('/push/') && req.method === 'POST'
+
     const proxyReq = httpRequest(
       {
         hostname: '127.0.0.1',
@@ -9889,7 +10140,6 @@ function createBibleTablingProxy() {
         headers: { ...req.headers, host: '127.0.0.1:8100' },
       },
       (proxyRes) => {
-        // CORS 헤더 보장
         res.setHeader('Access-Control-Allow-Origin', '*')
         res.setHeader('Access-Control-Allow-Methods', '*')
         res.setHeader('Access-Control-Allow-Headers', '*')
@@ -9912,6 +10162,10 @@ function createBibleTablingProxy() {
         } else {
           res.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers)
           proxyRes.pipe(res, { end: true })
+        }
+        if (isPush && (proxyRes.statusCode ?? 200) < 300) {
+          _serverDataLoaded = false
+          console.log('[BibleTabling] Push 완료 → 서버 데이터 캐시 무효화')
         }
       }
     )
