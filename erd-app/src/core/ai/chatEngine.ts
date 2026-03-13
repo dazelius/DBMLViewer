@@ -115,6 +115,13 @@ function stripHtmlFromChatText(text: string): string {
   // HTML 태그가 거의 없으면 빠른 경로
   if (!/< *[a-zA-Z/!]/.test(text)) return text;
 
+  // :::visualizer 블록 보존 (내부 HTML 유지)
+  const vizPlaceholders: string[] = [];
+  text = text.replace(/:::visualizer(?:\{[^}]*\})?[\s\S]*?(?:\n:::\s*(?:\n|$)|$)/g, (m) => {
+    vizPlaceholders.push(m);
+    return `\x00VIZ${vizPlaceholders.length - 1}\x00`;
+  });
+
   // 코드 블록을 보존하면서 처리
   const parts = text.split(/(```[\s\S]*?```|`[^`]+`)/g);
   const cleaned = parts.map((part, idx) => {
@@ -134,8 +141,14 @@ function stripHtmlFromChatText(text: string): string {
     return t;
   }).join('');
 
+  // :::visualizer 블록 복원
+  let result = cleaned;
+  vizPlaceholders.forEach((viz, idx) => {
+    result = result.replace(`\x00VIZ${idx}\x00`, viz);
+  });
+
   // 연속 빈 줄 정리
-  return cleaned.replace(/\n{3,}/g, '\n\n').trim();
+  return result.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // ── 타입 정의 ────────────────────────────────────────────────────────────────
@@ -972,9 +985,9 @@ const TOOLS = [
         severity: { type: 'string', enum: ['error', 'warning'], description: 'error=필수, warning=권장' },
         condition: {
           type: 'object',
-          description: '조건 객체. type 필수. 지원: range{column,min?,max?}, not_null{column}, in{column,values[]}, not_in{column,values[]}, regex{column,pattern}, compare_columns{left,op,right}, conditional{when:{column,op,value},then:{column,op,value}}, unique{column}',
+          description: '조건 객체. type 필수. 지원: range{column,min?,max?}, not_null{column}, in{column,values[]}, not_in{column,values[]}, regex{column,pattern}, compare_columns{left,op,right}, conditional{when:{column,op,value},then:{column,op,value}}, unique{column}, fk_ref{column,ref_table,ref_column?(기본"id"),allow_sentinel?(기본true,-1/0허용)}',
           properties: {
-            type: { type: 'string', enum: ['range', 'not_null', 'in', 'not_in', 'regex', 'compare_columns', 'conditional', 'unique'] },
+            type: { type: 'string', enum: ['range', 'not_null', 'in', 'not_in', 'regex', 'compare_columns', 'conditional', 'unique', 'fk_ref'] },
           },
           required: ['type'],
         },
@@ -1358,10 +1371,130 @@ function buildSystemPrompt(
   lines.push('- 모호한 질문 → A)/B)/C) 형식 객관식 되질문 (UI가 버튼으로 변환). 복수선택은 - [ ] 체크리스트.');
   lines.push('- ⭐ 답변 전 반드시 read_guide로 관련 가이드 먼저 읽기 (DB: _DB_OVERVIEW, 코드: _OVERVIEW)');
   lines.push('- "기억해/저장해" → save_knowledge(name=영문_snake_case). 읽기: read_knowledge(name).');
-  lines.push('- "룰 등록/검증 룰/HP는 0보다 커야/조건 추가" → save_validation_rule. 자연어를 구조화된 condition으로 변환. 목록: list_validation_rules. 삭제: delete_validation_rule(id).');
+  lines.push('- "룰 등록/검증 룰/HP는 0보다 커야/조건 추가" → save_validation_rule. 자연어를 구조화된 condition으로 변환. FK 참조 검증은 fk_ref 타입 사용 (예: {type:"fk_ref", column:"passive_id", ref_table:"Passive"}). 목록: list_validation_rules. 삭제: delete_validation_rule(id).');
   lines.push('  condition types: range{column,min?,max?}, not_null{column}, in{column,values[]}, compare_columns{left,op,right}, conditional{when:{column,op,value},then:{column,op,value}}, unique{column}, regex{column,pattern}');
-  lines.push('- 채팅에 HTML 태그 절대 금지. HTML은 아티팩트 안에만.');
+  lines.push('- 채팅에 HTML 태그 절대 금지. HTML은 아티팩트 또는 :::visualizer 블록 안에만.');
   lines.push('- 다단계 작업 시 :::progress 트래커 사용 (형식: 번호|상태|라벨|설명, 상태: done/active/pending/skipped)');
+  lines.push('');
+  lines.push('## 📊 인라인 비주얼라이저 (:::visualizer) — 아티팩트와 완전히 별개!');
+  lines.push('텍스트 답변 중간에 차트/다이어그램을 끼워넣는 기능. HTML 작성 불필요! 타입+데이터만 출력하면 프론트엔드가 렌더링.');
+  lines.push('');
+  lines.push('### 🔴 아티팩트 vs 비주얼라이저 — 반드시 하나만 선택!');
+  lines.push('| 구분 | 아티팩트 (create_artifact) | 비주얼라이저 (:::visualizer) |');
+  lines.push('|------|---------------------------|------------------------------|');
+  lines.push('| 용도 | 보고서/문서/대시보드 등 **영구 산출물** | 답변 중간 **보조 차트/다이어그램** |');
+  lines.push('| 위치 | 사이드 패널 | 채팅 인라인 |');
+  lines.push('| 방식 | <<<ARTIFACT_START>>> + create_artifact 도구 | :::visualizer 텍스트 블록 (도구 호출 없음!) |');
+  lines.push('| 트리거 | "문서로 만들어줘", "보고서", "아티팩트" | "차트로", "시각화", "그래프", "비교해줘" |');
+  lines.push('');
+  lines.push('### 🔴🔴🔴 절대 금지');
+  lines.push('- ❌ 비주얼라이저와 아티팩트 동시 사용 금지! 한 턴에 둘 중 하나만!');
+  lines.push('- ❌ 비주얼라이저 안에 <<<ARTIFACT_START>>> 마커 금지!');
+  lines.push('- ❌ "문서/보고서/시트 만들어줘" → 아티팩트! 비주얼라이저 아님!');
+  lines.push('');
+  lines.push('### 차트 타입 & 데이터 형식 (HTML 작성 금지! 아래 형식만 사용!)');
+  lines.push('타입 헤더: :::visualizer{type="타입" title="제목"}');
+  lines.push('데이터: 라벨|값 또는 라벨|값1|값2... (파이프 구분). 닫기: :::');
+  lines.push('');
+  lines.push('**bar** — 세로 막대 차트 (비교):');
+  lines.push('```');
+  lines.push(':::visualizer{type="bar" title="캐릭터 HP 비교"}');
+  lines.push('프리드벨|2500');
+  lines.push('카야|1800');
+  lines.push('엔젤|1200');
+  lines.push(':::');
+  lines.push('```');
+  lines.push('다중 시리즈 (헤더행 추가): _|HP|MP → 첫 줄이 헤더, 이후 라벨|값1|값2');
+  lines.push('');
+  lines.push('');
+  lines.push('**📈 수치 차트:**');
+  lines.push('- **hbar** — 가로 막대 (긴 라벨): 라벨|값');
+  lines.push('- **stack** — 스택 바 (구성비): 헤더행+라벨|값1|값2...');
+  lines.push('- **pie** — 파이 (비율): 라벨|값');
+  lines.push('- **donut** — 도넛 (비율+중앙 합계): 라벨|값');
+  lines.push('- **line** — 꺾은선 (추세): 라벨|값 또는 헤더행+다중시리즈');
+  lines.push('- **area** — 영역 (추세+면적): line과 동일 형식');
+  lines.push('- **radar** — 레이더 (다차원 비교): 축|값1|값2, 헤더행 가능');
+  lines.push('- **scatter** — 산점도: 라벨|x|y');
+  lines.push('- **bubble** — 버블 (3차원): 라벨|x|y|크기');
+  lines.push('- **gauge** — 게이지 (달성률): 라벨|현재|최대');
+  lines.push('- **treemap** — 트리맵 (점유율): 라벨|값');
+  lines.push('- **funnel** — 퍼널 (전환율): 라벨|값 (위→아래 순서)');
+  lines.push('- **waterfall** — 워터폴 (증감): 라벨|증감값 (+/-)');
+  lines.push('- **bullet** — 불릿 (목표 대비 실적): 라벨|실적|목표|최대?');
+  lines.push('');
+  lines.push('**📊 비교/분석:**');
+  lines.push('- **compare** — 카드 비교: 키: 값 형식, --- 구분');
+  lines.push('- **stat** — KPI 통계 카드: 라벨|값|변화(+2%)|설명');
+  lines.push('- **matrix** — 히트맵 매트릭스: 헤더행(_|열1|열2)+데이터(행|값1|값2)');
+  lines.push('- **quadrant** — 사분면: 축: X축|Y축 (첫줄), 라벨|x(-10~10)|y(-10~10)');
+  lines.push('- **progress** — 진행률 바: 라벨|현재|목표');
+  lines.push('- **dumbbell** — 덤벨 (전후 비교, 같은 축): 헤더행(_|이전|이후)+라벨|이전값|이후값');
+  lines.push('');
+  lines.push('**🔀 다이어그램/구조:**');
+  lines.push('- **flow** — 플로우차트: A -> B 또는 A -> B | 라벨');
+  lines.push('- **swimlane** — 스윔레인: 레인이름: 단계1 -> 단계2 -> 단계3');
+  lines.push('- **hierarchy** — 트리 구조: 들여쓰기(2칸)로 깊이 표현');
+  lines.push('- **mindmap** — 마인드맵: 첫줄=중심, 2칸들여쓰기=가지, 4칸=잎');
+  lines.push('- **relation** — 관계도: A -> B | 라벨(방향) 또는 A -- B | 라벨(양방향)');
+  lines.push('- **process** — 단계 프로세스: 단계명|상태(완료/진행/대기/실패)|설명?');
+  lines.push('');
+  lines.push('**📅 기타:**');
+  lines.push('- **timeline** — 타임라인: 날짜|제목|설명');
+  lines.push('- **kanban** — 칸반 보드: --- 구분, 첫줄=컬럼명, 이후=카드 항목');
+  lines.push('- **changelog** — 패치 노트/변경 이력: 버전 헤더 줄 + 태그|내용 (태그: new/fix/change/remove/balance)');
+  lines.push('');
+  lines.push('**🎮 게임 데이터 특화:**');
+  lines.push('- **tier** — 티어 리스트 (등급 랭킹): S: 항목1, 항목2 (줄바꿈으로 등급 구분)');
+  lines.push('- **itemcard** — 아이템/캐릭터 카드: 키: 값 형식, --- 구분. 숫자값=스탯바 자동 생성. 이미지: URL로 카드 상단에 썸네일 표시 (이미지/image/img/썸네일/icon 키 사용)');
+  lines.push('- **gallery** — 이미지 갤러리: 이미지URL|캡션|설명? (캐릭터/아이템 이미지 그리드)');
+  lines.push('- **table** — 조건부 서식 테이블: 헤더행(열1|열2|...) + 데이터행. 숫자 셀은 자동 히트맵 색상');
+  lines.push('- **diff** — 변경 전후 비교 (밸런스 패치): 헤더행(_|이전|이후) + 항목|이전값|이후값. 자동 증감률');
+  lines.push('- **histogram** — 히스토그램 (분포): 구간|빈도');
+  lines.push('- **calendar** — 캘린더 히트맵: 날짜|값|라벨?');
+  lines.push('- **gantt** — 간트 차트 (일정): 작업명|시작|끝|그룹?');
+  lines.push('');
+  lines.push('예시 — 이미지 포함 캐릭터 카드:');
+  lines.push('```');
+  lines.push(':::visualizer{type="itemcard" title="신규 캐릭터"}');
+  lines.push('이름: 프리드벨');
+  lines.push('이미지: https://example.com/friedbel.png');
+  lines.push('등급: SSR');
+  lines.push('클래스: Tank');
+  lines.push('속성: 화염');
+  lines.push('HP: 2500');
+  lines.push('ATK: 120');
+  lines.push('DEF: 350');
+  lines.push('---');
+  lines.push('이름: 카야');
+  lines.push('이미지: https://example.com/kaya.png');
+  lines.push('등급: SR');
+  lines.push('클래스: Damage');
+  lines.push('속성: 빙결');
+  lines.push('HP: 1800');
+  lines.push('ATK: 280');
+  lines.push('DEF: 80');
+  lines.push(':::');
+  lines.push('```');
+  lines.push('예시 — 패치 노트:');
+  lines.push('```');
+  lines.push(':::visualizer{type="changelog" title="v1.2.3 패치 노트"}');
+  lines.push('v1.2.3 (2026-03-13)');
+  lines.push('밸런스|프리드벨 HP 2500→2200 하향');
+  lines.push('밸런스|카야 ATK 280→300 상향');
+  lines.push('신규|새로운 던전 "심연의 탑" 추가');
+  lines.push('수정|스킬 쿨타임 표시 오류 수정');
+  lines.push('삭제|기존 이벤트 "겨울 축제" 종료');
+  lines.push(':::');
+  lines.push('```');
+  lines.push('⭐ **이미지 사용 팁**: find_resource_image로 검색한 URL을 itemcard의 이미지 필드나 gallery에 바로 사용!');
+  lines.push('- **html** — 자유 HTML (위 타입으로 불가능할 때만!)');
+  lines.push('');
+  lines.push('### 규칙');
+  lines.push('- 간단한 표/리스트는 마크다운 테이블로. 비주얼라이저는 시각적 표현이 필요할 때만!');
+  lines.push('- 가능하면 구조화된 타입 사용. html은 최후의 수단.');
+  lines.push('- 게임 데이터 조회 결과에 맞는 타입을 적극 활용: 밸런스 비교→diff, 등급 정리→tier, 장비/캐릭터 상세→itemcard, 스케줄→gantt');
+  lines.push('- 텍스트 설명과 함께: 차트 전 설명 → 차트 → 차트 후 해석');
   lines.push('');
   lines.push('## ⚡ 최적 호출 패턴 (이터레이션 최소화)');
   lines.push('- **데이터 조회**: 위 사전주입 스키마가 있으면 → 바로 query_game_data(sql). show_table_schema 생략.');
@@ -1449,9 +1582,11 @@ function buildSystemPrompt(
 
   // ── 아티팩트 규칙: artifact 도구 포함 시에만 ──
   if (hasTools(['create_artifact', 'patch_artifact'])) {
-    lines.push('## 아티팩트 생성 프로토콜');
+    lines.push('## 아티팩트 생성 프로토콜 — :::visualizer와 완전히 별개!');
     lines.push('🔴 아티팩트는 사용자가 명시적으로 요청할 때만 생성하세요!');
     lines.push('- "정리해줘", "문서로 만들어줘", "보고서 작성해줘", "시트 만들어줘", "아티팩트" 등 → create_artifact');
+    lines.push('- "차트로 보여줘", "시각화", "그래프" 등 → ❌ 아티팩트 아님! → :::visualizer 사용!');
+    lines.push('- 🔴 아티팩트 생성 시 :::visualizer 동시 사용 절대 금지! 한 턴에 하나만!');
     lines.push('- 사용자가 명시적으로 요청하지 않은 경우 → 텍스트+마크다운 표로 응답. 아티팩트 만들지 마세요!');
     lines.push('- 질문에 대한 답변, 데이터 조회 결과 등은 텍스트로 충분합니다. 선제적으로 아티팩트를 만들지 마세요.');
     lines.push('');
@@ -1462,6 +1597,42 @@ function buildSystemPrompt(
     lines.push('- 사용자가 기존 아티팩트를 언급/링크하면 → get_published_artifact로 가져와서 수정');
     lines.push('- 🔴 예외: edit_game_data / add_game_data_rows (바이브테이블링) 결과는 절대 아티팩트로 만들지 마세요! "정리/요약" 명목도 금지! 다운로드 링크가 결과물.');
     lines.push('<<<ARTIFACT_START>>> + HTML(body만, 다크테마 bg:#0f1117 text:#e2e8f0 accent:#6366f1) + <<<ARTIFACT_END>>> → create_artifact(title). 수정은 patch_artifact만.');
+    lines.push('');
+    lines.push('### 📊 아티팩트 내 차트 삽입 — <viz-chart> 태그');
+    lines.push('아티팩트 HTML 안에서 차트/시각화가 필요할 때, 전체 JS/SVG를 직접 작성하지 말고 `<viz-chart>` 태그를 사용하세요!');
+    lines.push('인라인 비주얼라이저와 동일한 32가지 템플릿이 자동 렌더링됩니다. **토큰 대폭 절약!**');
+    lines.push('');
+    lines.push('**형식:** `<viz-chart type="타입" title="제목">데이터</viz-chart>`');
+    lines.push('**데이터 형식**은 인라인 비주얼라이저(:::visualizer)와 100% 동일합니다.');
+    lines.push('');
+    lines.push('예시:');
+    lines.push('```html');
+    lines.push('<h2>캐릭터 밸런스 보고서</h2>');
+    lines.push('<p>시즌3 주요 캐릭터 HP 비교입니다.</p>');
+    lines.push('<viz-chart type="bar" title="캐릭터 HP">');
+    lines.push('프리드벨|2500');
+    lines.push('카야|1800');
+    lines.push('엔젤|1200');
+    lines.push('</viz-chart>');
+    lines.push('<p>티어 분포:</p>');
+    lines.push('<viz-chart type="tier" title="시즌3 티어">');
+    lines.push('S: 프리드벨, 카야');
+    lines.push('A: 엔젤');
+    lines.push('B: 슬라임킹');
+    lines.push('</viz-chart>');
+    lines.push('<viz-chart type="diff" title="1.2.3 밸런스 패치">');
+    lines.push('스탯|패치 전|패치 후');
+    lines.push('공격력|250|280');
+    lines.push('방어력|120|100');
+    lines.push('</viz-chart>');
+    lines.push('```');
+    lines.push('');
+    lines.push('⭐ **규칙:**');
+    lines.push('- 아티팩트에서 차트/그래프/시각화가 필요하면 **반드시** `<viz-chart>` 사용! 직접 JS/Canvas/Chart.js 작성 금지!');
+    lines.push('- 일반 HTML(텍스트, 테이블, 카드 레이아웃 등)과 `<viz-chart>`를 자유롭게 혼합 가능');
+    lines.push('- 하나의 아티팩트에 여러 `<viz-chart>` 사용 가능 (보고서에 복수 차트)');
+    lines.push('- type은 인라인 비주얼라이저와 동일: bar, hbar, stack, pie, donut, line, area, radar, scatter, bubble, gauge, treemap, funnel, waterfall, histogram, bullet, compare, stat, matrix, quadrant, progress, dumbbell, diff, table, flow, swimlane, hierarchy, mindmap, process, timeline, kanban, changelog, relation, tier, itemcard, gallery, calendar, gantt');
+    lines.push('');
     lines.push('임베드: data-embed="schema|query|relations|graph|diff|csv|scene|prefab|fbx-anim" 속성 사용. [[TableName]]→스키마 팝업.');
     lines.push('이미지: find_resource_image로 검색한 결과의 url 필드(전체 URL)를 <img src="...">에 사용. /api/images/... 상대경로 금지!');
     lines.push('Mermaid: \\n+4칸 들여쓰기, 노드ID=영문, 한글=["..."], 특수문자 금지.');
@@ -3126,6 +3297,7 @@ export async function sendChatMessage(
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     accumulatedText = '';
+    let _lastIterClean = '';
     console.log(`[Chat] 이터레이션 ${i + 1}/${MAX_ITERATIONS} 시작, messages: ${messages.length}`);
     onThinkingUpdate?.({ type: 'iteration_start', iteration: i + 1, maxIterations: MAX_ITERATIONS, timestamp: Date.now() });
 
@@ -3157,9 +3329,13 @@ export async function sendChatMessage(
               onThinkingUpdate?.({ type: 'streaming', iteration: i + 1, maxIterations: MAX_ITERATIONS, detail: isArtContinuation ? '아티팩트 이어쓰기 중' : '응답 생성 중', timestamp: Date.now() });
             }
             // 채팅에 표시할 텍스트에서 HTML 태그 제거 (아티팩트 HTML이 채팅에 노출되지 않도록)
-            const cleanDelta = stripHtmlFromChatText(delta);
-            const fullClean = continuationCount > 0 ? totalText + stripHtmlFromChatText(accumulatedText) : stripHtmlFromChatText(accumulatedText);
-            if (cleanDelta) onTextDelta?.(cleanDelta, fullClean);
+            // :::visualizer 블록은 stripHtmlFromChatText가 보존하므로 전체 텍스트 기반으로 전달
+            const iterClean = stripHtmlFromChatText(accumulatedText);
+            if (iterClean !== _lastIterClean) {
+              _lastIterClean = iterClean;
+              const fullClean = continuationCount > 0 ? totalText + iterClean : iterClean;
+              onTextDelta?.(iterClean, fullClean);
+            }
           },
           wrappedArtifactProgress,
           isArtContinuation, // 이어쓰기 모드 전달

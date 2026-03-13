@@ -47,6 +47,7 @@ import {
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
 import type { ParsedSchema } from '../core/schema/types.ts';
+import { buildVisualizerHtml, parseVizHeader, processArtifactCharts, type ChartType } from '../core/visualizer/chartTemplates.ts';
 
 const MiniRagGraph = lazy(() => import('../components/Chat/MiniRagGraph.tsx'));
 
@@ -1526,6 +1527,136 @@ interface BtHistoryEntry {
 
 // ── 간단 마크다운 렌더러 ──────────────────────────────────────────────────────
 
+// ── 인라인 비주얼라이저 컴포넌트 (:::visualizer 블록 렌더링) ────────────────
+function InlineVisualizer({ vizType, body, title, isStreaming }: { vizType: string; body: string; title: string; isStreaming?: boolean }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [iframeHeight, setIframeHeight] = useState(200);
+  const [hovered, setHovered] = useState(false);
+
+  const wrappedHtml = useMemo(() => {
+    const chartContent = buildVisualizerHtml({ type: vizType as ChartType, title, body });
+    return `<!DOCTYPE html><html lang="ko"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<style>html,body{margin:0;padding:0;overflow:hidden;background:#0f1117}</style>
+</head><body>${chartContent}
+<script>
+(function(){
+  function notifyHeight(){
+    var h=document.body.scrollHeight;
+    window.parent.postMessage({type:'viz-height',height:h},'*');
+  }
+  new MutationObserver(notifyHeight).observe(document.body,{childList:true,subtree:true,attributes:true});
+  window.addEventListener('load',function(){setTimeout(notifyHeight,50);setTimeout(notifyHeight,300);setTimeout(notifyHeight,1000)});
+  notifyHeight();
+})();
+</script></body></html>`;
+  }, [vizType, body, title]);
+
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type === 'viz-height' && typeof e.data.height === 'number') {
+        const src = e.source;
+        if (iframeRef.current && src === iframeRef.current.contentWindow) {
+          setIframeHeight(Math.max(80, e.data.height));
+        }
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  const handleDownload = useCallback(() => {
+    const blob = new Blob([wrappedHtml], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${title || 'visualization'}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [wrappedHtml, title]);
+
+  return (
+    <div
+      className="my-3 rounded-xl overflow-hidden transition-all"
+      style={{
+        border: `1px solid ${hovered ? 'rgba(129,140,248,0.4)' : 'rgba(129,140,248,0.2)'}`,
+        background: 'rgba(15,17,26,0.8)',
+        transition: 'border-color 0.2s',
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {/* 헤더 */}
+      <div
+        className="flex items-center justify-between px-4 py-2"
+        style={{ borderBottom: '1px solid rgba(129,140,248,0.12)', background: 'rgba(99,102,241,0.04)' }}
+      >
+        <div className="flex items-center gap-2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>
+          </svg>
+          <span className="text-[12px] font-semibold" style={{ color: '#a5b4fc' }}>
+            {title || '시각화'}
+          </span>
+          {isStreaming && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full animate-pulse"
+              style={{ background: 'rgba(99,102,241,0.15)', color: '#a5b4fc', border: '1px solid rgba(99,102,241,0.25)' }}>
+              생성 중…
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          {/* 다운로드 */}
+          <button
+            onClick={handleDownload}
+            className="p-1.5 rounded-md transition-colors"
+            style={{ color: 'var(--text-muted)' }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#e2e8f0'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+            title="HTML로 다운로드"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* iframe + 로딩 오버레이 */}
+      <div className="relative">
+        <iframe
+          ref={iframeRef}
+          srcDoc={wrappedHtml}
+          sandbox="allow-scripts allow-same-origin"
+          title={title || '시각화'}
+          className="w-full border-none"
+          scrolling="no"
+          style={{
+            height: iframeHeight,
+            background: '#0f1117',
+            transition: 'height 0.3s ease',
+            overflow: 'hidden',
+          }}
+        />
+        {isStreaming && (
+          <div
+            className="absolute inset-0 flex items-center justify-center"
+            style={{ background: 'rgba(15,17,23,0.6)', backdropFilter: 'blur(2px)' }}
+          >
+            <div className="flex flex-col items-center gap-3">
+              <svg className="animate-spin" width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="10" stroke="rgba(129,140,248,0.2)" strokeWidth="3"/>
+                <path d="M12 2a10 10 0 0 1 10 10" stroke="#818cf8" strokeWidth="3" strokeLinecap="round"/>
+              </svg>
+              <span className="text-[11px] font-medium" style={{ color: '#a5b4fc' }}>시각화 생성 중…</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── 프로세스 트래커 컴포넌트 ──────────────────────────────────────────────
 type ProcessStep = { index: number; status: 'done' | 'active' | 'pending' | 'skipped'; label: string; detail: string };
 
@@ -1681,6 +1812,24 @@ function renderMarkdown(text: string): React.ReactNode[] {
 
       if (steps.length > 0) {
         nodes.push(<ProcessTracker key={`proc-${i}`} steps={steps} />);
+      }
+      continue;
+    }
+
+    // 인라인 비주얼라이저 블록 (:::visualizer{type="bar" title="..."} ... :::)
+    if (line.trim().startsWith(':::visualizer')) {
+      const { type: vizType, title: vizTitle } = parseVizHeader(line);
+      const vizLines: string[] = [];
+      i++;
+      let closed = false;
+      while (i < lines.length) {
+        if (lines[i].trim() === ':::') { closed = true; i++; break; }
+        vizLines.push(lines[i]);
+        i++;
+      }
+      const vizBody = vizLines.join('\n').trim();
+      if (vizBody) {
+        nodes.push(<InlineVisualizer key={`viz-${i}`} vizType={vizType} body={vizBody} title={vizTitle} isStreaming={!closed} />);
       }
       continue;
     }
@@ -3798,7 +3947,7 @@ function ArtifactSidePanel({
         const iframe = streamIframeRef.current ?? document.getElementById('artifact-stream-iframe') as HTMLIFrameElement | null;
         const doc = iframe?.contentDocument;
         if (doc?.body) {
-          doc.body.innerHTML = _artBuf.html;
+          doc.body.innerHTML = processArtifactCharts(_artBuf.html);
           const fbxScript = doc.getElementById('__fbx_viewer_init__');
           if (fbxScript && !fbxScript.textContent) fbxScript.textContent = FBX_VIEWER_SCRIPT;
           lastIframeHtmlLen = _artBuf.html.length;
@@ -3897,7 +4046,7 @@ function ArtifactSidePanel({
     if (!isComplete || !finalTc) return;
     const origin = window.location.origin;
     const base = `<base href="${origin}/">`;
-    const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
+    const resolved = processArtifactCharts(resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData));
     const fullHtml = resolved.includes('<!DOCTYPE') || resolved.includes('<html')
       ? resolved
       : `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">${base}<title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}ul,ol{padding-left:1.4em;margin:.4em 0}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script><script>${FBX_VIEWER_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
@@ -3911,7 +4060,7 @@ function ArtifactSidePanel({
   const handleSaveHtml = useCallback(() => {
     if (!finalTc) return;
     const origin = window.location.origin;
-    const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
+    const resolved = processArtifactCharts(resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData));
     const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
     const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -8520,22 +8669,44 @@ export default function ChatPage() {
         pkValues.set(tblName.toLowerCase(), vals);
       }
     }
+    // BT 세션에서 새로 추가/편집된 데이터의 PK도 포함 (같은 세션 내 상호 FK 참조 허용)
+    if (btPanel.previewData) {
+      for (const file of btPanel.previewData) {
+        for (const sheet of file.sheets) {
+          const st = schema.tables.find(t => t.name.toLowerCase() === sheet.name.toLowerCase());
+          const pkCol = st?.columns.find(c => c.isPrimaryKey);
+          if (!pkCol) continue;
+          const key = sheet.name.toLowerCase();
+          if (!pkValues.has(key)) pkValues.set(key, new Set());
+          const existing = pkValues.get(key)!;
+          for (const row of sheet.rows) {
+            const v = row.cells[pkCol.name]?.value;
+            if (v != null && String(v).trim()) existing.add(String(v).toLowerCase());
+          }
+        }
+      }
+    }
 
     for (const file of btPanel.previewData) {
       for (const sheet of file.sheets) {
         const st = schema.tables.find(t => t.name.toLowerCase() === sheet.name.toLowerCase());
         if (!st) continue;
         for (const row of sheet.rows) {
+          const rowHasAnyHighlight = Object.values(row.cells).some(c => c?.highlighted);
+          if (!rowHasAnyHighlight) continue;
           for (const col of st.columns) {
             const cell = row.cells[col.name];
             if (!cell) continue;
             const val = cell.value != null ? String(cell.value) : '';
 
-            // NotNull
+            // NotNull (AI가 수정한 행의 모든 NotNull 컬럼 검사)
             if (col.isNotNull && !col.isPrimaryKey && (!val || !val.trim())) {
               issues.push({ severity: 'error', category: 'notnull', table: sheet.name, column: col.name, row: row.rowIndex, value: '(빈값)', message: `NOT NULL 컬럼에 빈값` });
             }
             if (!val || !val.trim()) continue;
+
+            // 아래 검증은 AI가 실제 수정한 셀만 대상
+            if (!cell.highlighted) continue;
 
             // Type
             const typeLower = col.type.toLowerCase();
@@ -8554,19 +8725,23 @@ export default function ChatPage() {
               }
             }
 
-            // FK
+            // FK (-1, 0 등 센티넬 값은 "없음"이므로 제외)
             if (col.isForeignKey) {
-              const ref = schema.refs.find(r => {
-                const fromTbl = nameById.get(r.fromTable);
-                return fromTbl?.toLowerCase() === sheet.name.toLowerCase() && r.fromColumns.includes(col.name);
-              });
-              if (ref) {
-                const toTblName = nameById.get(ref.toTable);
-                if (toTblName) {
-                  const targetPks = pkValues.get(toTblName.toLowerCase());
-                  if (targetPks && !targetPks.has(val.toLowerCase())) {
-                    issues.push({ severity: 'error', category: 'fk', table: sheet.name, column: col.name, row: row.rowIndex, value: val,
-                      message: `"${val}" → ${toTblName} 테이블에 존재하지 않는 FK 참조` });
+              const nv = Number(val);
+              const isSentinel = val === '-1' || val === '0' || (Number.isFinite(nv) && nv <= 0);
+              if (!isSentinel) {
+                const ref = schema.refs.find(r => {
+                  const fromTbl = nameById.get(r.fromTable);
+                  return fromTbl?.toLowerCase() === sheet.name.toLowerCase() && r.fromColumns.includes(col.name);
+                });
+                if (ref) {
+                  const toTblName = nameById.get(ref.toTable);
+                  if (toTblName) {
+                    const targetPks = pkValues.get(toTblName.toLowerCase());
+                    if (targetPks && !targetPks.has(val.toLowerCase())) {
+                      issues.push({ severity: 'error', category: 'fk', table: sheet.name, column: col.name, row: row.rowIndex, value: val,
+                        message: `"${val}" → ${toTblName} 테이블에 존재하지 않는 FK 참조` });
+                    }
                   }
                 }
               }
@@ -8601,8 +8776,10 @@ export default function ChatPage() {
       }
     }
 
+    const allIds = panel.allJobIds?.join(',') || panel.jobId || '';
     return [
       `[BT_PREV_JOB:${panel.jobId ?? ''}]`,
+      `[BT_ALL_JOBS:${allIds}]`,
       `[바이브테이블링 수정 요청]`,
       ``,
       `🔴 중요: 이것은 이전 바이브테이블링 결과에 대한 수정 요청입니다.`,
@@ -8841,7 +9018,8 @@ export default function ChatPage() {
     // 이전 바이브테이블링 결과 위에 이어서 편집할 수 있도록 체이닝 보장
     let apiText = text.trim();
     if (activeBtPanel?.jobId && !apiText.includes('[BT_PREV_JOB:')) {
-      apiText = `[BT_PREV_JOB:${activeBtPanel.jobId}] ${apiText}`;
+      const allIds = activeBtPanel.allJobIds?.join(',') || activeBtPanel.jobId;
+      apiText = `[BT_PREV_JOB:${activeBtPanel.jobId}] [BT_ALL_JOBS:${allIds}] ${apiText}`;
     }
 
     // ── FastPath: 간단한 질문은 API 호출 없이 즉시 응답 ──
@@ -8928,9 +9106,10 @@ export default function ChatPage() {
             });
           }
         },
-        (delta, _fullText) => {
-          // 실시간 텍스트 스트리밍 — 현재 이터레이션 슬롯에 누적
-          _iterTexts[_currentIter] += delta;
+        (iterClean, _fullText) => {
+          // 실시간 텍스트 스트리밍 — 현재 이터레이션의 전체 클린 텍스트로 교체
+          // (:::visualizer 블록 내 HTML 보존을 위해 delta 누적 대신 전체 텍스트 사용)
+          _iterTexts[_currentIter] = iterClean;
           setMessages((prev) =>
             prev.map((m) =>
               m.id === loadingId
@@ -9072,7 +9251,26 @@ export default function ChatPage() {
               tableCount: doneEntries.length,
             };
             setBtHistory(prev => {
-              if (prev.some(h => h.jobId === curBt.jobId)) return prev;
+              const existingIdx = prev.findIndex(h =>
+                h.jobId === curBt.jobId || curBt.allJobIds.some(id => h.allJobIds.includes(id))
+              );
+              if (existingIdx >= 0) {
+                const updated = [...prev];
+                updated[existingIdx] = {
+                  ...updated[existingIdx],
+                  title: autoTitle,
+                  jobId: curBt.jobId!,
+                  allJobIds: [...new Set([...updated[existingIdx].allJobIds, ...curBt.allJobIds])],
+                  entries: doneEntries.map(e => ({
+                    table: e.table, file: e.file, type: e.type, status: e.status,
+                    rowsAdded: e.rowsAdded, cellsModified: e.cellsModified,
+                  })),
+                  pushed: false,
+                  fileCount: new Set(doneEntries.map(e => e.file).filter(Boolean)).size,
+                  tableCount: doneEntries.length,
+                };
+                return updated;
+              }
               return [histEntry, ...prev];
             });
           }
@@ -10417,19 +10615,50 @@ export default function ChatPage() {
                     </div>
                   );
                 })
-              ) : !btPanel.previewLoading && btPanel.entries.map((entry, i) => (
-                <div key={i} className="rounded-lg overflow-hidden" style={{ border: `1px solid ${entry.status === 'error' ? 'rgba(239,68,68,0.3)' : entry.status === 'done' ? 'rgba(34,197,94,0.2)' : 'rgba(234,179,8,0.2)'}`, background: 'rgba(255,255,255,0.02)' }}>
-                  <div className="flex items-center gap-2 px-3 py-2" style={{ background: entry.status === 'error' ? 'rgba(239,68,68,0.08)' : entry.status === 'done' ? 'rgba(34,197,94,0.06)' : 'rgba(234,179,8,0.06)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                    <span className="text-[12px]">{entry.type === 'edit' ? '✏️' : '➕'}</span>
-                    <span className="text-[12px] font-semibold" style={{ color: entry.status === 'error' ? '#f87171' : '#e2e8f0' }}>{entry.table}</span>
-                    {entry.file && <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(100,116,139,0.15)', color: 'var(--text-muted)' }}>{entry.file}</span>}
-                    <span className="ml-auto text-[10px]" style={{ color: entry.status === 'done' ? '#22c55e' : entry.status === 'error' ? '#f87171' : '#eab308' }}>
-                      {entry.status === 'done' ? (entry.type === 'edit' ? `${entry.cellsModified ?? 0}셀 변경` : `+${entry.rowsAdded ?? 0}행`) : entry.status === 'error' ? '오류' : '처리중...'}
-                    </span>
-                  </div>
-                  {entry.error && <div className="px-3 py-2 text-[11px]" style={{ color: '#f87171' }}>{entry.error}</div>}
-                </div>
-              ))}
+              ) : !btPanel.previewLoading && (() => {
+                const grouped = new Map<string, { table: string; file: string; type: string; status: string; rowsAdded: number; cellsModified: number; errors: string[] }>();
+                for (const entry of btPanel.entries) {
+                  const key = `${entry.table}::${entry.file ?? ''}`;
+                  const g = grouped.get(key);
+                  if (g) {
+                    g.rowsAdded += (entry.rowsAdded ?? 0);
+                    g.cellsModified += (entry.cellsModified ?? 0);
+                    if (entry.type === 'edit') g.type = 'edit';
+                    if (entry.status === 'error') g.status = 'error';
+                    else if (entry.status === 'pending' && g.status !== 'error') g.status = 'pending';
+                    if (entry.error) g.errors.push(entry.error);
+                  } else {
+                    grouped.set(key, {
+                      table: entry.table, file: entry.file ?? '', type: entry.type,
+                      status: entry.status, rowsAdded: entry.rowsAdded ?? 0,
+                      cellsModified: entry.cellsModified ?? 0, errors: entry.error ? [entry.error] : [],
+                    });
+                  }
+                }
+                return [...grouped.values()].map((g, i) => {
+                  const hasEdit = g.cellsModified > 0;
+                  const hasAdd = g.rowsAdded > 0;
+                  const statusParts: string[] = [];
+                  if (g.status === 'done' || g.status === 'error') {
+                    if (hasEdit) statusParts.push(`${g.cellsModified}셀 변경`);
+                    if (hasAdd) statusParts.push(`+${g.rowsAdded}행`);
+                  }
+                  const statusText = g.status === 'error' ? '오류' : g.status === 'pending' ? '처리중...' : (statusParts.join(' · ') || '완료');
+                  return (
+                    <div key={i} className="rounded-lg overflow-hidden" style={{ border: `1px solid ${g.status === 'error' ? 'rgba(239,68,68,0.3)' : g.status === 'done' ? 'rgba(34,197,94,0.2)' : 'rgba(234,179,8,0.2)'}`, background: 'rgba(255,255,255,0.02)' }}>
+                      <div className="flex items-center gap-2 px-3 py-2" style={{ background: g.status === 'error' ? 'rgba(239,68,68,0.08)' : g.status === 'done' ? 'rgba(34,197,94,0.06)' : 'rgba(234,179,8,0.06)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <span className="text-[12px]">{hasEdit && hasAdd ? '✏️➕' : hasEdit ? '✏️' : '➕'}</span>
+                        <span className="text-[12px] font-semibold" style={{ color: g.status === 'error' ? '#f87171' : '#e2e8f0' }}>{g.table}</span>
+                        {g.file && <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(100,116,139,0.15)', color: 'var(--text-muted)' }}>{g.file}</span>}
+                        <span className="ml-auto text-[10px]" style={{ color: g.status === 'done' ? '#22c55e' : g.status === 'error' ? '#f87171' : '#eab308' }}>
+                          {statusText}
+                        </span>
+                      </div>
+                      {g.errors.length > 0 && <div className="px-3 py-2 text-[11px]" style={{ color: '#f87171' }}>{g.errors.join('; ')}</div>}
+                    </div>
+                  );
+                });
+              })()}
             </div>
             {/* 수정 요청 입력란 */}
             {btPanel.isComplete && !isLoading && (
@@ -10531,111 +10760,66 @@ export default function ChatPage() {
                   </div>
                 )}
                 <div className="flex items-center gap-2">
-                  {btPanel.downloadUrl && (
-                    <button
-                      onClick={() => bibleTablingDownload(btPanel.downloadUrl!, btPanel.downloadFilename || 'download.xlsx')}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-semibold"
-                      style={{ background: 'rgba(234,179,8,0.12)', color: '#eab308', border: '1px solid rgba(234,179,8,0.25)', cursor: 'pointer' }}
-                    >
-                      📥 다운로드
-                    </button>
-                  )}
                   {!btPanel.pushed ? (
                     <button
                       disabled={btPanel.pushLoading || btPendingEdits.length > 0}
                       onClick={async () => {
                         if (!btPanel.jobId) return;
-                        // 검증 오류가 있으면 경고
                         const errors = btValidationIssues.filter(i => i.severity === 'error');
                         if (errors.length > 0) {
                           const summary = errors.slice(0, 5).map(e => `  • ${e.table}.${e.column}: ${e.message}`).join('\n');
                           if (!confirm(`⚠️ ${errors.length}개 검증 오류가 있습니다!\n\n${summary}${errors.length > 5 ? `\n  ... 외 ${errors.length - 5}건` : ''}\n\n그래도 Push 하시겠습니까?`)) return;
                         }
-                        const files = btPanel.previewData?.map(f => f.filename).join(', ') ?? '';
-                        const hasLocalDir = !!localDirHandle;
-
-                        if (hasLocalDir) {
-                          // ── 로컬 Push: File System Access API로 직접 쓰기 ──
-                          const ok = await verifyPermission(localDirHandle!);
-                          if (!ok) { alert('폴더 접근 권한이 거부되었습니다.\n설정에서 폴더를 다시 선택해주세요.'); return; }
-                          if (!confirm(`${files}\n\n📁 내 폴더: ${localDirHandle!.name}\n\n계속하시겠습니까?`)) return;
-                          setBtPanel(prev => prev ? { ...prev, pushLoading: true } : prev);
-                          try {
-                            const previewFiles = btPanel.previewData ?? [];
-                            let writtenCount = 0;
-                            for (const pf of previewFiles) {
-                              const dlUrl = `/api/bible-tabling/download/${btPanel.jobId}/${pf.filename}`;
-                              const resp = await fetch(dlUrl);
-                              if (!resp.ok) throw new Error(`다운로드 실패: ${pf.filename} (${resp.status})`);
-                              const blob = await resp.blob();
-                              const fileHandle = await localDirHandle!.getFileHandle(pf.filename, { create: true });
-                              const writable = await fileHandle.createWritable();
-                              await writable.write(blob);
-                              await writable.close();
-                              writtenCount++;
-                            }
-                            if (writtenCount === 0) throw new Error('저장할 파일이 없습니다.');
-                            setBtPanel(prev => prev ? { ...prev, pushed: true, pushLoading: false } : prev);
-                            setBtHistory(prev => prev.map(h => h.jobId === btPanel.jobId ? { ...h, pushed: true } : h));
-                          } catch (e) {
-                            alert(`로컬 Push 실패: ${String(e)}`);
-                            setBtPanel(prev => prev ? { ...prev, pushLoading: false } : prev);
+                        const previewFiles = btPanel.previewData ?? [];
+                        if (previewFiles.length === 0) { alert('다운로드할 파일이 없습니다.'); return; }
+                        const targetDir = userSettings.localDataDir;
+                        if (!targetDir) {
+                          setShowUserSettingsDialog(true);
+                          alert('먼저 [내 설정]에서 로컬 데이터 폴더를 지정해주세요.');
+                          return;
+                        }
+                        const fileNames = previewFiles.map(f => f.filename).join(', ');
+                        if (!confirm(`📂 ${fileNames}\n\n📁 대상: ${targetDir}\n\n.bat 파일을 다운로드합니다.\n실행하면 파일이 복사됩니다.`)) return;
+                        setBtPanel(prev => prev ? { ...prev, pushLoading: true } : prev);
+                        try {
+                          // 1) 서버 원본에도 반영 (git pull → copy)
+                          await fetch(`/api/bible-tabling/push/${btPanel.jobId}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ backup: true, all_jobs: btPanel.allJobIds?.join(',') || '' }),
+                          });
+                          // 2) .bat 파일 다운로드
+                          const origin = window.location.origin;
+                          const escapedDir = targetDir.replace(/\//g, '\\');
+                          const lines = [
+                            '@echo off', 'chcp 65001 >nul',
+                            'echo ========================================',
+                            'echo   바이브테이블링 Push',
+                            `echo   대상: ${escapedDir}`,
+                            'echo ========================================', 'echo.',
+                            `if not exist "${escapedDir}" (`,
+                            `  echo [오류] 폴더가 존재하지 않습니다: ${escapedDir}`,
+                            '  pause', '  exit /b 1', ')',
+                          ];
+                          for (const pf of previewFiles) {
+                            const url = `${origin}/api/bible-tabling/download/${btPanel.jobId}/${encodeURIComponent(pf.filename)}`;
+                            lines.push(`echo [다운로드] ${pf.filename} ...`);
+                            lines.push(`curl -s -o "${escapedDir}\\${pf.filename}" "${url}"`);
+                            lines.push(`if errorlevel 1 ( echo   [실패] ${pf.filename} ) else ( echo   [완료] ${pf.filename} )`);
                           }
-                        } else {
-                          // ── .bat 스크립트 생성 → 유저 로컬 폴더로 복사 ──
-                          const previewFiles = btPanel.previewData ?? [];
-                          if (previewFiles.length === 0) { alert('다운로드할 파일이 없습니다.'); return; }
-                          const targetDir = userSettings.localDataDir;
-                          if (!targetDir) {
-                            setShowUserSettingsDialog(true);
-                            alert('먼저 [내 설정]에서 로컬 데이터 폴더를 지정해주세요.');
-                            return;
-                          }
-                          if (!confirm(`${files}\n\n📁 대상: ${targetDir}\n\nPush 스크립트를 생성합니다.\n다운로드된 .bat 파일을 실행하면 파일이 복사됩니다.`)) return;
-                          setBtPanel(prev => prev ? { ...prev, pushLoading: true } : prev);
-                          try {
-                            const origin = window.location.origin;
-                            const escapedDir = targetDir.replace(/\//g, '\\');
-                            const lines = [
-                              '@echo off',
-                              'chcp 65001 >nul',
-                              `echo ========================================`,
-                              `echo   바이브테이블링 Push`,
-                              `echo   대상: ${escapedDir}`,
-                              `echo ========================================`,
-                              `echo.`,
-                              `if not exist "${escapedDir}" (`,
-                              `  echo [오류] 폴더가 존재하지 않습니다: ${escapedDir}`,
-                              `  pause`,
-                              `  exit /b 1`,
-                              `)`,
-                            ];
-                            for (const pf of previewFiles) {
-                              const url = `${origin}/api/bible-tabling/download/${btPanel.jobId}/${encodeURIComponent(pf.filename)}`;
-                              const dest = `${escapedDir}\\${pf.filename}`;
-                              lines.push(`echo [다운로드] ${pf.filename} ...`);
-                              lines.push(`curl -s -o "${dest}" "${url}"`);
-                              lines.push(`if errorlevel 1 ( echo   [실패] ${pf.filename} ) else ( echo   [완료] ${pf.filename} )`);
-                            }
-                            lines.push('echo.');
-                            lines.push(`echo ✅ ${previewFiles.length}개 파일 Push 완료!`);
-                            lines.push('pause');
-                            const batContent = lines.join('\r\n');
-                            const blob = new Blob([batContent], { type: 'application/bat' });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = `push_${btPanel.jobId?.slice(0, 8) ?? 'sync'}.bat`;
-                            document.body.appendChild(a);
-                            a.click();
-                            document.body.removeChild(a);
-                            URL.revokeObjectURL(url);
-                            setBtPanel(prev => prev ? { ...prev, pushed: true, pushLoading: false } : prev);
-                            setBtHistory(prev => prev.map(h => h.jobId === btPanel.jobId ? { ...h, pushed: true } : h));
-                          } catch (e) {
-                            alert(`스크립트 생성 실패: ${String(e)}`);
-                            setBtPanel(prev => prev ? { ...prev, pushLoading: false } : prev);
-                          }
+                          lines.push('echo.', `echo ✅ ${previewFiles.length}개 파일 Push 완료!`, 'pause');
+                          const blob = new Blob([lines.join('\r\n')], { type: 'application/bat' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `push_${(btPanel.jobId ?? 'sync').slice(0, 8)}.bat`;
+                          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                          URL.revokeObjectURL(url);
+                          setBtPanel(prev => prev ? { ...prev, pushed: true, pushLoading: false } : prev);
+                          setBtHistory(prev => prev.map(h => h.jobId === btPanel.jobId ? { ...h, pushed: true } : h));
+                        } catch (e) {
+                          alert(`Push 실패: ${String(e)}`);
+                          setBtPanel(prev => prev ? { ...prev, pushLoading: false } : prev);
                         }
                       }}
                       className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-[12px] font-bold"
@@ -10649,9 +10833,7 @@ export default function ChatPage() {
                     >
                       {btPanel.pushLoading ? '반영 중...'
                         : btPendingEdits.length > 0 ? '먼저 저장하세요'
-                        : localDirHandle ? `🚀 Push → ${localDirHandle.name}`
-                        : userSettings.localDataDir ? `🚀 Push → ${userSettings.localDataDir.split('\\').pop()}`
-                        : '⚙️ 폴더 설정 필요'}
+                        : `🚀 Push → ${userSettings.localDataDir?.split('\\').pop() || '폴더 설정 필요'}`}
                     </button>
                   ) : (
                     <button
@@ -10665,7 +10847,7 @@ export default function ChatPage() {
                   )}
                 </div>
                 <div className="text-[9px] text-center" style={{ color: 'var(--text-muted)' }}>
-                  {btPanel.entries.length}개 테이블 · {btPanel.entries.filter(e => e.status === 'done').length}개 완료
+                  {new Set(btPanel.entries.map(e => e.table)).size}개 테이블 · {new Set(btPanel.entries.filter(e => e.status === 'done').map(e => e.table)).size}개 완료
                   {btPanel.pushed && ' · 노란색=AI / 파란색=사용자 편집'}
                   {btPanel.pushed && (localDirHandle || userSettings.localDataDir) && (
                     <div className="mt-1" style={{ color: '#22c55e', fontSize: 9 }}>📁 {localDirHandle ? localDirHandle.name : userSettings.localDataDir}</div>
