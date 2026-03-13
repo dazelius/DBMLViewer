@@ -779,54 +779,6 @@
     "updatedAt": 1773207461834
   },
   {
-    "id": "rule_1773207551460",
-    "name": "모듈 Passive use_target_id 8백만번대 범위 필수",
-    "table": "ModuleItem",
-    "severity": "error",
-    "condition": {
-      "type": "conditional",
-      "when": {
-        "column": "module_type",
-        "op": "eq",
-        "value": "Passive"
-      },
-      "then": {
-        "type": "range",
-        "column": "use_target_id",
-        "min": 8000000,
-        "max": 8999999
-      }
-    },
-    "enabled": true,
-    "scope": "team",
-    "createdAt": 1773207551460,
-    "updatedAt": 1773207551460
-  },
-  {
-    "id": "rule_1773207551465",
-    "name": "모듈 Perk use_target_id 8백만번대 범위 필수",
-    "table": "ModuleItem",
-    "severity": "error",
-    "condition": {
-      "type": "conditional",
-      "when": {
-        "column": "module_type",
-        "op": "eq",
-        "value": "Perk"
-      },
-      "then": {
-        "type": "range",
-        "column": "use_target_id",
-        "min": 8000000,
-        "max": 8999999
-      }
-    },
-    "enabled": true,
-    "scope": "team",
-    "createdAt": 1773207551465,
-    "updatedAt": 1773207551465
-  },
-  {
     "id": "rule_1773284975399",
     "name": "Reward 동일 reward_id 내 item_id 중복 금지",
     "table": "Reward",
@@ -1026,5 +978,444 @@
     "scope": "personal",
     "createdAt": 1773291006558,
     "updatedAt": 1773291006302
+  },
+  {
+    "id": "rule_1773308267076",
+    "name": "모듈 Perk use_target_id 8백만번대 범위 필수",
+    "table": "ModuleItem",
+    "severity": "error",
+    "condition": {
+      "type": "conditional",
+      "when": {
+        "column": "module_type",
+        "op": "eq",
+        "value": "Perk"
+      },
+      "then": {
+        "type": "range",
+        "column": "use_target_id",
+        "min": 8000000,
+        "max": 8999999
+      }
+    },
+    "enabled": true,
+    "scope": "personal",
+    "createdAt": 1773308267076,
+    "updatedAt": 1773308266832
+  },
+  {
+    "id": "characterpassiveset_passive_fk",
+    "name": "CharacterPassiveSet passive_id FK 참조 검증",
+    "table": "CharacterPassiveSet",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "passive_id",
+      "ref_table": "Passive",
+      "ref_column": "id",
+      "allow_sentinel": true
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364515183,
+    "updatedAt": 1773364515063
+  },
+  {
+    "id": "character_appearance_fk",
+    "name": "Character character_appearance_id FK 참조 검증",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "character_appearance_id",
+      "ref_table": "CharacterAppearance"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597929,
+    "updatedAt": 1773364597801
+  },
+  {
+    "id": "characterappearance_model_fk",
+    "name": "CharacterAppearance model_id FK 참조 검증",
+    "table": "CharacterAppearance",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "model_id",
+      "ref_table": "Model"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597930,
+    "updatedAt": 1773364597807
+  },
+  {
+    "id": "characterappearance_head_skin_fk",
+    "name": "CharacterAppearance head_skin_id FK 참조 검증",
+    "table": "CharacterAppearance",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "head_skin_id",
+      "ref_table": "CharacterSkin"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597930,
+    "updatedAt": 1773364597812
+  },
+  {
+    "id": "characterappearance_shirt_skin_fk",
+    "name": "CharacterAppearance shirt_skin_id FK 참조 검증",
+    "table": "CharacterAppearance",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "shirt_skin_id",
+      "ref_table": "CharacterSkin"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597930,
+    "updatedAt": 1773364597817
+  },
+  {
+    "id": "characterappearance_pants_skin_fk",
+    "name": "CharacterAppearance pants_skin_id FK 참조 검증",
+    "table": "CharacterAppearance",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "pants_skin_id",
+      "ref_table": "CharacterSkin"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597931,
+    "updatedAt": 1773364597823
+  },
+  {
+    "id": "characterappearance_shoes_skin_fk",
+    "name": "CharacterAppearance shoes_skin_id FK 참조 검증",
+    "table": "CharacterAppearance",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "shoes_skin_id",
+      "ref_table": "CharacterSkin"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597931,
+    "updatedAt": 1773364597830
+  },
+  {
+    "id": "characterappearance_mask_skin_fk",
+    "name": "CharacterAppearance mask_skin_id FK 참조 검증",
+    "table": "CharacterAppearance",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "mask_skin_id",
+      "ref_table": "CharacterSkin"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597931,
+    "updatedAt": 1773364597837
+  },
+  {
+    "id": "characterappearance_facepaint_skin_fk",
+    "name": "CharacterAppearance face_paint_skin_id FK 참조 검증",
+    "table": "CharacterAppearance",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "face_paint_skin_id",
+      "ref_table": "CharacterSkin"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597931,
+    "updatedAt": 1773364597844
+  },
+  {
+    "id": "charactergearset_fist_gear_fk",
+    "name": "CharacterGearSet fist_gear_id FK 참조 검증",
+    "table": "CharacterGearSet",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "fist_gear_id",
+      "ref_table": "Gear"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597931,
+    "updatedAt": 1773364597850
+  },
+  {
+    "id": "charactergearset_weapon_main1_fk",
+    "name": "CharacterGearSet weapon_gear_main_id_1 FK 참조 검증",
+    "table": "CharacterGearSet",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "weapon_gear_main_id_1",
+      "ref_table": "Gear"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597932,
+    "updatedAt": 1773364597856
+  },
+  {
+    "id": "charactergearset_weapon_main2_fk",
+    "name": "CharacterGearSet weapon_gear_main_id_2 FK 참조 검증",
+    "table": "CharacterGearSet",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "weapon_gear_main_id_2",
+      "ref_table": "Gear"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597932,
+    "updatedAt": 1773364597863
+  },
+  {
+    "id": "charactergearset_weapon_sub_fk",
+    "name": "CharacterGearSet weapon_gear_sub_id FK 참조 검증",
+    "table": "CharacterGearSet",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "weapon_gear_sub_id",
+      "ref_table": "Gear"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597932,
+    "updatedAt": 1773364597870
+  },
+  {
+    "id": "charactergearset_helmet_gear_fk",
+    "name": "CharacterGearSet helmet_gear_id FK 참조 검증",
+    "table": "CharacterGearSet",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "helmet_gear_id",
+      "ref_table": "Gear"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597932,
+    "updatedAt": 1773364597876
+  },
+  {
+    "id": "charactergearset_chest_gear_fk",
+    "name": "CharacterGearSet chest_gear_id FK 참조 검증",
+    "table": "CharacterGearSet",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "chest_gear_id",
+      "ref_table": "Gear"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597932,
+    "updatedAt": 1773364597883
+  },
+  {
+    "id": "character_gearset_fk",
+    "name": "Character character_gear_set_id FK 참조 검증",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "character_gear_set_id",
+      "ref_table": "CharacterGearSet"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597929,
+    "updatedAt": 1773364598560
+  },
+  {
+    "id": "character_skillset_fk",
+    "name": "Character skill_set_id FK 참조 검증",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "skill_set_id",
+      "ref_table": "SkillSet"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597930,
+    "updatedAt": 1773364598572
+  },
+  {
+    "id": "character_passiveset_fk",
+    "name": "Character character_passive_set_id FK 참조 검증",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "character_passive_set_id",
+      "ref_table": "CharacterPassiveSet"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597929,
+    "updatedAt": 1773364598579
+  },
+  {
+    "id": "character_stat_fk",
+    "name": "Character character_stat_id FK 참조 검증",
+    "table": "Character",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "character_stat_id",
+      "ref_table": "CharacterStat"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364597930,
+    "updatedAt": 1773364598589
+  },
+  {
+    "id": "rule_1773364742589",
+    "name": "BotActionDecision bot_condition_id1 → BotCondition FK 참조 검증",
+    "table": "BotActionDecision",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "bot_condition_id1",
+      "ref_table": "BotCondition",
+      "ref_column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364742589,
+    "updatedAt": 1773364742589
+  },
+  {
+    "id": "rule_1773364742594",
+    "name": "BotActionDecision bot_condition_id2 → BotCondition FK 참조 검증",
+    "table": "BotActionDecision",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "bot_condition_id2",
+      "ref_table": "BotCondition",
+      "ref_column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364742594,
+    "updatedAt": 1773364742594
+  },
+  {
+    "id": "rule_1773364742597",
+    "name": "BotMoveDecision bot_condition_id_1 → BotCondition FK 참조 검증",
+    "table": "BotMoveDecision",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "bot_condition_id_1",
+      "ref_table": "BotCondition",
+      "ref_column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364742597,
+    "updatedAt": 1773364742597
+  },
+  {
+    "id": "rule_1773364742600",
+    "name": "BotMoveDecision bot_condition_id_2 → BotCondition FK 참조 검증",
+    "table": "BotMoveDecision",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "bot_condition_id_2",
+      "ref_table": "BotCondition",
+      "ref_column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364742600,
+    "updatedAt": 1773364742600
+  },
+  {
+    "id": "rule_1773364742604",
+    "name": "BotSkillDecision bot_condition_id → BotCondition FK 참조 검증",
+    "table": "BotSkillDecision",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "bot_condition_id",
+      "ref_table": "BotCondition",
+      "ref_column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364742604,
+    "updatedAt": 1773364742604
+  },
+  {
+    "id": "rule_1773364742608",
+    "name": "BotTargetSelector condition_id → BotCondition FK 참조 검증",
+    "table": "BotTargetSelector",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "condition_id",
+      "ref_table": "BotCondition",
+      "ref_column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364742608,
+    "updatedAt": 1773364742608
+  },
+  {
+    "id": "rule_1773364742612",
+    "name": "BotBattleMovement condition_id → BotCondition FK 참조 검증",
+    "table": "BotBattleMovement",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "condition_id",
+      "ref_table": "BotCondition",
+      "ref_column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364742612,
+    "updatedAt": 1773364742612
+  },
+  {
+    "id": "rule_1773364742616",
+    "name": "BotEscapeTarget bot_condition_id_1 → BotCondition FK 참조 검증",
+    "table": "BotEscapeTarget",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "bot_condition_id_1",
+      "ref_table": "BotCondition",
+      "ref_column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364742616,
+    "updatedAt": 1773364742616
   }
 ]
