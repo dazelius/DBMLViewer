@@ -1417,5 +1417,21 @@
     "scope": "team",
     "createdAt": 1773364742616,
     "updatedAt": 1773364742616
+  },
+  {
+    "id": "rule_1773364745988",
+    "name": "BotEscapeTarget bot_condition_id_2 → BotCondition FK 참조 검증",
+    "table": "BotEscapeTarget",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "bot_condition_id_2",
+      "ref_table": "BotCondition",
+      "ref_column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364745988,
+    "updatedAt": 1773364745988
   }
 ]
