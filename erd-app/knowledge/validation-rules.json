@@ -1433,5 +1433,21 @@
     "scope": "team",
     "createdAt": 1773364745988,
     "updatedAt": 1773364745988
+  },
+  {
+    "id": "rule_1773364749582",
+    "name": "BotShotSelector bot_condition_id → BotCondition FK 참조 검증",
+    "table": "BotShotSelector",
+    "severity": "error",
+    "condition": {
+      "type": "fk_ref",
+      "column": "bot_condition_id",
+      "ref_table": "BotCondition",
+      "ref_column": "id"
+    },
+    "enabled": true,
+    "scope": "team",
+    "createdAt": 1773364749582,
+    "updatedAt": 1773364749582
   }
 ]
