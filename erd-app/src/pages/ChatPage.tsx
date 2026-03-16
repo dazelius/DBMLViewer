@@ -47,7 +47,7 @@ import {
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
 import type { ParsedSchema } from '../core/schema/types.ts';
-import { buildVisualizerHtml, parseVizHeader, processArtifactCharts, type ChartType } from '../core/visualizer/chartTemplates.ts';
+import { buildVisualizerHtml, parseVizHeader, processArtifactCharts, type ChartType } from '../core/visualizer/index';
 
 const MiniRagGraph = lazy(() => import('../components/Chat/MiniRagGraph.tsx'));
 
@@ -1528,9 +1528,11 @@ function InlineVisualizer({ vizType, body, title, isStreaming }: { vizType: stri
 
   const wrappedHtml = useMemo(() => {
     const chartContent = buildVisualizerHtml({ type: vizType as ChartType, title, body });
+    const isCustomHtml = vizType === 'html';
+    const overflowRule = isCustomHtml ? 'overflow:auto' : 'overflow:hidden';
     return `<!DOCTYPE html><html lang="ko"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<style>html,body{margin:0;padding:0;overflow:hidden;background:#0f1117}</style>
+<style>html,body{margin:0;padding:0;${overflowRule};background:#0f1117}</style>
 </head><body>${chartContent}
 <script>
 (function(){
@@ -1550,7 +1552,8 @@ function InlineVisualizer({ vizType, body, title, isStreaming }: { vizType: stri
       if (e.data?.type === 'viz-height' && typeof e.data.height === 'number') {
         const src = e.source;
         if (iframeRef.current && src === iframeRef.current.contentWindow) {
-          setIframeHeight(Math.max(80, e.data.height));
+          const maxH = vizType === 'html' ? 800 : 500;
+          setIframeHeight(Math.min(Math.max(80, e.data.height), maxH));
         }
       }
     };
@@ -1623,12 +1626,12 @@ function InlineVisualizer({ vizType, body, title, isStreaming }: { vizType: stri
           sandbox="allow-scripts allow-same-origin"
           title={title || '시각화'}
           className="w-full border-none"
-          scrolling="no"
+          scrolling={vizType === 'html' ? 'auto' : 'no'}
           style={{
             height: iframeHeight,
             background: '#0f1117',
             transition: 'height 0.3s ease',
-            overflow: 'hidden',
+            overflow: vizType === 'html' ? 'auto' : 'hidden',
           }}
         />
         {isStreaming && (
@@ -8888,6 +8891,8 @@ export default function ChatPage() {
   }, [schema]);
 
   const bottomRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const userScrolledUpRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // historyRef: Claude API에 넘길 대화 이력 — localStorage에서 복원
   const historyRef = useRef<ChatTurn[]>((() => {
@@ -8901,15 +8906,39 @@ export default function ChatPage() {
     } catch { return []; }
   })());
 
-  // 스크롤 자동 내리기 — 메시지 추가 + 스트리밍 중 콘텐츠 갱신 시
+  // 스크롤 자동 내리기 — 사용자가 하단 근처에 있을 때만
   const lastMsg = messages[messages.length - 1];
   const streamingContent = lastMsg?.isLoading ? lastMsg.content : '';
   const streamScrollTick = streamingContent.length;
+
+  const isNearBottom = useCallback(() => {
+    const el = chatScrollRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+  }, []);
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const onScroll = () => { userScrolledUpRef.current = !isNearBottom(); };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [isNearBottom]);
+
+  // 새 메시지 추가 시 — 사용자 메시지면 항상, AI 메시지면 하단 근처일 때만
+  useEffect(() => {
+    const last = messages[messages.length - 1];
+    if (last?.role === 'user') {
+      userScrolledUpRef.current = false;
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    } else if (!userScrolledUpRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages]);
+
+  // 스트리밍 중 콘텐츠 갱신 시 — 사용자가 위로 스크롤하지 않았을 때만
   useEffect(() => {
-    if (streamScrollTick > 0) {
+    if (streamScrollTick > 0 && !userScrolledUpRef.current) {
       bottomRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
     }
   }, [streamScrollTick]);
@@ -10173,7 +10202,7 @@ export default function ChatPage() {
             <ModelSelector />
           </div>
           {/* 메시지 목록 */}
-          <div className="flex-1 overflow-y-auto py-8">
+          <div ref={chatScrollRef} className="flex-1 overflow-y-auto py-8">
             <div className="w-full px-8 space-y-8">
             {messages.length === 0 && (
               <div className="fixed inset-0 flex flex-col items-center justify-center text-center pointer-events-none" style={{ color: 'var(--text-muted)', zIndex: 0 }}>
