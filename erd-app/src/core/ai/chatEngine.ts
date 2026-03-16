@@ -2731,10 +2731,9 @@ export async function tryFastPath(
   const refs = effectiveSchema.refs;
   const nameById = new Map(tables.map(t => [t.id, t.name]));
 
-  // ── 1. 테이블 목록 ──
-  if (/^(테이블|table)\s*(목록|리스트|list|뭐\s*있|몇\s*개|갯수|개수|전체)/i.test(msg) ||
-      /^(전체|모든)\s*테이블/i.test(msg) ||
-      /테이블이?\s*(몇\s*개|뭐\s*있|어떤)/i.test(msg)) {
+  // ── 1. 테이블 목록 (정확한 명령만) ──
+  if (/^(테이블|table)\s*(목록|리스트|list|몇\s*개|갯수|개수|전체)\s*[?？.!]*$/i.test(msg) ||
+      /^(전체|모든)\s*테이블\s*[?？.!]*$/i.test(msg)) {
     const groups = new Map<string, string[]>();
     for (const t of tables) {
       const g = t.groupName ?? '기타';
@@ -2753,9 +2752,9 @@ export async function tryFastPath(
     return { content: text, toolCalls: [] };
   }
 
-  // ── 2. 특정 테이블 스키마 ──
-  const schemaMatch = msg.match(/^(.+?)\s*(테이블|table)?\s*(컬럼|필드|스키마|column|field|schema|구조|뭐\s*있|정보|보여|알려)/i)
-    ?? msg.match(/^(show|describe|desc)\s+(\w+)/i);
+  // ── 2. 특정 테이블 스키마 (정확한 명령만: "X 컬럼", "X 스키마", "describe X") ──
+  const schemaMatch = msg.match(/^(.+?)\s*(테이블\s+)?(컬럼|필드|스키마|column|field|schema|구조)\s*[?？.!]*$/i)
+    ?? msg.match(/^(show|describe|desc)\s+(\w+)\s*[;]?$/i);
   if (schemaMatch) {
     const tblName = (schemaMatch[1] || schemaMatch[2] || '').trim();
     const info = resolveTableSchema(tblName, effectiveSchema);
@@ -2774,9 +2773,8 @@ export async function tryFastPath(
     }
   }
 
-  // ── 3. 데이터 미리보기 ──
-  const previewMatch = msg.match(/^(.+?)\s*(테이블|table)?\s*(데이터|미리\s*보기|preview|샘플|보여줘|내용|확인)/i)
-    ?? msg.match(/^(.+?)\s*(에|의)\s*(뭐\s*들어|데이터|내용)/i);
+  // ── 3. 데이터 미리보기 (정확한 명령만: "X 데이터", "X 샘플", "X 미리보기") ──
+  const previewMatch = msg.match(/^(.+?)\s*(테이블\s+)?(데이터|미리\s*보기|preview|샘플)\s*[?？.!]*$/i);
   if (previewMatch) {
     const tblName = (previewMatch[1] || '').trim();
     const lower = tblName.toLowerCase();
@@ -2811,9 +2809,9 @@ export async function tryFastPath(
     }
   }
 
-  // ── 4. FK/관계 조회 ──
-  if (/^(.+?)\s*(의?\s*)(관계|FK|외래키|참조|연결|relation|reference)/i.test(msg)) {
-    const m = msg.match(/^(.+?)\s*(의?\s*)(관계|FK|외래키|참조|연결|relation|reference)/i);
+  // ── 4. FK/관계 조회 (정확한 명령만: "X 관계", "X FK") ──
+  if (/^(.+?)\s*(의?\s*)(관계|FK|외래키|참조)\s*[?？.!]*$/i.test(msg)) {
+    const m = msg.match(/^(.+?)\s*(의?\s*)(관계|FK|외래키|참조)\s*[?？.!]*$/i);
     if (m) {
       const tblName = m[1].trim();
       const info = resolveTableSchema(tblName, effectiveSchema);
@@ -2828,10 +2826,9 @@ export async function tryFastPath(
     }
   }
 
-  // ── 5. 행 수 / 데이터 통계 ──
-  if (/^(데이터|행)\s*(수|통계|현황|요약|사이즈|크기)/i.test(msg) ||
-      /^(data|row)\s*(count|stat|size|summary)/i.test(msg) ||
-      /데이터\s*(얼마나|몇)/i.test(msg)) {
+  // ── 5. 행 수 / 데이터 통계 (정확한 명령만) ──
+  if (/^(데이터|행)\s*(수|통계|현황|요약)\s*[?？.!]*$/i.test(msg) ||
+      /^(data|row)\s*(count|stat|summary)\s*[?？.!]*$/i.test(msg)) {
     const sorted = tables
       .map(t => ({ name: t.name, group: t.groupName ?? '기타', rows: tableData.get(t.name)?.rows.length ?? 0 }))
       .sort((a, b) => b.rows - a.rows);
@@ -2849,8 +2846,8 @@ export async function tryFastPath(
     return { content: text, toolCalls: [] };
   }
 
-  // ── 6. 사용법 / 도움말 ──
-  if (/^(도움|help|사용법|뭐.*할\s*수|기능|어떻게|사용.*방법|뭘.*물어)/i.test(msg)) {
+  // ── 6. 사용법 / 도움말 (정확한 명령만: "도움", "help", "사용법") ──
+  if (/^(도움말?|help|사용법|사용\s*방법)\s*[?？.!]*$/i.test(msg)) {
     const text = `## 💡 이런 걸 물어보세요!\n\n` +
       `**📋 스키마 조회** — 즉시 응답\n` +
       `- "테이블 목록" / "Character 컬럼" / "Skill FK"\n\n` +
@@ -2866,11 +2863,11 @@ export async function tryFastPath(
     return { content: text, toolCalls: [] };
   }
 
-  // ── 7. enum 조회 ──
-  const enumMatch = msg.match(/^(.+?)\s*(enum|이넘|열거|값\s*목록)/i);
+  // ── 7. enum 조회 (정확한 명령만: "X enum", "X 이넘") ──
+  const enumMatch = msg.match(/^(.+?)\s*(enum|이넘|열거)\s*[?？.!]*$/i);
   if (enumMatch) {
     const enumName = enumMatch[1].trim().toLowerCase();
-    const found = effectiveSchema.enums.find(e => e.name.toLowerCase().includes(enumName));
+    const found = effectiveSchema.enums.find(e => e.name.toLowerCase() === enumName || e.name.toLowerCase().includes(enumName));
     if (found) {
       let text = `📌 **${found.name}** enum (${found.values.length}개 값)\n\n`;
       for (const v of found.values.slice(0, 50)) {
@@ -2881,9 +2878,9 @@ export async function tryFastPath(
     }
   }
 
-  // ── 8. 그룹 조회 ──
-  if (/^(그룹|group)\s*(목록|리스트|뭐|list)/i.test(msg) ||
-      /^(전체|모든)\s*그룹/i.test(msg)) {
+  // ── 8. 그룹 조회 (정확한 명령만) ──
+  if (/^(그룹|group)\s*(목록|리스트|list)\s*[?？.!]*$/i.test(msg) ||
+      /^(전체|모든)\s*그룹\s*[?？.!]*$/i.test(msg)) {
     const groups = effectiveSchema.tableGroups;
     if (groups.length > 0) {
       let text = `📁 **테이블 그룹 ${groups.length}개**\n\n`;
@@ -2898,10 +2895,10 @@ export async function tryFastPath(
 
   // Git 변경점/디프 질문 → FastPath 안 함 (Claude AI가 양쪽 레포를 깊이 분석하도록)
 
-  // ── 검증 실행 / 룰 목록 ──
-  if (/^(전체\s*)?(데이터\s*)?(검증|밸리데이션|validation|룰\s*검증)\s*(실행|해줘|해봐|돌려|돌려봐|체크|확인|run|ㄱㄱ)?[.!~]*$/i.test(msg) ||
-      /^(검증|밸리데이션)\s*(결과|위반|현황|상태)/i.test(msg) ||
-      /검증\s*(해|실행|돌려|체크)/i.test(msg)) {
+  // ── 검증 실행 / 룰 목록 (정확한 명령만) ──
+  if (/^(전체\s*)?(데이터\s*)?(검증|밸리데이션|validation)\s*(실행|해줘|해봐|돌려|run|ㄱㄱ)\s*[.!~]*$/i.test(msg) ||
+      /^(검증|밸리데이션)\s*(결과|위반|현황|상태)\s*[?？.!]*$/i.test(msg) ||
+      /^검증\s*(실행|돌려)\s*[.!~]*$/i.test(msg)) {
     const { fetchRulesFromServer, runValidation } = await import('./validationEngine.ts');
     const rules = await fetchRulesFromServer();
     if (rules.length === 0) {
@@ -2947,10 +2944,9 @@ export async function tryFastPath(
     return { content: text, toolCalls: [] };
   }
 
-  // ── 검증 룰 목록 ──
-  if (/룰\s*(목록|리스트|list|보여|확인|현황|뭐\s*있)/i.test(msg) ||
-      /검증.*룰/i.test(msg) && /목록|보여|확인|뭐/i.test(msg) ||
-      /^(validation\s*)?rules?\s*(list)?$/i.test(msg)) {
+  // ── 검증 룰 목록 (정확한 명령만) ──
+  if (/^(검증\s*)?룰\s*(목록|리스트|list)\s*[?？.!]*$/i.test(msg) ||
+      /^(validation\s*)?rules?\s*(list)?\s*$/i.test(msg)) {
     const { fetchRulesFromServer, rulesToSummary } = await import('./validationEngine.ts');
     const rules = await fetchRulesFromServer();
     if (rules.length === 0) {
@@ -2972,6 +2968,68 @@ function detectWorkflow(query: string): 'new_content' | 'balance_change' | 'data
   return null;
 }
 
+// ── 대화 서머라이제이션 ─────────────────────────────────────────────────────
+const SUMMARY_THRESHOLD = 12;
+const KEEP_RECENT = 6;
+const SUMMARY_MAX_CHARS = 800;
+
+/**
+ * 오래된 대화 턴을 Haiku로 요약하여 장기 기억 + 토큰 절감.
+ * 이전 요약이 있으면 누적 요약 (rolling summary).
+ */
+export async function summarizeConversation(
+  oldTurns: ChatTurn[],
+  existingSummary?: string,
+): Promise<string> {
+  const turnsText = oldTurns.map(t => {
+    const role = t.role === 'user' ? '사용자' : 'AI';
+    const tools = t.toolCalls?.length
+      ? ` [도구: ${t.toolCalls.map(tc => tc.kind).join(', ')}]`
+      : '';
+    return `${role}: ${t.content.slice(0, 400)}${t.content.length > 400 ? '...' : ''}${tools}`;
+  }).join('\n');
+
+  const existingBlock = existingSummary
+    ? `\n\n<기존 요약>\n${existingSummary}\n</기존 요약>\n\n위 기존 요약에 아래 새 대화 내용을 통합하여 하나의 요약으로 만드세요.`
+    : '';
+
+  const summaryPrompt = `당신은 대화 요약 전문가입니다. 아래 대화를 ${SUMMARY_MAX_CHARS}자 이내로 요약하세요.
+${existingBlock}
+
+<대화 내용>
+${turnsText}
+</대화 내용>
+
+요약 규칙:
+- 핵심 사실, 결정사항, 편집한 테이블/데이터, 사용자 선호/지시를 우선 보존
+- 구체적 수치, 테이블명, 컬럼명 등 고유명사는 보존
+- 대화의 목적과 진행 상황을 명확히
+- 불필요한 인사말, 중간 과정 설명은 생략
+- 한국어로 작성`;
+
+  try {
+    const resp = await fetch('/api/claude', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1024,
+        system: [{ type: 'text', text: '대화 요약 전문가. 간결하고 핵심만 보존.' }],
+        messages: [{ role: 'user', content: summaryPrompt }],
+        stream: false,
+      }),
+    });
+    if (!resp.ok) throw new Error(`Summarization API ${resp.status}`);
+    const data = await resp.json();
+    const text = data?.content?.[0]?.text ?? '';
+    return text.slice(0, SUMMARY_MAX_CHARS);
+  } catch {
+    return existingSummary ?? '';
+  }
+}
+
+export { SUMMARY_THRESHOLD, KEEP_RECENT };
+
 export async function sendChatMessage(
   userMessage: string,
   history: ChatTurn[],
@@ -2984,6 +3042,8 @@ export async function sendChatMessage(
   onTokenUsage?: (usage: TokenUsageSummary) => void,
   /** 도구 필터: 지정 시 해당 이름의 도구만 사용 가능 (예: ['patch_artifact']) */
   toolFilter?: string[],
+  /** 대화 서머라이제이션: 이전 대화 요약 (있으면 히스토리 앞에 주입) */
+  conversationSummary?: string,
 ): Promise<{ content: string; toolCalls: ToolCallResult[]; rawMessages?: ClaudeMsg[]; tokenUsage?: TokenUsageSummary }> {
   // 컴포넌트가 아직 로딩 중일 때 schema가 null일 수 있으므로 스토어에서 fallback
   const effectiveSchema = schema ?? useSchemaStore.getState().schema;
@@ -3236,9 +3296,20 @@ export async function sendChatMessage(
   let rawHistoryMsgs = historyToMessages(history);
   // 히스토리 지능적 압축 (HTML 행, JSON rows, tool_use input)
   rawHistoryMsgs = compressHistory(rawHistoryMsgs);
-  // 그래도 초과하면 오래된 메시지부터 제거
-  while (rawHistoryMsgs.length > 2 && estimateMsgChars(rawHistoryMsgs) > MAX_MSG_CHARS) {
-    rawHistoryMsgs = rawHistoryMsgs.slice(2); // 앞에서 2개씩 제거 (user + assistant 쌍)
+
+  // ── 대화 서머라이제이션: 요약이 있으면 히스토리 앞에 주입 ──
+  if (conversationSummary) {
+    const summaryMsgs: ClaudeMsg[] = [
+      { role: 'user', content: `[이전 대화 요약]\n${conversationSummary}` },
+      { role: 'assistant', content: '네, 이전 대화 내용을 기억하고 있습니다. 요약 내용을 참고하여 답변하겠습니다.' },
+    ];
+    rawHistoryMsgs = [...summaryMsgs, ...rawHistoryMsgs];
+  }
+
+  // 그래도 초과하면 오래된 메시지부터 제거 (요약 메시지 쌍은 보존)
+  const minKeep = conversationSummary ? 2 : 0;
+  while (rawHistoryMsgs.length > minKeep + 2 && estimateMsgChars(rawHistoryMsgs) > MAX_MSG_CHARS) {
+    rawHistoryMsgs = [...rawHistoryMsgs.slice(0, minKeep), ...rawHistoryMsgs.slice(minKeep + 2)];
   }
 
   const sysChars = systemPrompt.length;

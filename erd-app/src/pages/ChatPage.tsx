@@ -44,6 +44,9 @@ import {
   type BibleTablingEditResult,
   type BibleTablingAddRowsResult,
   getKnowledgeEntries,
+  summarizeConversation,
+  SUMMARY_THRESHOLD,
+  KEEP_RECENT,
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
 import type { ParsedSchema } from '../core/schema/types.ts';
@@ -1446,6 +1449,7 @@ interface ThinkingStepUI {
 
 // ── localStorage 캐시 키 ──────────────────────────────────────────────────────
 const CHAT_CACHE_KEY = 'datamaster_chat_history';
+const CHAT_SUMMARY_KEY = 'datamaster_chat_summary';
 const ARTIFACTS_CACHE_KEY = 'datamaster_saved_artifacts';
 const BT_HISTORY_CACHE_KEY = 'datamaster_bt_history';
 const USER_SETTINGS_KEY = 'datamaster_user_settings';
@@ -8905,6 +8909,8 @@ export default function ChatPage() {
         .map((m) => ({ id: m.id, role: m.role as 'user' | 'assistant', content: m.content, timestamp: new Date(m.timestamp) }));
     } catch { return []; }
   })());
+  // summaryRef: 대화 서머라이제이션 — 오래된 대화의 요약본
+  const summaryRef = useRef<string>(localStorage.getItem(CHAT_SUMMARY_KEY) ?? '');
 
   // 스크롤 자동 내리기 — 사용자가 하단 근처에 있을 때만
   const lastMsg = messages[messages.length - 1];
@@ -9065,6 +9071,25 @@ export default function ChatPage() {
       return;
     }
 
+    // ── 대화 서머라이제이션: 히스토리가 임계값 이상이면 오래된 턴 요약 ──
+    if (historyRef.current.length >= SUMMARY_THRESHOLD) {
+      setMessages(prev => prev.map(m =>
+        m.id === loadingId
+          ? { ...m, thinkingSteps: [...(m.thinkingSteps ?? []), { type: 'tool_start' as const, iteration: 0, maxIterations: 1, toolName: 'summarize', toolLabel: '🧠 대화 요약 중...', detail: `${historyRef.current.length - KEEP_RECENT}턴 → 요약`, timestamp: Date.now() }] }
+          : m,
+      ));
+      const oldTurns = historyRef.current.slice(0, -KEEP_RECENT);
+      const newSummary = await summarizeConversation(oldTurns, summaryRef.current || undefined);
+      summaryRef.current = newSummary;
+      try { localStorage.setItem(CHAT_SUMMARY_KEY, newSummary); } catch { /* ignore */ }
+      historyRef.current = historyRef.current.slice(-KEEP_RECENT);
+      setMessages(prev => prev.map(m =>
+        m.id === loadingId
+          ? { ...m, thinkingSteps: [...(m.thinkingSteps ?? []), { type: 'tool_done' as const, iteration: 0, maxIterations: 1, toolName: 'summarize', toolLabel: '🧠 대화 요약 완료', detail: `${newSummary.length}자 요약 생성`, timestamp: Date.now() }] }
+          : m,
+      ));
+    }
+
     // 이터레이션별 텍스트 버퍼 — 각 이터레이션마다 별도 버블로 렌더링
     const _iterTexts: string[] = [''];
     let _currentIter = 0;
@@ -9218,6 +9243,7 @@ export default function ChatPage() {
         },
         // ★ 편집 요청 시 patch_artifact만 사용 가능 (데이터 조회 등 차단 → 속도 대폭 향상)
         isEditRequest ? ['patch_artifact'] : undefined,
+        summaryRef.current || undefined,
       );
 
       // history 갱신 (max_tokens로 잘린 경우 rawMessages 포함 → 계속해줘 지원)
@@ -9226,7 +9252,7 @@ export default function ChatPage() {
         ...historyRef.current,
         { id: userMsg.id, role: 'user' as const, content: apiText, timestamp: userMsg.timestamp },
         { id: loadingId, role: 'assistant' as const, content, toolCalls, rawMessages, timestamp: new Date() },
-      ].slice(-20); // 최근 20턴만 유지
+      ];
 
       // 로딩 메시지를 실제 응답으로 교체
       setMessages((prev) =>
@@ -9723,7 +9749,9 @@ export default function ChatPage() {
   const clearHistory = () => {
     setMessages([]);
     historyRef.current = [];
+    summaryRef.current = '';
     localStorage.removeItem(CHAT_CACHE_KEY);
+    localStorage.removeItem(CHAT_SUMMARY_KEY);
   };
 
   return (
