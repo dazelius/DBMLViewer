@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
-import { TGALoader } from 'three/examples/jsm/loaders/TGALoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 interface FbxViewerProps {
@@ -286,12 +285,18 @@ export function FbxViewer({
       }
     };
 
-    // TGA 로더 등록 (Three.js FBXLoader가 내부적으로 사용)
-    const tgaLoader = new TGALoader();
-    THREE.DefaultLoadingManager.addHandler(/\.tga$/i, tgaLoader);
+    // FBXLoader 전용 LoadingManager: 내부 텍스처 참조 URL을 API로 리다이렉트
+    const fbxManager = new THREE.LoadingManager();
+    fbxManager.setURLModifier((rawUrl: string) => {
+      // FBXLoader가 /api/assets/<filename>.tga 형태로 resolve하는 걸 file API로 전환
+      // file?path= 가 포함된 정상 API URL은 건드리지 않음
+      const m = rawUrl.match(/^\/api\/assets\/([^?/]+)$/);
+      if (m) return `/api/assets/file?path=${encodeURIComponent(m[1])}`;
+      return rawUrl;
+    });
 
     // ── FBX 로드 ─────────────────────────────────────────────────────────────
-    const loader = new FBXLoader();
+    const loader = new FBXLoader(fbxManager);
     loader.load(
       url,
       async (fbx) => {
@@ -317,94 +322,146 @@ export function FbxViewer({
         const matEntries = await fetchMaterials();
         const texLoader  = new THREE.TextureLoader();
 
-        // 머터리얼 이름 → 텍스처 캐시
         const texCache: Record<string, THREE.Texture | null> = {};
         const loadTex = (apiUrl: string): Promise<THREE.Texture | null> => {
           if (!apiUrl) return Promise.resolve(null);
           if (texCache[apiUrl] !== undefined) return Promise.resolve(texCache[apiUrl]);
           return new Promise((resolve) => {
-            const isTga = /\.tga$/i.test(apiUrl);
-            const loader2 = isTga ? tgaLoader : texLoader;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (loader2 as any).load(
+            texLoader.load(
               apiUrl,
               (tex: THREE.Texture) => {
                 tex.colorSpace = THREE.SRGBColorSpace;
-                tex.flipY = !isTga;
+                tex.flipY = true;
                 texCache[apiUrl] = tex;
                 resolve(tex);
               },
               undefined,
-              () => { texCache[apiUrl] = null; resolve(null); }
+              (err) => {
+                console.warn(`[FbxViewer] ✗ tex FAILED: ${apiUrl.split('/').pop()}`, err);
+                texCache[apiUrl] = null;
+                resolve(null);
+              }
             );
           });
         };
 
-        const findEntry = (meshName: string): MatEntry | undefined => {
-          const mn = meshName.toLowerCase();
-          return matEntries.find(e => {
-            const en = e.name.toLowerCase();
-            return en && (mn.includes(en) || en.includes(mn));
-          }) ?? matEntries[0];
+        // Build a map from FBX-internal material name → matEntries
+        // Blender appends ".001" to duplicated mats; strip for matching
+        const stripSuffix = (n: string) => n.replace(/\.\d{3}$/, '').toLowerCase();
+        const matNameToEntry = new Map<string, MatEntry>();
+        for (const e of matEntries) {
+          if (e.name) matNameToEntry.set(e.name.toLowerCase(), e);
+        }
+
+        const findEntryForMat = (fbxMatName: string): MatEntry | undefined => {
+          if (!fbxMatName) return undefined;
+          const fn = stripSuffix(fbxMatName);
+
+          // 1) direct match (exact lowercase)
+          const direct = matNameToEntry.get(fbxMatName.toLowerCase());
+          if (direct) return direct;
+
+          // 2) match after stripping .NNN suffix from FBX name
+          for (const [k, v] of matNameToEntry) {
+            if (fn === k || fn === stripSuffix(k)) return v;
+          }
+
+          // 3) partial (substring) match
+          for (const [k, v] of matNameToEntry) {
+            if (fn.includes(k) || k.includes(fn)) return v;
+          }
+          return undefined;
         };
 
-        let appliedCount = 0;
+        // Check if FBXLoader already loaded textures via URL modifier
+        let fbxLoadedTexCount = 0;
+        fbx.traverse((child) => {
+          const mesh = child as THREE.Mesh;
+          if (!mesh.isMesh) return;
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          for (const m of mats) {
+            if ((m as THREE.MeshStandardMaterial).map) fbxLoadedTexCount++;
+          }
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+        });
 
-        await Promise.all(
-          (() => {
-            const promises: Promise<void>[] = [];
-            fbx.traverse((child) => {
-              const mesh = child as THREE.Mesh;
-              if (!mesh.isMesh) return;
-              mesh.castShadow = true;
-              mesh.receiveShadow = true;
+        if (fbxLoadedTexCount > 0) {
+          // FBXLoader successfully loaded textures with correct UV transforms — keep them
+        } else {
+          // FBXLoader couldn't load textures — fall back to material index
 
-              const entry = findEntry(mesh.name);
+          let appliedCount = 0;
+          const fbxMatOrder: THREE.Material[] = [];
+          fbx.traverse((child) => {
+            const mesh = child as THREE.Mesh;
+            if (!mesh.isMesh) return;
+            const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+            for (const m of mats) {
+              if (m && !fbxMatOrder.some(existing => existing.name === m.name)) {
+                fbxMatOrder.push(m);
+              }
+            }
+          });
 
-              promises.push((async () => {
-                const [albedoTex, normalTex, emissionTex] = await Promise.all([
-                  loadTex(entry?.albedo ?? ''),
-                  loadTex(entry?.normal ?? ''),
-                  loadTex(entry?.emission ?? ''),
-                ]);
+          const fbxMatToEntry = new Map<string, MatEntry>();
+          for (let i = 0; i < fbxMatOrder.length; i++) {
+            const fm = fbxMatOrder[i];
+            const matched = findEntryForMat(fm.name);
+            const entry = matched ?? matEntries[i % matEntries.length] ?? matEntries[0];
+            if (entry) {
+              fbxMatToEntry.set(fm.name, entry);
+            }
+          }
 
-                const newMat = new THREE.MeshStandardMaterial({
-                  side: THREE.DoubleSide,
-                  roughness: 0.75,
-                  metalness: 0.1,
-                });
-
-                if (albedoTex) {
-                  newMat.map = albedoTex;
-                  appliedCount++;
-                } else {
-                  const oldMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-                  const oldColor = (oldMat as THREE.MeshPhongMaterial)?.color;
-                  if (oldColor && (oldColor.r + oldColor.g + oldColor.b) > 0.05) {
-                    newMat.color.copy(oldColor);
-                  } else {
-                    newMat.color.set(0x8899bb);
-                  }
-                }
-
-                if (normalTex) {
-                  newMat.normalMap = normalTex;
-                  newMat.normalScale.set(1, -1);
-                  normalTex.colorSpace = THREE.NoColorSpace;
-                  normalTex.needsUpdate = true;
-                }
-                if (emissionTex) {
-                  newMat.emissiveMap = emissionTex;
-                  newMat.emissive.set(0xffffff);
-                }
-
-                newMat.needsUpdate = true;
-                mesh.material = newMat;
-              })());
+          const buildMat = async (entry: MatEntry | undefined): Promise<THREE.MeshStandardMaterial> => {
+            const [albedoTex, normalTex, emissionTex] = await Promise.all([
+              loadTex(entry?.albedo ?? ''),
+              loadTex(entry?.normal ?? ''),
+              loadTex(entry?.emission ?? ''),
+            ]);
+            const newMat = new THREE.MeshStandardMaterial({
+              side: THREE.DoubleSide,
+              roughness: 0.75,
+              metalness: 0.1,
             });
-            return promises;
-          })()
-        );
+            if (albedoTex) {
+              newMat.map = albedoTex;
+              appliedCount++;
+            } else {
+              newMat.color.set(0x8899bb);
+            }
+            if (normalTex) {
+              newMat.normalMap = normalTex;
+              newMat.normalScale.set(1, -1);
+              normalTex.colorSpace = THREE.NoColorSpace;
+              normalTex.needsUpdate = true;
+            }
+            if (emissionTex) {
+              newMat.emissiveMap = emissionTex;
+              newMat.emissive.set(0xffffff);
+            }
+            newMat.needsUpdate = true;
+            return newMat;
+          };
+
+          const builtMats = new Map<string, THREE.MeshStandardMaterial>();
+          await Promise.all(
+            [...fbxMatToEntry.entries()].map(async ([fname, entry]) => {
+              builtMats.set(fname, await buildMat(entry));
+            })
+          );
+
+          fbx.traverse((child) => {
+            const mesh = child as THREE.Mesh;
+            if (!mesh.isMesh) return;
+            if (Array.isArray(mesh.material)) {
+              mesh.material = mesh.material.map(m => builtMats.get(m.name) ?? builtMats.values().next().value!);
+            } else {
+              mesh.material = builtMats.get(mesh.material.name) ?? builtMats.values().next().value!;
+            }
+          });
+        }
 
         // AnimationMixer 생성 (모든 애니메이션을 이 mixer에서 재생)
         const mixer = new THREE.AnimationMixer(fbx);
@@ -424,7 +481,7 @@ export function FbxViewer({
 
         scene.add(fbx);
         if (!cancelled) {
-          setTexInfo(appliedCount > 0 ? `텍스처 ${appliedCount}개 적용됨` : '텍스처 없음 (기본 재질)');
+          setTexInfo(fbxLoadedTexCount > 0 ? `텍스처 ${fbxLoadedTexCount}개 적용됨` : '텍스처 없음 (기본 재질)');
           setStatus('ok');
         }
       },

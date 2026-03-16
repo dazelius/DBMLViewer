@@ -35,16 +35,52 @@ GIT_REPO_DATA_DIR = os.environ.get(
     'GIT_REPO_DATA_DIR',
     r'C:\TableMaster\DBMLViewer\erd-app\.git-repo\GameData\Data'
 )
+GIT_REPO_ROOT = os.environ.get(
+    'GIT_REPO_ROOT',
+    r'C:\TableMaster\DBMLViewer\erd-app\.git-repo'
+)
 DOWNLOADS_DIR = Path(__file__).parent / 'downloads'
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 PORT = int(os.environ.get('BIBLE_TABLING_PORT', '8100'))
 
 
+# ── Git 연동 헬퍼 ─────────────────────────────────────────────────────────────
+
+import subprocess
+
+def git_pull() -> str:
+    """로컬 변경 초기화 후 최신 pull. 이전 push 잔여물을 제거하고 깨끗한 상태로 복원."""
+    if not Path(GIT_REPO_ROOT).joinpath('.git').exists():
+        return "skip: .git not found"
+    try:
+        subprocess.run(
+            ['git', 'checkout', '--', '.'],
+            cwd=GIT_REPO_ROOT, capture_output=True, text=True, timeout=15,
+        )
+        subprocess.run(
+            ['git', 'clean', '-fd', '--', 'GameData/Data'],
+            cwd=GIT_REPO_ROOT, capture_output=True, text=True, timeout=15,
+        )
+        result = subprocess.run(
+            ['git', 'pull', '--no-rebase', '--no-edit'],
+            cwd=GIT_REPO_ROOT, capture_output=True, text=True, timeout=30,
+        )
+        msg = result.stdout.strip() or result.stderr.strip() or "done"
+        print(f"[BibleTabling] git checkout+pull: {msg[:100]}")
+        return msg
+    except subprocess.TimeoutExpired:
+        print("[BibleTabling] git pull: timeout")
+        return "timeout"
+    except Exception as e:
+        print(f"[BibleTabling] git pull error: {e}")
+        return f"error: {e}"
+
+
 # ── 오래된 다운로드 정리 (1시간 이상) ─────────────────────────────────────────
 
 def cleanup_old_downloads():
-    cutoff = time.time() - 3600
+    cutoff = time.time() - 86400  # 24시간 (BT 세션이 길어질 수 있음)
     for p in DOWNLOADS_DIR.iterdir():
         try:
             if p.stat().st_mtime < cutoff:
@@ -54,6 +90,25 @@ def cleanup_old_downloads():
                     shutil.rmtree(p)
         except Exception:
             pass
+
+
+def _find_best_prev_dir(prev_job_id: str | None, all_jobs_csv: str | None) -> Path | None:
+    """prev_job_id 디렉토리를 찾되, 없으면 all_jobs에서 가장 최근 것을 사용."""
+    if prev_job_id:
+        d = DOWNLOADS_DIR / prev_job_id
+        if d.is_dir():
+            return d
+        print(f"[BibleTabling] ⚠️ prev_job_dir 누락: {prev_job_id}")
+    if all_jobs_csv:
+        for jid in reversed(all_jobs_csv.split(',')):
+            jid = jid.strip()
+            if not jid:
+                continue
+            d = DOWNLOADS_DIR / jid
+            if d.is_dir() and any(d.glob("*.xlsx")):
+                print(f"[BibleTabling] ✅ 대체 prev_job 발견: {jid}")
+                return d
+    return None
 
 
 # ── Pydantic 모델 ─────────────────────────────────────────────────────────────
@@ -84,6 +139,7 @@ class TableEdit(BaseModel):
 class EditRequest(BaseModel):
     session_id: Optional[str] = None
     prev_job_id: Optional[str] = None  # 이전 job 출력 파일을 이어서 편집
+    all_jobs: Optional[str] = None     # 전체 job 체인 (fallback용)
     title: str = "바이브테이블링"
     reason: str = ""
     edit_plan: list[TableEdit]
@@ -97,6 +153,7 @@ class CloneSource(BaseModel):
 class AddRowRequest(BaseModel):
     session_id: Optional[str] = None
     prev_job_id: Optional[str] = None  # 이전 job 출력 파일을 이어서 편집
+    all_jobs: Optional[str] = None     # 전체 job 체인 (fallback용)
     title: str = "바이브테이블링 — 행 추가"
     reason: str = ""
     table: str
@@ -173,29 +230,22 @@ async def edit_data(req: EditRequest):
     편집된 셀은 노란색 하이라이트.
     """
     cleanup_old_downloads()
+    git_pull()
 
     job_id = str(uuid.uuid4())[:8]
     job_dir = DOWNLOADS_DIR / job_id
     job_dir.mkdir(exist_ok=True)
 
     try:
-        # 이전 job 디렉토리 (변경사항 누적용)
-        prev_job_dir = DOWNLOADS_DIR / req.prev_job_id if req.prev_job_id else None
-        if prev_job_dir and not prev_job_dir.is_dir():
-            prev_job_dir = None  # 만료된 경우 무시
+        prev_job_dir = _find_best_prev_dir(req.prev_job_id, req.all_jobs)
 
-        # 이전 job의 모든 xlsx 파일을 새 job으로 복사 (누적 변경 보존)
-        # add_rows에서 추가된 행이 포함된 파일도 이어서 편집 가능
         if prev_job_dir:
             for prev_file in prev_job_dir.glob("*.xlsx"):
                 dest = job_dir / prev_file.name
                 if not dest.exists():
                     shutil.copy2(prev_file, dest)
 
-        # order 순서로 정렬 (부모 테이블 먼저)
         sorted_edits = sorted(req.edit_plan, key=lambda e: e.order)
-
-        # 파일별로 그룹화하여 한 번만 열고/저장 (같은 xlsx 여러 시트 편집 시 변경 유실 방지)
         results = editor.apply_edits_batch(sorted_edits, job_dir, prev_job_dir)
 
         # 다운로드 URL 결정
@@ -266,15 +316,13 @@ async def edit_data_stream(req: EditRequest):
     각 시트 편집 완료마다 이벤트를 보내고, 개별 실패 시에도 계속 진행.
     """
     cleanup_old_downloads()
+    git_pull()
     job_id = str(uuid.uuid4())[:8]
     job_dir = DOWNLOADS_DIR / job_id
     job_dir.mkdir(exist_ok=True)
 
-    prev_job_dir = DOWNLOADS_DIR / req.prev_job_id if req.prev_job_id else None
-    if prev_job_dir and not prev_job_dir.is_dir():
-        prev_job_dir = None
+    prev_job_dir = _find_best_prev_dir(req.prev_job_id, req.all_jobs)
 
-    # 이전 job의 모든 xlsx 파일을 새 job으로 복사 (누적 변경 보존)
     if prev_job_dir:
         for prev_file in prev_job_dir.glob("*.xlsx"):
             dest = job_dir / prev_file.name
@@ -342,24 +390,20 @@ async def edit_data_stream(req: EditRequest):
 async def add_rows(req: AddRowRequest):
     """테이블에 새 행 추가 (노란색 하이라이트)"""
     cleanup_old_downloads()
+    git_pull()
 
     job_id = str(uuid.uuid4())[:8]
     job_dir = DOWNLOADS_DIR / job_id
     job_dir.mkdir(exist_ok=True)
 
     try:
-        prev_job_dir = DOWNLOADS_DIR / req.prev_job_id if req.prev_job_id else None
-        if prev_job_dir and not prev_job_dir.is_dir():
-            prev_job_dir = None
+        prev_job_dir = _find_best_prev_dir(req.prev_job_id, req.all_jobs)
 
-        # 이전 job의 모든 파일을 새 job으로 복사 (누적 변경 보존)
         if prev_job_dir:
             for prev_file in prev_job_dir.glob("*.xlsx"):
                 dest = job_dir / prev_file.name
                 if not dest.exists():
                     shutil.copy2(prev_file, dest)
-            for prev_zip in prev_job_dir.glob("*.zip"):
-                pass  # zip은 복사하지 않음
 
         if req.clone_source:
             result = editor.clone_rows(
@@ -412,7 +456,9 @@ async def add_rows(req: AddRowRequest):
 @app.get("/api/bible-tabling/download/{path:path}")
 async def download_file(path: str):
     """편집된 파일 다운로드"""
-    file_path = DOWNLOADS_DIR / path
+    file_path = (DOWNLOADS_DIR / path).resolve()
+    if not file_path.is_relative_to(DOWNLOADS_DIR.resolve()):
+        raise HTTPException(403, "접근이 허용되지 않는 경로입니다.")
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(404, "파일을 찾을 수 없습니다. (만료되었을 수 있음)")
 
@@ -476,13 +522,28 @@ async def zip_jobs(req: ZipJobsRequest):
 # ── GET /api/bible-tabling/preview/{job_id} ─ AI 편집 미리보기 ─────────────
 
 @app.get("/api/bible-tabling/preview/{job_id}")
-async def preview_job(job_id: str):
-    """job_dir의 xlsx에서 AI가 편집/추가한 행(노란색 하이라이트)만 반환."""
-    job_dir = DOWNLOADS_DIR / job_id
-    if not job_dir.exists() or not job_dir.is_dir():
+async def preview_job(job_id: str, all_jobs: str | None = None):
+    """job_dir의 xlsx에서 AI가 편집/추가한 행(노란색 하이라이트)만 반환.
+    all_jobs: 쉼표 구분 job_id 목록 → 여러 job의 파일을 병합하여 프리뷰."""
+    # 여러 job의 파일을 하나의 임시 디렉토리에 병합
+    merged_dir = DOWNLOADS_DIR / job_id
+    if all_jobs:
+        job_ids = [j.strip() for j in all_jobs.split(',') if j.strip()]
+        if job_id not in job_ids:
+            job_ids.append(job_id)
+        # 오래된 job부터 복사 (최신 job이 덮어씀 → 최신 편집 결과 우선)
+        for jid in job_ids:
+            src_dir = DOWNLOADS_DIR / jid
+            if src_dir.is_dir():
+                for f in src_dir.glob("*.xlsx"):
+                    dest = merged_dir / f.name
+                    if not dest.exists():
+                        merged_dir.mkdir(exist_ok=True)
+                        shutil.copy2(f, dest)
+    if not merged_dir.exists() or not merged_dir.is_dir():
         raise HTTPException(404, "Job을 찾을 수 없습니다. (만료되었을 수 있음)")
     try:
-        files = BibleTablingEditor.preview_job(job_dir)
+        files = BibleTablingEditor.preview_job(merged_dir)
         return {"job_id": job_id, "files": files}
     except Exception as e:
         raise HTTPException(500, f"미리보기 실패: {str(e)}")
@@ -512,18 +573,35 @@ async def update_cells(job_id: str, req: UpdateCellsRequest):
 
 class PushRequest(BaseModel):
     backup: bool = True
-    target_dir: str | None = None  # 유저별 로컬 폴더 (None이면 공용 GIT_REPO_DATA_DIR)
+    target_dir: str | None = None
+    all_jobs: str | None = None
 
 @app.post("/api/bible-tabling/push/{job_id}")
 async def push_job(job_id: str, req: PushRequest):
-    """job의 편집된 xlsx를 대상 디렉토리에 반영."""
+    """job의 편집된 xlsx를 원본 디렉토리에 반영. git pull로 최신 확보 후 덮어쓰기.
+    all_jobs: 쉼표 구분 job_id → 여러 job의 파일을 모두 push."""
     job_dir = DOWNLOADS_DIR / job_id
     if not job_dir.exists() or not job_dir.is_dir():
         raise HTTPException(404, "Job을 찾을 수 없습니다. (만료되었을 수 있음)")
 
-    # 대상 디렉토리: 유저 로컬 or 공용 원본
+    # 여러 job의 파일을 메인 job_dir에 병합 (오래된 것부터, 최신이 덮어씀)
+    if req.all_jobs:
+        all_ids = [j.strip() for j in req.all_jobs.split(',') if j.strip()]
+        for jid in all_ids:
+            if jid == job_id:
+                continue
+            src = DOWNLOADS_DIR / jid
+            if src.is_dir():
+                for f in src.glob("*.xlsx"):
+                    dest = job_dir / f.name
+                    if not dest.exists():
+                        shutil.copy2(f, dest)
+
     if req.target_dir:
-        data_dir = Path(req.target_dir)
+        data_dir = Path(req.target_dir).resolve()
+        allowed_roots = [Path(GIT_REPO_ROOT).resolve(), Path(GIT_REPO_DATA_DIR).resolve()]
+        if not any(data_dir == root or data_dir.is_relative_to(root) for root in allowed_roots):
+            raise HTTPException(403, "허용되지 않는 대상 경로입니다. Git 저장소 내부만 허용됩니다.")
         if not data_dir.exists():
             raise HTTPException(400, f"지정된 폴더가 존재하지 않습니다: {req.target_dir}")
         if not data_dir.is_dir():
@@ -532,6 +610,7 @@ async def push_job(job_id: str, req: PushRequest):
         data_dir = Path(GIT_REPO_DATA_DIR)
         if not data_dir.exists():
             raise HTTPException(500, f"원본 데이터 디렉토리 없음: {GIT_REPO_DATA_DIR}")
+        git_pull()
 
     edited_files = list(job_dir.glob("*.xlsx"))
     if not edited_files:
@@ -572,13 +651,16 @@ class ValidateDirRequest(BaseModel):
 @app.post("/api/bible-tabling/validate-dir")
 async def validate_dir(req: ValidateDirRequest):
     """유저가 입력한 폴더 경로가 유효한지 + xlsx 파일이 있는지 확인."""
-    p = Path(req.path)
+    p = Path(req.path).resolve()
+    allowed_roots = [Path(GIT_REPO_ROOT).resolve(), Path(GIT_REPO_DATA_DIR).resolve()]
+    if not any(p == root or p.is_relative_to(root) for root in allowed_roots):
+        return {"valid": False, "reason": "허용되지 않는 경로입니다. Git 저장소 내부만 허용됩니다."}
     if not p.exists():
         return {"valid": False, "reason": "폴더가 존재하지 않습니다."}
     if not p.is_dir():
         return {"valid": False, "reason": "경로가 폴더가 아닙니다."}
     xlsx_count = len(list(p.glob("*.xlsx")))
-    return {"valid": True, "xlsx_count": xlsx_count, "path": str(p.resolve())}
+    return {"valid": True, "xlsx_count": xlsx_count, "path": str(p)}
 
 
 # ── GET /api/bible-tabling/tables ─ 테이블 목록 ─────────────────────────────

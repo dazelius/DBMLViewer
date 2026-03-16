@@ -73,13 +73,11 @@ function applyPatches(originalHtml: string, patches: { find: string; replace: st
   const failed: string[] = [];
   for (const patch of patches) {
     if (!patch.find) continue;
-    console.log(`[applyPatch] find(${patch.find.length}자): "${patch.find.slice(0, 80)}…"`);
 
     // 1차: 정확히 포함
     if (html.includes(patch.find)) {
       html = html.split(patch.find).join(patch.replace);
       applied++;
-      console.log(`[applyPatch] ✅ 1단계 정확 매칭 성공`);
       continue;
     }
 
@@ -95,14 +93,12 @@ function applyPatches(originalHtml: string, patches: { find: string; replace: st
         html = html.replace(re, patch.replace);
         if (html !== before) {
           applied++;
-          console.log(`[applyPatch] ✅ 2단계 공백 정규화 매칭 성공`);
           continue;
         }
       } catch { /* fall through */ }
       // regex 실패 → 정규화된 버전에서 직접 교체
       html = normHtml.split(normFind).join(patch.replace);
       applied++;
-      console.log(`[applyPatch] ✅ 2단계 정규화 직접 교체 성공`);
       continue;
     }
 
@@ -120,7 +116,6 @@ function applyPatches(originalHtml: string, patches: { find: string; replace: st
           html = html.replace(re, patch.replace);
           if (html !== before) {
             applied++;
-            console.log(`[applyPatch] ✅ 3단계 핵심 텍스트 매칭 성공`);
             continue;
           }
         } catch { /* fall through */ }
@@ -147,7 +142,6 @@ function applyPatches(originalHtml: string, patches: { find: string; replace: st
           html = html.slice(0, start) + region.replace(re, patch.replace) + html.slice(end);
           if (html !== before) {
             applied++;
-            console.log(`[applyPatch] ✅ 4단계 부분 문자열 매칭 성공 (core: "${core.slice(0, 30)}…")`);
             continue;
           }
         } catch { /* fall through */ }
@@ -157,7 +151,6 @@ function applyPatches(originalHtml: string, patches: { find: string; replace: st
     console.warn(`[applyPatch] ❌ 매칭 실패: "${patch.find.slice(0, 60)}…" (원본 HTML ${html.length}자)`);
     failed.push(patch.find.slice(0, 60) + (patch.find.length > 60 ? '…' : ''));
   }
-  console.log(`[applyPatch] 결과: ${applied}개 성공, ${failed.length}개 실패 (원본 ${originalHtml.length}자 → 결과 ${html.length}자)`);
   return { html, applied, failed };
 }
 
@@ -663,8 +656,8 @@ function renderCsvEmbedHtml(csvText: string, filename: string): string {
   <span style="background:rgba(52,211,153,.12);color:#34d399;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">${totalRows}행 × ${totalCols}열</span>
   <div style="margin-left:auto;display:flex;gap:6px">
     <input type="text" placeholder="🔍 검색..." style="background:#1e293b;border:1px solid #334155;border-radius:4px;padding:3px 8px;color:#e2e8f0;font-size:11px;width:120px;outline:none" id="${uid}_search"/>
-    <button onclick="(function(){try{var d=atob('${csvB64}');var b=new Blob([d],{type:'text/csv;charset=utf-8'});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='${(filename || 'data.csv').replace(/'/g, "\\'")}';a.click();URL.revokeObjectURL(u)}catch(e){}})()" style="background:#1e4d3b;color:#34d399;border:1px solid #059669;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:4px;white-space:nowrap">⬇ 다운로드</button>
-    <button onclick="(function(){try{var d=atob('${csvB64}');navigator.clipboard.writeText(d).then(function(){var b=event.target;b.textContent='✅ 복사됨';setTimeout(function(){b.textContent='📋 전체 복사'},1500)})}catch(e){}})()" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:4px;white-space:nowrap">📋 전체 복사</button>
+    <button onclick="(function(){try{var d=atob('${csvB64}');var b=new Blob([d],{type:'text/csv;charset=utf-8'});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='${(filename || 'data.csv').replace(/'/g, "\\'")}';a.click();URL.revokeObjectURL(u)}catch(e){console.warn('[ChatPage]',e)}})()" style="background:#1e4d3b;color:#34d399;border:1px solid #059669;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:4px;white-space:nowrap">⬇ 다운로드</button>
+    <button onclick="(function(){try{var d=atob('${csvB64}');navigator.clipboard.writeText(d).then(function(){var b=event.target;b.textContent='✅ 복사됨';setTimeout(function(){b.textContent='📋 전체 복사'},1500)})}catch(e){/* non-critical */}})()" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:4px;white-space:nowrap">📋 전체 복사</button>
   </div>
 </div>
 <div style="overflow:auto;max-height:500px" id="${uid}_scroll">
@@ -1154,7 +1147,7 @@ function renderDiffEmbedHtml(commit: string, file?: string): string {
 (function(){
   var root=document.getElementById("${safeId}");
   if(!root)return;
-  var _base="";try{_base=parent.location.origin;}catch(e){try{_base=window.location.origin;}catch(e2){}}
+  var _base="";try{_base=parent.location.origin;}catch(e){try{_base=window.location.origin;}catch(e2){/* non-critical */}}
   fetch(_base+"/api/git/commit-diff?hash=${encodeURIComponent(commit)}${fileParam}")
     .then(function(r){return r.json();})
     .then(function(data){
@@ -1289,7 +1282,7 @@ function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableD
     /<div([^>]*?)data-embed=["']scene["']([^>]*?)data-src=["']([^"']+)["']([^>]*?)(?:data-label=["']([^"']+)["'])?([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
     (_, _a, _b, src, _c, label) => {
       const sceneName = label ?? src.split('/').pop()?.replace('.unity', '') ?? 'Scene';
-      return `<div class="embed-card embed-scene" data-scene-path="${src}" data-scene-label="${sceneName}" style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin:12px 0;cursor:pointer;" onclick="try{parent.postMessage({type:'openScene',scenePath:'${src.replace(/'/g, "\\'")}',label:'${sceneName.replace(/'/g, "\\'")}'},'*')}catch(e){}">
+      return `<div class="embed-card embed-scene" data-scene-path="${src}" data-scene-label="${sceneName}" style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin:12px 0;cursor:pointer;" onclick="try{parent.postMessage({type:'openScene',scenePath:'${src.replace(/'/g, "\\'")}',label:'${sceneName.replace(/'/g, "\\'")}'},'*')}catch(e){/* non-critical */}">
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2">
       <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/>
@@ -1311,7 +1304,7 @@ function resolveArtifactEmbeds(html: string, schema: ParsedSchema | null, tableD
     /<div([^>]*?)data-embed=["']prefab["']([^>]*?)data-src=["']([^"']+)["']([^>]*?)(?:data-label=["']([^"']+)["'])?([^>]*?)(?:\/>|>[\s\S]*?<\/div>)/gi,
     (_, _a, _b, src, _c, label) => {
       const prefabName = label ?? src.split('/').pop()?.replace('.prefab', '') ?? 'Prefab';
-      return `<div class="embed-card embed-prefab" data-prefab-path="${src}" data-prefab-label="${prefabName}" style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin:12px 0;cursor:pointer;" onclick="try{parent.postMessage({type:'openPrefab',prefabPath:'${src.replace(/'/g, "\\'")}',label:'${prefabName.replace(/'/g, "\\'")}'},'*')}catch(e){}">
+      return `<div class="embed-card embed-prefab" data-prefab-path="${src}" data-prefab-label="${prefabName}" style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:16px;margin:12px 0;cursor:pointer;" onclick="try{parent.postMessage({type:'openPrefab',prefabPath:'${src.replace(/'/g, "\\'")}',label:'${prefabName.replace(/'/g, "\\'")}'},'*')}catch(e){/* non-critical */}">
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2">
       <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
@@ -3621,7 +3614,7 @@ ${EMBED_CSS}
 </style>
 <script>
 // base href 를 parent origin 으로 설정
-try{document.getElementById('dynbase').href=parent.location.origin+'/';}catch(e){}
+try{document.getElementById('dynbase').href=parent.location.origin+'/';}catch(e){/* non-critical */}
 </script>
 <script id="__fbx_viewer_init__"></script>
 ${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}
@@ -3667,7 +3660,7 @@ const FBX_VIEWER_SCRIPT = `
       '<span style="opacity:.6;font-size:10px;">' + name + '</span>';
     btn.addEventListener('click', function(e){
       e.preventDefault(); e.stopPropagation();
-      try { parent.postMessage({ type: 'openFbx', url: url, label: name }, '*'); } catch(ex){}
+      try { parent.postMessage({ type: 'openFbx', url: url, label: name }, '*'); } catch(ex){/* non-critical */}
     });
     return btn;
   }
@@ -3679,7 +3672,7 @@ const FBX_VIEWER_SCRIPT = `
       var apiUrl = toApiUrl(href);
       if (!apiUrl) return;
       var btn = makeFbxButton(apiUrl, labelFrom(a));
-      try { a.parentNode.replaceChild(btn, a); } catch(ex){}
+      try { a.parentNode.replaceChild(btn, a); } catch(ex){console.warn('[ChatPage]',ex)}
     });
     // 2) <div class="fbx-viewer" data-src="..."> → 버튼
     document.querySelectorAll('.fbx-viewer[data-src],[data-fbx]').forEach(function(d){
@@ -3689,7 +3682,7 @@ const FBX_VIEWER_SCRIPT = `
       var wrap = document.createElement('div');
       wrap.style.cssText = 'background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 14px;margin:8px 0;';
       wrap.appendChild(makeFbxButton(apiUrl, d.getAttribute('data-label')||''));
-      try { d.parentNode.replaceChild(wrap, d); } catch(ex){}
+      try { d.parentNode.replaceChild(wrap, d); } catch(ex){console.warn('[ChatPage]',ex)}
     });
     // 3) <div data-embed="scene" data-scene-path="..."> → 씬 뷰어 버튼
     document.querySelectorAll('.embed-scene[data-scene-path]').forEach(function(d){
@@ -3700,7 +3693,7 @@ const FBX_VIEWER_SCRIPT = `
       d.style.cursor = 'pointer';
       d.addEventListener('click', function(e){
         e.preventDefault(); e.stopPropagation();
-        try { parent.postMessage({ type: 'openScene', scenePath: scenePath, label: label }, '*'); } catch(ex){}
+        try { parent.postMessage({ type: 'openScene', scenePath: scenePath, label: label }, '*'); } catch(ex){/* non-critical */}
       });
     });
     // 4) <div data-embed="prefab" data-prefab-path="..."> → 프리팹 뷰어 버튼
@@ -3712,7 +3705,7 @@ const FBX_VIEWER_SCRIPT = `
       d.style.cursor = 'pointer';
       d.addEventListener('click', function(e){
         e.preventDefault(); e.stopPropagation();
-        try { parent.postMessage({ type: 'openPrefab', prefabPath: prefabPath, label: label }, '*'); } catch(ex){}
+        try { parent.postMessage({ type: 'openPrefab', prefabPath: prefabPath, label: label }, '*'); } catch(ex){/* non-critical */}
       });
     });
     // 5) <div data-embed="fbx-anim"> → 인라인 iframe 애니메이션 뷰어 (이미 iframe이 삽입된 경우 스킵)
@@ -3742,7 +3735,7 @@ const FBX_VIEWER_SCRIPT = `
         '<audio controls preload="metadata" style="width:100%;border-radius:6px;accent-color:#6366f1;">' +
           '<source src="' + apiSrc + '" type="' + mime + '">' +
         '</audio>';
-      try { d.parentNode.replaceChild(wrap, d); } catch(ex){}
+      try { d.parentNode.replaceChild(wrap, d); } catch(ex){console.warn('[ChatPage]',ex)}
     });
   }
 
@@ -6788,7 +6781,8 @@ function KnowledgeBrowser() {
 // ── 검증 룰 브라우저 (사이드바용) ────────────────────────────────────────
 
 function ValidationRuleBrowser() {
-  const [rules, setRules] = useState<Array<{ id: string; name: string; table: string; severity: 'error' | 'warning'; enabled: boolean; condition: any }>>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [rules, setRules] = useState<Array<{ id: string; name: string; table: string; severity: 'error' | 'warning'; enabled: boolean; condition: Record<string, any> }>>([]);
   const [expanded, setExpanded] = useState(false);
 
   const loadRulesList = useCallback(async () => {
@@ -6824,7 +6818,8 @@ function ValidationRuleBrowser() {
     } catch { /* ignore */ }
   }, []);
 
-  const conditionText = (cond: any): string => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const conditionText = (cond: Record<string, any> | null | undefined): string => {
     if (!cond) return '?';
     switch (cond.type) {
       case 'range': {
@@ -6838,9 +6833,9 @@ function ValidationRuleBrowser() {
       case 'in': return `${cond.column} ∈ {${(cond.values ?? []).slice(0, 3).join(', ')}${(cond.values?.length ?? 0) > 3 ? '...' : ''}}`;
       case 'compare_columns': return `${cond.left} ${cond.op} ${cond.right}`;
       case 'conditional': return `IF ${cond.when?.column}${cond.when?.op}${cond.when?.value} → ${cond.then?.column}${cond.then?.op}${cond.then?.value}`;
-      case 'unique': return `${cond.column} UNIQUE${(cond as Record<string, unknown>).group_by ? ` (per ${(cond as Record<string, unknown>).group_by})` : ''}`;
+      case 'unique': return `${cond.column} UNIQUE${cond.group_by ? ` (per ${cond.group_by})` : ''}`;
       case 'regex': return `${cond.column} ~ /${(cond.pattern ?? '').slice(0, 20)}/`;
-      default: return cond.type ?? '?';
+      default: return String(cond.type ?? '?');
     }
   };
 
@@ -7868,7 +7863,6 @@ function extractMultipleChoiceGroups(text: string): { groups: MCGroup[]; afterTe
   if (groups.length === 0) return null;
 
   const afterText = beforeLines.join('\n').trim();
-  console.log('[MC] 객관식 감지:', groups.length, '그룹', groups.map(g => `[${g.items.map(it => it.key).join(',')}]`).join(' '));
   return { groups, afterText };
 }
 
@@ -8990,7 +8984,6 @@ export default function ChatPage() {
       _artBuf.html = existingHtml; // 기존 HTML부터 시작
       _artBuf.baseHtml = existingHtml;
       _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0; _artBuf.rawJson = '';
-      console.log(`[ArtBuf] 🔧 편집 모드: 기존 HTML ${existingHtml.length}자 → baseHtml 설정`);
     } else {
       // 일반 메시지: baseHtml 초기화 (패치 모드 해제)
       _artBuf.html = ''; _artBuf.title = ''; _artBuf.charCount = 0; _artBuf.ver = 0; _artBuf.rawJson = '';
@@ -9025,7 +9018,6 @@ export default function ChatPage() {
     // ── FastPath: 간단한 질문은 API 호출 없이 즉시 응답 ──
     const fastResult = await tryFastPath(apiText, schema, tableData);
     if (fastResult) {
-      console.log(`[FastPath] ⚡ 즉답 (${fastResult.toolCalls.length}개 도구, ${fastResult.content.length}자)`);
       const assistantMsg: Message = {
         id: loadingId,
         role: 'assistant',
@@ -9146,13 +9138,11 @@ export default function ChatPage() {
           const now = performance.now();
           if (_lastArtifactLog === 0 || now - _lastArtifactLog >= 500) {
             _lastArtifactLog = now;
-            console.log(`[ArtStream] v=${_artBuf.ver} cc=${charCount} html=${_artBuf.html.length} t="${_artBuf.title}" patch=${!!_artBuf.baseHtml}`);
           }
 
           // 패널 열기만 React state로 1회 처리 (컴포넌트 마운트 트리거)
           if (!_artifactPanelOpened) {
             _artifactPanelOpened = true;
-            console.log(`[ArtPanel] 패널 오픈 트리거! html=${_artBuf.html.length} title="${_artBuf.title}" cc=${charCount} patchMode=${!!_artBuf.baseHtml}`);
             setArtifactPanel(prev => {
               if (prev?.isComplete && prev?.finalTc && _artBuf.baseHtml) {
                 // ★ patch_artifact 모드: isComplete=false로 전환 → 스트리밍 UI 활성화 (실시간 패치 반영)
@@ -9324,11 +9314,6 @@ export default function ChatPage() {
         ]);
       } else if (patchTc && patchTc.patches.length > 0) {
         // patch_artifact: 현재 열린 아티팩트에 패치 적용
-        console.log(`[Patch] 🔧 패치 적용 시작: ${patchTc.patches.length}개 패치, title="${patchTc.title ?? '(없음)'}"`);
-        for (const p of patchTc.patches) {
-          console.log(`[Patch] find(${p.find.length}자): "${p.find.slice(0, 100)}${p.find.length > 100 ? '…' : ''}"`);
-          console.log(`[Patch] replace(${p.replace.length}자): "${p.replace.slice(0, 100)}${p.replace.length > 100 ? '…' : ''}"`);
-        }
         setArtifactPanel((prev) => {
           // 원본 HTML: finalTc.html → prev.html → _artBuf.baseHtml → _artBuf.html → savedArtifacts 순 fallback
           const originalHtml = prev?.finalTc?.html
@@ -9337,7 +9322,6 @@ export default function ChatPage() {
             || _artBuf.html
             || (savedArtifacts.length > 0 ? savedArtifacts[0].tc.html : '')
             || '';
-          console.log(`[Patch] 원본 HTML: finalTc=${(prev?.finalTc?.html ?? '').length}자, prev=${(prev?.html ?? '').length}자, baseHtml=${_artBuf.baseHtml.length}자, savedArt=${savedArtifacts.length > 0 ? (savedArtifacts[0].tc.html ?? '').length : 0}자 → 사용: ${originalHtml.length}자`);
           if (!originalHtml) {
             console.warn('[Patch] ❌ 패치할 원본 HTML이 없습니다!');
             return prev;
@@ -9345,14 +9329,12 @@ export default function ChatPage() {
 
           // 1차: 원본 HTML에 직접 패치 적용
           let { html: patchedHtml, applied, failed } = applyPatches(originalHtml, patchTc.patches);
-          console.log(`[Patch] 1차(원본): ${applied}/${patchTc.patches.length}개 성공${failed.length ? `, 실패: ${failed.join(' | ')}` : ''}`);
 
           // 2차: 실패한 패치가 있으면, style/script 제거본에서 시도 후 결과 병합
           if (failed.length > 0) {
             const strippedHtml = compressHtmlForEdit(originalHtml);
             const failedPatches = patchTc.patches.filter(p => failed.some(f => p.find.startsWith(f.replace('…', ''))));
             if (failedPatches.length > 0 && strippedHtml !== originalHtml) {
-              console.log(`[Patch] 2차(압축본) 시도: ${failedPatches.length}개 패치, 압축본 ${strippedHtml.length}자`);
               const { html: strippedPatched, applied: applied2, failed: failed2 } = applyPatches(strippedHtml, failedPatches);
               if (applied2 > 0) {
                 // 압축본에서 성공한 패치 → 원본에서 style/script를 보존하면서 body 부분만 교체
@@ -9366,12 +9348,10 @@ export default function ChatPage() {
                 }
                 applied += applied2;
                 failed = failed2;
-                console.log(`[Patch] 2차 성공: +${applied2}개 (총 ${applied}개)${failed2.length ? `, 최종 실패: ${failed2.join(' | ')}` : ''}`);
               }
             }
           }
 
-          console.log(`[Patch] ✅ 최종: ${applied}/${patchTc.patches.length}개, ${originalHtml.length}자 → ${patchedHtml.length}자`);
           const newTitle = patchTc.title ?? prev?.finalTc?.title ?? prev?.title ?? '문서';
           const baseTc: ArtifactResult = prev?.finalTc ?? { kind: 'artifact', title: newTitle, description: '', html: originalHtml, duration: 0 };
           const patchedTc: ArtifactResult = { ...baseTc, html: patchedHtml, title: newTitle };
@@ -9706,7 +9686,6 @@ export default function ChatPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: '_improvement_guide', content: improvementContent }),
       });
-      console.log(`[Feedback] ✅ _improvement_guide 갱신 완료: 긍정 ${positiveCount}건, 부정 ${negativeCount}건`);
     } catch (e) {
       console.warn('[Feedback] _improvement_guide 생성 실패:', e);
     }
@@ -10886,7 +10865,6 @@ export default function ChatPage() {
                   console.warn('[EditRequest] 수정할 HTML이 없습니다.');
                   return;
                 }
-                console.log(`[EditRequest] 원본 HTML ${currentHtml.length}자, title="${title}"`);
                 const compressedHtml = compressHtmlForEdit(currentHtml);
                 const fullMessage =
                   `[아티팩트 수정 요청]\n` +

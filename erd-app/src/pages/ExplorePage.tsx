@@ -116,13 +116,11 @@ function applyPatches(orig: string, patches: { find: string; replace: string }[]
   const failed: string[] = [];
   for (const p of patches) {
     if (!p.find) continue;
-    console.log(`[applyPatch] find(${p.find.length}자): "${p.find.slice(0, 80)}…"`);
 
     // 1차: 정확히 포함
     if (html.includes(p.find)) {
       html = html.split(p.find).join(p.replace);
       applied++;
-      console.log(`[applyPatch] ✅ 정확 매칭 성공`);
       continue;
     }
 
@@ -139,7 +137,6 @@ function applyPatches(orig: string, patches: { find: string; replace: string }[]
         html = html.replace(re, p.replace);
         if (html !== before) {
           applied++;
-          console.log(`[applyPatch] ✅ 공백 정규화 매칭 성공`);
           continue;
         }
       } catch { /* fall through */ }
@@ -159,7 +156,6 @@ function applyPatches(orig: string, patches: { find: string; replace: string }[]
           html = html.replace(re, p.replace);
           if (html !== before) {
             applied++;
-            console.log(`[applyPatch] ✅ 핵심 텍스트 매칭 성공`);
             continue;
           }
         } catch { /* fall through */ }
@@ -169,7 +165,6 @@ function applyPatches(orig: string, patches: { find: string; replace: string }[]
     console.warn(`[applyPatch] ❌ 매칭 실패: "${p.find.slice(0, 60)}…"`);
     failed.push(p.find.slice(0, 40));
   }
-  console.log(`[applyPatch] 결과: ${applied}개 성공, ${failed.length}개 실패`);
   return { html, applied, failed };
 }
 
@@ -998,7 +993,6 @@ function MiniChatPanel({ doc, docHtml, onDocUpdated, onClose }: {
           if (ptc.patches?.length) {
             const result = applyPatches(currentHtmlRef.current, ptc.patches);
             patchResult = { applied: result.applied, failed: result.failed };
-            console.log(`[MiniChat] 패치 적용: ${result.applied}개 성공, ${result.failed.length}개 실패`);
             if (result.applied > 0) {
               currentHtmlRef.current = result.html;
               onDocUpdated(result.html);
@@ -1020,7 +1014,6 @@ function MiniChatPanel({ doc, docHtml, onDocUpdated, onClose }: {
             currentHtmlRef.current = atc.html;
             onDocUpdated(atc.html);
             patchResult = { applied: 1, failed: [] };
-            console.log(`[MiniChat] 아티팩트 전체 교체: ${atc.html.length}자`);
             try {
               await fetch(`/api/publish/${doc.id}`, {
                 method: 'PUT',
@@ -1546,7 +1539,7 @@ export default function ExplorePage() {
               {!isEditMode && (
                 <div className="flex-shrink-0 flex rounded-lg overflow-hidden" style={{ border: '1px solid var(--border-color)' }}>
                   <button
-                    onClick={() => { setViewMode('grid'); try { localStorage.setItem('explore_viewMode', 'grid'); } catch {} }}
+                    onClick={() => { setViewMode('grid'); try { localStorage.setItem('explore_viewMode', 'grid'); } catch (e) { /* non-critical */ } }}
                     className="p-1.5 transition-colors"
                     style={{ background: viewMode === 'grid' ? 'rgba(99,102,241,0.2)' : 'var(--bg-secondary)', color: viewMode === 'grid' ? '#818cf8' : 'var(--text-muted)' }}
                     title="그리드 뷰"
@@ -1557,7 +1550,7 @@ export default function ExplorePage() {
                     </svg>
                   </button>
                   <button
-                    onClick={() => { setViewMode('list'); try { localStorage.setItem('explore_viewMode', 'list'); } catch {} }}
+                    onClick={() => { setViewMode('list'); try { localStorage.setItem('explore_viewMode', 'list'); } catch (e) { /* non-critical */ } }}
                     className="p-1.5 transition-colors"
                     style={{ background: viewMode === 'list' ? 'rgba(99,102,241,0.2)' : 'var(--bg-secondary)', color: viewMode === 'list' ? '#818cf8' : 'var(--text-muted)', borderLeft: '1px solid var(--border-color)' }}
                     title="리스트 뷰"

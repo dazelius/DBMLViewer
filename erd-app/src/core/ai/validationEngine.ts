@@ -9,9 +9,10 @@ export type RuleCondition =
   | { type: 'not_in'; column: string; values: string[] }
   | { type: 'regex'; column: string; pattern: string }
   | { type: 'compare_columns'; left: string; op: '<' | '<=' | '==' | '!=' | '>=' | '>'; right: string }
-  | { type: 'conditional'; when: { column: string; op: string; value: string }; then: { column: string; op: string; value: string } }
+  | { type: 'conditional'; when: { column: string; op: string; value: string }; then: { column: string; op?: string; value?: string; type?: string; min?: number; max?: number; values?: string[] } }
   | { type: 'unique'; column: string; group_by?: string }
-  | { type: 'expression'; expr: string };
+  | { type: 'expression'; expr: string }
+  | { type: 'fk_ref'; column: string; ref_table: string; ref_column?: string; allow_sentinel?: boolean };
 
 export interface ValidationRule {
   id: string;
@@ -83,14 +84,13 @@ async function migrateLocalStorageToServer() {
     // 서버에 이미 룰이 있으면 스킵
     const resp = await fetch('/api/validation-rules/list');
     if (resp.ok) {
-      const data = await resp.json() as { rules: any[] };
+      const data = await resp.json() as { rules: Record<string, unknown>[] };
       if (data.rules && data.rules.length > 0) {
         localStorage.removeItem(LEGACY_STORAGE_KEY);
         return;
       }
     }
 
-    console.log(`[Validation] localStorage → 서버 마이그레이션: ${localRules.length}개 룰`);
     for (const rule of localRules) {
       await fetch('/api/validation-rules/save', {
         method: 'POST',
@@ -99,7 +99,6 @@ async function migrateLocalStorageToServer() {
       });
     }
     localStorage.removeItem(LEGACY_STORAGE_KEY);
-    console.log(`[Validation] 마이그레이션 완료 — localStorage 데이터 삭제`);
   } catch (e) {
     console.warn('[Validation] 마이그레이션 실패:', e);
   }
@@ -207,6 +206,7 @@ function checkRule(
   headers: string[],
   rows: Record<string, string>[],
   tableName: string,
+  allTableData?: TableDataMap,
 ): RuleViolation[] {
   const violations: RuleViolation[] = [];
   const cond = rule.condition;
@@ -320,18 +320,63 @@ function checkRule(
     case 'conditional': {
       const { when, then: thenC } = cond;
       if (!headers.includes(when.column) || !headers.includes(thenC.column)) break;
-      for (const row of rows) {
-        const whenVal = String(row[when.column] ?? '');
-        if (!compareValues(whenVal, when.op, when.value)) continue;
-        const thenVal = String(row[thenC.column] ?? '');
-        if (!compareValues(thenVal, thenC.op, thenC.value)) {
-          const rowId = String(row[pk] ?? '');
-          violations.push({
-            ruleId: rule.id, ruleName: rule.name, table: tableName,
-            severity: rule.severity, rowId,
-            details: `${when.column}=${whenVal}일 때 ${thenC.column}=${thenVal} (기대: ${thenC.op} ${thenC.value})`,
-          });
-          if (violations.length >= MAX_VIOLATIONS_PER_RULE) return violations;
+      if (thenC.type === 'range') {
+        for (const row of rows) {
+          const whenVal = String(row[when.column] ?? '');
+          if (!compareValues(whenVal, when.op, when.value)) continue;
+          const n = parseFloat(String(row[thenC.column] ?? ''));
+          if (isNaN(n)) continue;
+          if ((thenC.min !== undefined && n < thenC.min) || (thenC.max !== undefined && n > thenC.max)) {
+            violations.push({
+              ruleId: rule.id, ruleName: rule.name, table: tableName,
+              severity: rule.severity, rowId: String(row[pk] ?? ''),
+              details: `${when.column}=${whenVal}일 때 ${thenC.column}=${n} (범위: ${thenC.min ?? ''}~${thenC.max ?? ''})`,
+            });
+            if (violations.length >= MAX_VIOLATIONS_PER_RULE) return violations;
+          }
+        }
+      } else if (thenC.type === 'not_null') {
+        for (const row of rows) {
+          const whenVal = String(row[when.column] ?? '');
+          if (!compareValues(whenVal, when.op, when.value)) continue;
+          const tv = row[thenC.column];
+          if (tv == null || tv === '' || tv === 'null') {
+            violations.push({
+              ruleId: rule.id, ruleName: rule.name, table: tableName,
+              severity: rule.severity, rowId: String(row[pk] ?? ''),
+              details: `${when.column}=${whenVal}일 때 ${thenC.column}이(가) 비어있음`,
+            });
+            if (violations.length >= MAX_VIOLATIONS_PER_RULE) return violations;
+          }
+        }
+      } else if (thenC.type === 'in' && thenC.values) {
+        const allowed = new Set(thenC.values.map(v => v.toLowerCase()));
+        for (const row of rows) {
+          const whenVal = String(row[when.column] ?? '');
+          if (!compareValues(whenVal, when.op, when.value)) continue;
+          const tv = String(row[thenC.column] ?? '').toLowerCase();
+          if (tv && !allowed.has(tv)) {
+            violations.push({
+              ruleId: rule.id, ruleName: rule.name, table: tableName,
+              severity: rule.severity, rowId: String(row[pk] ?? ''),
+              details: `${when.column}=${whenVal}일 때 ${thenC.column}="${row[thenC.column]}" (허용값 아님)`,
+            });
+            if (violations.length >= MAX_VIOLATIONS_PER_RULE) return violations;
+          }
+        }
+      } else {
+        for (const row of rows) {
+          const whenVal = String(row[when.column] ?? '');
+          if (!compareValues(whenVal, when.op, when.value)) continue;
+          const thenVal = String(row[thenC.column] ?? '');
+          if (!compareValues(thenVal, thenC.op ?? 'eq', thenC.value ?? '')) {
+            violations.push({
+              ruleId: rule.id, ruleName: rule.name, table: tableName,
+              severity: rule.severity, rowId: String(row[pk] ?? ''),
+              details: `${when.column}=${whenVal}일 때 ${thenC.column}=${thenVal} (기대: ${thenC.op} ${thenC.value})`,
+            });
+            if (violations.length >= MAX_VIOLATIONS_PER_RULE) return violations;
+          }
         }
       }
       break;
@@ -380,7 +425,34 @@ function checkRule(
       break;
     }
     case 'expression': {
-      // expression은 간단한 JS 기반 평가 (향후 확장)
+      break;
+    }
+    case 'fk_ref': {
+      if (!headers.includes(cond.column) || !allTableData) break;
+      const refCol = cond.ref_column ?? 'id';
+      const refKey = [...allTableData.keys()].find(k => k.toLowerCase() === cond.ref_table.toLowerCase());
+      if (!refKey) break;
+      const refData = allTableData.get(refKey);
+      if (!refData) break;
+      const validPks = new Set(refData.rows.map(r => String(r[refCol] ?? '').toLowerCase()));
+      const allowSentinel = cond.allow_sentinel !== false;
+      for (const row of rows) {
+        const val = String(row[cond.column] ?? '').trim();
+        if (!val || val === '' || val === 'null' || val === 'NULL') continue;
+        if (allowSentinel) {
+          const nv = Number(val);
+          if (val === '-1' || val === '0' || (Number.isFinite(nv) && nv <= 0)) continue;
+        }
+        if (!validPks.has(val.toLowerCase())) {
+          const rowId = String(row[pk] ?? '');
+          violations.push({
+            ruleId: rule.id, ruleName: rule.name, table: tableName,
+            severity: rule.severity, rowId,
+            details: `${cond.column}="${val}" → ${cond.ref_table}.${refCol}에 존재하지 않음`,
+          });
+          if (violations.length >= MAX_VIOLATIONS_PER_RULE) return violations;
+        }
+      }
       break;
     }
   }
@@ -405,7 +477,7 @@ export function runValidation(
     for (const [tableName, { headers, rows }] of tableData) {
       if (!matchTable(rule.table, tableName)) continue;
       ruleChecked = true;
-      const v = checkRule(rule, headers, rows, tableName);
+      const v = checkRule(rule, headers, rows, tableName, tableData);
       violations.push(...v);
     }
     if (ruleChecked) checkedRules++;
@@ -475,8 +547,16 @@ function conditionToText(cond: RuleCondition): string {
     case 'not_in': return `${cond.column} ∉ {${cond.values.join(', ')}}`;
     case 'regex': return `${cond.column} ~ /${cond.pattern}/`;
     case 'compare_columns': return `${cond.left} ${cond.op} ${cond.right}`;
-    case 'conditional': return `IF ${cond.when.column}${cond.when.op}${cond.when.value} THEN ${cond.then.column}${cond.then.op}${cond.then.value}`;
+    case 'conditional': {
+      const t = cond.then;
+      const thenText = t.type === 'range' ? `${t.min ?? ''}≤${t.column}≤${t.max ?? ''}`
+        : t.type === 'not_null' ? `${t.column} ≠ NULL`
+        : t.type === 'in' ? `${t.column} ∈ {${t.values?.join(', ')}}`
+        : `${t.column}${t.op}${t.value}`;
+      return `IF ${cond.when.column}${cond.when.op}${cond.when.value} THEN ${thenText}`;
+    }
     case 'unique': return `${cond.column} UNIQUE`;
     case 'expression': return cond.expr;
+    case 'fk_ref': return `${cond.column} → ${cond.ref_table}.${cond.ref_column ?? 'id'}`;
   }
 }

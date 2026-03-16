@@ -1,6 +1,6 @@
 import type { Plugin } from 'vite'
-import { execSync, execFileSync, execFile } from 'child_process'
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync, appendFileSync } from 'fs'
+import { execFileSync, execFile } from 'child_process'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync, appendFileSync, copyFileSync } from 'fs'
 import { join, resolve, extname, sep } from 'path'
 import { promisify } from 'util'
 import { createRequire } from 'module'
@@ -80,20 +80,60 @@ async function serverExtractFBX(fbxAbsPath: string): Promise<Array<{
     THREE.TextureLoader.prototype.load = origLoad
   }
 
+  // Unity FBX import은 기본적으로 cm→m 변환 (0.01 스케일) 적용
+  // Three.js FBXLoader는 이를 자동 적용하지 않으므로 수동으로 설정
+  const FBX_UNIT_SCALE = 0.01
+  group.scale.set(FBX_UNIT_SCALE, FBX_UNIT_SCALE, FBX_UNIT_SCALE)
+  group.updateMatrixWorld(true)
+
+  const SKIP_RE = /_(LOD[1-9]|LOD\d{2,})$|^UCX_/i
   const result: ReturnType<typeof serverExtractFBX> extends Promise<infer R> ? R : never = []
+
   group.traverse((child: any) => {
     if (!child.isMesh || !child.geometry) return
+    const name = child.name || 'Mesh'
+    if (SKIP_RE.test(name)) return
+
     const geo   = child.geometry
     const posA  = geo.attributes?.position
     if (!posA) return
 
+    // child.matrixWorld를 적용하여 FBX 내부 스케일/변환(cm→m) 반영
+    const mat4 = child.matrixWorld as { elements: number[] }
+    const e = mat4.elements
+    const hasTransform = !(
+      e[0] === 1 && e[1] === 0 && e[2] === 0 && e[3] === 0 &&
+      e[4] === 0 && e[5] === 1 && e[6] === 0 && e[7] === 0 &&
+      e[8] === 0 && e[9] === 0 && e[10] === 1 && e[11] === 0 &&
+      e[12] === 0 && e[13] === 0 && e[14] === 0 && e[15] === 1
+    )
+
     const cnt = posA.count
     const verts: { x: number; y: number; z: number }[] = []
-    for (let i = 0; i < cnt; i++) verts.push({ x: posA.getX(i), y: posA.getY(i), z: posA.getZ(i) })
+    if (hasTransform) {
+      const v3 = new THREE.Vector3()
+      for (let i = 0; i < cnt; i++) {
+        v3.set(posA.getX(i), posA.getY(i), posA.getZ(i)).applyMatrix4(mat4 as any)
+        verts.push({ x: v3.x, y: v3.y, z: v3.z })
+      }
+    } else {
+      for (let i = 0; i < cnt; i++) verts.push({ x: posA.getX(i), y: posA.getY(i), z: posA.getZ(i) })
+    }
 
     const norms: { x: number; y: number; z: number }[] = []
     const normA = geo.attributes?.normal
-    if (normA) for (let i = 0; i < normA.count; i++) norms.push({ x: normA.getX(i), y: normA.getY(i), z: normA.getZ(i) })
+    if (normA) {
+      if (hasTransform) {
+        const normalMatrix = new THREE.Matrix3().getNormalMatrix(mat4 as any)
+        const n3 = new THREE.Vector3()
+        for (let i = 0; i < normA.count; i++) {
+          n3.set(normA.getX(i), normA.getY(i), normA.getZ(i)).applyMatrix3(normalMatrix).normalize()
+          norms.push({ x: n3.x, y: n3.y, z: n3.z })
+        }
+      } else {
+        for (let i = 0; i < normA.count; i++) norms.push({ x: normA.getX(i), y: normA.getY(i), z: normA.getZ(i) })
+      }
+    }
 
     const uvs: { x: number; y: number }[] = []
     const uvA = geo.attributes?.uv
@@ -103,7 +143,7 @@ async function serverExtractFBX(fbxAbsPath: string): Promise<Array<{
       ? (Array.from(geo.index.array as Uint16Array | Uint32Array | Int32Array) as number[])
       : Array.from({ length: cnt }, (_, i) => i)
 
-    result.push({ name: child.name || 'Mesh', vertices: verts, normals: norms, uvs, triangles: tris })
+    result.push({ name, vertices: verts, normals: norms, uvs, triangles: tris })
   })
 
   return result
@@ -132,7 +172,7 @@ function bakeWorldTransform(
 
   return verts.map(v => {
     const vec = new THREE.Vector3(v.x, v.y, v.z).applyMatrix4(mat)
-    return { x: vec.x, y: vec.y, z: vec.z }
+    return { x: Math.round(vec.x * 10) / 10, y: Math.round(vec.y * 10) / 10, z: Math.round(vec.z * 10) / 10 }
   })
 }
 
@@ -160,7 +200,8 @@ function bakeProBuilderVerts(
   }
 
   const worldVerts = bakeWorldTransform(localVerts, pos, rot, scl, THREE)
-  return { vertices: worldVerts, normals: [], uvs: [], triangles: flipped }
+  const roundedVerts = worldVerts.map(v => ({ x: Math.round(v.x * 10) / 10, y: Math.round(v.y * 10) / 10, z: Math.round(v.z * 10) / 10 }))
+  return { vertices: roundedVerts, normals: [], uvs: [], triangles: flipped }
 }
 
 /** 메시 오브젝트 배열에서 바운딩 박스 계산 */
@@ -501,9 +542,9 @@ function buildAuthUrl(repoUrl: string, token?: string): string {
   }
 }
 
-function runGit(cmd: string, cwd: string): string {
+function runGit(args: string[], cwd: string): string {
   try {
-    return execSync(cmd, { cwd, encoding: 'utf-8', timeout: 120_000, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+    return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 120_000, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
   } catch (err: any) {
     throw new Error(err.stderr || err.message || String(err))
   }
@@ -949,14 +990,14 @@ function createGitMiddleware(options: GitPluginOptions) {
       // Git Data
       checks.gitData = { ok: existsSync(join(localDir, '.git')) }
       if (checks.gitData.ok) {
-        try { checks.gitData.detail = execSync('git rev-parse --short HEAD', { cwd: localDir, encoding: 'utf-8', timeout: 3000 }).trim() } catch {}
+        try { checks.gitData.detail = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: localDir, encoding: 'utf-8', timeout: 3000 }).toString().trim() } catch (e) { /* non-critical */ }
       }
 
       // Git Aegis
       if (options.repo2LocalDir) {
         checks.gitAegis = { ok: existsSync(join(options.repo2LocalDir, '.git')) }
         if (checks.gitAegis.ok) {
-          try { checks.gitAegis.detail = execSync('git rev-parse --short HEAD', { cwd: options.repo2LocalDir, encoding: 'utf-8', timeout: 3000 }).trim() } catch {}
+          try { checks.gitAegis.detail = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: options.repo2LocalDir, encoding: 'utf-8', timeout: 3000 }).toString().trim() } catch (e) { /* non-critical */ }
         }
       } else {
         checks.gitAegis = { ok: false }
@@ -976,7 +1017,7 @@ function createGitMiddleware(options: GitPluginOptions) {
 
       // Slack Bot — node.exe 프로세스 수로 추정 (preview 서버 1개 + slack-bot 1개)
       try {
-        const ps = execSync('tasklist /FI "IMAGENAME eq node.exe" /FO CSV /NH 2>nul', { encoding: 'utf-8', timeout: 3000 })
+        const ps = execFileSync('tasklist', ['/FI', 'IMAGENAME eq node.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf-8', timeout: 3000 }).toString()
         const nodeCount = (ps.match(/"node\.exe"/gi) || []).length
         checks.slackBot = { ok: nodeCount >= 2 }
       } catch {
@@ -1058,7 +1099,7 @@ function createGitMiddleware(options: GitPluginOptions) {
       }
 
       let isStream = false
-      try { isStream = JSON.parse(rawBody || '{}').stream === true } catch {}
+      try { isStream = JSON.parse(rawBody || '{}').stream === true } catch (e) { /* non-critical */ }
 
       if (isStream) {
         // ── SSE 스트리밍: Node.js native https.request + pipe() (버퍼링 완전 제거) ──
@@ -2477,9 +2518,33 @@ function createGitMiddleware(options: GitPluginOptions) {
           return
         }
 
+        // ── /api/assets/game-scenes : GameContents/Map 하위 모든 .unity + bake 상태 ──
+        if (req.url.startsWith('/api/assets/game-scenes')) {
+          const SCENE_CACHE_DIR = join(process.cwd(), '..', '..', 'scene-cache')
+          const UNITY_ASSETS_DIR_GS = join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets')
+          const mapDir = join(UNITY_ASSETS_DIR_GS, 'GameContents', 'Map')
+          if (!existsSync(mapDir)) { sendJson(res, 200, { scenes: [] }); return }
+          const scenes: { name: string; path: string; folder: string; baked: boolean }[] = []
+          const walk = (dir: string) => {
+            for (const ent of readdirSync(dir, { withFileTypes: true })) {
+              if (ent.isDirectory()) walk(join(dir, ent.name))
+              else if (ent.name.endsWith('.unity')) {
+                const relPath = join(dir, ent.name).replace(UNITY_ASSETS_DIR_GS + sep, '').replace(/\\/g, '/')
+                const folderName = ent.name.replace(/\.unity$/i, '').replace(/[<>:"/\\|?*]/g, '_').slice(0, 60)
+                const baked = existsSync(join(SCENE_CACHE_DIR, folderName, 'meshes.json'))
+                scenes.push({ name: ent.name.replace(/\.unity$/, ''), path: relPath, folder: folderName, baked })
+              }
+            }
+          }
+          walk(mapDir)
+          scenes.sort((a, b) => a.name.localeCompare(b.name))
+          sendJson(res, 200, { scenes })
+          return
+        }
+
         // ── /api/assets/map-list : 씬 캐시 맵 목록 ─────────────────────────────
         if (req.url.startsWith('/api/assets/map-list')) {
-          const SCENE_CACHE_DIR = join(process.cwd(), '..', 'scene-cache')
+          const SCENE_CACHE_DIR = join(process.cwd(), '..', '..', 'scene-cache')
           if (!existsSync(SCENE_CACHE_DIR)) {
             sendJson(res, 200, { maps: [] })
             return
@@ -2493,7 +2558,7 @@ function createGitMiddleware(options: GitPluginOptions) {
                 const info = JSON.parse(readFileSync(join(SCENE_CACHE_DIR, e.name, 'scene_info.json'), 'utf-8').replace(/^\uFEFF/, ''))
                 meshCount = info.meshCount || 0
                 sceneName = info.sceneName || e.name
-              } catch {}
+              } catch (e) { console.warn('[vite-git-plugin]', e) }
               return {
                 folder: e.name,
                 sceneName,
@@ -2510,7 +2575,7 @@ function createGitMiddleware(options: GitPluginOptions) {
         if (req.url.startsWith('/api/assets/map-scene-info')) {
           const url2  = new URL(req.url, 'http://localhost')
           const mapName = url2.searchParams.get('map') || ''
-          const SCENE_CACHE_DIR = join(process.cwd(), '..', 'scene-cache')
+          const SCENE_CACHE_DIR = join(process.cwd(), '..', '..', 'scene-cache')
           const infoPath = join(SCENE_CACHE_DIR, mapName, 'scene_info.json')
           if (!mapName || !existsSync(infoPath)) {
             sendJson(res, 404, { error: `scene_info.json not found for map: ${mapName}` }); return
@@ -2531,7 +2596,7 @@ function createGitMiddleware(options: GitPluginOptions) {
           const url2    = new URL(req.url, 'http://localhost')
           const mapName = url2.searchParams.get('map') || ''
           const file    = url2.searchParams.get('file') || ''
-          const SCENE_CACHE_DIR = join(process.cwd(), '..', 'scene-cache')
+          const SCENE_CACHE_DIR = join(process.cwd(), '..', '..', 'scene-cache')
           // 경로 탈출 방지
           const safeName = file.replace(/[/\\]/g, '')
           const texPath  = join(SCENE_CACHE_DIR, mapName, 'textures', safeName)
@@ -2550,20 +2615,21 @@ function createGitMiddleware(options: GitPluginOptions) {
         if (req.url.startsWith('/api/assets/map-meshes')) {
           const url2    = new URL(req.url, 'http://localhost')
           const mapName = url2.searchParams.get('map') || ''
-          const SCENE_CACHE_DIR = join(process.cwd(), '..', 'scene-cache')
+          const SCENE_CACHE_DIR = join(process.cwd(), '..', '..', 'scene-cache')
           const meshPath = join(SCENE_CACHE_DIR, mapName, 'meshes.json')
           if (!mapName || !existsSync(meshPath)) {
             sendJson(res, 404, { error: `meshes.json not found for map: ${mapName}` }); return
           }
-          const stat = statSync(meshPath)
+          const buf = readFileSync(meshPath)
+          const hasBom = buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF
+          const body = hasBom ? buf.subarray(3) : buf
           res.writeHead(200, {
-            'Content-Type': 'application/json',
-            'Content-Length': stat.size,
+            'Content-Type': 'application/json; charset=utf-8',
+            'Content-Length': body.length,
             'Access-Control-Allow-Origin': '*',
             'Cache-Control': 'public, max-age=300',
           })
-          const { createReadStream } = await import('fs')
-          createReadStream(meshPath).pipe(res)
+          res.end(body)
           return
         }
 
@@ -2597,7 +2663,8 @@ function createGitMiddleware(options: GitPluginOptions) {
         const url2     = new URL(req.url, 'http://localhost')
         const scenePath = url2.searchParams.get('path') || ''
         const isPrefab = req.url?.startsWith('/api/assets/prefab') ?? false
-        const maxObjects = parseInt(url2.searchParams.get('max') || (isPrefab ? '200' : '60'), 10)
+        const isBake = url2.searchParams.get('bake') === '1'
+        const maxObjects = isBake ? 9999 : parseInt(url2.searchParams.get('max') || (isPrefab ? '200' : '60'), 10)
 
         if (!scenePath) { sendJson(res, 400, { error: 'path parameter required' }); return }
 
@@ -2733,6 +2800,7 @@ function createGitMiddleware(options: GitPluginOptions) {
         const goRigidbodyData: Record<string, { mass: number; isKinematic: boolean; useGravity: boolean }> = {}
         const goAudioData: Record<string, { volume: number; loop: boolean; spatialBlend: number }> = {}
         const goScriptNames: Record<string, string[]> = {}
+        const goMonoSections: Record<string, string[]> = {}
 
         const parseVec3S = (s: string, k: string): V3 | null => {
           const re = new RegExp(k + ':\\s*\\{x:\\s*([\\d.eE+\\-]+),\\s*y:\\s*([\\d.eE+\\-]+),\\s*z:\\s*([\\d.eE+\\-]+)')
@@ -2994,6 +3062,8 @@ function createGitMiddleware(options: GitPluginOptions) {
               addComponent(goM[1], scriptName)
               if (!goScriptNames[goM[1]]) goScriptNames[goM[1]] = []
               if (!goScriptNames[goM[1]].includes(scriptName)) goScriptNames[goM[1]].push(scriptName)
+              if (!goMonoSections[goM[1]]) goMonoSections[goM[1]] = []
+              goMonoSections[goM[1]].push(section)
             }
           }
           // ─── 기타 컴포넌트 파싱 (GO별 컴포넌트 목록 구축) ────────────
@@ -3432,6 +3502,212 @@ function createGitMiddleware(options: GitPluginOptions) {
           boxCount++
         }
 
+        // ── 레벨 데이터 추출 (SceneMeshExporter.cs 구조 호환) ──────────────
+        const quatToEuler = (q: Q4): V3 => {
+          const sinr = 2 * (q.w * q.x + q.y * q.z)
+          const cosr = 1 - 2 * (q.x * q.x + q.y * q.y)
+          const sinp = Math.min(1, Math.max(-1, 2 * (q.w * q.y - q.z * q.x)))
+          const siny = 2 * (q.w * q.z + q.x * q.y)
+          const cosy = 1 - 2 * (q.y * q.y + q.z * q.z)
+          return {
+            x: Math.round(Math.atan2(sinr, cosr) * 1800 / Math.PI) / 10,
+            y: Math.round(Math.asin(sinp) * 1800 / Math.PI) / 10,
+            z: Math.round(Math.atan2(siny, cosy) * 1800 / Math.PI) / 10,
+          }
+        }
+        const r1 = (v: number) => Math.round(v * 10) / 10
+        const rv3 = (v: V3): V3 => ({ x: r1(v.x), y: r1(v.y), z: r1(v.z) })
+        // Unity LH → Three.js RH: bakeWorldTransform과 동일하게 Z 반전
+        const rv3rh = (v: V3): V3 => ({ x: r1(v.x), y: r1(v.y), z: r1(-v.z) })
+        const findTfForGo = (goId: string): string | undefined =>
+          Object.entries(tfMap).find(([, t]) => !t.stripped && t.goId === goId)?.[0]
+
+        interface LevelSpawnPoint { name: string; position: V3; rotation: V3 }
+        interface LevelCapturePoint {
+          name: string; uniqueID: number; networkObjectID: number
+          position: V3; rotation: V3; radius: number; areaShape: number
+          activeDelayTime: number; baseTime: number; k: number
+          decay: number; tickInterval: number
+          pointCaptureIndex: number; nextPointCaptureIndex: number[]
+        }
+        interface LevelSafetyZone {
+          name: string; position: V3; rotation: V3
+          center: V3; size: V3; worldCenter: V3; worldMin: V3; worldMax: V3
+        }
+
+        const levelSpawnPoints: LevelSpawnPoint[] = []
+        const levelCapturePoints: LevelCapturePoint[] = []
+        const levelSafetyZones: LevelSafetyZone[] = []
+
+        // SpawnPoints: direct GameObjects
+        for (const [goId, goName] of Object.entries(gameObjects)) {
+          if (goName.startsWith('Player_') || goName.startsWith('SpawnPoint') || goName.includes('Spawn')) {
+            const tfId = findTfForGo(goId)
+            if (tfId) {
+              const world = getWorldTf(tfId)
+              levelSpawnPoints.push({ name: goName, position: rv3rh(world.pos), rotation: quatToEuler(world.rot) })
+            }
+          }
+        }
+        // SpawnPoints: PrefabInstances
+        for (const p of placements) {
+          if (p.prefabName.startsWith('Player_') || p.prefabName.startsWith('SpawnPoint') || p.prefabName.includes('Spawn')) {
+            levelSpawnPoints.push({ name: p.prefabName, position: rv3rh(p.pos), rotation: quatToEuler(p.rot) })
+          }
+        }
+        levelSpawnPoints.sort((a, b) => a.name.localeCompare(b.name))
+
+        // NeutralPointCaptures: direct GameObjects with capture scripts
+        for (const [goId, goName] of Object.entries(gameObjects)) {
+          if (goName.includes('NeutralPointCapture') || goName.includes('CapturePoint')) {
+            const tfId = findTfForGo(goId)
+            if (!tfId) continue
+            const world = getWorldTf(tfId)
+            const cp: LevelCapturePoint = {
+              name: goName, position: rv3rh(world.pos), rotation: quatToEuler(world.rot),
+              uniqueID: 0, networkObjectID: 0, radius: 5, areaShape: 0,
+              activeDelayTime: 0, baseTime: 60, k: 1, decay: 0.1, tickInterval: 1,
+              pointCaptureIndex: 0, nextPointCaptureIndex: [],
+            }
+            const monoSecs = goMonoSections[goId] || []
+            for (const sec of monoSecs) {
+              const pf = (name: string, def: number) => {
+                const m = sec.match(new RegExp(`${name}:\\s*([\\d.eE+\\-]+)`))
+                return m ? parseFloat(m[1]) : def
+              }
+              cp.uniqueID = pf('uniqueID', cp.uniqueID)
+              cp.networkObjectID = pf('networkObjectID', cp.networkObjectID)
+              cp.radius = pf('radius', cp.radius)
+              cp.areaShape = pf('areaShape', cp.areaShape)
+              cp.activeDelayTime = pf('ActiveDelayTime', cp.activeDelayTime) || pf('activeDelayTime', cp.activeDelayTime)
+              cp.baseTime = pf('baseTime', cp.baseTime)
+              cp.k = pf('k', cp.k)
+              cp.decay = pf('decay', cp.decay)
+              cp.tickInterval = pf('tickInterval', cp.tickInterval)
+              cp.pointCaptureIndex = pf('pointCaptureIndex', cp.pointCaptureIndex)
+              const nextM = sec.match(/nextPointCaptureIndex:\s*\n((?:\s*-\s*\d+\s*\n?)+)/)
+              if (nextM) {
+                cp.nextPointCaptureIndex = [...nextM[1].matchAll(/\d+/g)].map(m2 => parseInt(m2[0]))
+              }
+            }
+            levelCapturePoints.push(cp)
+          }
+        }
+        // NeutralPointCaptures: PrefabInstances
+        for (const p of placements) {
+          if (p.prefabName.includes('NeutralPointCapture') || p.prefabName.includes('CapturePoint')) {
+            const cp: LevelCapturePoint = {
+              name: p.prefabName, position: rv3rh(p.pos), rotation: quatToEuler(p.rot),
+              uniqueID: 0, networkObjectID: 0, radius: 5, areaShape: 0,
+              activeDelayTime: 0, baseTime: 60, k: 1, decay: 0.1, tickInterval: 1,
+              pointCaptureIndex: 0, nextPointCaptureIndex: [],
+            }
+            const prefabAbs = guidToAbs(p.sourcePrefabGuid)
+            if (prefabAbs && existsSync(prefabAbs)) {
+              try {
+                const pc = readFileSync(prefabAbs, 'utf-8')
+                for (const sec of pc.split(/\n---/)) {
+                  if (!sec.includes('!u!114 &')) continue
+                  const pf = (name: string, def: number) => {
+                    const m = sec.match(new RegExp(`${name}:\\s*([\\d.eE+\\-]+)`))
+                    return m ? parseFloat(m[1]) : def
+                  }
+                  const uid = pf('uniqueID', -1)
+                  if (uid < 0) continue
+                  cp.uniqueID = uid
+                  cp.networkObjectID = pf('networkObjectID', 0)
+                  cp.radius = pf('radius', 5)
+                  cp.areaShape = pf('areaShape', 0)
+                  cp.activeDelayTime = pf('ActiveDelayTime', 0) || pf('activeDelayTime', 0)
+                  cp.baseTime = pf('baseTime', 60)
+                  cp.k = pf('k', 1)
+                  cp.decay = pf('decay', 0.1)
+                  cp.tickInterval = pf('tickInterval', 1)
+                  cp.pointCaptureIndex = pf('pointCaptureIndex', 0)
+                  const nextM = sec.match(/nextPointCaptureIndex:\s*\n((?:\s*-\s*\d+\s*\n?)+)/)
+                  if (nextM) cp.nextPointCaptureIndex = [...nextM[1].matchAll(/\d+/g)].map(m2 => parseInt(m2[0]))
+                  break
+                }
+              } catch (e) { console.warn('[vite-git-plugin]', e) }
+            }
+            // Apply m_Modifications overrides from scene PrefabInstance
+            const piSection = sections.find(s => s.includes(`!u!1001 &${p.id}`))
+            if (piSection) {
+              const mods = parseModifications(piSection)
+              for (const mod of mods) {
+                if (mod.prop === 'uniqueID') cp.uniqueID = parseVal(mod.value)
+                else if (mod.prop === 'radius') cp.radius = parseVal(mod.value)
+                else if (mod.prop === 'pointCaptureIndex') cp.pointCaptureIndex = parseVal(mod.value)
+                else if (mod.prop === 'networkObjectID') cp.networkObjectID = parseVal(mod.value)
+                else if (mod.prop === 'areaShape') cp.areaShape = parseVal(mod.value)
+                else if (mod.prop === 'baseTime') cp.baseTime = parseVal(mod.value)
+                else if (mod.prop === 'k') cp.k = parseVal(mod.value)
+                else if (mod.prop === 'decay') cp.decay = parseVal(mod.value)
+                else if (mod.prop === 'tickInterval') cp.tickInterval = parseVal(mod.value)
+              }
+            }
+            levelCapturePoints.push(cp)
+          }
+        }
+        levelCapturePoints.sort((a, b) => a.uniqueID - b.uniqueID)
+
+        // SafetyZones: direct GameObjects with BoxCollider
+        for (const [goId, goName] of Object.entries(gameObjects)) {
+          if (!goName.startsWith('SafetyZone_') && !goName.includes('SafetyZone')) continue
+          const colliders = goColliderData[goId]
+          const box = colliders?.find(c => c.type === 'box')
+          if (!box?.size) continue
+          const tfId = findTfForGo(goId)
+          if (!tfId) continue
+          const world = getWorldTf(tfId)
+          const cen = box.center || { x: 0, y: 0, z: 0 }
+          const wc = vecAdd(world.pos, quatRotateVec(world.rot, vecMulComp(cen, world.scale)))
+          const hs = {
+            x: Math.abs(box.size.x * world.scale.x) / 2,
+            y: Math.abs(box.size.y * world.scale.y) / 2,
+            z: Math.abs(box.size.z * world.scale.z) / 2,
+          }
+          levelSafetyZones.push({
+            name: goName, position: rv3rh(world.pos), rotation: quatToEuler(world.rot),
+            center: rv3(cen), size: rv3(box.size),
+            worldCenter: rv3rh(wc),
+            worldMin: rv3rh({ x: wc.x - hs.x, y: wc.y - hs.y, z: wc.z - hs.z }),
+            worldMax: rv3rh({ x: wc.x + hs.x, y: wc.y + hs.y, z: wc.z + hs.z }),
+          })
+        }
+        // SafetyZones: PrefabInstances
+        for (const p of placements) {
+          if (!p.prefabName.startsWith('SafetyZone') && !p.prefabName.includes('SafetyZone')) continue
+          const pcd = resolvePrefabComponentData(p.sourcePrefabGuid)
+          const box = pcd?.colliders?.find(c => c.type === 'box')
+          if (!box?.size) continue
+          const cen = box.center || { x: 0, y: 0, z: 0 }
+          const wc = vecAdd(p.pos, quatRotateVec(p.rot, vecMulComp(cen, p.scale)))
+          const hs = {
+            x: Math.abs(box.size.x * p.scale.x) / 2,
+            y: Math.abs(box.size.y * p.scale.y) / 2,
+            z: Math.abs(box.size.z * p.scale.z) / 2,
+          }
+          levelSafetyZones.push({
+            name: p.prefabName, position: rv3rh(p.pos), rotation: quatToEuler(p.rot),
+            center: rv3(cen), size: rv3(box.size),
+            worldCenter: rv3rh(wc),
+            worldMin: rv3rh({ x: wc.x - hs.x, y: wc.y - hs.y, z: wc.z - hs.z }),
+            worldMax: rv3rh({ x: wc.x + hs.x, y: wc.y + hs.y, z: wc.z + hs.z }),
+          })
+        }
+        levelSafetyZones.sort((a, b) => a.name.localeCompare(b.name))
+
+        const levelData = {
+          spawnPoints: levelSpawnPoints,
+          neutralPointCaptures: levelCapturePoints,
+          safetyZones: levelSafetyZones,
+        }
+
+        if (levelSpawnPoints.length || levelCapturePoints.length || levelSafetyZones.length) {
+          sLog('INFO', `[level-parse] SpawnPoints: ${levelSpawnPoints.length}, CapturePoints: ${levelCapturePoints.length}, SafetyZones: ${levelSafetyZones.length}`)
+        }
+
         // ── 프리팹 모드: 메시 없는 직접 GameObject도 empty 오브젝트로 추가 ──
         // 프리팹에서는 빈 오브젝트(Collider, Script, Animator 등)도 확인 가능해야 함
         const renderedGoIds = new Set<string>() // 이미 렌더링 오브젝트가 있는 GO
@@ -3614,15 +3890,54 @@ function createGitMiddleware(options: GitPluginOptions) {
           }
 
           try {
-            const fbxObjs  = sceneObjects.filter(o => o.type === 'fbx'         && o.fbxPath)
+            const SKY_RE = /^sky[_\s-]|skybox|skydome|sky\.fbx$/i
+            const fbxObjs  = sceneObjects.filter(o => o.type === 'fbx'         && o.fbxPath && !SKY_RE.test(o.name) && !SKY_RE.test(o.fbxPath.split('/').pop() || ''))
             const pbObjs   = sceneObjects.filter(o => o.type === 'probuilder'  && o.vertices)
             const totalWork = fbxObjs.length + pbObjs.length
             sse({ type: 'start', total: totalWork, sceneName: scenePath })
+
+            const rawSceneName = scenePath.split('/').pop()?.replace(/\.unity$/i, '') || 'scene'
+            const safeFolder   = rawSceneName.replace(/[<>:"/\\|?*]/g, '_').slice(0, 60)
+            const outDir       = join(process.cwd(), '..', '..', 'scene-cache', safeFolder)
+            const forceOverwrite = url2.searchParams.get('force') === '1'
+
+            // ⓪ 기존 데이터 보호: meshCount가 더 크면 skip
+            if (!forceOverwrite && existsSync(join(outDir, 'meshes.json'))) {
+              try {
+                let existInfo = ''
+                const existInfoPath = join(outDir, 'scene_info.json')
+                if (existsSync(existInfoPath)) {
+                  existInfo = readFileSync(existInfoPath, 'utf-8').replace(/^\uFEFF/, '')
+                  const parsed = JSON.parse(existInfo)
+                  const existCount = parsed.meshCount || 0
+                  if (existCount > totalWork && existCount > 100) {
+                    sse({ type: 'skip', reason: `기존 데이터가 더 품질 좋음 (기존 ${existCount} meshes vs 새 ${totalWork} objects)` })
+                    sse({ type: 'done', mapFolder: safeFolder, meshCount: existCount, sceneName: rawSceneName, skipped: true })
+                    res.end()
+                    return
+                  }
+                }
+              } catch (e) { console.warn('[vite-git-plugin]', e) }
+            }
 
             // ① Three.js 초기화
             sse({ type: 'progress', pct: 3, msg: 'Three.js 초기화 중...' })
             const { THREE } = await getServerThree()
 
+            // ① -b material_index 로드
+            const UNITY_ASSETS_DIR_BAKE = join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets')
+            const matIdxPath = join(process.cwd(), '..', '..', 'assets', '.material_index.json')
+            let fbxMatMap: Record<string, { name: string; albedoPath: string; normalPath?: string }[]> = {}
+            try {
+              if (existsSync(matIdxPath)) {
+                let matRaw = readFileSync(matIdxPath, 'utf-8')
+                if (matRaw.charCodeAt(0) === 0xFEFF) matRaw = matRaw.slice(1)
+                const matIdx = JSON.parse(matRaw)
+                fbxMatMap = matIdx.fbxMaterials || {}
+              }
+            } catch (matErr) { console.error('[bake] material_index load error:', matErr) }
+
+            const texturesToCopy = new Set<string>()
             const meshObjects: any[] = []
             let done = 0
 
@@ -3632,13 +3947,27 @@ function createGitMiddleware(options: GitPluginOptions) {
               if (done % 5 === 0 || done === fbxObjs.length) {
                 sse({ type: 'progress', pct: 5 + (done / totalWork) * 80,
                       msg: `FBX 로딩 ${done} / ${totalWork}` })
-                await new Promise(r => setTimeout(r, 0))  // event loop 양보
+                await new Promise(r => setTimeout(r, 0))
               }
 
               try {
-                const UNITY_ASSETS_DIR = join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets')
-                const absPath = join(UNITY_ASSETS_DIR, ...obj.fbxPath.replace(/\//g, sep).split(sep))
+                const absPath = join(UNITY_ASSETS_DIR_BAKE, ...obj.fbxPath.replace(/\//g, sep).split(sep))
                 if (!existsSync(absPath)) continue
+
+                const matEntries = fbxMatMap[obj.fbxPath] || []
+                const firstMat = matEntries[0]
+                let materialData: any = undefined
+                if (firstMat) {
+                  materialData = { color: { r: 0.6, g: 0.6, b: 0.6 } }
+                  if (firstMat.albedoPath) {
+                    const texFileName = firstMat.albedoPath.split('/').pop() || ''
+                    const ext = texFileName.split('.').pop()?.toLowerCase() || ''
+                    if (['png', 'jpg', 'jpeg'].includes(ext)) {
+                      materialData.mainTextureId = texFileName
+                      texturesToCopy.add(firstMat.albedoPath)
+                    }
+                  }
+                }
 
                 const subMeshes = await serverExtractFBX(absPath)
                 for (const sm of subMeshes) {
@@ -3659,9 +3988,10 @@ function createGitMiddleware(options: GitPluginOptions) {
                     geometry: {
                       vertices:  worldVerts,
                       normals:   worldNorms,
-                      uvs:       sm.uvs,
+                      uvs:       sm.uvs.map(u => ({ x: Math.round(u.x * 100) / 100, y: Math.round(u.y * 100) / 100 })),
                       triangles: sm.triangles,
                     },
+                    ...(materialData ? { material: materialData } : {}),
                   })
                 }
               } catch (fbxErr) {
@@ -3686,19 +4016,33 @@ function createGitMiddleware(options: GitPluginOptions) {
                   },
                   geometry: baked,
                 })
-              } catch {}
+              } catch (e) { console.warn('[vite-git-plugin]', e) }
             }
 
-            sse({ type: 'progress', pct: 88, msg: '씬 정보 저장 중...' })
+            sse({ type: 'progress', pct: 85, msg: '텍스처 복사 중...' })
+            await new Promise(r => setTimeout(r, 0))
+
+            // ③-b 텍스처 파일 복사
+            mkdirSync(outDir, { recursive: true })
+            const texOutDir = join(outDir, 'textures')
+            mkdirSync(texOutDir, { recursive: true })
+            let texCopied = 0
+            for (const relTexPath of texturesToCopy) {
+              try {
+                const srcPath = join(UNITY_ASSETS_DIR_BAKE, ...relTexPath.replace(/\//g, sep).split(sep))
+                const texName = relTexPath.split('/').pop() || ''
+                const dstPath = join(texOutDir, texName)
+                if (existsSync(srcPath) && !existsSync(dstPath)) {
+                  copyFileSync(srcPath, dstPath)
+                  texCopied++
+                }
+              } catch (e) { console.warn('[vite-git-plugin]', e) }
+            }
+
+            sse({ type: 'progress', pct: 90, msg: `씬 정보 저장 중... (텍스처 ${texCopied}개 복사)` })
             await new Promise(r => setTimeout(r, 0))
 
             // ④ 출력 디렉토리에 저장 (scene-cache/<sceneName>/)
-            const rawSceneName = scenePath.split('/').pop()?.replace(/\.unity$/i, '') || 'scene'
-            // 파일시스템 안전 이름
-            const safeFolder   = rawSceneName.replace(/[<>:"/\\|?*]/g, '_').slice(0, 60)
-            const outDir       = join(process.cwd(), '..', 'scene-cache', safeFolder)
-            mkdirSync(outDir, { recursive: true })
-
             writeFileSync(join(outDir, 'meshes.json'), JSON.stringify({ meshObjects }))
 
             const bounds = computeMeshBounds(meshObjects)
@@ -3707,11 +4051,14 @@ function createGitMiddleware(options: GitPluginOptions) {
               meshCount:  meshObjects.length,
               exportTime: new Date().toISOString(),
               bounds,
+              spawnPoints: levelSpawnPoints.length > 0 ? levelSpawnPoints : undefined,
+              neutralPointCaptures: levelCapturePoints.length > 0 ? levelCapturePoints : undefined,
+              safetyZones: levelSafetyZones.length > 0 ? levelSafetyZones : undefined,
             }
             writeFileSync(join(outDir, 'scene_info.json'), JSON.stringify(sceneInfoOut))
 
             sse({ type: 'progress', pct: 100, msg: '완료!' })
-            sse({ type: 'done', mapFolder: safeFolder, meshCount: meshObjects.length, sceneName: rawSceneName })
+            sse({ type: 'done', mapFolder: safeFolder, meshCount: meshObjects.length, sceneName: rawSceneName, textures: texCopied })
           } catch (bakeErr) {
             sse({ type: 'error', msg: String(bakeErr) })
           }
@@ -3730,6 +4077,7 @@ function createGitMiddleware(options: GitPluginOptions) {
           resolvedCount: sceneObjects.length,
           objects: sceneObjects,
           hierarchy,
+          levelData,
         })
         return
       } catch (sceneErr) {
@@ -4940,7 +5288,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isCloned) {
               const lockPath = join(activeDir, '.git', 'index.lock')
               if (existsSync(lockPath)) {
-                try { unlinkSync(lockPath); sLog('WARN', `Removed stale index.lock: ${lockPath}`) } catch {}
+                try { unlinkSync(lockPath); sLog('WARN', `Removed stale index.lock: ${lockPath}`) } catch (e) { /* non-critical */ }
               }
             }
 
@@ -4976,9 +5324,9 @@ document.addEventListener('DOMContentLoaded', () => {
               sendJson(res, 200, { cloned: false })
               return
             }
-            const head = runGit('git rev-parse --short HEAD', activeDir)
-            const date = runGit('git log -1 --format=%ci', activeDir)
-            const msg = runGit('git log -1 --format=%s', activeDir)
+            const head = runGit(['rev-parse', '--short', 'HEAD'], activeDir)
+            const date = runGit(['log', '-1', '--format=%ci'], activeDir)
+            const msg = runGit(['log', '-1', '--format=%s'], activeDir)
             sendJson(res, 200, { cloned: true, commit: head, date, message: msg })
             return
           }
@@ -5080,11 +5428,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const from = url.searchParams.get('from') || 'HEAD~1'
             const to = url.searchParams.get('to') || 'HEAD'
             const path = url.searchParams.get('path') || ''
-            const pathArg = path ? ` -- "${path}"` : ''
-            const raw = runGit(
-              `git diff --name-status ${from} ${to}${pathArg}`,
-              activeDir
-            )
+            const diffArgs = ['diff', '--name-status', from, to]
+            if (path) { diffArgs.push('--', path) }
+            const raw = runGit(diffArgs, activeDir)
             const changes = raw.split('\n').filter(Boolean).map((line) => {
               const [status, ...rest] = line.split('\t')
               return { status: status.trim(), file: rest.join('\t').trim() }
@@ -5093,7 +5439,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // Get stat summary
             let statSummary = ''
             try {
-              statSummary = runGit(`git diff --stat ${from} ${to}${pathArg}`, activeDir)
+              const statArgs = ['diff', '--stat', from, to]
+              if (path) { statArgs.push('--', path) }
+              statSummary = runGit(statArgs, activeDir)
             } catch { /* ignore */ }
 
             sendJson(res, 200, { from, to, changes, statSummary })
@@ -5111,7 +5459,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             let diff = ''
             try {
-              diff = runGit(`git diff ${from} ${to} -- "${filePath}"`, activeDir)
+              diff = runGit(['diff', from, to, '--', filePath], activeDir)
             } catch { /* binary or missing */ }
 
             sendJson(res, 200, { diff })
@@ -5468,9 +5816,9 @@ function _gitResetToClean(gitRepoDir: string) {
   const dotGit = join(gitDir, '.git')
   if (!existsSync(dotGit)) return
   try {
-    execSync('git checkout -- .', { cwd: gitDir, encoding: 'utf-8', timeout: 15000, stdio: 'pipe' })
-    execSync('git clean -fd -- GameData/Data', { cwd: gitDir, encoding: 'utf-8', timeout: 15000, stdio: 'pipe' })
-    execSync('git pull --no-rebase --no-edit', { cwd: gitDir, encoding: 'utf-8', timeout: 30000, stdio: 'pipe' })
+    execFileSync('git', ['checkout', '--', '.'], { cwd: gitDir, encoding: 'utf-8', timeout: 15000, stdio: 'pipe' })
+    execFileSync('git', ['clean', '-fd', '--', 'GameData/Data'], { cwd: gitDir, encoding: 'utf-8', timeout: 15000, stdio: 'pipe' })
+    execFileSync('git', ['pull', '--no-rebase', '--no-edit'], { cwd: gitDir, encoding: 'utf-8', timeout: 30000, stdio: 'pipe' })
     console.log('[ChatAPI] git checkout+clean+pull 완료')
   } catch (e) {
     console.log(`[ChatAPI] git reset warning: ${e}`)
@@ -6721,10 +7069,10 @@ function serverExecuteTool(
       try {
         const dir = repo === 'aegis' && options.repo2LocalDir ? options.repo2LocalDir : options.localDir
         if (!existsSync(join(dir, '.git'))) return { result: 'Git 저장소가 없습니다.' }
-        let cmd = `git log --oneline -n ${count}`
-        if (keyword) cmd += ` --grep="${keyword.replace(/"/g, '\\"')}"`
-        if (filePath) cmd += ` -- "${filePath}"`
-        const log = runGit(cmd, dir)
+        const gitArgs = ['log', '--oneline', '-n', String(count)]
+        if (keyword) gitArgs.push(`--grep=${keyword}`)
+        if (filePath) { gitArgs.push('--'); gitArgs.push(filePath) }
+        const log = runGit(gitArgs, dir)
         const commits = log.split('\n').filter(Boolean).map(line => {
           const [hash, ...rest] = line.split(' ')
           return { hash, message: rest.join(' ') }
@@ -7073,13 +7421,11 @@ function serverExecuteTool(
       try {
         const dir = repo === 'aegis' && options.repo2LocalDir ? options.repo2LocalDir : options.localDir
         if (!existsSync(join(dir, '.git'))) return { result: 'Git 저장소가 없습니다.' }
-        let cmd = `git diff ${commitHash}^..${commitHash} --stat`
-        const stats = runGit(cmd, dir)
-        let diffCmd = filePath
-          ? `git diff ${commitHash}^..${commitHash} -- "${filePath}"`
-          : `git diff ${commitHash}^..${commitHash}`
+        const stats = runGit(['diff', `${commitHash}^..${commitHash}`, '--stat'], dir)
+        const diffArgs = ['diff', `${commitHash}^..${commitHash}`]
+        if (filePath) { diffArgs.push('--'); diffArgs.push(filePath) }
         let diff = ''
-        try { diff = runGit(diffCmd, dir) } catch { diff = '(diff 조회 실패)' }
+        try { diff = runGit(diffArgs, dir) } catch { diff = '(diff 조회 실패)' }
         // 너무 길면 잘라냄
         if (diff.length > 6000) diff = diff.slice(0, 6000) + '\n...(잘림, 특정 파일로 좁혀 조회하세요)'
         const resultText = `커밋 ${commitHash} 변경 내용 (repo: ${repo}):\n\n${stats}\n\n${diff}`
@@ -8548,7 +8894,7 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       var btn = makeFbxBtn(apiUrl, fbxName);
       if (el.tagName === 'CODE') {
         // <code>filename.fbx</code> → 버튼으로 교체
-        try { el.parentNode.replaceChild(btn, el); } catch(e){}
+        try { el.parentNode.replaceChild(btn, el); } catch (e) { /* non-critical */ }
         return;
       } else if (el.tagName === 'TD') {
         // 테이블 셀 안에 있으면 셀 내용을 버튼으로 교체
@@ -8565,7 +8911,7 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       var prefabPath = prefabMatches[0].trim();
       var btn = makePrefabBtn(prefabPath, prefabPath.split('/').pop().replace('.prefab',''));
       if (el.tagName === 'CODE') {
-        try { el.parentNode.replaceChild(btn, el); } catch(e){}
+        try { el.parentNode.replaceChild(btn, el); } catch (e) { /* non-critical */ }
         return;
       } else if (el.tagName === 'TD') {
         el.innerHTML = '';
@@ -8583,7 +8929,7 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       var apiUrl = toApiUrl(href);
       if (!apiUrl) return;
       var btn = makeFbxBtn(apiUrl, a.textContent.trim());
-      try { a.parentNode.replaceChild(btn, a); } catch(e){}
+      try { a.parentNode.replaceChild(btn, a); } catch (e) { /* non-critical */ }
     });
 
     // 2) <code> 안의 .fbx / .prefab 파일명 → 뷰어 버튼
@@ -8609,7 +8955,7 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       var wrap = document.createElement('div');
       wrap.style.cssText = 'margin:8px 0;';
       wrap.appendChild(makeFbxBtn(apiUrl, d.getAttribute('data-label')||''));
-      try { d.parentNode.replaceChild(wrap, d); } catch(e){}
+      try { d.parentNode.replaceChild(wrap, d); } catch (e) { /* non-critical */ }
     });
 
     // 5) embed-prefab → 버튼
@@ -8620,7 +8966,7 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       var wrap = document.createElement('div');
       wrap.style.cssText = 'margin:8px 0;';
       wrap.appendChild(makePrefabBtn(pp, lb));
-      try { d.parentNode.replaceChild(wrap, d); } catch(e){}
+      try { d.parentNode.replaceChild(wrap, d); } catch (e) { /* non-critical */ }
     });
 
     // 6) embed-fbx-anim → iframe
@@ -8633,7 +8979,7 @@ function buildPublishedPage(title: string, contentHtml: string): string {
       iframe.src = '/TableMaster/viewer/prefab?fbx=' + encodeURIComponent(apiUrl);
       iframe.style.cssText = 'width:100%;height:400px;border:1px solid #334155;border-radius:8px;margin:8px 0;background:#0a0a0a;';
       iframe.allow = 'fullscreen';
-      try { d.parentNode.insertBefore(iframe, d.nextSibling); } catch(e){}
+      try { d.parentNode.insertBefore(iframe, d.nextSibling); } catch (e) { /* non-critical */ }
     });
 
     // 7) embed-scene

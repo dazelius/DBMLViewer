@@ -600,9 +600,168 @@ function SearchResults({
   );
 }
 
+// ── 레벨 맵 타입 ────────────────────────────────────────────────────────────────
+interface MapEntry {
+  folder: string;
+  sceneName: string;
+  meshCount: number;
+  thumbUrl: string;
+}
+
+interface MapSceneInfo {
+  sceneName: string;
+  meshCount: number;
+  exportTime?: string;
+  spawnPoints?: Array<{ name: string; position: { x: number; y: number; z: number } }>;
+  neutralPointCaptures?: Array<{ name: string; uniqueID: number; radius: number; position: { x: number; y: number; z: number } }>;
+  safetyZones?: Array<{ name: string; worldCenter: { x: number; y: number; z: number }; size: { x: number; y: number; z: number } }>;
+}
+
+// ── 레벨 브라우저 ───────────────────────────────────────────────────────────────
+function LevelBrowser({ onOpenLevel }: { onOpenLevel: (map: MapEntry) => void }) {
+  const [maps, setMaps] = useState<MapEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [infos, setInfos] = useState<Record<string, MapSceneInfo>>({});
+
+  useEffect(() => {
+    setLoading(true);
+    fetch('/api/assets/map-list')
+      .then(r => r.json())
+      .then(async (d: { maps: MapEntry[] }) => {
+        setMaps(d.maps || []);
+        setLoading(false);
+        const infoMap: Record<string, MapSceneInfo> = {};
+        for (const m of (d.maps || [])) {
+          try {
+            const res = await fetch(`/api/assets/map-scene-info?map=${encodeURIComponent(m.folder)}`);
+            if (res.ok) infoMap[m.folder] = await res.json();
+          } catch (e) { /* non-critical */ }
+        }
+        setInfos(infoMap);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  if (loading) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300, gap: 8, color: '#475569', fontSize: 13 }}>
+      <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+      </svg>
+      레벨 목록 로딩 중...
+    </div>
+  );
+
+  if (maps.length === 0) return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, gap: 12, color: '#475569' }}>
+      <div style={{ fontSize: 40 }}>🗺️</div>
+      <div style={{ fontWeight: 600, color: '#94a3b8', fontSize: 14 }}>Baked 레벨이 없습니다</div>
+      <div style={{ fontSize: 12, color: '#475569', textAlign: 'center', maxWidth: 400 }}>
+        .unity 씬 파일을 열어 Bake를 실행하면 레벨 데이터가 생성됩니다.<br/>
+        Assets에서 .unity 파일을 클릭하여 씬을 로드하세요.
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+        {maps.map(m => {
+          const info = infos[m.folder];
+          const spCount = info?.spawnPoints?.length || 0;
+          const cpCount = info?.neutralPointCaptures?.length || 0;
+          const szCount = info?.safetyZones?.length || 0;
+          const hasLevelData = spCount > 0 || cpCount > 0 || szCount > 0;
+
+          return (
+            <div
+              key={m.folder}
+              onClick={() => onOpenLevel(m)}
+              style={{
+                background: '#161b22', border: '1px solid rgba(255,255,255,0.06)',
+                borderRadius: 12, padding: 16, cursor: 'pointer', transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => {
+                e.currentTarget.style.background = '#1c2333';
+                e.currentTarget.style.borderColor = 'rgba(96,165,250,0.3)';
+                e.currentTarget.style.transform = 'translateY(-2px)';
+                e.currentTarget.style.boxShadow = '0 8px 24px rgba(0,0,0,0.3)';
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = '#161b22';
+                e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)';
+                e.currentTarget.style.transform = 'none';
+                e.currentTarget.style.boxShadow = 'none';
+              }}
+            >
+              {/* 헤더 */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <div style={{
+                  width: 36, height: 36, borderRadius: 8,
+                  background: 'linear-gradient(135deg, #6366f1, #3b82f6)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                }}>
+                  <span style={{ fontSize: 18 }}>🗺️</span>
+                </div>
+                <div>
+                  <div style={{ color: '#e2e8f0', fontWeight: 700, fontSize: 14 }}>{m.sceneName}</div>
+                  <div style={{ color: '#64748b', fontSize: 11 }}>
+                    {m.meshCount.toLocaleString()} meshes
+                    {info?.exportTime && ` · ${info.exportTime.split('T')[0]}`}
+                  </div>
+                </div>
+              </div>
+
+              {/* 레벨 데이터 배지 */}
+              {hasLevelData && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                  {spCount > 0 && (
+                    <span style={{ padding: '2px 8px', background: 'rgba(34,211,238,0.12)', color: '#22d3ee', borderRadius: 5, fontSize: 10, fontWeight: 600 }}>
+                      🚩 Spawn ×{spCount}
+                    </span>
+                  )}
+                  {cpCount > 0 && (
+                    <span style={{ padding: '2px 8px', background: 'rgba(244,63,94,0.12)', color: '#f43f5e', borderRadius: 5, fontSize: 10, fontWeight: 600 }}>
+                      ⚔ Capture ×{cpCount}
+                    </span>
+                  )}
+                  {szCount > 0 && (
+                    <span style={{ padding: '2px 8px', background: 'rgba(163,230,53,0.12)', color: '#a3e635', borderRadius: 5, fontSize: 10, fontWeight: 600 }}>
+                      🛡 Safety ×{szCount}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* 레벨 상세 정보 */}
+              {info?.neutralPointCaptures && info.neutralPointCaptures.length > 0 && (
+                <div style={{ fontSize: 10, color: '#64748b', padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+                  {info.neutralPointCaptures.map((cp, i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                      <span style={{ color: '#94a3b8' }}>{cp.name}</span>
+                      <span>R={cp.radius}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 4, marginTop: 6,
+                color: '#3b82f6', fontSize: 11, fontWeight: 600,
+              }}>
+                3D 뷰어로 열기 →
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── 메인 페이지 ───────────────────────────────────────────────────────────────
 export default function UnityPage() {
   const navigate = useNavigate();
+  const [mode, setMode] = useState<'assets' | 'levels'>('assets');
   const [selectedDir, setSelectedDir] = useState('GameContents');
   const [typeFilter, setTypeFilter] = useState<AssetType | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -614,6 +773,7 @@ export default function UnityPage() {
   const [openFbx, setOpenFbx] = useState<AssetFile | null>(null);
   const [openScene, setOpenScene] = useState<AssetFile | null>(null);
   const [openCode, setOpenCode] = useState<AssetFile | null>(null);
+  
 
   // 검색 디바운스
   useEffect(() => {
@@ -687,59 +847,90 @@ export default function UnityPage() {
           <span style={{ fontWeight: 700, fontSize: 15, color: '#e2e8f0' }}>Unity Asset Browser</span>
         </div>
 
-        {/* 검색 */}
-        <div style={{ flex: 1, maxWidth: 400, position: 'relative', marginLeft: 8 }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round"
-            style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
-            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          </svg>
-          <input
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder="파일명 검색..."
+        {/* 모드 스위처 */}
+        <div style={{ display: 'flex', gap: 2, background: '#0d1117', borderRadius: 6, padding: 2 }}>
+          <button
+            onClick={() => setMode('assets')}
             style={{
-              width: '100%', paddingLeft: 34, paddingRight: searchQuery ? 32 : 12,
-              paddingTop: 7, paddingBottom: 7,
-              background: '#0d1117', border: '1px solid rgba(255,255,255,0.1)',
-              borderRadius: 8, color: '#e2e8f0', fontSize: 13, outline: 'none',
+              padding: '5px 12px', borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: 'pointer', border: 'none',
+              background: mode === 'assets' ? '#1e293b' : 'transparent',
+              color: mode === 'assets' ? '#e2e8f0' : '#64748b',
             }}
-            onFocus={e => { e.target.style.borderColor = 'rgba(99,102,241,0.5)'; }}
-            onBlur={e => { e.target.style.borderColor = 'rgba(255,255,255,0.1)'; }}
-          />
-          {searchQuery && (
-            <button onClick={() => setSearchQuery('')} style={{
-              position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
-              background: 'none', border: 'none', color: '#475569', cursor: 'pointer', padding: 2, fontSize: 14,
-            }}>×</button>
-          )}
+          >
+            📁 Assets
+          </button>
+          <button
+            onClick={() => setMode('levels')}
+            style={{
+              padding: '5px 12px', borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: 'pointer', border: 'none',
+              background: mode === 'levels' ? '#1e293b' : 'transparent',
+              color: mode === 'levels' ? '#e2e8f0' : '#64748b',
+            }}
+          >
+            🗺️ Levels
+          </button>
         </div>
 
-        {/* 타입 필터 */}
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'nowrap', overflowX: 'auto' }}>
-          {ALL_FILTERS.map(f => {
-            const active = typeFilter === f.key;
-            const meta = f.key !== 'all' ? (TYPE_META[f.key as AssetType] ?? TYPE_META.other) : null;
-            return (
-              <button
-                key={f.key}
-                onClick={() => setTypeFilter(f.key as AssetType | 'all')}
+        {mode === 'assets' && (
+          <>
+            {/* 검색 */}
+            <div style={{ flex: 1, maxWidth: 400, position: 'relative', marginLeft: 8 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round"
+                style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="파일명 검색..."
                 style={{
-                  padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
-                  cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
-                  background: active ? (meta?.bg ?? 'rgba(99,102,241,0.15)') : 'transparent',
-                  color: active ? (meta?.color ?? '#818cf8') : '#64748b',
-                  border: active ? `1px solid ${meta?.color ?? '#818cf8'}44` : '1px solid transparent',
-                  transition: 'all 0.15s',
+                  width: '100%', paddingLeft: 34, paddingRight: searchQuery ? 32 : 12,
+                  paddingTop: 7, paddingBottom: 7,
+                  background: '#0d1117', border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: 8, color: '#e2e8f0', fontSize: 13, outline: 'none',
                 }}
-              >
-                {f.label}
-              </button>
-            );
-          })}
-        </div>
+                onFocus={e => { e.target.style.borderColor = 'rgba(99,102,241,0.5)'; }}
+                onBlur={e => { e.target.style.borderColor = 'rgba(255,255,255,0.1)'; }}
+              />
+              {searchQuery && (
+                <button onClick={() => setSearchQuery('')} style={{
+                  position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+                  background: 'none', border: 'none', color: '#475569', cursor: 'pointer', padding: 2, fontSize: 14,
+                }}>×</button>
+              )}
+            </div>
+
+            {/* 타입 필터 */}
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'nowrap', overflowX: 'auto' }}>
+              {ALL_FILTERS.map(f => {
+                const active = typeFilter === f.key;
+                const meta = f.key !== 'all' ? (TYPE_META[f.key as AssetType] ?? TYPE_META.other) : null;
+                return (
+                  <button
+                    key={f.key}
+                    onClick={() => setTypeFilter(f.key as AssetType | 'all')}
+                    style={{
+                      padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                      cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+                      background: active ? (meta?.bg ?? 'rgba(99,102,241,0.15)') : 'transparent',
+                      color: active ? (meta?.color ?? '#818cf8') : '#64748b',
+                      border: active ? `1px solid ${meta?.color ?? '#818cf8'}44` : '1px solid transparent',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {f.label}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
 
       {/* ── 메인 레이아웃 ── */}
+      {mode === 'levels' ? (
+        <LevelBrowser onOpenLevel={(m) => navigate(`/level-viewer?map=${encodeURIComponent(m.folder)}`)} />
+      ) : (
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
 
         {/* 사이드바: 파일 트리 */}
@@ -822,6 +1013,7 @@ export default function UnityPage() {
           )}
         </div>
       </div>
+      )}
 
       {/* ── 모달: FBX 뷰어 ── */}
       {openFbx && (
@@ -837,6 +1029,8 @@ export default function UnityPage() {
       {openCode && (
         <CodeViewer path={openCode.path} onClose={() => setOpenCode(null)} />
       )}
+
+      
     </div>
   );
 }

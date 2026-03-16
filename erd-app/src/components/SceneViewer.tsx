@@ -57,12 +57,26 @@ interface MeshJsonObject {
   componentData?: ComponentData
 }
 
+interface LevelSpawnPoint { name: string; position: Vec3; rotation: Vec3 }
+interface LevelCapturePoint {
+  name: string; uniqueID: number; networkObjectID: number
+  position: Vec3; rotation: Vec3; radius: number; areaShape: number
+  activeDelayTime: number; baseTime: number; k: number
+  decay: number; tickInterval: number
+  pointCaptureIndex: number; nextPointCaptureIndex: number[]
+}
+interface LevelSafetyZone {
+  name: string; position: Vec3; rotation: Vec3
+  center: Vec3; size: Vec3; worldCenter: Vec3; worldMin: Vec3; worldMax: Vec3
+}
+
 interface SceneInfo {
   sceneName:  string
   meshCount:  number
   bounds?:    { min: Vec3; max: Vec3 }
-  spawnPoints?: unknown[]
-  neutralPointCaptures?: unknown[]
+  spawnPoints?: LevelSpawnPoint[]
+  neutralPointCaptures?: LevelCapturePoint[]
+  safetyZones?: LevelSafetyZone[]
 }
 
 interface MapEntry {
@@ -73,18 +87,22 @@ interface MapEntry {
 }
 
 // ── 레이어 시스템 ────────────────────────────────────────────────────────────
-type LayerName = 'Mesh' | 'Light' | 'Collider' | 'Camera' | 'Audio' | 'Particle' | 'Trigger'
+type LayerName = 'Mesh' | 'Light' | 'Collider' | 'Camera' | 'Audio' | 'Particle' | 'Trigger' | 'Spawn' | 'Capture' | 'SafetyZone'
 const LAYER_COLORS: Record<LayerName, string> = {
-  Mesh:     '#60a5fa',
-  Light:    '#fbbf24',
-  Collider: '#4ade80',
-  Camera:   '#a78bfa',
-  Audio:    '#38bdf8',
-  Particle: '#f472b6',
-  Trigger:  '#fb923c',
+  Mesh:       '#60a5fa',
+  Light:      '#fbbf24',
+  Collider:   '#4ade80',
+  Camera:     '#a78bfa',
+  Audio:      '#38bdf8',
+  Particle:   '#f472b6',
+  Trigger:    '#fb923c',
+  Spawn:      '#22d3ee',
+  Capture:    '#f43f5e',
+  SafetyZone: '#a3e635',
 }
 const LAYER_ICONS: Record<LayerName, string> = {
   Mesh: '◆', Light: '💡', Collider: '🛡', Camera: '📷', Audio: '🔊', Particle: '✨', Trigger: '⚡',
+  Spawn: '🚩', Capture: '⚔', SafetyZone: '🛡',
 }
 
 // ── 상수 ────────────────────────────────────────────────────────────────────
@@ -92,8 +110,9 @@ const CHUNK_SIZE  = 80
 const TEX_CONCURRENCY = 6
 
 interface SceneViewerProps {
-  scenePath: string
-  height?:   number
+  scenePath?: string
+  mapEntry?:  MapEntry
+  height?:    number
 }
 
 // ── 텍스처 로딩 ──────────────────────────────────────────────────────────────
@@ -107,35 +126,36 @@ function loadTextureFromUrl(url: string): Promise<THREE.Texture | null> {
   })
 }
 
-// ── BufferGeometry 생성 ─────────────────────────────────────────────────────
-function createGeometry(geo: MeshGeometry): THREE.BufferGeometry {
-  const bg = new THREE.BufferGeometry()
-  const verts = new Float32Array(geo.vertices.length * 3)
-  geo.vertices.forEach((v, i) => { verts[i*3] = v.x; verts[i*3+1] = v.y; verts[i*3+2] = v.z })
-  bg.setAttribute('position', new THREE.BufferAttribute(verts, 3))
-  if (geo.triangles?.length) bg.setIndex(geo.triangles)
-  if (geo.normals?.length) {
-    const n = new Float32Array(geo.normals.length * 3)
-    geo.normals.forEach((v, i) => { n[i*3] = v.x; n[i*3+1] = v.y; n[i*3+2] = v.z })
-    bg.setAttribute('normal', new THREE.BufferAttribute(n, 3))
-  } else bg.computeVertexNormals()
-  if (geo.uvs?.length) {
-    const u = new Float32Array(geo.uvs.length * 2)
-    geo.uvs.forEach((v, i) => { u[i*2] = v.x; u[i*2+1] = v.y })
-    bg.setAttribute('uv', new THREE.BufferAttribute(u, 2))
-  }
-  if (geo.uv2s?.length) {
-    const u2 = new Float32Array(geo.uv2s.length * 2)
-    geo.uv2s.forEach((v, i) => { u2[i*2] = v.x; u2[i*2+1] = v.y })
-    bg.setAttribute('uv2', new THREE.BufferAttribute(u2, 2))
-  }
-  return bg
-}
-
-// ── 메시 생성 ────────────────────────────────────────────────────────────────
+// ── 메시 생성 (collaborative_map_viewer 호환) ──────────────────────────────
 function createThreeMesh(obj: MeshJsonObject, texCache: Map<string, THREE.Texture>): THREE.Mesh | null {
   if (!obj.geometry?.vertices?.length) return null
-  const geo = createGeometry(obj.geometry)
+
+  const gd = obj.geometry
+  const bg = new THREE.BufferGeometry()
+  const verts = new Float32Array(gd.vertices.length * 3)
+  gd.vertices.forEach((v, i) => { verts[i*3] = v.x; verts[i*3+1] = v.y; verts[i*3+2] = v.z })
+  bg.setAttribute('position', new THREE.BufferAttribute(verts, 3))
+  if (gd.triangles?.length) bg.setIndex(gd.triangles)
+  if (gd.normals?.length) {
+    const n = new Float32Array(gd.normals.length * 3)
+    gd.normals.forEach((v, i) => { n[i*3] = v.x; n[i*3+1] = v.y; n[i*3+2] = v.z })
+    bg.setAttribute('normal', new THREE.BufferAttribute(n, 3))
+  } else bg.computeVertexNormals()
+  if (gd.uvs?.length) {
+    const u = new Float32Array(gd.uvs.length * 2)
+    gd.uvs.forEach((v, i) => { u[i*2] = v.x; u[i*2+1] = v.y })
+    bg.setAttribute('uv', new THREE.BufferAttribute(u, 2))
+  }
+  if (gd.uv2s?.length) {
+    const u2 = new Float32Array(gd.uv2s.length * 2)
+    const so = obj.material?.lightmapScaleOffset
+    gd.uv2s.forEach((v, i) => {
+      if (so) { u2[i*2] = v.x * so.x + so.z; u2[i*2+1] = v.y * so.y + so.w }
+      else { u2[i*2] = v.x; u2[i*2+1] = v.y }
+    })
+    bg.setAttribute('uv2', new THREE.BufferAttribute(u2, 2))
+  }
+
   const mat = obj.material
   const baseColor = mat?.color ? new THREE.Color(mat.color.r, mat.color.g, mat.color.b) : new THREE.Color(0x888888)
   const params: Record<string, unknown> = { side: THREE.DoubleSide, color: baseColor }
@@ -146,10 +166,10 @@ function createThreeMesh(obj: MeshJsonObject, texCache: Map<string, THREE.Textur
     if (mat?.mainTextureOffset) tex.offset.set(mat.mainTextureOffset.x || 0, mat.mainTextureOffset.y || 0)
     params.map = tex; params.color = new THREE.Color(0xffffff)
   }
-  const threeMesh = new THREE.Mesh(geo,
+  const threeMesh = new THREE.Mesh(bg,
     params.map
-      ? new THREE.MeshStandardMaterial({ ...params, roughness: 0.85, metalness: 0 } as THREE.MeshStandardMaterialParameters)
-      : new THREE.MeshPhongMaterial({ ...params, transparent: false, flatShading: true } as THREE.MeshPhongMaterialParameters),
+      ? new THREE.MeshStandardMaterial({ ...params, roughness: 0.9, metalness: 0 } as THREE.MeshStandardMaterialParameters)
+      : new THREE.MeshPhongMaterial({ ...params, transparent: true, opacity: 0.8, flatShading: true } as THREE.MeshPhongMaterialParameters),
   )
   threeMesh.userData = { name: obj.name, path: obj.path, transform: obj.transform, layer: 'Mesh' as LayerName }
   return threeMesh
@@ -288,6 +308,230 @@ function createParticleVisual(pos: Vec3): THREE.Group {
   return g
 }
 
+// ── 레벨 요소 시각화 (collaborative_map_viewer 호환) ────────────────────────
+
+function makeCanvasLabel(text: string, color: string, width = 256, height = 64, fontSize = 28): THREE.Sprite {
+  const canvas = document.createElement('canvas')
+  canvas.width = width; canvas.height = height
+  const ctx = canvas.getContext('2d')!
+  ctx.fillStyle = color
+  ctx.font = `bold ${fontSize}px sans-serif`
+  ctx.textAlign = 'center'
+  ctx.fillText(text, width / 2, height * 0.65)
+  const tex = new THREE.CanvasTexture(canvas)
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }))
+  sprite.scale.set(width / 80, height / 80, 1)
+  return sprite
+}
+
+function createSpawnVisual(sp: LevelSpawnPoint): THREE.Group | null {
+  if (!sp?.position) return null
+  const g = new THREE.Group()
+  g.position.set(sp.position.x, sp.position.y, sp.position.z)
+  if (sp.rotation) g.rotation.y = sp.rotation.y * Math.PI / 180
+
+  const bodyMat = new THREE.MeshPhongMaterial({
+    color: 0x00ff88, transparent: true, opacity: 0.7,
+    emissive: new THREE.Color(0x00ff88), emissiveIntensity: 0.3,
+  })
+
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 1.4, 8), bodyMat)
+  body.position.y = 0.7
+  g.add(body)
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 8), bodyMat)
+  head.position.y = 1.6
+  g.add(head)
+
+  const arrow = new THREE.Mesh(
+    new THREE.ConeGeometry(0.15, 0.4, 4),
+    new THREE.MeshBasicMaterial({ color: 0xffff00 }),
+  )
+  arrow.rotation.x = Math.PI / 2
+  arrow.position.set(0, 1.0, 0.5)
+  g.add(arrow)
+
+  const label = makeCanvasLabel(sp.name, '#00ff88')
+  label.position.y = 2.5
+  g.add(label)
+
+  g.userData = { layer: 'Spawn' as LayerName, levelName: sp.name, levelType: 'spawn' }
+  return g
+}
+
+function createCaptureVisual(cp: LevelCapturePoint): THREE.Group | null {
+  if (!cp?.position) return null
+  const g = new THREE.Group()
+  g.position.set(cp.position.x, cp.position.y, cp.position.z)
+  if (cp.rotation) g.rotation.y = cp.rotation.y * Math.PI / 180
+
+  const totalSize = cp.radius || 10
+  const halfSize = totalSize / 2
+  const isRect = cp.areaShape === 0
+
+  let color = 0xffd700
+  let teamName = 'CENTER'
+  const nameLower = cp.name.toLowerCase()
+  if (nameLower.includes('defense')) { color = 0x3b82f6; teamName = 'DEFENSE' }
+  else if (nameLower.includes('offen')) { color = 0xef4444; teamName = 'OFFENSE' }
+
+  const areaMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false })
+  const fillMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.15, side: THREE.DoubleSide, depthWrite: false })
+  const wallMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.08, side: THREE.DoubleSide, depthWrite: false })
+
+  if (isRect) {
+    const borderShape = new THREE.Shape()
+    borderShape.moveTo(-halfSize, -halfSize)
+    borderShape.lineTo(halfSize, -halfSize)
+    borderShape.lineTo(halfSize, halfSize)
+    borderShape.lineTo(-halfSize, halfSize)
+    borderShape.closePath()
+    const hole = new THREE.Path()
+    const inner = halfSize - 0.3
+    hole.moveTo(-inner, -inner); hole.lineTo(-inner, inner)
+    hole.lineTo(inner, inner); hole.lineTo(inner, -inner); hole.closePath()
+    borderShape.holes.push(hole)
+    const border = new THREE.Mesh(new THREE.ShapeGeometry(borderShape), areaMat)
+    border.rotation.x = -Math.PI / 2; border.position.y = 0.1
+    g.add(border)
+
+    const fill = new THREE.Mesh(new THREE.PlaneGeometry(totalSize - 0.6, totalSize - 0.6), fillMat)
+    fill.rotation.x = -Math.PI / 2; fill.position.y = 0.05
+    g.add(fill)
+
+    const wallGeo = new THREE.PlaneGeometry(totalSize, 6)
+    ;[[0, 0, halfSize], [0, Math.PI, -halfSize], [halfSize, Math.PI / 2, 0], [-halfSize, -Math.PI / 2, 0]].forEach(([x, ry, z]) => {
+      const wall = new THREE.Mesh(wallGeo, wallMat)
+      wall.position.set(x as number, 3, z as number); wall.rotation.y = ry as number
+      g.add(wall)
+    })
+
+    const topEdge = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(totalSize, 0.1, totalSize)),
+      new THREE.LineBasicMaterial({ color }),
+    )
+    topEdge.position.y = 6; g.add(topEdge)
+
+    ;[[-halfSize, -halfSize], [halfSize, -halfSize], [halfSize, halfSize], [-halfSize, halfSize]].forEach(([x, z]) => {
+      const pillar = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.12, 0.12, 6, 8),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, depthWrite: false }),
+      )
+      pillar.position.set(x, 3, z); g.add(pillar)
+    })
+
+    const pulseGeo = new THREE.PlaneGeometry(totalSize + 0.5, totalSize + 0.5)
+    const pulse = new THREE.Mesh(pulseGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }))
+    pulse.rotation.x = -Math.PI / 2; pulse.position.y = 0.15; pulse.userData.isPulse = true
+    g.add(pulse)
+  } else {
+    const ring = new THREE.Mesh(new THREE.RingGeometry(halfSize - 0.2, halfSize, 64), areaMat)
+    ring.rotation.x = -Math.PI / 2; ring.position.y = 0.1; g.add(ring)
+
+    const circle = new THREE.Mesh(new THREE.CircleGeometry(halfSize - 0.2, 64), fillMat)
+    circle.rotation.x = -Math.PI / 2; circle.position.y = 0.05; g.add(circle)
+
+    const cylinder = new THREE.Mesh(
+      new THREE.CylinderGeometry(halfSize, halfSize, 6, 32, 1, true), wallMat,
+    )
+    cylinder.position.y = 3; g.add(cylinder)
+
+    const topRing = new THREE.Mesh(
+      new THREE.TorusGeometry(halfSize, 0.15, 8, 64),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8, depthWrite: false }),
+    )
+    topRing.rotation.x = Math.PI / 2; topRing.position.y = 6; g.add(topRing)
+
+    const pulseRing = new THREE.Mesh(
+      new THREE.RingGeometry(halfSize - 0.3, halfSize + 0.3, 64),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }),
+    )
+    pulseRing.rotation.x = -Math.PI / 2; pulseRing.position.y = 0.15; pulseRing.userData.isPulse = true
+    g.add(pulseRing)
+  }
+
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.1, 0.1, 5, 8),
+    new THREE.MeshPhongMaterial({ color: 0x666666 }),
+  )
+  pole.position.y = 2.5; g.add(pole)
+
+  const flagMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(2, 1.2, 0.05),
+    new THREE.MeshPhongMaterial({ color, emissive: new THREE.Color(color), emissiveIntensity: 0.4, side: THREE.DoubleSide }),
+  )
+  flagMesh.position.set(1, 4.5, 0); g.add(flagMesh)
+
+  const displayName = teamName === 'CENTER' ? '중앙' : teamName === 'DEFENSE' ? '수비' : '공격'
+  const canvas = document.createElement('canvas')
+  canvas.width = 400; canvas.height = 200
+  const ctx = canvas.getContext('2d')!
+  ctx.fillStyle = 'rgba(0,0,0,0.85)'
+  ctx.beginPath(); ctx.roundRect(5, 5, 390, 190, 12); ctx.fill()
+  const colorHex = '#' + color.toString(16).padStart(6, '0')
+  ctx.strokeStyle = colorHex; ctx.lineWidth = 3
+  ctx.beginPath(); ctx.roundRect(5, 5, 390, 190, 12); ctx.stroke()
+  ctx.fillStyle = colorHex; ctx.globalAlpha = 0.3; ctx.fillRect(5, 5, 390, 50); ctx.globalAlpha = 1
+  ctx.fillStyle = '#ffffff'; ctx.font = 'bold 32px sans-serif'; ctx.textAlign = 'center'
+  ctx.fillText(displayName, 200, 42)
+  ctx.font = '22px sans-serif'; ctx.fillText(`${totalSize}m × ${totalSize}m`, 200, 82)
+  ctx.font = '20px sans-serif'; ctx.fillStyle = '#cccccc'
+  ctx.fillText(`점령 시간: 약 ${Math.round(cp.baseTime)}초`, 200, 112)
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 1
+  ctx.beginPath(); ctx.moveTo(20, 130); ctx.lineTo(380, 130); ctx.stroke()
+  ctx.font = '14px monospace'; ctx.fillStyle = '#777777'; ctx.textAlign = 'left'
+  ctx.fillText(`ID:${cp.uniqueID ?? 0} | Pos:(${cp.position.x?.toFixed(0) ?? 0},${cp.position.y?.toFixed(0) ?? 0},${cp.position.z?.toFixed(0) ?? 0})`, 20, 155)
+  ctx.fillText(`T=${cp.baseTime ?? 0}s | k=${cp.k ?? 0} | idx:${cp.pointCaptureIndex ?? 0}`, 20, 178)
+  const labelTex = new THREE.CanvasTexture(canvas)
+  const labelSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelTex, transparent: true, depthTest: false }))
+  labelSprite.scale.set(10, 5, 1); labelSprite.position.y = 8; g.add(labelSprite)
+
+  g.userData = { layer: 'Capture' as LayerName, levelName: cp.name, levelType: 'capture', captureData: cp }
+  return g
+}
+
+function createSafetyZoneVisual(sz: LevelSafetyZone): THREE.Group | null {
+  if (!sz?.worldCenter || !sz?.worldMin || !sz?.worldMax) return null
+  const g = new THREE.Group()
+  const wc = sz.worldCenter
+  const dx = Math.abs(sz.worldMax.x - sz.worldMin.x)
+  const dy = Math.abs(sz.worldMax.y - sz.worldMin.y) || 4
+  const dz = Math.abs(sz.worldMax.z - sz.worldMin.z)
+  g.position.set(wc.x, wc.y, wc.z)
+
+  const color = 0xa3e635
+  const borderMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false })
+  const fillMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.08, side: THREE.DoubleSide, depthWrite: false })
+
+  const fill = new THREE.Mesh(new THREE.PlaneGeometry(dx, dz), fillMat)
+  fill.rotation.x = -Math.PI / 2; fill.position.y = -dy / 2 + 0.05; g.add(fill)
+
+  const wallGeo = new THREE.PlaneGeometry(1, dy)
+  const wallMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.06, side: THREE.DoubleSide, depthWrite: false })
+  ;[[0, 0, dz / 2, dx], [0, Math.PI, -dz / 2, dx], [dx / 2, Math.PI / 2, 0, dz], [-dx / 2, -Math.PI / 2, 0, dz]].forEach(([x, ry, z, w]) => {
+    const wall = new THREE.Mesh(new THREE.PlaneGeometry(w as number, dy), wallMat)
+    wall.position.set(x as number, 0, z as number); wall.rotation.y = ry as number; g.add(wall)
+  })
+
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(dx, dy, dz)),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.6 }),
+  )
+  g.add(edges)
+
+  const ringBorder = new THREE.Mesh(
+    new THREE.RingGeometry(Math.min(dx, dz) * 0.4, Math.min(dx, dz) * 0.42, 32),
+    borderMat,
+  )
+  ringBorder.rotation.x = -Math.PI / 2; ringBorder.position.y = -dy / 2 + 0.06; g.add(ringBorder)
+
+  const label = makeCanvasLabel(sz.name, '#a3e635', 300, 64, 22)
+  label.position.y = dy / 2 + 1; g.add(label)
+
+  g.userData = { layer: 'SafetyZone' as LayerName, levelName: sz.name, levelType: 'safetyZone' }
+  return g
+}
+
 // ── 하이어라키 트리 ─────────────────────────────────────────────────────────
 interface HierarchyNode {
   name:     string
@@ -317,11 +561,15 @@ function detectMapFolder(scenePath: string, maps: MapEntry[]): MapEntry | null {
   try {
     const params = new URL(scenePath, 'http://localhost').searchParams
     const pathParam = params.get('path') || ''
-    const sceneName = (pathParam.split('/').pop() || '').toLowerCase().replace(/[._-]/g, '')
-    const sorted = [...maps].sort((a, b) => b.folder.length - a.folder.length)
-    for (const m of sorted) {
-      const folder = m.folder.toLowerCase().replace(/[_-]/g, '')
-      if (sceneName.includes(folder) || folder.includes(sceneName)) return m
+    const fileName = (pathParam.split('/').pop() || '').replace(/\.unity$/i, '')
+    const safeFolder = fileName.replace(/[<>:"/\\|?*]/g, '_').slice(0, 60)
+    for (const m of maps) {
+      if (m.folder === safeFolder || m.folder === fileName) return m
+    }
+    const norm = (s: string) => s.toLowerCase().replace(/[_\-. ]/g, '')
+    const target = norm(fileName)
+    for (const m of maps) {
+      if (norm(m.folder) === target || norm(m.sceneName) === target) return m
     }
   } catch {}
   return null
@@ -409,7 +657,7 @@ function MapSelector({ maps, onSelect }: { maps: MapEntry[]; onSelect: (m: MapEn
 }
 
 // ── 메인 컴포넌트 ────────────────────────────────────────────────────────────
-export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
+export function SceneViewer({ scenePath, mapEntry, height = 600 }: SceneViewerProps) {
   const mountRef     = useRef<HTMLDivElement>(null)
   const sceneRef     = useRef<THREE.Scene | undefined>(undefined)
   const rendererRef  = useRef<THREE.WebGLRenderer | undefined>(undefined)
@@ -440,6 +688,7 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
   const [hierFilter,    setHierFilter]    = useState('')
   const [layers, setLayers] = useState<Record<LayerName, boolean>>({
     Mesh: true, Light: true, Collider: true, Camera: true, Audio: true, Particle: true, Trigger: true,
+    Spawn: true, Capture: true, SafetyZone: true,
   })
 
   // Component stats
@@ -455,8 +704,8 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
   useEffect(() => {
     const el = mountRef.current; if (!el) return
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x1a1d23)
-    scene.fog = new THREE.FogExp2(0x1a1d23, 0.0008)
+    scene.background = new THREE.Color(0x1a1a1a)
+    scene.fog = new THREE.FogExp2(0x1a1a1a, 0.0008)
     sceneRef.current = scene
 
     const camera = new THREE.PerspectiveCamera(60, el.clientWidth / (height || el.clientHeight), 0.1, 5000)
@@ -473,10 +722,12 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
     controls.enableDamping = true; controls.dampingFactor = 0.08
     controlsRef.current = controls
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.5))
-    const dir = new THREE.DirectionalLight(0xffffff, 0.6)
-    dir.position.set(100, 200, 100); scene.add(dir)
-    scene.add(new THREE.GridHelper(1000, 50, 0x2d3748, 0x2d3748))
+    scene.add(new THREE.AmbientLight(0xffffff, 0.7))
+    const dir = new THREE.DirectionalLight(0xffffff, 0.5)
+    dir.position.set(100, 150, 100); scene.add(dir)
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.3))
+    const grid = new THREE.GridHelper(500, 100, 0x444444, 0x333333)
+    grid.visible = false; scene.add(grid)
 
     const meshGroup = new THREE.Group(); scene.add(meshGroup); meshGroupRef.current = meshGroup
     const compGroup = new THREE.Group(); scene.add(compGroup); compGroupRef.current = compGroup
@@ -509,6 +760,17 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
           controls.target.copy(camera.position.clone().add(fwd))
         }
         controls.update()
+        const t = Date.now() * 0.001
+        compGroup.traverse((child: THREE.Object3D) => {
+          if ((child as THREE.Mesh).userData?.isPulse) {
+            const m = child as THREE.Mesh
+            const pulse = 1 + Math.sin(t * 2) * 0.08
+            m.scale.set(pulse, pulse, 1)
+            if ((m.material as THREE.MeshBasicMaterial).opacity !== undefined) {
+              ;(m.material as THREE.MeshBasicMaterial).opacity = 0.2 + Math.sin(t * 3) * 0.15
+            }
+          }
+        })
         renderer.render(scene, camera)
       } catch {}
     }
@@ -562,13 +824,14 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
       .catch(() => { setAvailMaps([]); setMapsLoaded(true) })
   }, [])
 
-  // ── 씬 경로 → 맵 감지 ─────────────────────────────────────────────────
+  // ── mapEntry prop으로 직접 로드 ─────────────────────────────────────────
   useEffect(() => {
+    if (mapEntry) { loadMap(mapEntry); return }
     if (!scenePath || !mapsLoaded) return
     const detected = detectMapFolder(scenePath, availMaps)
     if (detected) loadMap(detected); else startBake(scenePath)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenePath, mapsLoaded])
+  }, [scenePath, mapEntry, mapsLoaded])
 
   useEffect(() => { if (manualMap) loadMap(manualMap) }, [manualMap]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -671,6 +934,17 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
         await new Promise(r => setTimeout(r, 0))
       }
 
+      // Level data visualization
+      if (info.spawnPoints?.length) {
+        for (const sp of info.spawnPoints) { const v = createSpawnVisual(sp); if (v) compGroup.add(v) }
+      }
+      if (info.neutralPointCaptures?.length) {
+        for (const cp of info.neutralPointCaptures) { const v = createCaptureVisual(cp); if (v) compGroup.add(v) }
+      }
+      if (info.safetyZones?.length) {
+        for (const sz of info.safetyZones) { const v = createSafetyZoneVisual(sz); if (v) compGroup.add(v) }
+      }
+
       setHierarchy(buildTree(objs))
       setProgress(100); setStatus('ready'); fitToScene()
     } catch (err) {
@@ -699,7 +973,7 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
             if (newMap) loadMap(newMap); else setStatus('error')
           }).catch(() => setStatus('error'))
         } else if (data.type === 'error') { evtSrc.close(); setProgressMsg('오류: ' + data.msg); setStatus('error') }
-      } catch {}
+      } catch (e) { console.warn('[SceneViewer]', e) }
     }
     evtSrc.onerror = () => { evtSrc.close(); setProgressMsg('서버 연결 오류'); setStatus('error') }
   }, [loadMap])
@@ -759,13 +1033,19 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
         <div style={{ flex: 1 }} />
 
         {/* 레이어 토글 */}
-        {status === 'ready' && (Object.keys(LAYER_COLORS) as LayerName[]).map(name => (
-          <button key={name} onClick={() => toggleLayer(name)}
-            style={{ padding: '2px 6px', background: layers[name] ? LAYER_COLORS[name] + '33' : '#1e293b', border: `1px solid ${layers[name] ? LAYER_COLORS[name] : borderCol}`,
-                     borderRadius: 3, color: layers[name] ? LAYER_COLORS[name] : '#475569', cursor: 'pointer', fontSize: 9, lineHeight: '14px' }}>
-            {LAYER_ICONS[name]} {name}
-          </button>
-        ))}
+        {status === 'ready' && (Object.keys(LAYER_COLORS) as LayerName[]).map(name => {
+          let count: number | undefined
+          if (name === 'Spawn') count = sceneInfo?.spawnPoints?.length
+          else if (name === 'Capture') count = sceneInfo?.neutralPointCaptures?.length
+          else if (name === 'SafetyZone') count = sceneInfo?.safetyZones?.length
+          return (
+            <button key={name} onClick={() => toggleLayer(name)}
+              style={{ padding: '2px 6px', background: layers[name] ? LAYER_COLORS[name] + '33' : '#1e293b', border: `1px solid ${layers[name] ? LAYER_COLORS[name] : borderCol}`,
+                       borderRadius: 3, color: layers[name] ? LAYER_COLORS[name] : '#475569', cursor: 'pointer', fontSize: 9, lineHeight: '14px' }}>
+              {LAYER_ICONS[name]} {name}{count ? ` (${count})` : ''}
+            </button>
+          )
+        })}
 
         <div style={{ width: 1, height: 16, background: borderCol, margin: '0 2px' }} />
 
@@ -848,7 +1128,11 @@ export function SceneViewer({ scenePath, height = 600 }: SceneViewerProps) {
               Inspector
             </div>
             <div style={{ flex: 1, overflowY: 'auto', padding: 10, fontSize: 11 }}>
-              {selectedObj ? <InspectorPanel obj={selectedObj} /> : <div style={{ color: '#475569', fontSize: 11 }}>오브젝트를 선택하면<br/>속성이 표시됩니다</div>}
+              {selectedObj ? <InspectorPanel obj={selectedObj} /> : (
+                sceneInfo && (sceneInfo.spawnPoints?.length || sceneInfo.neutralPointCaptures?.length || sceneInfo.safetyZones?.length)
+                  ? <LevelDataPanel info={sceneInfo} />
+                  : <div style={{ color: '#475569', fontSize: 11 }}>오브젝트를 선택하면<br/>속성이 표시됩니다</div>
+              )}
             </div>
           </div>
         )}
@@ -898,10 +1182,14 @@ function InspectorPanel({ obj }: { obj: MeshJsonObject }) {
         </div>
       )}
 
-      {section('Transform', '🔄')}
-      {row('Position', v3(obj.transform.position))}
-      {row('Rotation', v3(obj.transform.rotation))}
-      {row('Scale',    v3(obj.transform.scale))}
+      {obj.transform && (
+        <>
+          {section('Transform', '🔄')}
+          {obj.transform.position && row('Position', v3(obj.transform.position))}
+          {obj.transform.rotation && row('Rotation', v3(obj.transform.rotation))}
+          {obj.transform.scale && row('Scale',    v3(obj.transform.scale))}
+        </>
+      )}
 
       {obj.tag   && row('Tag',   obj.tag)}
       {obj.layer && row('Layer', obj.layer)}
@@ -991,6 +1279,70 @@ function InspectorPanel({ obj }: { obj: MeshJsonObject }) {
           {cd.scripts.map((s, i) => (
             <div key={i} style={{ color: '#94a3b8', fontSize: 10, marginBottom: 2 }}>• {s}</div>
           ))}
+        </>
+      )}
+    </div>
+  )
+}
+
+function LevelDataPanel({ info }: { info: SceneInfo }) {
+  const sec = (title: string, icon: string, color: string) => (
+    <div style={{ color, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, marginTop: 10, marginBottom: 4, borderBottom: '1px solid #1e293b', paddingBottom: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
+      <span style={{ fontSize: 12 }}>{icon}</span>{title}
+    </div>
+  )
+  const row = (label: string, value: string | number, color?: string) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, gap: 6 }}>
+      <span style={{ color: '#64748b', flexShrink: 0 }}>{label}</span>
+      <span style={{ color: color || '#e2e8f0', textAlign: 'right', wordBreak: 'break-all', fontSize: 10 }}>{value}</span>
+    </div>
+  )
+  const v3s = (v?: Vec3) => v ? `${v.x}, ${v.y}, ${v.z}` : '-'
+
+  return (
+    <div>
+      <div style={{ fontWeight: 700, color: '#e2e8f0', fontSize: 13, marginBottom: 8 }}>Level Data</div>
+
+      {info.spawnPoints && info.spawnPoints.length > 0 && (
+        <>
+          {sec(`Spawn Points (${info.spawnPoints.length})`, '🚩', '#22d3ee')}
+          {info.spawnPoints.map((sp, i) => sp ? (
+            <div key={i} style={{ marginBottom: 6, padding: '4px 6px', background: '#0f1420', borderRadius: 4, border: '1px solid #1e293b' }}>
+              <div style={{ color: '#22d3ee', fontWeight: 600, fontSize: 10, marginBottom: 2 }}>{sp.name || `Spawn ${i}`}</div>
+              {sp.position && row('Position', v3s(sp.position))}
+            </div>
+          ) : null)}
+        </>
+      )}
+
+      {info.neutralPointCaptures && info.neutralPointCaptures.length > 0 && (
+        <>
+          {sec(`Capture Points (${info.neutralPointCaptures.length})`, '⚔', '#f43f5e')}
+          {info.neutralPointCaptures.map((cp, i) => cp ? (
+            <div key={i} style={{ marginBottom: 6, padding: '4px 6px', background: '#0f1420', borderRadius: 4, border: '1px solid #1e293b' }}>
+              <div style={{ color: '#f43f5e', fontWeight: 600, fontSize: 10, marginBottom: 2 }}>{cp.name || `Capture ${i}`}</div>
+              {row('ID', cp.uniqueID ?? '-')}
+              {cp.position && row('Position', v3s(cp.position))}
+              {cp.radius != null && row('Radius', cp.radius.toFixed(1))}
+              {row('Shape', cp.areaShape === 0 ? 'Circle' : 'Square')}
+              {cp.baseTime != null && row('Base Time', `${cp.baseTime}s`)}
+              {cp.tickInterval != null && row('Tick', `${cp.tickInterval}s`)}
+              {cp.nextPointCaptureIndex?.length > 0 && row('Next', cp.nextPointCaptureIndex.join(', '))}
+            </div>
+          ) : null)}
+        </>
+      )}
+
+      {info.safetyZones && info.safetyZones.length > 0 && (
+        <>
+          {sec(`Safety Zones (${info.safetyZones.length})`, '🛡', '#a3e635')}
+          {info.safetyZones.map((sz, i) => sz ? (
+            <div key={i} style={{ marginBottom: 6, padding: '4px 6px', background: '#0f1420', borderRadius: 4, border: '1px solid #1e293b' }}>
+              <div style={{ color: '#a3e635', fontWeight: 600, fontSize: 10, marginBottom: 2 }}>{sz.name || `Zone ${i}`}</div>
+              {sz.worldCenter && row('Center', v3s(sz.worldCenter))}
+              {sz.size && row('Size', v3s(sz.size))}
+            </div>
+          ) : null)}
         </>
       )}
     </div>

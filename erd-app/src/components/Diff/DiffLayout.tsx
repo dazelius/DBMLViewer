@@ -95,8 +95,6 @@ export default function DiffLayout() {
       const fromSchema = fromImport.directSchema;
       const toSchema = toImport.directSchema;
 
-      console.log(`[Diff] FROM: ${fromSchemaFiles.length} files → ${fromSchema.tables.length} tables | TO: ${toSchemaFiles.length} files → ${toSchema.tables.length} tables`);
-
       const sr = diffSchemas(fromSchema, toSchema);
       setSchemaDiff(sr);
       const dr = diffData(fromImport.dataRowCounts, toImport.dataRowCounts);

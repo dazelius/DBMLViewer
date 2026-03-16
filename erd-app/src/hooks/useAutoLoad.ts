@@ -28,16 +28,12 @@ async function loadAndApplyFiles() {
       const schema = useSchemaStore.getState().schema;
       const report = runAnomalyDetection(result.dataSheets, schema);
       useCanvasStore.getState().setAnomalyReport(report);
-      const c = report.anomalies.filter(a => a.severity === 'critical').length;
-      const w = report.anomalies.filter(a => a.severity === 'warning').length;
-      console.log(`[Anomaly] 이상치 탐지 완료: ${report.analyzedTables}개 테이블 분석, ${c}건 critical, ${w}건 warning (${report.durationMs.toFixed(0)}ms)`);
 
       // 서버에서 룰 로드 + 유효성 검증 실행
       fetchRulesFromServer().then(rules => {
         if (rules.length > 0) {
           const vResult = runValidation(result.dataSheets, rules);
           useCanvasStore.getState().setValidationResult(vResult);
-          console.log(`[Validation] 검증 완료: ${vResult.checkedRules}/${vResult.totalRules}개 룰, ${vResult.violations.length}건 위반 (${vResult.durationMs.toFixed(0)}ms)`);
         }
       }).catch(() => {});
     }, 500);
@@ -60,8 +56,7 @@ export function useAutoLoad() {
         // 이미 클론된 데이터가 있으면 즉시 로드 (sync 안 기다림)
         const status = await gitStatus().catch(() => null);
         if (status?.cloned) {
-          const count = await loadAndApplyFiles().catch(() => 0);
-          if (count > 0) console.log(`[AutoLoad] 기존 데이터 즉시 로드: ${count}개 파일 (${status.commit ?? ''})`);
+          await loadAndApplyFiles().catch(() => 0);
         }
 
         // 백그라운드 sync 시작
@@ -92,17 +87,13 @@ export function useAutoLoad() {
 
         // sync 후 변경이 있으면 다시 로드
         if (syncResult.status === 'cloned' || syncResult.status === 'updated') {
-          const count = await loadAndApplyFiles();
-          console.log(`[AutoSync] ${syncResult.status} — ${count}개 파일 다시 로드 (${syncResult.commit})`);
+          await loadAndApplyFiles();
         } else if (!status?.cloned) {
           // 처음에 클론 안 되어 있었던 경우 (초기 클론 완료 후 로드)
-          const count = await loadAndApplyFiles();
-          console.log(`[AutoSync] 초기 클론 완료 — ${count}개 파일 로드 (${syncResult.commit})`);
-        } else {
-          console.log(`[AutoSync] ${syncResult.status} — 데이터 변경 없음 (${syncResult.commit})`);
+          await loadAndApplyFiles();
         }
-      } catch (err: any) {
-        setError(err?.message ?? String(err));
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : String(err));
         console.warn('[AutoSync] failed:', err);
       }
     })();

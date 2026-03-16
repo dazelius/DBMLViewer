@@ -1275,7 +1275,6 @@ function selectToolsForQuery(query: string, existingFilter?: string[]): typeof T
   }
 
   const selected = TOOLS.filter(t => matched.has(t.name));
-  console.log(`[Chat] 🎯 동적 도구 선택: ${selected.length}/${TOOLS.length}개 (${[...matched].filter(n => !ALWAYS_TOOLS.includes(n)).join(', ')})`);
   return selected;
 }
 
@@ -2161,13 +2160,13 @@ async function streamClaude(
 
       // 429 Rate Limit → 모델 폴백 체인: Opus → Sonnet → Haiku → 대기 후 재시도
       if (response.status === 429) {
-        const currentModel = String((requestBody as any).model ?? '');
+        const currentModel = String((requestBody as Record<string, unknown>).model ?? '');
         if (fallbackIdx < MODEL_FALLBACK_CHAIN.length) {
           const nextModel = MODEL_FALLBACK_CHAIN[fallbackIdx++];
           const label = nextModel.includes('sonnet') ? 'Sonnet' : nextModel.includes('haiku') ? 'Haiku' : nextModel;
           console.warn(`[streamClaude] ⚠️ 429 (${currentModel}) → ${label}로 폴백`);
           onTextDelta(`\n⏳ Rate Limit (${currentModel.split('-').slice(0, 2).join('-')}) — ${label}로 자동 전환합니다...\n`);
-          (requestBody as any).model = nextModel;
+          (requestBody as Record<string, unknown>).model = nextModel;
           await new Promise(r => setTimeout(r, 2000));
           continue;
         }
@@ -2232,7 +2231,6 @@ async function streamClaude(
   const MARKER_END = '<<<ARTIFACT_END>>>';
 
   if (artifactContinuationMode) {
-    console.log('[streamClaude] 🔄 아티팩트 이어쓰기 모드: <<<ARTIFACT_START>>> 없이 바로 HTML 캡처');
     // 이어쓰기 모드에서는 패널이 이미 열려있으므로 진행 상태만 알림
     if (onArtifactProgress) onArtifactProgress('', '이어쓰기 중...', 0, '');
   }
@@ -2261,7 +2259,6 @@ async function streamClaude(
         
         // 패널 열기
         if (onArtifactProgress) {
-          console.log('[ArtTextStream] ⚡ <<<ARTIFACT_START>>> 감지 → 패널 오픈');
           onArtifactProgress('', '', 0, '');
         }
         
@@ -2302,7 +2299,6 @@ async function streamClaude(
         _artStreamedHtml += htmlChunk;
         
         _artMarkerState = 'done';
-        console.log(`[ArtTextStream] <<<ARTIFACT_END>>> 감지 → HTML ${_artStreamedHtml.length}자 캡처 완료`);
         
         // 최종 HTML 전달
         if (onArtifactProgress) {
@@ -2348,9 +2344,6 @@ async function streamClaude(
     _readCount++;
     const chunk = decoder.decode(value, { stream: true });
     buf += chunk;
-    if (_readCount <= 3 || _readCount % 50 === 0) {
-      console.log(`[streamClaude] 📦 chunk #${_readCount}: +${chunk.length}B (+${(performance.now() - _streamStart).toFixed(0)}ms)`);
-    }
 
     const lines = buf.split('\n');
     buf = lines.pop() ?? '';
@@ -2378,11 +2371,6 @@ async function streamClaude(
       }
       lastEventType = '';
 
-      // ★ 디버그: 모든 SSE 이벤트 타입 로깅 (스트리밍 진단용)
-      if (ev.type !== 'content_block_delta' && ev.type !== 'ping') {
-        console.log(`[SSE] ${ev.type}`, ev.type === 'content_block_start' ? (ev.content_block as Record<string, unknown>)?.type + ':' + (ev.content_block as Record<string, unknown>)?.name : '');
-      }
-
       switch (ev.type) {
         case 'content_block_start': {
           const idx = ev.index as number;
@@ -2392,11 +2380,9 @@ async function streamClaude(
             // patch_artifact 블록 시작 → 아티팩트 패널 오픈
             // create_artifact는 텍스트 마커에서 이미 패널 오픈되므로, 마커가 없을 때만 여기서 오픈
             if ((cb as ToolUseBlock).name === 'patch_artifact' && onArtifactProgress) {
-              console.log(`[streamClaude] ⚡ patch_artifact content_block_start → 패널 오픈`);
               onArtifactProgress('', '', 0, '');
             }
             if ((cb as ToolUseBlock).name === 'create_artifact' && onArtifactProgress && !_artStreamedHtml && _artMarkerState === 'idle') {
-              console.log(`[streamClaude] ⚡ create_artifact content_block_start → 패널 오픈 (텍스트 마커 미사용)`);
               onArtifactProgress('', '', 0, '');
             }
           } else {
@@ -2496,7 +2482,7 @@ async function streamClaude(
       _artPendingText = '';
     }
     _artMarkerState = 'done';
-    console.log(`[ArtTextStream] ⚠️ 스트림 종료 but <<<ARTIFACT_END>>> 미수신 → HTML ${_artStreamedHtml.length}자 강제 확정`);
+    console.warn(`[ArtTextStream] ⚠️ 스트림 종료 but <<<ARTIFACT_END>>> 미수신 → HTML ${_artStreamedHtml.length}자 강제 확정`);
     if (onArtifactProgress) {
       onArtifactProgress(_artStreamedHtml, '', _artStreamedHtml.length, '');
     }
@@ -2562,8 +2548,8 @@ function buildRagTrace(query: string, toolCalls: ToolCallResult[], tokenUsage?: 
 
     return {
       toolName, tables, guides,
-      duration: ('duration' in tc ? (tc as any).duration : undefined),
-      error: !!('error' in tc && (tc as any).error),
+      duration: ('duration' in tc ? (tc as unknown as Record<string, unknown>).duration as number | undefined : undefined),
+      error: !!('error' in tc && (tc as unknown as Record<string, unknown>).error),
     };
   });
 
@@ -3170,7 +3156,6 @@ export async function sendChatMessage(
 
   const sysChars = systemPrompt.length;
   const msgChars = estimateMsgChars(rawHistoryMsgs);
-  console.log(`[Chat] 토큰 추정: system=${Math.round(sysChars/3)}t, history=${Math.round(msgChars/3)}t, 합계≈${Math.round((sysChars+msgChars)/3)}t (${rawHistoryMsgs.length}개 메시지)`);
 
   // ── 멀티턴 대화 캐싱: 히스토리 끝에 cache_control 브레이크포인트 ──
   // 먼저 기존 cache_control을 모두 제거 (rawMessages 재사용 시 중복 방지, API 최대 4개 제한)
@@ -3298,7 +3283,6 @@ export async function sendChatMessage(
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     accumulatedText = '';
     let _lastIterClean = '';
-    console.log(`[Chat] 이터레이션 ${i + 1}/${MAX_ITERATIONS} 시작, messages: ${messages.length}`);
     onThinkingUpdate?.({ type: 'iteration_start', iteration: i + 1, maxIterations: MAX_ITERATIONS, timestamp: Date.now() });
 
     // 529 재시도 포함 스트리밍 호출
@@ -3377,7 +3361,6 @@ export async function sendChatMessage(
       onTokenUsage?.(summary);
     }
 
-    console.log(`[Chat] 이터레이션 ${i + 1} 완료: stop_reason=${data.stop_reason}, blocks=${data.content.length}, text="${accumulatedText.slice(0, 60)}"${data.usage ? `, tokens: in=${data.usage.input_tokens} out=${data.usage.output_tokens}` : ''}`);
     onThinkingUpdate?.({ type: 'iteration_done', iteration: i + 1, maxIterations: MAX_ITERATIONS, detail: `stop_reason=${data.stop_reason}`, timestamp: Date.now() });
 
     // ── 최종 답변 ──
@@ -3406,7 +3389,6 @@ export async function sendChatMessage(
       if (streamedArtifactHtml && streamedArtifactHtml.length >= 10 && !alreadyHasArtifact) {
         // 누적 HTML이 있으면 합침
         const finalArtHtml = artifactAccumulatedHtml ? (artifactAccumulatedHtml + streamedArtifactHtml) : streamedArtifactHtml;
-        console.log(`[Chat] ⚡ 자동 아티팩트 생성: HTML ${finalArtHtml.length}자 (create_artifact 미호출${artifactAccumulatedHtml ? `, 이어쓰기 ${artifactContinuationCount}회` : ''})`);
         const autoTitle = text.match(/^#+\s*(.+)/m)?.[1]
           ?? text.match(/^(.{1,50})/)?.[1]?.replace(/\s+/g, ' ').trim()
           ?? '문서';
@@ -4458,20 +4440,16 @@ function showTab(id){
           if (hadBibleTabling) {
             tc = { kind: 'artifact', title, description, html: '', duration } as ArtifactResult;
             resultStr = `🔴 바이브테이블링 결과는 아티팩트로 만들지 마세요! 다운로드 링크가 결과물입니다. 텍스트 응답으로 요약하세요.`;
-            console.log(`[Chat] create_artifact 차단: 바이브테이블링 후 아티팩트 생성 시도 → 거부 ("${title}")`);
           } else if (allToolCalls.some(tc => tc.kind === 'artifact')) {
             // ── 중복 호출 방지: 이미 아티팩트가 있으면 무시 ──
             tc = { kind: 'artifact', title, description, html, duration } as ArtifactResult;
             resultStr = `⚠️ 이미 아티팩트가 성공적으로 생성되었습니다. 재생성 불필요합니다. 대화를 이어가세요.`;
-            console.log(`[Chat] create_artifact 중복 호출 차단: "${title}"`);
           } else {
             // ── 항상 성공 반환 (빈 HTML이어도) — 재시도 방지 ──
             tc = { kind: 'artifact', title, description, html, duration } as ArtifactResult;
             resultStr = `✅ 아티팩트 "${title}" 생성 완료. 사이드 패널에 정상 표시됩니다. 대화를 이어가세요.`;
-            console.log(`[Chat] create_artifact: title="${title}" html=${html.length}자 (${artifactAccumulatedHtml ? '이어쓰기+' : ''}${streamedArtifactHtml ? '텍스트 마커' : 'tool 파라미터/없음'})`);
             // 이어쓰기 모드 종료
             if (artifactAccumulatedHtml) {
-              console.log(`[Chat] 아티팩트 이어쓰기 완료: ${artifactContinuationCount}회, 최종 ${html.length}자`);
               artifactAccumulatedHtml = '';
               artifactContinuationCount = 0;
             }
@@ -5138,7 +5116,7 @@ function showTab(id){
             const ruleName = String(inp.name ?? '');
             const ruleTable = String(inp.table ?? '*');
             const severity = (inp.severity === 'warning' ? 'warning' : 'error') as 'error' | 'warning';
-            const condition = inp.condition as any;
+            const condition = inp.condition as Record<string, unknown> | undefined;
 
             if (!ruleName || !condition?.type) {
               resultStr = '오류: name과 condition.type이 필요합니다.';
@@ -5146,7 +5124,8 @@ function showTab(id){
             } else {
               const newRule = {
                 id: ruleId, name: ruleName, table: ruleTable, severity,
-                condition, enabled: true, scope: 'personal' as const,
+                condition: condition as unknown as import('./validationEngine.ts').RuleCondition,
+                enabled: true, scope: 'personal' as const,
                 createdAt: Date.now(), updatedAt: Date.now(),
               };
               const allRules = await vMod.addRule(newRule);
@@ -5252,8 +5231,8 @@ function showTab(id){
                 tc = { kind: 'confluence_page', pageId, error: resultStr, duration } as ConfluencePageResult;
               } else {
                 const title = String(confData.title ?? '');
-                const spaceKey = String(((confData as any).space as Record<string,unknown>)?.key ?? '');
-                const bodyHtml = String(((confData as any).body?.storage as Record<string,unknown>)?.value ?? '');
+                const spaceKey = String(((confData as Record<string, unknown>).space as Record<string,unknown>)?.key ?? '');
+                const bodyHtml = String((((confData as Record<string, unknown>).body as Record<string, unknown>)?.storage as Record<string,unknown>)?.value ?? '');
                 const plainText = bodyHtml
                   .replace(/<ac:structured-macro[\s\S]*?<\/ac:structured-macro>/gi, '')
                   .replace(/<[^>]+>/g, ' ')
@@ -5645,7 +5624,6 @@ function showTab(id){
         toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: resultStr });
       }
 
-      console.log(`[Chat] 툴 처리 완료: ${toolBlocks.map(t => t.name).join(', ')}`);
       for (const tb of toolBlocks) {
         const label = TOOL_LABELS[tb.name] ?? `🔧 ${tb.name}`;
         onThinkingUpdate?.({ type: 'tool_done', iteration: i + 1, maxIterations: MAX_ITERATIONS, toolName: tb.name, toolLabel: label, timestamp: Date.now() });
@@ -5661,7 +5639,6 @@ function showTab(id){
         finalText = stripHtmlFromChatText(finalText);
         if (continuationCount > 0) finalText = stripHtmlFromChatText(totalText) + finalText;
 
-        console.log(`[Chat] ✅ 아티팩트/패치 생성 완료 → 즉시 반환 (불필요한 재시도 방지), text=${finalText.length}자`);
         const tokenUsage = buildTokenSummary();
         useRagTraceStore.getState().pushTrace(buildRagTrace(userMessage, allToolCalls, tokenUsage));
         return {
@@ -5723,7 +5700,6 @@ function showTab(id){
         artifactAccumulatedHtml += streamedArtifactHtml!;
         artifactContinuationCount++;
         const lastChunk = streamedArtifactHtml!.slice(-200); // 마지막 200자를 컨텍스트로
-        console.log(`[Chat] ⚡ 아티팩트 이어쓰기 ${artifactContinuationCount}회: 누적 ${artifactAccumulatedHtml.length}자, 마지막: "${lastChunk.slice(-60)}..."`);
         onThinkingUpdate?.({ type: 'continuation', iteration: i + 1, maxIterations: MAX_ITERATIONS, detail: `아티팩트 이어쓰기 ${artifactContinuationCount}회 (${artifactAccumulatedHtml.length}자)`, timestamp: Date.now() });
 
         // 사이드 패널에 현재까지 누적된 HTML 표시 (진행 중 상태)
@@ -5745,7 +5721,6 @@ function showTab(id){
       // ★ max_tokens로 잘렸지만 완성된 아티팩트 HTML이 있는 경우 → 자동 아티팩트 생성
       if (artHtmlTruncated && htmlLooksComplete && !hasArtifact) {
         const finalArtHtml = artifactAccumulatedHtml + streamedArtifactHtml!;
-        console.log(`[Chat] ⚡ max_tokens 자동 아티팩트 생성 (완성): HTML ${finalArtHtml.length}자`);
         const autoTitle = truncatedText.match(/^#+\s*(.+)/m)?.[1] ?? '문서';
         const autoTc: ArtifactResult = { kind: 'artifact', title: autoTitle, description: '', html: finalArtHtml, duration: 0 };
         allToolCalls.push(autoTc);
@@ -5755,7 +5730,6 @@ function showTab(id){
       // 데이터 수집 완료 & 아티팩트 미생성 → create_artifact 재촉 (단, 바이브테이블링이면 제외!)
       const hadBibleTabling = allToolCalls.some(tc => tc.kind === 'bible_tabling_edit' || tc.kind === 'bible_tabling_add_rows');
       if (hasFetchedData && !hasArtifact && !artHtmlTruncated && !hadBibleTabling) {
-        console.log('[Chat] max_tokens 감지: 데이터 수집 완료, 아티팩트 자동 재시도');
         messages.push({
           role: 'user',
           content:
@@ -5764,7 +5738,6 @@ function showTab(id){
         });
       } else if (hadBibleTabling && !artHtmlTruncated) {
         // 바이브테이블링 중 max_tokens → 데이터를 줄여서 재시도 안내
-        console.log('[Chat] max_tokens 감지: 바이브테이블링 중 잘림 → 분할 호출 재시도');
         messages.push({
           role: 'user',
           content:
@@ -5778,7 +5751,6 @@ function showTab(id){
           totalText += truncatedText;
         }
         continuationCount++;
-        console.log(`[Chat] max_tokens 감지: 텍스트 자동 계속 ${continuationCount}회 (누적 ${totalText.length}자)`);
         onThinkingUpdate?.({ type: 'continuation', iteration: i + 1, maxIterations: MAX_ITERATIONS, detail: `자동 계속 ${continuationCount}회 (${totalText.length}자)`, timestamp: Date.now() });
         messages.push({
           role: 'user',
@@ -5792,7 +5764,6 @@ function showTab(id){
     const hadBT = allToolCalls.some(tc => tc.kind === 'bible_tabling_edit' || tc.kind === 'bible_tabling_add_rows');
     if (artHtmlTruncated && !hasArtifact && !hadBT) {
       const finalArtHtml = artifactAccumulatedHtml + streamedArtifactHtml!;
-      console.log(`[Chat] ⚡ 마지막 이터레이션 자동 아티팩트 생성: HTML ${finalArtHtml.length}자 (잘린 상태)`);
       const autoTitle = truncatedText.match(/^#+\s*(.+)/m)?.[1] ?? '문서 (미완성)';
       const autoTc: ArtifactResult = { kind: 'artifact', title: autoTitle, description: '(max_tokens로 잘린 문서)', html: finalArtHtml, duration: 0 };
       allToolCalls.push(autoTc);
@@ -5802,7 +5773,6 @@ function showTab(id){
     // 마지막 이터레이션에서도 잘린 경우 → rawMessages 저장하여 '계속해줘' 지원
     pushAssistantWithOrphanFix(messages);
     const finalTruncatedText = stripHtmlFromChatText(continuationCount > 0 ? totalText + truncatedText : truncatedText);
-    console.log('[Chat] max_tokens: 최대 이터레이션 도달, rawMessages 저장');
     const tokenUsage = buildTokenSummary();
     useRagTraceStore.getState().pushTrace(buildRagTrace(userMessage, allToolCalls, tokenUsage));
     return {
@@ -5826,7 +5796,6 @@ function showTab(id){
   ).length;
 
   if (hasCollectedData) {
-    console.log(`[Chat] MAX_ITERATIONS 소진: 수집된 도구 호출 ${allToolCalls.length}건 (데이터 조회 ${dataToolCount}건), rawMessages 보존`);
     return {
       content: `데이터 조회가 많아 응답이 중단되었습니다 (${allToolCalls.length}건 조회 완료). 아래 '이어서 생성하기' 버튼을 눌러 이미 조회된 데이터로 답변을 이어받을 수 있습니다.`,
       toolCalls: allToolCalls,
