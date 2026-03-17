@@ -5,6 +5,14 @@
 
 ---
 
+## ❌ [2026-03-17 오후 12:10] 부정 피드백
+- **질문**: 결과 = 각 거점을 보고 싶어!!! 3개 모두!
+- **AI 답변 요약**: 네! 출판된 아티팩트 먼저 가져올게요!
+- **사용자 평가**: 😕 도움이 안 됐어요
+- **📚 널리지: read:test_case_writing_rules, read:workflow_data_qa, read:workflow_balance_change, read:workflow_new_content, read:resource_search_guide, read:user_preferences, read:_feedback_log, read:validation_rule_history, read:bible_tabling_id_rules, read:bible_tabling_type_rules, read:passive_effect_type_values, read:passive_perk_work_guide, read:statuseffect_function_type_values, read:statuseffect_table_work_guide, read:numbered_list_avoid_buttons, read:enum_query_rules, read:module_table_work_guide, read:hash_column_is_memo, read:resource_sheet_rules, read:table_info_artifact_template, read:sql_reserved_table_names, read:mermaid_rules, read:jira_comment_style, read:lee_doohyung_rule, read:character_sheet_weapon_resource, read:data_sheet_rules, read:jira_artifact_rules, read:aegis_design_rules, read:aegis_worldview_sources, read:artifact_design_doc_style, read:_improvement_guide**
+- **🔧 기타: 아티팩트 생성**
+- **사용자 의견**: 요청에 대해 행동을 하지 않았어요
+- **개선 필요**: 이 패턴의 질문에 대해 더 정확하고 유용한 답변이 필요함
 ## ✅ [2026-03-06 오전 10:05] 긍정 피드백
 - **질문**: ✅ **에어드롭 투하 높이 200m** — CommonConfig `airdrop_height = 200`에서 가져온 값. 보급 상자가 200m 상공에서 투하된다는 의미로 해석했습니다. *맞나요?*, **낙하 시간 5초** — CommonConfig `airdrop_drop_duration = 5000`(ms)에서 가져온 값. 투하 시작~바닥 착지까지 5초
 - **AI 답변 요약**: :::progress 0|done|목적 확인|기획서 작성 목적 확인 완료 1|done|초안 작성|초안 v1 완성 2|done|용어 검증|✅ 전체 용어 승인 완료 3|done|기획 의도 검증|✅ 전체 항목 승인 완료 4|pending|초안 수정| :::  **기획 의도 검증 완료!** 🎉 10개 항목 모두 승인되었습니다.  용어 검증과 기획 의도 검증 모두
@@ -20,4 +28,8 @@
 - **질문**: 지라에 댓글달때 주니어 레벨의 사용자에게 답변한다고 생각하고 좀 어휘를 쉽게 해서 잘 설명해줘 이건 널리지에 등록해주고
 - **AI 답변 요약**:   기존 널리지에 있는 `jira_comment_style`을 먼저 확인하고, 새 규칙을 추가/업데이트하겠습니다. 기존 스타일 규칙에 "주니어 친화적 어휘" 규칙을 추가해서 업데이트하겠습니다. `jira_comment_style` 널리지를 업데이트했습니다. 추가된 핵심 규칙을 요약하면:  1. **주니어 대상 어휘** — 전문 용어 쓸 때 반드시 괄호로 짧
 - **사용 도구**: knowledge, knowledge, knowledge, knowledge, knowledge, knowledge, knowledge, knowledge, knowledge, knowledge, knowledge, knowledge
+- **유지 패턴**: 이런 방식의 답변이 사용자에게 도움이 됨
+
+## ✅ [2026-03-07] 긍정 피드백
+- **사용자 의견**: "잘했다 이번엔" — 이번 작업에 만족
 - **유지 패턴**: 이런 방식의 답변이 사용자에게 도움이 됨
