@@ -583,6 +583,10 @@ function getLocalIp(): string {
 }
 
 const SERVER_PORT = process.env.PORT || process.env.DATAMASTER_PORT || '5173'
+function getTableMasterUrl(): string {
+  const host = process.env.TABLEMASTER_HOST || getLocalIp()
+  return `http://${host}:${SERVER_PORT}`
+}
 
 function resolveHost(req: IncomingMessage): string {
   const host = req.headers.host || `localhost:${SERVER_PORT}`
@@ -7337,12 +7341,12 @@ function serverExecuteTool(
         if (results.length === 0) return { result: `"${query}" 이미지 없음 (전체 ${all.length}개 중)` }
         return {
           result: results.map(r => {
-            const tmUrl = options.tableMasterUrl || process.env.TABLEMASTER_URL || `http://${getLocalIp()}:${SERVER_PORT}`
+            const tmUrl = options.tableMasterUrl || getTableMasterUrl()
             const url = `${tmUrl}/api/images/file?path=${encodeURIComponent(r.relPath)}`
             return `${r.name} → ${url}`
           }).join('\n') + `\n\n총 ${results.length}개. 아티팩트에 삽입할 때: <img src="위의URL" style="max-width:100%">`,
           data: { total: results.length, images: results.map(r => {
-            const tmUrl = options.tableMasterUrl || process.env.TABLEMASTER_URL || `http://${getLocalIp()}:${SERVER_PORT}`
+            const tmUrl = options.tableMasterUrl || getTableMasterUrl()
             return { name: r.name, relPath: r.relPath, url: `${tmUrl}/api/images/file?path=${encodeURIComponent(r.relPath)}` }
           }) }
         }
@@ -7695,7 +7699,7 @@ function serverExecuteTool(
         const query = String(input.query ?? '').trim().toLowerCase()
         const limit = Number(input.limit ?? 10)
         const list = readPublishedIndex()
-        const baseUrl = options.tableMasterUrl || process.env.TABLEMASTER_URL || `http://${getLocalIp()}:${SERVER_PORT}`
+        const baseUrl = options.tableMasterUrl || getTableMasterUrl()
 
         if (list.length === 0) return { result: '출판된 아티팩트가 없습니다.' }
 
@@ -7799,7 +7803,7 @@ async function serverExecuteToolAsync(
   // fetch는 서버→서버 직통(localhost:8100), 다운로드 링크는 Vite 프록시 경유(5173)
   const BIBLE_TABLING_API_URL = process.env.BIBLE_TABLING_URL || 'http://localhost:8100'
   // 슬랙에 전달할 다운로드 링크 베이스: Vite 프록시 서버 URL (외부에서 접근 가능)
-  const BIBLE_TABLING_LINK_BASE = options.tableMasterUrl || process.env.TABLEMASTER_URL || `http://${getLocalIp()}:${SERVER_PORT}`
+  const BIBLE_TABLING_LINK_BASE = options.tableMasterUrl || getTableMasterUrl()
 
   // 대화 턴 내 바이브테이블링 편집 체이닝: 이전 job_id를 자동 전달하여 변경사항 누적
   const prevJobId = (options as unknown as Record<string, unknown>)._btPrevJobId as string | undefined
