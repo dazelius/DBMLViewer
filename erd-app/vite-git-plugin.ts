@@ -5256,6 +5256,17 @@ document.addEventListener('DOMContentLoaded', () => {
         html = FBX_STANDALONE_SCRIPT + html
       }
 
+      // 스크롤 보장: 이중 래핑된 기존 문서 또는 overflow:hidden 페이지 대응
+      // </head> 직전에 강제 스크롤 스타일 주입 (기존 CSS보다 높은 우선순위)
+      const SCROLL_FIX = `<style>html,body{overflow:auto!important;height:auto!important;min-height:100vh!important;max-height:none!important}</style>`
+      if (html.includes('</head>')) {
+        html = html.replace('</head>', SCROLL_FIX + '\n</head>')
+      } else if (html.includes('</body>')) {
+        html = html.replace('</body>', SCROLL_FIX + '\n</body>')
+      } else {
+        html = SCROLL_FIX + html
+      }
+
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=60' })
       res.end(html)
       return
@@ -9751,7 +9762,28 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       const id = `pub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
       ensurePublishedDir()
 
-      const fullHtml = buildPublishedPage(title, contentHtml)
+      // contentHtml이 이미 완전한 HTML 문서인지 판별 (이중 래핑 방지)
+      const isCompleteHtml = /^\s*<!DOCTYPE\s+html/i.test(contentHtml) || /^\s*<html[\s>]/i.test(contentHtml)
+      let fullHtml: string
+      if (isCompleteHtml) {
+        // 완전한 HTML 문서 → 스크롤/레이아웃 보장을 위한 최소 패치만 적용
+        fullHtml = contentHtml
+        // overflow 제한 제거 (height: 100vh, overflow: hidden 등이 있으면 스크롤 불가)
+        fullHtml = fullHtml.replace(/body\s*\{([^}]*)\}/i, (_match, inner) => {
+          let patched = inner
+            .replace(/overflow\s*:\s*hidden/gi, 'overflow: auto')
+            .replace(/height\s*:\s*100vh/gi, 'min-height: 100vh')
+          // max-width가 없으면 추가
+          if (!/max-width/i.test(patched)) patched += '; max-width: 1200px; margin-left: auto; margin-right: auto'
+          return 'body {' + patched + '}'
+        })
+        // viewport 메타가 없으면 추가
+        if (!/<meta[^>]*viewport/i.test(fullHtml)) {
+          fullHtml = fullHtml.replace(/<head>/i, '<head>\n<meta name="viewport" content="width=device-width, initial-scale=1.0">')
+        }
+      } else {
+        fullHtml = buildPublishedPage(title, contentHtml)
+      }
       writeFileSync(join(PUBLISHED_DIR, `${id}.html`), fullHtml, 'utf-8')
 
       // Slack 소스일 경우 "Slack" 폴더 자동 생성/할당
@@ -9805,7 +9837,11 @@ function createChatApiMiddleware(options: GitPluginOptions) {
         res.end('<h1>404 — 페이지를 찾을 수 없습니다</h1>')
         return
       }
-      const html = readFileSync(fp, 'utf-8')
+      let html = readFileSync(fp, 'utf-8')
+      // 스크롤 보장
+      const SCROLL_FIX_LEGACY = `<style>html,body{overflow:auto!important;height:auto!important;min-height:100vh!important;max-height:none!important}</style>`
+      if (html.includes('</head>')) html = html.replace('</head>', SCROLL_FIX_LEGACY + '\n</head>')
+      else html = SCROLL_FIX_LEGACY + html
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'public, max-age=86400',
@@ -9853,7 +9889,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
         return
       }
 
-      const MODEL = 'claude-sonnet-4-6'
+      const MODEL = 'claude-opus-4-6'
       const MAX_ITERATIONS = 20
       // ── 동적 max_tokens: 슬랙/아티팩트/바이브테이블링이면 16384, 일반 대화면 8192 ──
       const ARTIFACT_KEYWORDS = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|캐릭터.*시트|릴리즈.*노트|분석|작성해줘|보여줘|프로필|비교|현황|리스트|목록|전체/

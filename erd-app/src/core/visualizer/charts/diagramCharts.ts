@@ -139,31 +139,39 @@ export function mindmapChart(body: string, _title: string): string {
     }
   }
 
-  const CX = 200, CY = 120, R = 90;
+  const hasLeaves = branches.some(b => b.leaves.length > 0);
+  const branchR = hasLeaves ? 120 : 100;
+  const leafR = branchR + 65;
+  const PAD = hasLeaves ? 80 : 50;
+  const SIZE = (hasLeaves ? leafR : branchR) + PAD;
+  const W = SIZE * 2, H = W;
+  const CX = W / 2, CY = H / 2;
 
   const branchHtml = branches.map((b, i) => {
     const angle = (i / branches.length) * 2 * Math.PI - Math.PI / 2;
-    const bx = CX + R * Math.cos(angle);
-    const by = CY + R * Math.sin(angle);
+    const bx = CX + branchR * Math.cos(angle);
+    const by = CY + branchR * Math.sin(angle);
     const color = COLORS[i % COLORS.length];
 
     const leavesHtml = b.leaves.map((leaf, li) => {
-      const leafAngle = angle + ((li - (b.leaves.length - 1) / 2) * 0.35);
-      const lr = R + 52;
-      const lx = CX + lr * Math.cos(leafAngle);
-      const ly = CY + lr * Math.sin(leafAngle);
+      const spread = Math.min(0.35, 1.5 / Math.max(b.leaves.length, 1));
+      const leafAngle = angle + ((li - (b.leaves.length - 1) / 2) * spread);
+      const lx = CX + leafR * Math.cos(leafAngle);
+      const ly = CY + leafR * Math.sin(leafAngle);
       return `<line x1="${bx}" y1="${by}" x2="${lx}" y2="${ly}" stroke="${color}30" stroke-width="1"/>
         <text x="${lx}" y="${ly + 4}" text-anchor="${Math.cos(leafAngle) > 0.1 ? 'start' : Math.cos(leafAngle) < -0.1 ? 'end' : 'middle'}" fill="#94a3b8" font-size="9">${leaf}</text>`;
     }).join('');
 
+    const bNodeR = Math.max(24, b.label.length * 4);
     return `<line x1="${CX}" y1="${CY}" x2="${bx}" y2="${by}" stroke="${color}50" stroke-width="2"/>
       ${leavesHtml}
-      <circle cx="${bx}" cy="${by}" r="24" fill="${color}20" stroke="${color}" stroke-width="1.5"/>
-      <text x="${bx}" y="${by + 4}" text-anchor="middle" fill="${color}" font-size="10" font-weight="600">${b.label}</text>`;
+      <circle cx="${bx}" cy="${by}" r="${bNodeR}" fill="${color}20" stroke="${color}" stroke-width="1.5"/>
+      <text x="${bx}" y="${by + 4}" text-anchor="middle" fill="${color}" font-size="${b.label.length > 8 ? 9 : 10}" font-weight="600">${b.label}</text>`;
   }).join('');
 
-  return `<svg viewBox="0 0 400 240" style="width:100%;margin:0 auto;display:block">
-    <circle cx="${CX}" cy="${CY}" r="32" fill="#818cf820" stroke="#818cf8" stroke-width="2"/>
+  const centerR = Math.max(32, center.length * 4.5);
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${Math.min(W, 600)}px;margin:0 auto;display:block">
+    <circle cx="${CX}" cy="${CY}" r="${centerR}" fill="#818cf820" stroke="#818cf8" stroke-width="2"/>
     <text x="${CX}" y="${CY + 4}" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="700">${center}</text>
     ${branchHtml}
   </svg>`;
@@ -191,31 +199,39 @@ export function relationChart(body: string, _title: string): string {
   const nodeArr = [...nodes.values()];
   if (nodeArr.length === 0) return EMPTY;
 
-  const W = 380, H = 260, CX = W / 2, CY = H / 2;
-  const R = Math.min(CX, CY) - 40;
+  const maxLabelLen = Math.max(...nodeArr.map(n => n.label.length));
+  const nodeR = Math.max(24, Math.min(45, maxLabelLen * 4.5));
+  const n = nodeArr.length;
+  const PAD = nodeR + 20;
+  const layoutR = Math.max(80, n <= 3 ? 80 : n <= 6 ? 120 : n <= 10 ? 160 : 200);
+  const W = (layoutR + PAD) * 2;
+  const H = W;
+  const CX = W / 2, CY = H / 2;
+
   const positions = new Map<string, { x: number; y: number }>();
-  nodeArr.forEach((n, i) => {
-    const angle = (i / nodeArr.length) * 2 * Math.PI - Math.PI / 2;
-    positions.set(n.id, { x: CX + R * Math.cos(angle), y: CY + R * Math.sin(angle) });
+  nodeArr.forEach((nd, i) => {
+    const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
+    positions.set(nd.id, { x: CX + layoutR * Math.cos(angle), y: CY + layoutR * Math.sin(angle) });
   });
 
   const edgesHtml = edges.map(e => {
     const from = positions.get(e.from)!;
     const to = positions.get(e.to)!;
     const mx = (from.x + to.x) / 2, my = (from.y + to.y) / 2;
-    return `<line x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" stroke="#475569" stroke-width="1.5" ${e.directed ? 'marker-end="url(#rel-arrow)"' : ''}/>
-      ${e.label ? `<text x="${mx}" y="${my - 6}" text-anchor="middle" fill="#64748b" font-size="9">${e.label}</text>` : ''}`;
+    return `<line x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" stroke="#475569" stroke-width="1.5" ${e.directed ? `marker-end="url(#rel-arrow)"` : ''}/>
+      ${e.label ? `<text x="${mx}" y="${my - 8}" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="500">${e.label}</text>` : ''}`;
   }).join('');
 
-  const nodesHtml = nodeArr.map((n, i) => {
-    const pos = positions.get(n.id)!;
+  const fontSize = maxLabelLen > 10 ? 9 : maxLabelLen > 6 ? 10 : 11;
+  const nodesHtml = nodeArr.map((nd, i) => {
+    const pos = positions.get(nd.id)!;
     const color = COLORS[i % COLORS.length];
-    return `<circle cx="${pos.x}" cy="${pos.y}" r="22" fill="${color}18" stroke="${color}" stroke-width="2"/>
-      <text x="${pos.x}" y="${pos.y + 4}" text-anchor="middle" fill="#e2e8f0" font-size="10" font-weight="500">${n.label}</text>`;
+    return `<circle cx="${pos.x}" cy="${pos.y}" r="${nodeR}" fill="${color}18" stroke="${color}" stroke-width="2"/>
+      <text x="${pos.x}" y="${pos.y + 4}" text-anchor="middle" fill="#e2e8f0" font-size="${fontSize}" font-weight="600">${nd.label}</text>`;
   }).join('');
 
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;margin:0 auto;display:block">
-    <defs><marker id="rel-arrow" markerWidth="8" markerHeight="6" refX="28" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#475569"/></marker></defs>
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${Math.min(W, 600)}px;margin:0 auto;display:block">
+    <defs><marker id="rel-arrow" markerWidth="8" markerHeight="6" refX="${nodeR + 6}" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#475569"/></marker></defs>
     ${edgesHtml}${nodesHtml}
   </svg>`;
 }

@@ -10,9 +10,13 @@
  * 
  * 필요한 Slack App 권한:
  *   Bot Token Scopes: chat:write, app_mentions:read, im:read, im:write, im:history,
- *                      channels:history, groups:history, reactions:read
+ *                      channels:history, groups:history, reactions:read, links:read, links:write,
+ *                      users:read
  *   Socket Mode: 활성화 필요
- *   Event Subscriptions: app_mention, message.im
+ *   Event Subscriptions: app_mention, message.im, link_shared, app_home_opened
+ *   Interactivity: 활성화 필요 (모달/버튼 인터랙션)
+ *   App Home Tab: 활성화 필요 (Home Tab → Show Tab 체크)
+ *   App Unfurl Domains: DataMaster 퍼블릭 URL 도메인 등록 필요
  */
 
 const { App } = require('@slack/bolt');
@@ -104,6 +108,35 @@ function getSessionId(channel, threadTs) {
 // 봇 응답 ts → { channel, threadTs, userText, toolCount, responseLen, timestamp }
 const botResponses = new Map();
 const BOT_RESPONSE_TTL = 24 * 60 * 60 * 1000; // 24시간
+
+// ── 차트 캐시 (모달 표시용) ──
+// chartCacheId → { charts: [{url, title, type}], vizBlocks: [...], publishedUrl, timestamp }
+const chartCache = new Map();
+const CHART_CACHE_TTL = 2 * 60 * 60 * 1000; // 2시간
+
+function storeChartData(charts, vizBlocks, publishedUrl) {
+  const id = `chart-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  chartCache.set(id, { charts, vizBlocks, publishedUrl, timestamp: Date.now() });
+  if (chartCache.size > 100) {
+    const now = Date.now();
+    for (const [k, v] of chartCache) {
+      if (now - v.timestamp > CHART_CACHE_TTL) chartCache.delete(k);
+    }
+  }
+  return id;
+}
+
+// ── Home Tab 활동 추적 ──
+// userId → [{ query, tools, charts, publishedUrl, timestamp }]
+const userActivity = new Map();
+const MAX_ACTIVITY_PER_USER = 15;
+
+function trackUserActivity(userId, info) {
+  if (!userActivity.has(userId)) userActivity.set(userId, []);
+  const list = userActivity.get(userId);
+  list.unshift({ ...info, timestamp: Date.now() });
+  if (list.length > MAX_ACTIVITY_PER_USER) list.length = MAX_ACTIVITY_PER_USER;
+}
 
 function trackBotResponse(msgTs, info) {
   botResponses.set(msgTs, { ...info, timestamp: Date.now() });
@@ -434,6 +467,134 @@ function mdTableToSlack(tableText) {
   });
 
   return '```\n' + formatted.join('\n') + '\n```';
+}
+
+// ── :::visualizer 블록 파싱 ──
+function extractVisualizerBlocks(text) {
+  const blocks = [];
+  const vizRegex = /:::visualizer\{([^}]*)\}\n([\s\S]*?)(?:\n:::\s*(?:\n|$)|$)/g;
+  let match;
+  while ((match = vizRegex.exec(text)) !== null) {
+    const attrStr = match[1];
+    const body = match[2].trim();
+    const typeMatch = attrStr.match(/type="([^"]+)"/);
+    const titleMatch = attrStr.match(/title="([^"]+)"/);
+    if (typeMatch) {
+      blocks.push({
+        type: typeMatch[1],
+        title: titleMatch ? titleMatch[1] : '',
+        body,
+        raw: match[0],
+      });
+    }
+  }
+  let stripped = text;
+  for (const b of blocks) {
+    stripped = stripped.replace(b.raw, '');
+  }
+  stripped = stripped.replace(/\n{3,}/g, '\n\n').trim();
+  return { blocks, stripped };
+}
+
+// ── visualizer → QuickChart.io 이미지 URL ──
+const QUICKCHART_TYPES = new Set(['bar', 'hbar', 'line', 'area', 'pie', 'donut', 'scatter', 'radar', 'bubble']);
+
+function parseVisualizerData(body) {
+  const lines = body.split('\n').filter(l => l.trim());
+  if (lines.length === 0) return null;
+
+  const firstCols = lines[0].split('|').map(c => c.trim());
+  const hasHeader = firstCols[0] === '_' || firstCols[0] === '';
+  let headers = null;
+  let dataLines = lines;
+
+  if (hasHeader && lines.length > 1) {
+    headers = firstCols.slice(1);
+    dataLines = lines.slice(1);
+  }
+
+  const labels = [];
+  const datasets = [];
+
+  for (const line of dataLines) {
+    const cols = line.split('|').map(c => c.trim());
+    labels.push(cols[0]);
+    const values = cols.slice(1).map(v => parseFloat(v) || 0);
+    while (datasets.length < values.length) datasets.push([]);
+    values.forEach((v, i) => datasets[i].push(v));
+  }
+
+  return { labels, datasets, headers };
+}
+
+function visualizerToQuickChartUrl(block) {
+  if (!QUICKCHART_TYPES.has(block.type)) return null;
+
+  const parsed = parseVisualizerData(block.body);
+  if (!parsed || parsed.labels.length === 0) return null;
+
+  const COLORS = [
+    'rgba(54,162,235,0.8)', 'rgba(255,99,132,0.8)', 'rgba(75,192,192,0.8)',
+    'rgba(255,206,86,0.8)', 'rgba(153,102,255,0.8)', 'rgba(255,159,64,0.8)',
+    'rgba(46,204,113,0.8)', 'rgba(231,76,60,0.8)',
+  ];
+  const BORDER_COLORS = COLORS.map(c => c.replace('0.8', '1'));
+
+  let chartType;
+  let indexAxis;
+  const fill = block.type === 'area';
+  switch (block.type) {
+    case 'hbar': chartType = 'horizontalBar'; break;
+    case 'pie': case 'donut': chartType = block.type === 'donut' ? 'doughnut' : 'pie'; break;
+    case 'scatter': case 'bubble': chartType = block.type; break;
+    case 'radar': chartType = 'radar'; break;
+    case 'area': chartType = 'line'; break;
+    default: chartType = 'bar';
+  }
+
+  let datasets;
+  if (chartType === 'pie' || chartType === 'doughnut') {
+    datasets = [{
+      data: parsed.datasets[0] || [],
+      backgroundColor: parsed.labels.map((_, i) => COLORS[i % COLORS.length]),
+    }];
+  } else if (chartType === 'scatter') {
+    const points = parsed.labels.map((label, i) => ({
+      x: (parsed.datasets[0] || [])[i] || 0,
+      y: (parsed.datasets[1] || [])[i] || 0,
+    }));
+    datasets = [{ label: block.title || 'Data', data: points, backgroundColor: COLORS[0] }];
+  } else {
+    datasets = parsed.datasets.map((data, i) => ({
+      label: parsed.headers ? parsed.headers[i] : `시리즈 ${i + 1}`,
+      data,
+      backgroundColor: parsed.datasets.length === 1
+        ? parsed.labels.map((_, j) => COLORS[j % COLORS.length])
+        : COLORS[i % COLORS.length],
+      borderColor: BORDER_COLORS[i % BORDER_COLORS.length],
+      fill,
+    }));
+  }
+
+  const config = {
+    type: chartType,
+    data: { labels: parsed.labels, datasets },
+    options: {
+      plugins: {
+        title: block.title ? { display: true, text: block.title, font: { size: 16 } } : undefined,
+        legend: { display: parsed.datasets.length > 1 || chartType === 'pie' || chartType === 'doughnut' },
+      },
+      ...(chartType === 'horizontalBar' ? { indexAxis: 'y' } : {}),
+    },
+  };
+
+  try {
+    const encoded = encodeURIComponent(JSON.stringify(config));
+    if (encoded.length > 8000) return null;
+    return `https://quickchart.io/chart?c=${encoded}&w=600&h=400&bkg=white&f=png`;
+  } catch {
+    return null;
+  }
 }
 
 // ── 마크다운 → Slack mrkdwn 변환 ──
@@ -1129,6 +1290,17 @@ async function handleMessage({ message, say, client, event }) {
     if (!result) throw new Error('재시도 횟수 초과');
     const rawContent = result.content || '';
     
+    // ── :::visualizer 블록 추출 → 차트 이미지 URL 변환 ──
+    const { blocks: vizBlocks, stripped: contentWithoutViz } = extractVisualizerBlocks(rawContent);
+    const chartImageUrls = [];
+    for (const vb of vizBlocks) {
+      const url = visualizerToQuickChartUrl(vb);
+      if (url) chartImageUrls.push({ url, title: vb.title || `${vb.type} 차트`, type: vb.type });
+    }
+    if (chartImageUrls.length > 0) {
+      console.log(`[Slack] 차트 이미지 ${chartImageUrls.length}개 생성: ${chartImageUrls.map(c => c.type).join(', ')}`);
+    }
+    
     // ── 도구 결과에서 메타정보 축적 ──
     if (result.toolCalls.length > 0) {
       accumulateToolMeta(channel, threadTs, result.toolCalls);
@@ -1180,9 +1352,30 @@ async function handleMessage({ message, say, client, event }) {
       return false;
     }
     
-    // 출판용 콘텐츠: 진행 텍스트 필터링 적용 (단, 필터 후 너무 짧으면 원본 사용)
-    const _stripped = stripProgressText(rawContent);
-    const publishContent = _stripped.length >= 50 ? _stripped : rawContent;
+    // 아티팩트 도구 사용 시 rawContent에서 HTML/코드 블록 제거
+    // AI가 아티팩트 내용(HTML, YAML 등)을 텍스트에 포함시키는 경우 Slack에 코드가 노출되는 것을 방지
+    function stripArtifactCode(text) {
+      let cleaned = text;
+      // YAML 블록 형태: "id: xxx\ntitle: xxx\nhtml: |\n  <!DOCTYPE..." 패턴 제거
+      cleaned = cleaned.replace(/^(?:id:\s*.+\n)?(?:title:\s*.+\n)?html:\s*\|?\s*\n[\s\S]*?(?:<\/html>|<\/body>|<\/style>|<\/script>)[^\n]*/gm, '');
+      // 인라인 HTML 블록: <!DOCTYPE ... </html> 전체 제거
+      cleaned = cleaned.replace(/<!DOCTYPE[\s\S]*?<\/html>/gi, '');
+      // 마크다운 코드펜스 안의 HTML 제거: ```html ... ```
+      cleaned = cleaned.replace(/```(?:html|htm|css|xml)\n[\s\S]*?```/gi, '');
+      // 길게 이어지는 HTML 태그 라인 제거 (style, div, table 등이 3줄 이상)
+      cleaned = cleaned.replace(/(?:^[ \t]*<(?:style|div|table|tr|td|th|head|body|meta|link|section|h[1-6]|span|p|ul|ol|li|img|a |!--|script)[^>]*>.*\n){3,}/gim, '');
+      // 남은 빈 줄 정리
+      cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+      return cleaned;
+    }
+
+    // 출판용 콘텐츠: visualizer 블록 제거 + 진행 텍스트 필터링 (단, 필터 후 너무 짧으면 원본 사용)
+    let textForSlack = chartImageUrls.length > 0 ? contentWithoutViz : rawContent;
+    if (usedArtifactTool) {
+      textForSlack = stripArtifactCode(textForSlack);
+    }
+    const _stripped = stripProgressText(textForSlack);
+    const publishContent = _stripped.length >= 50 ? _stripped : textForSlack;
     
     // 구조화된 내용 판별 (대화형 텍스트가 아닌 실제 데이터/문서 내용인지)
     const hasTable = /\|.+\|.+\|/.test(publishContent) && publishContent.split('\n').filter(l => l.includes('|')).length > 2;
@@ -1195,41 +1388,80 @@ async function handleMessage({ message, say, client, event }) {
     const shouldForcePublish = (hasVisualTool && !isConversationalOnly(publishContent)) 
       || (result.toolCalls.length >= 2 && hasStructuredContent);
     
+    // 출판 URL 추출 헬퍼
+    function extractPublishedUrl(pubData) {
+      let url = (pubData.url || '').replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
+      if (url.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
+        url = url.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
+      }
+      return url;
+    }
+
     // 1) AI가 create_artifact/patch_artifact 도구로 만든 아티팩트 → HTML 직접 출판
+    // result가 없는 경우도 포함하여 넓게 탐색
     const artifactTC = result.toolCalls.find(tc => 
-      (tc.tool === 'create_artifact' || tc.tool === 'patch_artifact') && tc.result
+      tc.tool === 'create_artifact' || tc.tool === 'patch_artifact'
     );
     if (artifactTC) {
-      try {
-        const artData = typeof artifactTC.result === 'object' ? artifactTC.result : {};
-        const artHtml = artData.html || '';
-        const artTitle = artData.title || userText.slice(0, 40);
-        
-        if (artHtml.length > 50) {
+      const artResult = artifactTC.result;
+      const artData = (typeof artResult === 'object' && artResult) ? artResult : {};
+      const artHtml = artData.html || '';
+      const artTitle = artData.title || artifactTC.input?.title || userText.slice(0, 40);
+
+      if (artHtml.length > 50) {
+        try {
           const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ title: artTitle, html: artHtml, source: 'slack' }),
           });
           if (pubResp.ok) {
-            const pubData = await pubResp.json();
-            publishedUrl = pubData.url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
-            if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
-              publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
-            }
-            console.log(`[Slack] 아티팩트 출판: "${artTitle}" → ${publishedUrl}`);
+            publishedUrl = extractPublishedUrl(await pubResp.json());
+            console.log(`[Slack] 아티팩트 출판 (HTML): "${artTitle}" → ${publishedUrl}`);
           }
-        } else {
-          // HTML이 비어있거나 너무 짧으면 → 아티팩트 도구는 사용했지만 출판 불가
-          // 이 경우 rawContent(진행 텍스트)를 아티팩트로 출판하면 안 됨!
-          console.warn(`[Slack] create_artifact 결과 HTML 부족 (${artHtml.length}자) — 출판 건너뜀`);
+        } catch (e) {
+          console.warn('[Slack] 아티팩트 HTML 출판 실패:', e.message);
         }
-      } catch (e) {
-        console.warn('[Slack] 아티팩트 출판 실패:', e.message);
+      }
+
+      // HTML이 없거나 짧거나 출판 실패 → rawContent에서 HTML 추출 시도
+      if (!publishedUrl) {
+        const htmlMatch = rawContent.match(/<!DOCTYPE[\s\S]*?<\/html>/i)
+          || rawContent.match(/<html[\s\S]*?<\/html>/i);
+        if (htmlMatch && htmlMatch[0].length > 100) {
+          try {
+            const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: artTitle, html: htmlMatch[0], source: 'slack' }),
+            });
+            if (pubResp.ok) {
+              publishedUrl = extractPublishedUrl(await pubResp.json());
+              console.log(`[Slack] 아티팩트 출판 (rawContent HTML 추출): "${artTitle}" → ${publishedUrl}`);
+            }
+          } catch (e) {
+            console.warn('[Slack] rawContent HTML 출판 실패:', e.message);
+          }
+        }
+      }
+
+      // 그래도 실패 → publishContent(코드 제거된)를 마크다운으로 출판
+      if (!publishedUrl && publishContent.length > 100) {
+        try {
+          const pubResp = await fetch(`${DATAMASTER_URL}/api/v1/publish`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: artTitle, markdown: publishContent, source: 'slack' }),
+          });
+          if (pubResp.ok) {
+            publishedUrl = extractPublishedUrl(await pubResp.json());
+            console.log(`[Slack] 아티팩트 출판 (마크다운 fallback): "${artTitle}" → ${publishedUrl}`);
+          }
+        } catch (e) {
+          console.warn('[Slack] 아티팩트 마크다운 출판 실패:', e.message);
+        }
       }
     }
-    
-    // ※ 아티팩트 도구를 사용했으면 조건 2, 3으로 빠지지 않음 (진행 텍스트 출판 방지)
     
     // 2) 비주얼 도구 사용 or 구조화된 데이터가 충분할 때 → 강제 출판
     if (!publishedUrl && !usedArtifactTool && shouldForcePublish && publishContent.length > 200) {
@@ -1241,11 +1473,7 @@ async function handleMessage({ message, say, client, event }) {
           body: JSON.stringify({ title: titleGuess, markdown: publishContent, source: 'slack' }),
         });
         if (pubResp.ok) {
-          const pubData = await pubResp.json();
-          publishedUrl = pubData.url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
-          if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
-            publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
-          }
+          publishedUrl = extractPublishedUrl(await pubResp.json());
           console.log(`[Slack] 강제 출판 (${hasVisualTool ? '비주얼도구' : `구조화${result.toolCalls.length}도구`}): ${publishedUrl}`);
         }
       } catch (e) {
@@ -1263,11 +1491,7 @@ async function handleMessage({ message, say, client, event }) {
           body: JSON.stringify({ title: titleGuess, markdown: publishContent, source: 'slack' }),
         });
         if (pubResp.ok) {
-          const pubData = await pubResp.json();
-          publishedUrl = pubData.url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
-          if (publishedUrl.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
-            publishedUrl = publishedUrl.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
-          }
+          publishedUrl = extractPublishedUrl(await pubResp.json());
           console.log(`[Slack] 텍스트 출판: ${publishedUrl}`);
         }
       } catch (e) {
@@ -1299,9 +1523,17 @@ async function handleMessage({ message, say, client, event }) {
       // 짧은 응답: 진행 텍스트("~하겠습니다" 등) 제거 후 Slack mrkdwn으로 표시
       let slackText = mdToSlack(publishContent);
       
-      // 필터링 후 빈 경우 → 원본 rawContent fallback (도구 요약으로 대체하지 않음)
+      // 필터링 후 빈 경우 → rawContent fallback (아티팩트 사용 시 코드 제거)
       if (!slackText.trim()) {
-        slackText = mdToSlack(rawContent);
+        const fallbackRaw = usedArtifactTool ? stripArtifactCode(rawContent) : rawContent;
+        slackText = mdToSlack(fallbackRaw);
+      }
+      
+      // 아티팩트 도구를 사용했지만 출판 실패 + 남은 텍스트가 여전히 HTML 코드인 경우 안전장치
+      if (usedArtifactTool && (/<[a-z][\s\S]*>/i.test(slackText) || /^\s*(body|html|style|div|meta|head)\s*\{/m.test(slackText))) {
+        const artTitle = result.toolCalls.find(tc => tc.tool === 'create_artifact' || tc.tool === 'patch_artifact');
+        const titleStr = artTitle?.input?.title || artTitle?.result?.title || '문서';
+        slackText = '📄 *' + titleStr + '*이(가) 생성되었습니다.\n웹에서 확인해주세요.';
       }
       
       slackText = truncateForSlack(slackText);
@@ -1315,6 +1547,49 @@ async function handleMessage({ message, say, client, event }) {
       }
     }
     
+    // ── 차트 이미지 블록 추가 (QuickChart.io) ──
+    let chartCacheId = null;
+    if (chartImageUrls.length > 0) {
+      chartCacheId = storeChartData(chartImageUrls, vizBlocks, publishedUrl);
+      blocks.push({ type: 'divider' });
+      for (const chart of chartImageUrls.slice(0, 3)) {
+        blocks.push({
+          type: 'image',
+          image_url: chart.url,
+          alt_text: chart.title,
+          title: { type: 'plain_text', text: chart.title, emoji: true },
+        });
+      }
+
+      // 차트가 2개 이상이거나 웹에서만 지원하는 타입이 있으면 모달 버튼 추가
+      const unsupported = vizBlocks.filter(vb => !QUICKCHART_TYPES.has(vb.type));
+      const actionElements = [];
+      if (chartImageUrls.length >= 2 || unsupported.length > 0) {
+        actionElements.push({
+          type: 'button',
+          text: { type: 'plain_text', text: '🔍 차트 모아보기', emoji: true },
+          action_id: 'open_chart_modal',
+          value: chartCacheId,
+        });
+      }
+      if (publishedUrl) {
+        actionElements.push({
+          type: 'button',
+          text: { type: 'plain_text', text: '🌐 웹에서 상세 보기', emoji: true },
+          url: publishedUrl,
+        });
+      }
+      if (actionElements.length > 0) {
+        blocks.push({ type: 'actions', elements: actionElements });
+      }
+      if (unsupported.length > 0) {
+        blocks.push({
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: `💡 _${unsupported.map(u => u.type).join(', ')} 차트는 모달 또는 웹에서 확인할 수 있습니다_` }],
+        });
+      }
+    }
+
     // 도구 호출 context 추가
     if (result.toolCalls.length > 0) {
       const unique = [...new Set(result.toolCalls.map(tc => TOOL_LABELS[tc.tool] || tc.tool))];
@@ -1326,9 +1601,14 @@ async function handleMessage({ message, say, client, event }) {
     }
 
     // 로딩 메시지 업데이트 → 실제 응답으로 교체
-    const fallbackText = publishedUrl 
-      ? `${extractSlackSummary(publishContent)}\n\n📊 전체 결과: ${publishedUrl}`
-      : mdToSlack(publishContent || rawContent).slice(0, 3000);
+    let fallbackText;
+    if (publishedUrl) {
+      fallbackText = extractSlackSummary(publishContent) + '\n\n📊 전체 결과: ' + publishedUrl;
+    } else {
+      let fbSource = publishContent || rawContent;
+      if (usedArtifactTool) fbSource = stripArtifactCode(fbSource);
+      fallbackText = mdToSlack(fbSource).slice(0, 3000);
+    }
     
     if (loadingMsg?.ts) {
       try {
@@ -1365,6 +1645,14 @@ async function handleMessage({ message, say, client, event }) {
         published: !!publishedUrl,
       });
     }
+
+    // Home Tab 활동 추적
+    trackUserActivity(userId, {
+      query: userText.slice(0, 100),
+      tools: [...new Set(result.toolCalls.map(tc => tc.tool))],
+      chartCount: chartImageUrls.length,
+      publishedUrl,
+    });
 
   } catch (error) {
     if (globalTimeoutFired) return; // 글로벌 타임아웃이 이미 응답함
@@ -1425,6 +1713,306 @@ app.event('message', async (args) => {
   // DM 채널만 처리 (im 타입)
   if (event.channel_type === 'im') {
     await handleMessage({ ...args, message: event });
+  }
+});
+
+// ── 차트 모달 (버튼 클릭 → 차트 모아보기) ──
+app.action('open_chart_modal', async ({ ack, body, client }) => {
+  await ack();
+  const cacheId = body.actions?.[0]?.value;
+  const cached = cacheId ? chartCache.get(cacheId) : null;
+
+  if (!cached || cached.charts.length === 0) {
+    try {
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        view: {
+          type: 'modal',
+          title: { type: 'plain_text', text: '📊 차트 보기' },
+          close: { type: 'plain_text', text: '닫기' },
+          blocks: [{ type: 'section', text: { type: 'mrkdwn', text: '차트 데이터가 만료되었습니다. 다시 질문해주세요.' } }],
+        },
+      });
+    } catch (e) { console.warn('[Slack] 차트 모달 오류:', e.message); }
+    return;
+  }
+
+  const modalBlocks = [];
+
+  for (let i = 0; i < cached.charts.length; i++) {
+    const chart = cached.charts[i];
+    if (i > 0) modalBlocks.push({ type: 'divider' });
+    modalBlocks.push({
+      type: 'header',
+      text: { type: 'plain_text', text: chart.title || `차트 ${i + 1}`, emoji: true },
+    });
+    modalBlocks.push({
+      type: 'image',
+      image_url: chart.url.replace('w=600&h=400', 'w=800&h=500'),
+      alt_text: chart.title || `차트 ${i + 1}`,
+    });
+    // 차트 원본 데이터 표시
+    const vizBlock = cached.vizBlocks.find(vb => (vb.title || `${vb.type} 차트`) === chart.title);
+    if (vizBlock?.body) {
+      const dataPreview = vizBlock.body.split('\n').slice(0, 8).join('\n');
+      modalBlocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `📋 _${chart.type}_ 차트 · 데이터:\n\`\`\`${dataPreview}\`\`\`` }],
+      });
+    }
+  }
+
+  // 웹에서만 지원하는 차트 타입 안내
+  const unsupported = cached.vizBlocks.filter(vb => !QUICKCHART_TYPES.has(vb.type));
+  if (unsupported.length > 0) {
+    modalBlocks.push({ type: 'divider' });
+    for (const vb of unsupported) {
+      modalBlocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*${vb.title || vb.type}* (_${vb.type}_ 타입)\n이 차트는 Slack에서 이미지로 표시할 수 없습니다.` },
+      });
+      if (vb.body) {
+        const preview = vb.body.split('\n').slice(0, 5).join('\n');
+        modalBlocks.push({
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: `\`\`\`${preview}\`\`\`` }],
+        });
+      }
+    }
+  }
+
+  // 웹 링크 버튼
+  if (cached.publishedUrl) {
+    modalBlocks.push({ type: 'divider' });
+    modalBlocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '🌐 인터랙티브 차트와 전체 결과는 웹에서 확인할 수 있습니다.' },
+      accessory: {
+        type: 'button',
+        text: { type: 'plain_text', text: '웹에서 보기', emoji: true },
+        url: cached.publishedUrl,
+        style: 'primary',
+      },
+    });
+  }
+
+  try {
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: {
+        type: 'modal',
+        title: { type: 'plain_text', text: '📊 차트 모아보기' },
+        close: { type: 'plain_text', text: '닫기' },
+        blocks: modalBlocks.slice(0, 100),
+      },
+    });
+    console.log(`[Slack] 차트 모달 열림: ${cached.charts.length}개 차트`);
+  } catch (e) {
+    console.error('[Slack] 차트 모달 오류:', e.message);
+  }
+});
+
+// ── App Home Tab (대시보드) ──
+app.event('app_home_opened', async ({ event, client }) => {
+  const userId = event.user;
+
+  try {
+    const blocks = [];
+
+    // 헤더
+    blocks.push({
+      type: 'header',
+      text: { type: 'plain_text', text: '📊 DataMaster 대시보드', emoji: true },
+    });
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `_${new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} 기준_` }],
+    });
+    blocks.push({ type: 'divider' });
+
+    // 서버 상태
+    let serverOk = false;
+    try {
+      const healthResp = await fetch(`${DATAMASTER_URL}/api/health`, { signal: AbortSignal.timeout(3000) });
+      serverOk = healthResp.ok;
+    } catch { /* ignore */ }
+
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*🖥️ 서버 상태*\n${serverOk ? '✅ DataMaster 온라인' : '❌ DataMaster 오프라인'}\n📡 Socket Mode 연결 중`,
+      },
+    });
+    blocks.push({ type: 'divider' });
+
+    // 최근 출판 문서 (전체)
+    let publishedDocs = [];
+    try {
+      const pubResp = await fetch(`${DATAMASTER_URL}/api/published`, { signal: AbortSignal.timeout(5000) });
+      if (pubResp.ok) publishedDocs = await pubResp.json();
+    } catch { /* ignore */ }
+
+    if (publishedDocs.length > 0) {
+      blocks.push({
+        type: 'header',
+        text: { type: 'plain_text', text: '📄 최근 출판 문서', emoji: true },
+      });
+
+      const recent = publishedDocs
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+        .slice(0, 5);
+
+      for (const doc of recent) {
+        const dateStr = doc.createdAt
+          ? new Date(doc.createdAt).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+          : '';
+        const docUrl = DATAMASTER_PUBLIC_URL + '/api/p/' + doc.id;
+        const docTitle = doc.title || '(제목 없음)';
+        const sourceBadge = doc.source === 'slack' ? ' · Slack에서 생성' : '';
+        blocks.push({
+          type: 'section',
+          text: { type: 'mrkdwn', text: '*<' + docUrl + '|' + docTitle + '>*\n' + dateStr + sourceBadge },
+          accessory: {
+            type: 'button',
+            text: { type: 'plain_text', text: '열기', emoji: true },
+            url: docUrl,
+          },
+        });
+      }
+      blocks.push({ type: 'divider' });
+    }
+
+    // 내 최근 활동
+    const myActivity = userActivity.get(userId) || [];
+    if (myActivity.length > 0) {
+      blocks.push({
+        type: 'header',
+        text: { type: 'plain_text', text: '🕐 내 최근 질문', emoji: true },
+      });
+
+      for (const act of myActivity.slice(0, 8)) {
+        const timeStr = new Date(act.timestamp).toLocaleString('ko-KR', {
+          timeZone: 'Asia/Seoul', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+        });
+        const toolIcons = (act.tools || []).map(t => TOOL_LABELS[t] || t).slice(0, 4).join(' ');
+        const chartBadge = act.chartCount > 0 ? ` · 📈 차트 ${act.chartCount}개` : '';
+        const pubBadge = act.publishedUrl ? ` · <${act.publishedUrl}|📄 문서>` : '';
+        blocks.push({
+          type: 'section',
+          text: { type: 'mrkdwn', text: `*${act.query}*\n${timeStr} · ${toolIcons}${chartBadge}${pubBadge}` },
+        });
+      }
+      blocks.push({ type: 'divider' });
+    }
+
+    // 사용법 안내
+    blocks.push({
+      type: 'header',
+      text: { type: 'plain_text', text: '💡 사용법', emoji: true },
+    });
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: [
+          '• 채널에서 *@DataMaster* 멘션하여 질문',
+          '• DM으로 직접 메시지 보내기',
+          '• `/datamaster` 슬래시 커맨드 사용',
+          '• 👍/👎 리액션으로 답변 피드백',
+          '',
+          '*예시 질문:*',
+          '> 전사 캐릭터의 스탯 비교해줘',
+          '> 아이템 테이블 구조 보여줘',
+          '> AEGIS-1234 이슈 알려줘',
+        ].join('\n'),
+      },
+    });
+
+    // 통계
+    const totalSessions = threadSessions.size;
+    const totalActivities = [...userActivity.values()].reduce((sum, list) => sum + list.length, 0);
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `📊 활성 세션: ${totalSessions} · 총 질문: ${totalActivities} · 출판 문서: ${publishedDocs.length}개` }],
+    });
+
+    await client.views.publish({
+      user_id: userId,
+      view: {
+        type: 'home',
+        blocks: blocks.slice(0, 100),
+      },
+    });
+    console.log(`[Slack] Home Tab 업데이트: user=${userId}`);
+  } catch (err) {
+    console.error('[Slack] Home Tab 오류:', err.message);
+  }
+});
+
+// ── 링크 언펄링 (DataMaster URL 공유 시 리치 프리뷰) ──
+app.event('link_shared', async ({ event, client }) => {
+  try {
+    const unfurls = {};
+    for (const link of event.links || []) {
+      const url = link.url || '';
+      const docMatch = url.match(/\/api\/p\/([a-z0-9_]+)/i) || url.match(/\/api\/v1\/published\/([a-z0-9_]+)/i);
+      if (!docMatch) continue;
+
+      const docId = docMatch[1];
+      let title = 'DataMaster 분석 결과';
+      let description = '자세한 내용은 링크를 클릭해 확인하세요.';
+
+      try {
+        const metaResp = await fetch(`${DATAMASTER_URL}/api/published`);
+        if (metaResp.ok) {
+          const allDocs = await metaResp.json();
+          const doc = allDocs.find(d => d.id === docId);
+          if (doc) {
+            title = doc.title || title;
+            description = doc.description || `${doc.author ? doc.author + ' · ' : ''}${new Date(doc.createdAt).toLocaleDateString('ko-KR')} 생성`;
+          }
+        }
+      } catch (metaErr) {
+        console.warn('[Slack] 문서 메타 조회 실패:', metaErr.message);
+      }
+
+      unfurls[url] = {
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `*📊 ${title}*\n${description}`,
+            },
+            accessory: {
+              type: 'button',
+              text: { type: 'plain_text', text: '열기', emoji: true },
+              url: url,
+              style: 'primary',
+            },
+          },
+          {
+            type: 'context',
+            elements: [
+              { type: 'mrkdwn', text: '📋 _DataMaster에서 생성된 문서입니다_' },
+            ],
+          },
+        ],
+      };
+    }
+
+    if (Object.keys(unfurls).length > 0) {
+      await client.chat.unfurl({
+        ts: event.message_ts,
+        channel: event.channel,
+        unfurls,
+      });
+      console.log(`[Slack] 링크 언펄링 완료: ${Object.keys(unfurls).length}개`);
+    }
+  } catch (err) {
+    console.error('[Slack] 링크 언펄링 오류:', err.message);
   }
 });
 
@@ -1524,13 +2112,22 @@ app.command('/datamaster', async ({ command, ack, respond }) => {
     const sessionId = getSessionId(command.channel_id, null);
     const result = await callDataMaster(userText, sessionId);
     
-    let response = mdToSlack(result.content);
+    const { blocks: cmdVizBlocks, stripped: cmdStripped } = extractVisualizerBlocks(result.content);
+    const cmdCharts = cmdVizBlocks.map(vb => ({ url: visualizerToQuickChartUrl(vb), title: vb.title || `${vb.type} 차트` })).filter(c => c.url);
+    
+    let response = mdToSlack(cmdCharts.length > 0 ? cmdStripped : result.content);
     const toolSummary = formatToolSummary(result.toolCalls);
     response = truncateForSlack(response + toolSummary);
 
+    const cmdBlocks = [{ type: 'section', text: { type: 'mrkdwn', text: response.slice(0, 2900) } }];
+    for (const chart of cmdCharts.slice(0, 3)) {
+      cmdBlocks.push({ type: 'image', image_url: chart.url, alt_text: chart.title, title: { type: 'plain_text', text: chart.title, emoji: true } });
+    }
+
     await respond({
       text: response,
-      response_type: 'in_channel', // 채널 전체에 표시
+      blocks: cmdBlocks,
+      response_type: 'in_channel',
     });
   } catch (error) {
     await respond({ text: `❌ 오류: ${error.message}` });
@@ -1552,6 +2149,11 @@ app.command('/datamaster', async ({ command, ack, respond }) => {
 ║  • 채널에서 @DataMaster 멘션                                 ║
 ║  • DM으로 직접 메시지                                         ║
 ║  • /datamaster 슬래시 커맨드                                  ║
+║                                                              ║
+║  기능:                                                        ║
+║  • 📊 차트 모아보기 모달 (버튼 클릭)                          ║
+║  • 🏠 App Home Tab 대시보드                                  ║
+║  • 🔗 링크 언펄링 · 👍👎 피드백                              ║
 ║                                                              ║
 ║  종료: Ctrl+C                                                ║
 ╚══════════════════════════════════════════════════════════════╝
