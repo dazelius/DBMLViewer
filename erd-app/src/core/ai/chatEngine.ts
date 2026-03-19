@@ -1264,6 +1264,14 @@ function selectToolsForQuery(query: string, existingFilter?: string[]): typeof T
     matched.add('query_game_data');
   }
 
+  // 버그 헌팅 키워드 → 데이터 + 코드 도구 모두 포함
+  if (/버그.*찾|버그.*헌팅|게임.*버그|QA.*해|런타임.*버그|크래시.*찾/i.test(query)) {
+    for (const t of TOOL_GROUPS.data.tools) matched.add(t);
+    for (const t of TOOL_GROUPS.code.tools) matched.add(t);
+    matched.add('read_guide');
+    anyGroupMatched = true;
+  }
+
   // 댓글/코멘트 키워드 + Confluence URL → confluence 도구 보장
   if (/댓글|코멘트|comment/i.test(query) && /\/wiki\/|\/pages\/\d+|confluence|컨플/i.test(query)) {
     for (const t of TOOL_GROUPS.confluence.tools) matched.add(t);
@@ -1313,7 +1321,7 @@ function buildSystemPrompt(
   selectedToolNames?: string[],
   anomalyPrompt?: string,
   validationPrompt?: string,
-  detectedWorkflow?: 'new_content' | 'balance_change' | 'data_qa' | null,
+  detectedWorkflow?: 'new_content' | 'balance_change' | 'data_qa' | 'game_bug_hunt' | null,
 ): string {
   const hasTools = (names: string[]) => !selectedToolNames || names.some(n => selectedToolNames.includes(n));
   const lines: string[] = [];
@@ -1559,6 +1567,7 @@ function buildSystemPrompt(
   lines.push('- "캐릭터 추가/삭제/복제" → workflow_new_content 참조');
   lines.push('- "밸런스/수치 조정" → workflow_balance_change 참조');
   lines.push('- "검증/QA/확인" → workflow_data_qa 참조');
+  lines.push('- "버그 찾아줘/게임 버그/QA 해줘" → workflow_bug_hunt 참조 (코드+데이터 크로스 체크)');
   lines.push('');
   lines.push('### 맥락 유지');
   lines.push('- 이전에 편집한 테이블을 기억하고, 관련 작업이 남아있으면 proactive하게 제안');
@@ -1569,6 +1578,7 @@ function buildSystemPrompt(
       new_content: '신규 콘텐츠 추가',
       balance_change: '밸런스 조정',
       data_qa: '데이터 QA',
+      game_bug_hunt: '🐛 게임 버그 헌팅',
     };
     lines.push('### ⚡ 워크플로 모드 활성화');
     lines.push(`감지된 워크플로: **${WF_LABELS[detectedWorkflow] ?? detectedWorkflow}**`);
@@ -1579,6 +1589,15 @@ function buildSystemPrompt(
     lines.push('4. 편집 후 반드시 같은 턴 내에서 검증 수행');
     lines.push('시스템이 편집 완료 시 FK 관련 테이블 힌트를 자동 제공합니다. 이를 참고하여 검증하세요.');
     lines.push('');
+
+    if (detectedWorkflow === 'game_bug_hunt') {
+      lines.push('### 🐛 버그 헌팅 특별 지시');
+      lines.push('이 워크플로는 **게임 데이터 + C# 코드를 크로스 체크**하여 런타임 버그를 찾습니다.');
+      lines.push('반드시 workflow_bug_hunt 널리지를 참조하여 단계별로 진행하세요.');
+      lines.push('핵심: query_game_data로 데이터 수집 → search_code/read_code_file로 관련 코드 분석 → 데이터×코드 크로스 체크');
+      lines.push('발견된 버그는 심각도(CRASH/LOGIC/BALANCE)별로 분류하여 리포트하세요.');
+      lines.push('');
+    }
   }
 
   // ── 바이브테이블링 규칙: edit_game_data/add_game_data_rows 포함 시에만 ──
@@ -2965,10 +2984,11 @@ export async function tryFastPath(
   return null;
 }
 
-function detectWorkflow(query: string): 'new_content' | 'balance_change' | 'data_qa' | null {
+function detectWorkflow(query: string): 'new_content' | 'balance_change' | 'data_qa' | 'game_bug_hunt' | null {
   if (/추가|등록|세팅|새.*캐릭|새.*스킬|새.*아이템|신규|복제|클론/i.test(query)) return 'new_content';
   if (/밸런스|상향|하향|너프|버프|수치.*조정|HP|ATK|배율/i.test(query)) return 'balance_change';
-  if (/QA|검증|이상|무결성|버그.*찾|데이터.*확인|깨진|orphan/i.test(query)) return 'data_qa';
+  if (/버그.*찾|버그.*헌팅|게임.*버그|QA.*해|코드.*데이터.*비교|런타임.*버그|크래시.*찾/i.test(query)) return 'game_bug_hunt';
+  if (/QA|검증|이상|무결성|데이터.*확인|깨진|orphan/i.test(query)) return 'data_qa';
   return null;
 }
 
@@ -3366,7 +3386,7 @@ export async function sendChatMessage(
 
   // ── 워크플로 상태 추적 (에이전틱 모드) ──
   const wfState: {
-    type: 'new_content' | 'balance_change' | 'data_qa' | null;
+    type: 'new_content' | 'balance_change' | 'data_qa' | 'game_bug_hunt' | null;
     editedTables: Map<string, { jobId: string; rows: number }>;
     verifiedAfterEdit: boolean;
     planEmitted: boolean;

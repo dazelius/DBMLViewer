@@ -42,7 +42,7 @@ GIT_REPO_ROOT = os.environ.get(
 DOWNLOADS_DIR = Path(__file__).parent / 'downloads'
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
-PORT = int(os.environ.get('BIBLE_TABLING_PORT', '8100'))
+PORT = int(os.environ.get('TOOL_PORT', os.environ.get('BIBLE_TABLING_PORT', '8100')))
 
 
 # ── Git 연동 헬퍼 ─────────────────────────────────────────────────────────────

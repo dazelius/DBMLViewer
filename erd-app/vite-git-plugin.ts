@@ -1011,7 +1011,8 @@ function createGitMiddleware(options: GitPluginOptions) {
 
       // Bible Tabling — http.request with manual timeout
       await new Promise<void>((resolve) => {
-        const r = httpRequest({ hostname: '127.0.0.1', port: 8100, path: '/api/bible-tabling/health', method: 'GET', timeout: 2000 }, (resp) => {
+        const btHealthPort = parseInt(process.env.TOOL_PORT || process.env.BIBLE_TABLING_PORT || '8100')
+        const r = httpRequest({ hostname: '127.0.0.1', port: btHealthPort, path: '/api/bible-tabling/health', method: 'GET', timeout: 2000 }, (resp) => {
           checks.bibleTabling = { ok: resp.statusCode === 200 }
           resp.resume()
           resolve()
@@ -7800,8 +7801,8 @@ async function serverExecuteToolAsync(
   if (syncTools.includes(toolName)) return serverExecuteTool(toolName, input, options)
 
   // ── 바이브테이블링 (Python 백엔드 호출) ──
-  // fetch는 서버→서버 직통(localhost:8100), 다운로드 링크는 Vite 프록시 경유(5173)
-  const BIBLE_TABLING_API_URL = process.env.BIBLE_TABLING_URL || 'http://localhost:8100'
+  const BT_PORT = process.env.TOOL_PORT || process.env.BIBLE_TABLING_PORT || '8100'
+  const BIBLE_TABLING_API_URL = process.env.BIBLE_TABLING_URL || `http://localhost:${BT_PORT}`
   // 슬랙에 전달할 다운로드 링크 베이스: Vite 프록시 서버 URL (외부에서 접근 가능)
   const BIBLE_TABLING_LINK_BASE = options.tableMasterUrl || getTableMasterUrl()
 
@@ -10516,8 +10517,9 @@ for line in resp.iter_lines():
 }
 
 /** async 미들웨어를 안전하게 래핑 — 미처리 예외를 로그 + 500 응답 */
-// ── 바이브테이블링 프록시 미들웨어 (localhost:5173 → localhost:8100) ────────────
+// ── 바이브테이블링 프록시 미들웨어 ────────────
 function createBibleTablingProxy() {
+  const btProxyPort = parseInt(process.env.TOOL_PORT || process.env.BIBLE_TABLING_PORT || '8100')
   return (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     if (!req.url?.startsWith('/api/bible-tabling/')) return next()
 
@@ -10526,10 +10528,10 @@ function createBibleTablingProxy() {
     const proxyReq = httpRequest(
       {
         hostname: '127.0.0.1',
-        port: 8100,
+        port: btProxyPort,
         path: req.url,
         method: req.method ?? 'GET',
-        headers: { ...req.headers, host: '127.0.0.1:8100' },
+        headers: { ...req.headers, host: `127.0.0.1:${btProxyPort}` },
       },
       (proxyRes) => {
         res.setHeader('Access-Control-Allow-Origin', '*')
@@ -10563,7 +10565,7 @@ function createBibleTablingProxy() {
     )
     proxyReq.on('error', () => {
       res.writeHead(502, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ detail: '바이브테이블링 서버(8100)에 연결할 수 없습니다.' }))
+      res.end(JSON.stringify({ detail: `바이브테이블링 서버(${btProxyPort})에 연결할 수 없습니다.` }))
     })
     req.pipe(proxyReq, { end: true })
   }

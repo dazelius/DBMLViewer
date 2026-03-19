@@ -6,6 +6,7 @@ import gitPlugin from './vite-git-plugin'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+  const serverPort = parseInt(env.PORT || env.DATAMASTER_PORT || '5173')
 
   return {
     plugins: [
@@ -27,19 +28,19 @@ export default defineConfig(({ mode }) => {
         confluenceUserEmail: env.CONFLUENCE_USER_EMAIL || '',
         confluenceApiToken: env.CONFLUENCE_API_TOKEN || '',
         webSearchApiKey: env.WEB_SEARCH_API_KEY || '',
-        tableMasterUrl: env.TABLEMASTER_URL || 'http://localhost:5173',
+        tableMasterUrl: env.TABLEMASTER_HOST
+          ? `http://${env.TABLEMASTER_HOST}:${serverPort}`
+          : `http://localhost:${serverPort}`,
       }),
     ],
-    base: '/TableMaster',
+    base: env.VITE_BASE_PATH || '/',
     server: {
       host: '0.0.0.0',
-      port: 5173,
-      // /api/claude 프록시는 vite-git-plugin 미들웨어에서 SSE 스트리밍 지원으로 직접 처리
-      // Vite 내장 http-proxy는 SSE 응답을 버퍼링하므로 사용하지 않음
+      port: serverPort,
     },
     preview: {
       host: '0.0.0.0',
-      port: 5173,
+      port: serverPort,
     },
     build: {
       rollupOptions: {
