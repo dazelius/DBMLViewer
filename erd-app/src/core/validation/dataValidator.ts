@@ -262,6 +262,8 @@ export function validateData(schema: ParsedSchema, dataTables: TableData[]): Val
                 totalChecks++; tc.checks++;
                 const val = colData[i];
                 if (!val || val === '') continue;
+                const numVal = Number(val);
+                if (!isNaN(numVal) && numVal <= 0) continue;
                 if (!targetPkVals.has(val)) {
                   issues.push({
                     id: mkId(), severity: 'error', category: 'referential',

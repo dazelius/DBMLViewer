@@ -14,6 +14,7 @@ const ChatPage = lazy(() => import('./pages/ChatPage.tsx'));
 const ExplorePage = lazy(() => import('./pages/ExplorePage.tsx'));
 const PrefabViewerPage = lazy(() => import('./pages/PrefabViewerPage.tsx'));
 const UnityPage = lazy(() => import('./pages/UnityPage.tsx'));
+const LevelViewerPage = lazy(() => import('./pages/LevelViewerPage.tsx'));
 
 function PageLoader() {
   return (
@@ -49,6 +50,7 @@ export default function App() {
           <Route path="/explore" element={<ExplorePage />} />
           <Route path="/viewer/prefab" element={<PrefabViewerPage />} />
           <Route path="/unity" element={<UnityPage />} />
+          <Route path="/level-viewer" element={<LevelViewerPage />} />
         </Routes>
       </Suspense>
     </BrowserRouter>

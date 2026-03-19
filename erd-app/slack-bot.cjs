@@ -45,7 +45,8 @@ loadEnv();
 // ── 설정 ──
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
 const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN || '';
-const DATAMASTER_URL = process.env.DATAMASTER_URL || 'http://localhost:5173';
+const DATAMASTER_PORT = process.env.DATAMASTER_PORT || '5173';
+const DATAMASTER_URL = process.env.DATAMASTER_URL || `http://localhost:${DATAMASTER_PORT}`;
 // 외부에서 접근 가능한 URL (Slack 링크용) — 자동 감지
 function detectLocalIp() {
   const nets = os.networkInterfaces();
@@ -57,7 +58,7 @@ function detectLocalIp() {
   return 'localhost';
 }
 const DATAMASTER_PUBLIC_URL = process.env.DATAMASTER_PUBLIC_URL
-  || `http://${detectLocalIp()}:5173`;
+  || `http://${detectLocalIp()}:${DATAMASTER_PORT}`;
 
 if (!SLACK_BOT_TOKEN || !SLACK_APP_TOKEN) {
   console.error(`

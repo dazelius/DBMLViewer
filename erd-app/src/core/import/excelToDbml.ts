@@ -508,6 +508,18 @@ export function excelFilesToDbml(
         const headerRow = (raw[headerIdx] as unknown[]).map((h) => String(h ?? '').trim());
         const validHeaders = headerRow.filter(Boolean);
         if (validHeaders.length === 0) continue;
+
+        // DataGroup 행에서 실제 테이블명 추출
+        let dataGroupName = '';
+        if (headerIdx > 0) {
+          const row0 = (raw[0] as unknown[]) ?? [];
+          const cell0 = String(row0[0] ?? '').trim().toLowerCase();
+          if (cell0 === 'datagroup' && row0[1]) {
+            dataGroupName = String(row0[1]).trim();
+          }
+        }
+        const actualTableName = dataGroupName || sheetName;
+
         const rows: Record<string, string>[] = [];
         for (let i = headerIdx + 1; i < raw.length; i++) {
           const rowArr = raw[i] as unknown[];
@@ -520,9 +532,12 @@ export function excelFilesToDbml(
           rows.push(record);
         }
         if (rows.length > 0) {
-          const key = sheetName.toLowerCase();
+          const key = actualTableName.toLowerCase();
           dataRowCounts.set(key, rows.length);
-          dataSheets.set(key, { headers: validHeaders, rows });
+          const existing = dataSheets.get(key);
+          if (!existing || rows.length > existing.rows.length) {
+            dataSheets.set(key, { headers: validHeaders, rows });
+          }
         }
       }
     } catch (err) {

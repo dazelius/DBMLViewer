@@ -40,4 +40,9 @@ pnpm-debug.log*
 # OS files
 Thumbs.db
 
+# Environment files (secrets)
+.env
+.env.local
+.env.*.local
+
 erd-app/bible-tabling/downloads/
