@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import Toolbar from '../components/Layout/Toolbar';
 
 interface KnowledgeItem {
@@ -255,7 +255,7 @@ export default function KnowledgePage() {
 
 function MarkdownContent({ content }: { content: string }) {
   const lines = content.split('\n');
-  const elements: JSX.Element[] = [];
+  const elements: ReactNode[] = [];
   let i = 0;
   let inCodeBlock = false;
   let codeLang = '';
@@ -330,7 +330,7 @@ function MarkdownContent({ content }: { content: string }) {
 }
 
 function InlineMarkdown({ text }: { text: string }) {
-  const parts: (string | JSX.Element)[] = [];
+  const parts: ReactNode[] = [];
   let remaining = text;
   let key = 0;
 
