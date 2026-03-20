@@ -33,7 +33,7 @@ export default function App() {
   useDebouncedParse();
 
   return (
-    <BrowserRouter basename="/TableMaster">
+    <BrowserRouter>
       <SyncToast />
       <Suspense fallback={<PageLoader />}>
         <Routes>
