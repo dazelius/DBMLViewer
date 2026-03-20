@@ -6,14 +6,14 @@ import gitPlugin from './vite-git-plugin'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const serverPort = parseInt(env.PORT || env.DATAMASTER_PORT || '5173')
+  const port = parseInt(env.PORT || '5173')
 
   return {
     plugins: [
       react(),
       tailwindcss(),
       gitPlugin({
-        repoUrl: env.GITLAB_REPO_URL || 'http://13.209.114.157/projectaegis/projectaegisdata.git',
+        repoUrl: env.GITLAB_REPO_URL || '',
         localDir: resolve(process.cwd(), '.git-repo'),
         token: env.GITLAB_TOKEN || '',
         claudeApiKey: env.CLAUDE_API_KEY || '',
@@ -29,18 +29,18 @@ export default defineConfig(({ mode }) => {
         confluenceApiToken: env.CONFLUENCE_API_TOKEN || '',
         webSearchApiKey: env.WEB_SEARCH_API_KEY || '',
         tableMasterUrl: env.TABLEMASTER_HOST
-          ? `http://${env.TABLEMASTER_HOST}:${serverPort}`
-          : `http://localhost:${serverPort}`,
+          ? `http://${env.TABLEMASTER_HOST}:${port}`
+          : `http://localhost:${port}`,
       }),
     ],
-    base: env.VITE_BASE_PATH || '/',
+    base: '/',
     server: {
       host: '0.0.0.0',
-      port: serverPort,
+      port,
     },
     preview: {
       host: '0.0.0.0',
-      port: serverPort,
+      port,
     },
     build: {
       rollupOptions: {

@@ -582,7 +582,8 @@ function getLocalIp(): string {
   return 'localhost'
 }
 
-const SERVER_PORT = process.env.PORT || process.env.DATAMASTER_PORT || '5173'
+const SERVER_PORT = process.env.PORT || '5173'
+const SECONDARY_PORT = process.env.SECONDARY_PORT || process.env.TOOL_PORT || '8100'
 function getTableMasterUrl(): string {
   const host = process.env.TABLEMASTER_HOST || getLocalIp()
   return `http://${host}:${SERVER_PORT}`
@@ -1011,7 +1012,7 @@ function createGitMiddleware(options: GitPluginOptions) {
 
       // Bible Tabling — http.request with manual timeout
       await new Promise<void>((resolve) => {
-        const btHealthPort = parseInt(process.env.TOOL_PORT || process.env.BIBLE_TABLING_PORT || '8100')
+        const btHealthPort = parseInt(SECONDARY_PORT)
         const r = httpRequest({ hostname: '127.0.0.1', port: btHealthPort, path: '/api/bible-tabling/health', method: 'GET', timeout: 2000 }, (resp) => {
           checks.bibleTabling = { ok: resp.statusCode === 200 }
           resp.resume()
@@ -7801,8 +7802,7 @@ async function serverExecuteToolAsync(
   if (syncTools.includes(toolName)) return serverExecuteTool(toolName, input, options)
 
   // ── 바이브테이블링 (Python 백엔드 호출) ──
-  const BT_PORT = process.env.TOOL_PORT || process.env.BIBLE_TABLING_PORT || '8100'
-  const BIBLE_TABLING_API_URL = process.env.BIBLE_TABLING_URL || `http://localhost:${BT_PORT}`
+  const BIBLE_TABLING_API_URL = process.env.BIBLE_TABLING_URL || `http://localhost:${SECONDARY_PORT}`
   // 슬랙에 전달할 다운로드 링크 베이스: Vite 프록시 서버 URL (외부에서 접근 가능)
   const BIBLE_TABLING_LINK_BASE = options.tableMasterUrl || getTableMasterUrl()
 
@@ -10519,7 +10519,7 @@ for line in resp.iter_lines():
 /** async 미들웨어를 안전하게 래핑 — 미처리 예외를 로그 + 500 응답 */
 // ── 바이브테이블링 프록시 미들웨어 ────────────
 function createBibleTablingProxy() {
-  const btProxyPort = parseInt(process.env.TOOL_PORT || process.env.BIBLE_TABLING_PORT || '8100')
+  const btProxyPort = parseInt(SECONDARY_PORT)
   return (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     if (!req.url?.startsWith('/api/bible-tabling/')) return next()
 
