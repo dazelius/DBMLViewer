@@ -33,7 +33,7 @@ export default function App() {
   useDebouncedParse();
 
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '') || '/'}>
       <SyncToast />
       <Suspense fallback={<PageLoader />}>
         <Routes>

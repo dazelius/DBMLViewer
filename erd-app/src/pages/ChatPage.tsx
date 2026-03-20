@@ -7580,7 +7580,7 @@ function CharacterPortrait({
       style={{
         width: size,
         height: size,
-        backgroundImage: 'url(/portrait.png)',
+        backgroundImage: `url(${import.meta.env.BASE_URL}portrait.png)`,
         backgroundSize: '500% 300%',
         backgroundPosition: `${xPct}% ${yPct}%`,
         border: `2px solid ${borderColor}`,

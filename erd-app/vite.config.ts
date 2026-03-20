@@ -33,7 +33,7 @@ export default defineConfig(({ mode }) => {
           : `http://localhost:${port}`,
       }),
     ],
-    base: '/',
+    base: env.VITE_BASE || '/',
     server: {
       host: '0.0.0.0',
       port,
