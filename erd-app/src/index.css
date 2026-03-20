@@ -1,9 +1,3 @@
-@import "tailwindcss";
-@source "../src/**/*.{ts,tsx,js,jsx,html}";
-@source not "../.git-repo/**";
-@source not "../.git-repo-aegis/**";
-@source not "../node_modules/**";
-
 :root {
   --bg-primary: #0f1117;
   --bg-secondary: #161821;
