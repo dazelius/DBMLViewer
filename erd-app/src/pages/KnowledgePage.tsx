@@ -439,22 +439,18 @@ function Inline({ text }: { text: string }) {
   let k = 0;
 
   while (remaining.length > 0) {
-    const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
-    const codeMatch = remaining.match(/`([^`]+)`/);
-    const italicMatch = remaining.match(/(?<!\*)\*([^*]+?)\*(?!\*)/);
-    const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
-
-    type Hit = { type: string; idx: number; match: RegExpMatchArray };
-    let best: Hit | null = null;
-    const consider = (type: string, m: RegExpMatchArray | null) => {
-      if (m && m.index !== undefined && (!best || m.index < best.idx)) best = { type, idx: m.index, match: m };
+    const candidates: { type: string; idx: number; match: RegExpMatchArray }[] = [];
+    const tryMatch = (type: string, m: RegExpMatchArray | null) => {
+      if (m && m.index !== undefined) candidates.push({ type, idx: m.index, match: m });
     };
-    consider('bold', boldMatch);
-    consider('code', codeMatch);
-    consider('italic', italicMatch);
-    consider('link', linkMatch);
+    tryMatch('bold', remaining.match(/\*\*(.+?)\*\*/));
+    tryMatch('code', remaining.match(/`([^`]+)`/));
+    tryMatch('italic', remaining.match(/(?<!\*)\*([^*]+?)\*(?!\*)/));
+    tryMatch('link', remaining.match(/\[([^\]]+)\]\(([^)]+)\)/));
 
-    if (!best) { parts.push(remaining); break; }
+    if (candidates.length === 0) { parts.push(remaining); break; }
+    candidates.sort((a, b) => a.idx - b.idx);
+    const best = candidates[0];
 
     if (best.idx > 0) parts.push(remaining.slice(0, best.idx));
 
