@@ -12,6 +12,7 @@ dist-ssr/
 
 # Test & debug files (root level)
 *.png
+!erd-app/public/*.png
 *.js
 page_content.html
 DocsDesignTest/
