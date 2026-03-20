@@ -1,5 +1,0 @@
-@import "tailwindcss";
-@source "../src/**/*.{ts,tsx,js,jsx,html}";
-@source not "../.git-repo/**";
-@source not "../.git-repo-aegis/**";
-@source not "../node_modules/**";
