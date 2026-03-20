@@ -1,6 +1,6 @@
 import type { Plugin } from 'vite'
 import { execFileSync, execFile } from 'child_process'
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync, appendFileSync, copyFileSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync, copyFileSync } from 'fs'
 import { join, resolve, extname, sep } from 'path'
 import { promisify } from 'util'
 import { createRequire } from 'module'
@@ -219,8 +219,6 @@ function computeMeshBounds(meshObjs: any[]): { min: V3; max: V3 } | null {
 }
 
 
-const SERVER_LOG = join(process.cwd(), '..', 'server.log')
-
 function ts(): string {
   return new Date().toISOString().replace('T', ' ').replace('Z', '')
 }
@@ -228,23 +226,8 @@ function ts(): string {
 function sLog(level: 'INFO' | 'WARN' | 'ERROR' | 'REQ', msg: string) {
   const line = `[${ts()}] [${level}] ${msg}\n`
   process.stdout.write(level === 'ERROR' ? `\x1b[31m${line}\x1b[0m` : line)
-  try { appendFileSync(SERVER_LOG, line) } catch { /* ignore */ }
 }
 
-function rotateLogs() {
-  try {
-    if (!existsSync(SERVER_LOG)) return
-    const stat = statSync(SERVER_LOG)
-    if (stat.size > 5 * 1024 * 1024) {
-      const { renameSync } = require('fs')
-      const backup = SERVER_LOG.replace('.log', `_${Date.now()}.log`)
-      try { renameSync(SERVER_LOG, backup) } catch { unlinkSync(SERVER_LOG) }
-      writeFileSync(SERVER_LOG, `[${ts()}] [INFO] === Log rotated ===\n`)
-    }
-  } catch { /* ignore */ }
-}
-
-rotateLogs()
 sLog('INFO', `=== Server starting (pid=${process.pid}) cwd=${process.cwd()} ===`)
 
 // ── 전역 에러 핸들러 (서버 다운 원인 캐치) ─────────────────────────────────────
