@@ -1,4 +1,5 @@
 @echo off
+setlocal EnableDelayedExpansion
 chcp 65001 > nul
 title TableMaster - Server
 
@@ -58,12 +59,21 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%BT_PORT% " 2^>nul') do (
 )
 timeout /t 1 /nobreak >nul
 
+echo [INFO] Python 의존성 설치 확인 중...
+pip install -r "%~dp0erd-app\bible-tabling\requirements.txt" -q >nul 2>&1
+
 echo [INFO] 바이블테이블링 서버 시작 중... (포트 %BT_PORT%)
 start "BibleTabling Server" /d "%~dp0erd-app\bible-tabling" /min cmd /k "python main.py"
-timeout /t 3 /nobreak >nul
 
-curl -s http://localhost:%BT_PORT%/api/bible-tabling/health >nul 2>&1
-if %errorlevel% equ 0 (
+:: 서버 시작 대기 (최대 ~15초, 2초 간격 헬스체크)
+set "BT_READY=0"
+for /L %%i in (1,1,7) do (
+  if !BT_READY! equ 0 (
+    timeout /t 2 /nobreak >nul
+    curl -s -o nul -w "" http://localhost:%BT_PORT%/api/bible-tabling/health >nul 2>&1 && set "BT_READY=1"
+  )
+)
+if !BT_READY! equ 1 (
   echo [OK] 바이블테이블링 서버 실행 중 (http://localhost:%BT_PORT%)
 ) else (
   echo [WARN] 바이블테이블링 서버 응답 없음 - Python 환경 확인 필요
