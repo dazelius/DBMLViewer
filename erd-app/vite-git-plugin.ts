@@ -5295,6 +5295,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const lockPromise = new Promise<void>(resolve => { releaseLock = resolve })
             _gitSyncLocks.set(activeDir, lockPromise)
 
+            let lockHandledByBackground = false
             try {
               const raw = await readBody(req)
               const body = raw ? JSON.parse(raw) : {}
@@ -5321,8 +5322,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
                 const head = await runGitAsync('git rev-parse --short HEAD', activeDir)
                 sendJson(res, 200, { status: 'cloned', message: 'Repository cloned successfully', commit: head })
-                // 히스토리 확장: 응답은 보냈지만, lock은 완료까지 유지
-                await runGitAsync(`git fetch --deepen=200 origin ${branch}`, activeDir).catch(() => {})
+                // 히스토리 확장: 응답은 즉시 반환, lock은 백그라운드에서 해제
+                lockHandledByBackground = true
+                runGitAsync(`git fetch --deepen=200 origin ${branch}`, activeDir)
+                  .catch(() => {})
+                  .finally(() => { _gitSyncLocks.delete(activeDir); releaseLock() })
               } else {
                 await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
                 await runGitAsync(`git remote set-url origin "${authUrl}"`, activeDir)
@@ -5339,8 +5343,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
               }
             } finally {
-              _gitSyncLocks.delete(activeDir)
-              releaseLock()
+              if (!lockHandledByBackground) {
+                _gitSyncLocks.delete(activeDir)
+                releaseLock()
+              }
             }
             return
           }
