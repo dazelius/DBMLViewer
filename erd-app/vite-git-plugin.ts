@@ -5281,9 +5281,14 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
           if (route === 'sync' && req.method === 'POST') {
             // ── 뮤텍스: 동일 디렉토리에 대한 동시 sync 방지 ──
-            if (_gitSyncLocks.has(activeDir)) {
-              sendJson(res, 409, { status: 'busy', message: 'Git sync already in progress for this repository. Please wait.' })
-              return
+            const existing = _gitSyncLocks.get(activeDir)
+            if (existing) {
+              sLog('INFO', `sync already in progress for ${activeDir}, waiting...`)
+              try { await Promise.race([existing, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 60000))]) } catch { /* timeout */ }
+              if (_gitSyncLocks.has(activeDir)) {
+                sendJson(res, 409, { status: 'busy', message: 'Git sync already in progress for this repository. Please wait.' })
+                return
+              }
             }
 
             let releaseLock: () => void = () => {}
@@ -5302,7 +5307,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
               // stale lock 파일 자동 제거
               if (isCloned) {
-                for (const lockFile of ['index.lock', 'shallow.lock', 'HEAD.lock']) {
+                for (const lockFile of ['index.lock', 'shallow.lock', 'HEAD.lock', 'refs/heads/' + branch + '.lock', 'FETCH_HEAD.lock']) {
                   const lockPath = join(activeDir, '.git', lockFile)
                   if (existsSync(lockPath)) {
                     try { unlinkSync(lockPath); sLog('WARN', `Removed stale ${lockFile}: ${lockPath}`) } catch { /* non-critical */ }
@@ -5316,7 +5321,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
                 const head = await runGitAsync('git rev-parse --short HEAD', activeDir)
                 sendJson(res, 200, { status: 'cloned', message: 'Repository cloned successfully', commit: head })
-                runGitAsync(`git fetch --deepen=200 origin ${branch}`, activeDir).catch(() => {})
+                // 히스토리 확장: 응답은 보냈지만, lock은 완료까지 유지
+                await runGitAsync(`git fetch --deepen=200 origin ${branch}`, activeDir).catch(() => {})
               } else {
                 await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
                 await runGitAsync(`git remote set-url origin "${authUrl}"`, activeDir)
