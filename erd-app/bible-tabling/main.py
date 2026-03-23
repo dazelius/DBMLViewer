@@ -31,13 +31,14 @@ from excel_editor import BibleTablingEditor
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 
+_ERD_APP_DIR = str(Path(__file__).resolve().parent.parent)
 GIT_REPO_DATA_DIR = os.environ.get(
     'GIT_REPO_DATA_DIR',
-    r'C:\TableMaster\DBMLViewer\erd-app\.git-repo\GameData\Data'
+    os.path.join(_ERD_APP_DIR, '.git-repo', 'GameData', 'Data')
 )
 GIT_REPO_ROOT = os.environ.get(
     'GIT_REPO_ROOT',
-    r'C:\TableMaster\DBMLViewer\erd-app\.git-repo'
+    os.path.join(_ERD_APP_DIR, '.git-repo')
 )
 DOWNLOADS_DIR = Path(__file__).parent / 'downloads'
 DOWNLOADS_DIR.mkdir(exist_ok=True)
@@ -217,7 +218,16 @@ async def generic_exception_cors_handler(request: Request, exc: Exception):
     )
 
 
-editor = BibleTablingEditor(GIT_REPO_DATA_DIR)
+editor: BibleTablingEditor | None = None
+
+def get_editor() -> BibleTablingEditor:
+    global editor
+    if editor is None:
+        data_path = Path(GIT_REPO_DATA_DIR)
+        if not data_path.exists():
+            raise HTTPException(503, f"데이터 디렉토리 준비 중: {GIT_REPO_DATA_DIR} (Git clone이 아직 완료되지 않았을 수 있습니다)")
+        editor = BibleTablingEditor(str(data_path))
+    return editor
 
 
 # ── POST /api/bible-tabling/edit ─ 데이터 편집 ───────────────────────────────
@@ -246,7 +256,7 @@ async def edit_data(req: EditRequest):
                     shutil.copy2(prev_file, dest)
 
         sorted_edits = sorted(req.edit_plan, key=lambda e: e.order)
-        results = editor.apply_edits_batch(sorted_edits, job_dir, prev_job_dir)
+        results = get_editor().apply_edits_batch(sorted_edits, job_dir, prev_job_dir)
 
         # 다운로드 URL 결정
         edited_files = list(job_dir.glob("*.xlsx"))
@@ -334,7 +344,7 @@ async def edit_data_stream(req: EditRequest):
     def generate():
         all_results = []
         try:
-            for event in editor.apply_edits_streaming(sorted_edits, job_dir, prev_job_dir):
+            for event in get_editor().apply_edits_streaming(sorted_edits, job_dir, prev_job_dir):
                 if event["type"] == "complete":
                     all_results = event["results"]
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -406,17 +416,17 @@ async def add_rows(req: AddRowRequest):
                     shutil.copy2(prev_file, dest)
 
         if req.clone_source:
-            result = editor.clone_rows(
+            result = get_editor().clone_rows(
                 req.table, req.file, req.sheet,
                 req.clone_source.column, req.clone_source.value,
                 req.override_csv, job_dir, prev_job_dir
             )
         elif req.csv:
-            result = editor.add_rows_csv(
+            result = get_editor().add_rows_csv(
                 req.table, req.file, req.sheet, req.csv, job_dir, prev_job_dir
             )
         else:
-            result = editor.add_rows(
+            result = get_editor().add_rows(
                 req.table, req.file, req.sheet, req.rows, job_dir, prev_job_dir
             )
         edited_files = list(job_dir.glob("*.xlsx"))
@@ -668,7 +678,7 @@ async def validate_dir(req: ValidateDirRequest):
 @app.get("/api/bible-tabling/tables")
 async def list_tables():
     """사용 가능한 게임 데이터 테이블 목록"""
-    tables = editor.list_tables()
+    tables = get_editor().list_tables()
     return {"count": len(tables), "tables": tables}
 
 
