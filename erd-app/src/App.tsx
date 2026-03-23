@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { SyncToast } from './components/Sync/SyncToast.tsx';
 import { useAutoLoad } from './hooks/useAutoLoad.ts';
 import { useDebouncedParse } from './hooks/useDebouncedParse.ts';
@@ -34,7 +34,7 @@ export default function App() {
   useDebouncedParse();
 
   return (
-    <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '') || '/'}>
+    <HashRouter>
       <SyncToast />
       <Suspense fallback={<PageLoader />}>
         <Routes>
@@ -55,6 +55,6 @@ export default function App() {
           <Route path="/knowledge" element={<KnowledgePage />} />
         </Routes>
       </Suspense>
-    </BrowserRouter>
+    </HashRouter>
   );
 }

@@ -34,7 +34,7 @@ export default defineConfig(({ mode }) => {
     css: {
       postcss: { plugins: [] },
     },
-    base: env.VITE_BASE || '/',
+    base: env.VITE_BASE || './',
     server: {
       host: '0.0.0.0',
       port,
