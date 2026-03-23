@@ -568,7 +568,7 @@ function getLocalIp(): string {
 const SERVER_PORT = process.env.PORT || '5173'
 const SECONDARY_PORT = process.env.SECONDARY_PORT || process.env.TOOL_PORT || '8100'
 function getTableMasterUrl(): string {
-  const host = process.env.TABLEMASTER_HOST || getLocalIp()
+  const host = process.env.TABLEMASTER_HOST || 'localhost'
   return `http://${host}:${SERVER_PORT}`
 }
 

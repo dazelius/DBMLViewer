@@ -28,9 +28,7 @@ export default defineConfig(({ mode }) => {
         confluenceUserEmail: env.CONFLUENCE_USER_EMAIL || '',
         confluenceApiToken: env.CONFLUENCE_API_TOKEN || '',
         webSearchApiKey: env.WEB_SEARCH_API_KEY || '',
-        tableMasterUrl: env.TABLEMASTER_HOST
-          ? `http://${env.TABLEMASTER_HOST}:${port}`
-          : `http://localhost:${port}`,
+        tableMasterUrl: `http://${env.TABLEMASTER_HOST || 'localhost'}:${port}`,
       }),
     ],
     css: {

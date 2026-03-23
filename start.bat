@@ -9,12 +9,22 @@ echo.
 
 cd /d "%~dp0erd-app"
 
+:: ── .env에서 포트 읽기 ──────────────────────────────────────────────
+set "APP_PORT=5173"
+set "BT_PORT=8100"
+if exist ".env" (
+  for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
+    if "%%A"=="PORT" set "APP_PORT=%%B"
+    if "%%A"=="SECONDARY_PORT" set "BT_PORT=%%B"
+  )
+)
+
 :: dist 폴더가 있으면 재빌드 여부 물어봄
 if exist "dist\index.html" (
   echo [INFO] 이전 빌드 결과가 있습니다.
   echo.
-  echo   [1] 재빌드 없이 바로 서버 시작  (빠름)
-  echo   [2] 새로 빌드 후 서버 시작      (코드 변경 시)
+  echo   [1] 재빌드 없이 바로 서버 시작  ^(빠름^)
+  echo   [2] 새로 빌드 후 서버 시작      ^(코드 변경 시^)
   echo.
   set /p CHOICE="선택 (1 또는 2, 기본=1): "
   if "%CHOICE%"=="2" goto BUILD
@@ -41,27 +51,26 @@ echo [INFO] 빌드 완료!
 :START_SERVER
 echo.
 
-:: ── 바이블테이블링 서버 (포트 8100) ──────────────────────────────────
-echo [INFO] 8100 포트 기존 프로세스 종료 중...
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8100 " 2^>nul') do (
+:: ── 바이블테이블링 서버 ─────────────────────────────────────────────
+echo [INFO] %BT_PORT% 포트 기존 프로세스 종료 중...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%BT_PORT% " 2^>nul') do (
   taskkill /PID %%a /F >nul 2>&1
 )
 timeout /t 1 /nobreak >nul
 
-echo [INFO] 바이블테이블링 서버 시작 중... (포트 8100)
+echo [INFO] 바이블테이블링 서버 시작 중... (포트 %BT_PORT%)
 start "BibleTabling Server" /d "%~dp0erd-app\bible-tabling" /min cmd /k "python main.py"
 timeout /t 3 /nobreak >nul
 
-:: 서버 시작 확인
-curl -s http://localhost:8100/api/bible-tabling/health >nul 2>&1
+curl -s http://localhost:%BT_PORT%/api/bible-tabling/health >nul 2>&1
 if %errorlevel% equ 0 (
-  echo [OK] 바이블테이블링 서버 실행 중 (http://localhost:8100)
+  echo [OK] 바이블테이블링 서버 실행 중 (http://localhost:%BT_PORT%)
 ) else (
   echo [WARN] 바이블테이블링 서버 응답 없음 - Python 환경 확인 필요
 )
 echo.
 
-:: ── Slack Bot ──────────────────────────────────────────────────────
+:: ── Slack Bot ────────────────────────────────────────────────────────
 if exist "%~dp0erd-app\.env" (
   findstr /C:"SLACK_BOT_TOKEN" "%~dp0erd-app\.env" >nul 2>&1
   if not errorlevel 1 (
@@ -79,15 +88,15 @@ if exist "%~dp0erd-app\.env" (
   echo.
 )
 
-:: ── TableMaster 앱 서버 (포트 5173) ─────────────────────────────────
-echo [INFO] 5173 포트 기존 프로세스 종료 중...
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5173 " 2^>nul') do (
+:: ── TableMaster 앱 서버 ─────────────────────────────────────────────
+echo [INFO] %APP_PORT% 포트 기존 프로세스 종료 중...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%APP_PORT% " 2^>nul') do (
   taskkill /PID %%a /F >nul 2>&1
 )
 timeout /t 1 /nobreak >nul
 
 echo [INFO] 서버 시작 중...
-echo [INFO] 주소: http://localhost:5173/TableMaster
+echo [INFO] 주소: http://localhost:%APP_PORT%
 echo [INFO] 종료하려면 Ctrl+C 를 누르세요.
 echo.
 
