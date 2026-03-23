@@ -105,29 +105,15 @@ if (fs.existsSync(btMain)) {
 }
 
 // ── 4. Vite build (비동기) → 완료 후 임시 서버 종료 → vite preview 시작 ──
-log('MAIN', 'running vite build...');
-const buildProc = spawn('npx', ['vite', 'build'], {
-  cwd: ROOT,
-  shell: process.platform === 'win32',
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
-buildProc.stdout.on('data', d => log('BUILD', d));
-buildProc.stderr.on('data', d => log('BUILD', d));
+// 안전 빌드: dist-staging에 빌드 후 성공 시에만 dist로 교체 (중간 kill 대비)
+const distDir = path.join(ROOT, 'dist');
+const stagingDir = path.join(ROOT, 'dist-staging');
 
-buildProc.on('exit', (code) => {
-  if (code !== 0) {
-    log('BUILD', `vite build failed (code=${code})`);
-    if (!fs.existsSync(path.join(ROOT, 'dist', 'index.html'))) {
-      log('MAIN', 'no previous build found, exiting');
-      cleanup();
-      return;
-    }
-    log('MAIN', 'using previous build');
-  } else {
-    log('BUILD', 'vite build complete');
-  }
+function rmDir(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+}
 
-  // 임시 서버 종료 → vite preview 시작
+function startPreview() {
   if (tempServer) {
     tempServer.close(() => {
       log('MAIN', 'temp server closed, starting vite preview...');
@@ -137,6 +123,52 @@ buildProc.on('exit', (code) => {
   } else {
     launch('VITE', 'npx', ['vite', 'preview']);
   }
-
   log('MAIN', 'all services launched. Press Ctrl+C to stop.');
+}
+
+rmDir(stagingDir);
+log('MAIN', 'running vite build (output → dist-staging)...');
+const buildProc = spawn('npx', ['vite', 'build', '--outDir', 'dist-staging', '--emptyOutDir'], {
+  cwd: ROOT,
+  shell: process.platform === 'win32',
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+buildProc.stdout.on('data', d => log('BUILD', d));
+buildProc.stderr.on('data', d => log('BUILD', d));
+
+buildProc.on('exit', (code) => {
+  if (code !== 0 || !fs.existsSync(path.join(stagingDir, 'index.html'))) {
+    log('BUILD', `vite build failed (code=${code})`);
+    rmDir(stagingDir);
+    if (fs.existsSync(path.join(distDir, 'index.html'))) {
+      log('MAIN', 'using previous successful build (dist/)');
+      startPreview();
+    } else {
+      log('MAIN', 'no previous build found, exiting');
+      cleanup();
+    }
+    return;
+  }
+
+  log('BUILD', 'vite build complete, swapping dist...');
+  rmDir(distDir);
+  try {
+    fs.renameSync(stagingDir, distDir);
+    log('MAIN', 'dist updated successfully');
+  } catch (e) {
+    log('MAIN', `rename failed, trying copy: ${e.message}`);
+    try {
+      fs.cpSync(stagingDir, distDir, { recursive: true });
+      rmDir(stagingDir);
+      log('MAIN', 'dist copied successfully');
+    } catch (e2) {
+      log('MAIN', `copy also failed: ${e2.message}`);
+      if (!fs.existsSync(path.join(distDir, 'index.html'))) {
+        cleanup();
+        return;
+      }
+    }
+  }
+
+  startPreview();
 });
