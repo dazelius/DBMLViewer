@@ -567,6 +567,9 @@ function getLocalIp(): string {
 
 const SERVER_PORT = process.env.PORT || '5173'
 const SECONDARY_PORT = process.env.SECONDARY_PORT || process.env.TOOL_PORT || '8100'
+
+// git sync 뮤텍스: 디렉토리별 동시 실행 방지
+const _gitSyncLocks = new Map<string, Promise<void>>()
 function getTableMasterUrl(): string {
   const host = process.env.TABLEMASTER_HOST || 'localhost'
   return `http://${host}:${SERVER_PORT}`
@@ -5277,45 +5280,61 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
           if (route === 'sync' && req.method === 'POST') {
-            const raw = await readBody(req)
-            const body = raw ? JSON.parse(raw) : {}
-            const repoUrl = body.repoUrl || activeRepoUrl
-            const token = body.token || activeToken
-            const branch = body.branch || 'main'
-            const authUrl = buildAuthUrl(repoUrl, token)
-
-            const isCloned = existsSync(join(activeDir, '.git'))
-
-            // stale index.lock 자동 제거 (이전 git 프로세스 강제 종료 시 잔류)
-            if (isCloned) {
-              const lockPath = join(activeDir, '.git', 'index.lock')
-              if (existsSync(lockPath)) {
-                try { unlinkSync(lockPath); sLog('WARN', `Removed stale index.lock: ${lockPath}`) } catch (e) { /* non-critical */ }
-              }
+            // ── 뮤텍스: 동일 디렉토리에 대한 동시 sync 방지 ──
+            if (_gitSyncLocks.has(activeDir)) {
+              sendJson(res, 409, { status: 'busy', message: 'Git sync already in progress for this repository. Please wait.' })
+              return
             }
 
-            if (!isCloned) {
-              mkdirSync(activeDir, { recursive: true })
-              await runGitAsync(`git clone --depth 1 --single-branch --branch ${branch} "${authUrl}" .`, activeDir)
-              await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
-              const head = await runGitAsync('git rev-parse --short HEAD', activeDir)
-              sendJson(res, 200, { status: 'cloned', message: 'Repository cloned successfully', commit: head })
-              // 백그라운드에서 히스토리 확장 (git log/diff 용)
-              runGitAsync(`git fetch --deepen=200 origin ${branch}`, activeDir).catch(() => {})
-            } else {
-              await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
-              await runGitAsync(`git remote set-url origin "${authUrl}"`, activeDir)
-              await runGitAsync(`git fetch origin ${branch}`, activeDir)
-              const localHead = await runGitAsync('git rev-parse HEAD', activeDir)
-              const remoteHead = await runGitAsync(`git rev-parse origin/${branch}`, activeDir).catch(() => localHead)
+            let releaseLock: () => void = () => {}
+            const lockPromise = new Promise<void>(resolve => { releaseLock = resolve })
+            _gitSyncLocks.set(activeDir, lockPromise)
 
-              if (localHead === remoteHead) {
-                sendJson(res, 200, { status: 'up-to-date', message: 'Already up to date', commit: localHead.substring(0, 8) })
-              } else {
-                await runGitAsync(`git reset --hard origin/${branch}`, activeDir)
-                const newHead = await runGitAsync('git rev-parse HEAD', activeDir)
-                sendJson(res, 200, { status: 'updated', message: 'Pulled latest changes', commit: newHead.substring(0, 8) })
+            try {
+              const raw = await readBody(req)
+              const body = raw ? JSON.parse(raw) : {}
+              const repoUrl = body.repoUrl || activeRepoUrl
+              const token = body.token || activeToken
+              const branch = body.branch || 'main'
+              const authUrl = buildAuthUrl(repoUrl, token)
+
+              const isCloned = existsSync(join(activeDir, '.git'))
+
+              // stale lock 파일 자동 제거
+              if (isCloned) {
+                for (const lockFile of ['index.lock', 'shallow.lock', 'HEAD.lock']) {
+                  const lockPath = join(activeDir, '.git', lockFile)
+                  if (existsSync(lockPath)) {
+                    try { unlinkSync(lockPath); sLog('WARN', `Removed stale ${lockFile}: ${lockPath}`) } catch { /* non-critical */ }
+                  }
+                }
               }
+
+              if (!isCloned) {
+                mkdirSync(activeDir, { recursive: true })
+                await runGitAsync(`git clone --depth 1 --single-branch --branch ${branch} "${authUrl}" .`, activeDir)
+                await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
+                const head = await runGitAsync('git rev-parse --short HEAD', activeDir)
+                sendJson(res, 200, { status: 'cloned', message: 'Repository cloned successfully', commit: head })
+                runGitAsync(`git fetch --deepen=200 origin ${branch}`, activeDir).catch(() => {})
+              } else {
+                await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
+                await runGitAsync(`git remote set-url origin "${authUrl}"`, activeDir)
+                await runGitAsync(`git fetch origin ${branch}`, activeDir)
+                const localHead = await runGitAsync('git rev-parse HEAD', activeDir)
+                const remoteHead = await runGitAsync(`git rev-parse origin/${branch}`, activeDir).catch(() => localHead)
+
+                if (localHead === remoteHead) {
+                  sendJson(res, 200, { status: 'up-to-date', message: 'Already up to date', commit: localHead.substring(0, 8) })
+                } else {
+                  await runGitAsync(`git reset --hard origin/${branch}`, activeDir)
+                  const newHead = await runGitAsync('git rev-parse HEAD', activeDir)
+                  sendJson(res, 200, { status: 'updated', message: 'Pulled latest changes', commit: newHead.substring(0, 8) })
+                }
+              }
+            } finally {
+              _gitSyncLocks.delete(activeDir)
+              releaseLock()
             }
             return
           }
