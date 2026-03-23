@@ -72,8 +72,14 @@ if (fs.existsSync(slackBotPath) && process.env.SLACK_BOT_TOKEN) {
 
 // ── 4. Bible Tabling Python 서버 ──
 const btMain = path.join(ROOT, 'bible-tabling', 'main.py');
+const btReqs = path.join(ROOT, 'bible-tabling', 'requirements.txt');
 if (fs.existsSync(btMain)) {
   const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+  if (fs.existsSync(btReqs)) {
+    log('BIBLE', 'installing Python dependencies...');
+    try { execSync(`${pythonCmd} -m pip install -r requirements.txt -q`, { cwd: path.join(ROOT, 'bible-tabling'), stdio: 'pipe' }); }
+    catch { log('BIBLE', 'pip install warning (may already be installed)'); }
+  }
   launch('BIBLE', pythonCmd, ['main.py'], { cwd: path.join(ROOT, 'bible-tabling') });
 } else {
   log('BIBLE', 'skipped (bible-tabling/main.py not found)');
