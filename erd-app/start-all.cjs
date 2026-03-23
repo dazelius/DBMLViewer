@@ -49,6 +49,32 @@ function cleanup() {
 process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
 
+function killPort(port) {
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync(`netstat -ano | findstr ":${port} "`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      const pids = new Set();
+      for (const line of out.split('\n')) {
+        const m = line.trim().split(/\s+/);
+        const pid = m[m.length - 1];
+        if (pid && /^\d+$/.test(pid) && pid !== '0') pids.add(pid);
+      }
+      for (const pid of pids) {
+        try { execSync(`taskkill /PID ${pid} /F`, { stdio: 'pipe' }); } catch { /* ignore */ }
+      }
+      if (pids.size > 0) log('MAIN', `killed ${pids.size} process(es) on port ${port}`);
+    } else {
+      execSync(`fuser -k ${port}/tcp 2>/dev/null || true`, { stdio: 'pipe' });
+    }
+  } catch { /* no process on port */ }
+}
+
+// ── 0. 기존 포트 점유 프로세스 정리 ──
+const appPort = process.env.PORT || '5173';
+const btPort = process.env.SECONDARY_PORT || process.env.TOOL_PORT || '8100';
+killPort(appPort);
+killPort(btPort);
+
 // ── 1. Vite build ──
 log('MAIN', 'running vite build...');
 try {
