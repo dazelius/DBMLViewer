@@ -2,7 +2,7 @@ import type { ParsedSchema } from '../schema/types.ts';
 import type { Row, TableDataMap } from '../query/schemaQueryEngine.ts';
 import { executeDataSQL, RESERVED_TABLE_NAMES, VIRTUAL_TABLE_SCHEMA } from '../query/schemaQueryEngine.ts';
 import { useSchemaStore } from '../../store/useSchemaStore.ts';
-import { useCanvasStore } from '../../store/useCanvasStore.ts';
+import { useCanvasStore, type ClaudeModelId } from '../../store/useCanvasStore.ts';
 import { anomalyReportToPrompt } from './anomalyDetector.ts';
 
 // ── ADF (Atlassian Document Format) → 플레인텍스트 변환 ──────────────────────
@@ -3064,60 +3064,76 @@ export interface ChatImage {
   media_type: string;  // image/png, image/jpeg, etc.
 }
 
+type RoutingTier = 'opus' | 'sonnet' | 'haiku';
+
 /**
- * 질문 복잡도 분류 — Opus가 필요한지 Sonnet으로 충분한지 판별
- * true = 단순 질문 (Sonnet OK), false = 복잡 질문 (Opus 필요)
+ * 질문 복잡도 3단계 분류
+ * - haiku: 인사, 감사, 잡담 등 (도구 불필요)
+ * - sonnet: 단순 질문, 짧은 조회 (가벼운 도구 1~2회)
+ * - opus: 복잡한 분석, 다단계 도구, 아티팩트 생성 등
  */
 function classifyQueryComplexity(
   msg: string,
   history: ChatTurn[],
   tools: Array<{ name: string }>,
   images?: ChatImage[],
-): boolean {
-  // 이미지 포함 → 복잡 (vision 분석은 Opus가 우수)
-  if (images && images.length > 0) return false;
+): RoutingTier {
+  const trimmed = msg.trim();
 
-  // Opus가 필요한 복잡한 작업 키워드
+  // ── Haiku 판별: 도구가 전혀 필요 없는 가벼운 대화 ──
+  const HAIKU_PATTERNS = [
+    /^(안녕|하이|헬로|hello|hi|hey)\b/i,
+    /^(고마워|감사|ㄳ|땡큐|thanks|thank you)/i,
+    /^(ㅎㅎ|ㅋㅋ|ㅇㅇ|ㅇㅋ|ㄴㄴ|넵|네|응|ㅇ|ok|ㅎ|ㅋ)+$/i,
+    /^(잘 ?했어|좋아|좋네|오키|알겠어|알았어|그래|ㅎ)/,
+    /^(수고|잘 ?자|바이|bye)/i,
+    /^(뭐해|뭐 ?하고 ?있어|심심)/,
+    /^.{1,15}$/,  // 15자 이하 초단문
+  ];
+  const isGreetingContext = history.length <= 2;
+  if (isGreetingContext && HAIKU_PATTERNS.some(p => p.test(trimmed))) return 'haiku';
+  if (/^(ㅎㅎ|ㅋㅋ|ㅇㅇ|ㅇㅋ|넵|네|응|ㅎ|ㅋ|ok)+$/i.test(trimmed)) return 'haiku';
+
+  // ── Opus 판별: 복잡한 작업 ──
+  if (images && images.length > 0) return 'opus';
+
   const COMPLEX_PATTERNS = [
     /아티팩트/, /바이블/, /테이블링/, /밸런스.*조정/, /분석해/, /전체.*조회/,
     /비교해/, /요약해/, /정리해/, /리팩토링/, /최적화/, /설계/,
     /보고서/, /문서.*만들/, /릴리즈.*노트/, /시트.*만들/,
     /수정해/, /편집해/, /추가해/, /삭제해/, /변경해/,
-    /이어서.*생성/, /계속/, /FK.*무결성/, /검증/,
+    /이어서.*생성/, /계속해/, /FK.*무결성/, /검증/,
     /코드.*분석/, /쿼리.*짜/, /SQL.*작성/, /시각화/,
     /Jira/, /Confluence/, /이슈.*만들/, /티켓/,
     /3[dD]/, /모델링/, /씬.*뷰/, /프리팹/,
   ];
-  if (COMPLEX_PATTERNS.some(p => p.test(msg))) return false;
+  if (COMPLEX_PATTERNS.some(p => p.test(msg))) return 'opus';
 
-  // 도구가 많이 필요한 경우 → 복잡
   const heavyTools = ['edit_game_data', 'add_game_data_rows', 'create_artifact', 'patch_artifact',
     'jira_create_issue', 'jira_search', 'confluence_search', 'web_search'];
-  const hasHeavyTools = tools.some(t => heavyTools.includes(t.name));
-  if (hasHeavyTools && msg.length > 100) return false;
+  if (tools.some(t => heavyTools.includes(t.name)) && msg.length > 100) return 'opus';
+  if (msg.length > 300) return 'opus';
+  if (history.length > 10) return 'opus';
 
-  // 긴 메시지 → 복잡할 가능성 높음
-  if (msg.length > 300) return false;
-
-  // 대화 히스토리가 길면 맥락 유지가 중요 → Opus
-  if (history.length > 10) return false;
-
-  // 짧고 단순한 질문 패턴
+  // ── Sonnet 판별: 단순하지만 데이터 관련 질문 ──
   const SIMPLE_PATTERNS = [
-    /^.{0,50}\?$/, // 짧은 질문
+    /^.{0,50}\?$/,
     /뭐야/, /뭔가요/, /뭐지/, /알려줘/, /설명해/,
     /몇 ?개/, /몇 ?명/, /얼마/, /어디/, /언제/, /누구/,
     /있어\?/, /있나요/, /있나\?/, /있니/,
     /맞아\?/, /맞나요/, /인가요/, /인가\?/,
     /차이/, /다른 ?점/, /의미/, /뜻/,
-    /안녕/, /고마워/, /감사/, /ㅎㅎ/, /ㅋㅋ/, /ㅇㅇ/,
-    /^[^\n]{1,80}$/, // 한 줄 짧은 메시지
   ];
-  if (SIMPLE_PATTERNS.some(p => p.test(msg))) return true;
+  if (SIMPLE_PATTERNS.some(p => p.test(msg))) return 'sonnet';
 
-  // 기본값: 150자 이하면 단순 질문으로 간주
-  return msg.length <= 150;
+  return msg.length <= 150 ? 'sonnet' : 'opus';
 }
+
+const ROUTING_LABELS: Record<RoutingTier, { model: ClaudeModelId; label: string; saving: string }> = {
+  haiku:  { model: 'claude-haiku-4-5-20251001', label: 'Haiku',  saving: '~97% 비용 절감' },
+  sonnet: { model: 'claude-sonnet-4-6',          label: 'Sonnet', saving: '~80% 비용 절감' },
+  opus:   { model: 'claude-opus-4-6',            label: 'Opus',   saving: '' },
+};
 
 export async function sendChatMessage(
   userMessage: string,
@@ -3547,26 +3563,28 @@ export async function sendChatMessage(
       : tool
   );
 
-  // ── 스마트 라우팅: 단순 질문은 Sonnet으로 비용 절감 ──
+  // ── 스마트 라우팅: 질문 복잡도에 따라 모델 자동 선택 ──
   const userPrefModel = useCanvasStore.getState().claudeModel || 'claude-opus-4-6';
   let routedDown = false;
   let selectedModel = userPrefModel;
+  let routingTier: RoutingTier = 'opus';
 
   if (userPrefModel.includes('opus')) {
-    const isSimple = classifyQueryComplexity(userMessage, history, filteredTools, images);
-    if (isSimple) {
-      selectedModel = 'claude-sonnet-4-6';
+    routingTier = classifyQueryComplexity(userMessage, history, filteredTools, images);
+    if (routingTier !== 'opus') {
+      const info = ROUTING_LABELS[routingTier];
+      selectedModel = info.model;
       routedDown = true;
       onThinkingUpdate?.({
         type: 'tool_start', iteration: 0, maxIterations: MAX_ITERATIONS,
         toolName: 'smart_routing', toolLabel: '⚡ 스마트 라우팅',
-        detail: `단순 질문 감지 → Sonnet으로 전환 (비용 절감)`,
+        detail: `${routingTier === 'haiku' ? '가벼운 대화' : '단순 질문'} 감지 → ${info.label}로 전환`,
         timestamp: Date.now(),
       });
       onThinkingUpdate?.({
         type: 'tool_done', iteration: 0, maxIterations: MAX_ITERATIONS,
-        toolName: 'smart_routing', toolLabel: '⚡ Sonnet 사용',
-        detail: `Opus → Sonnet (약 80% 비용 절감)`,
+        toolName: 'smart_routing', toolLabel: `⚡ ${info.label} 사용`,
+        detail: `Opus → ${info.label} (${info.saving})`,
         timestamp: Date.now(),
       });
     }

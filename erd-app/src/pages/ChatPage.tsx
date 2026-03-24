@@ -8476,12 +8476,17 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onF
               )}
 
               {/* 스마트 라우팅 뱃지 */}
-              {msg.tokenUsage?.routedDown && (
-                <div className="flex items-center gap-1.5 mt-2 px-1" style={{ fontSize: 10, color: '#38bdf8' }}>
+              {msg.tokenUsage?.routedDown && msg.tokenUsage.model && (
+                <div className="flex items-center gap-1.5 mt-2 px-1" style={{
+                  fontSize: 10,
+                  color: msg.tokenUsage.model.includes('haiku') ? '#4ade80' : '#38bdf8',
+                }}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                     <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
                   </svg>
-                  ⚡ Sonnet — 스마트 라우팅 (비용 절감)
+                  {msg.tokenUsage.model.includes('haiku')
+                    ? '⚡ Haiku — 가벼운 대화 (비용 ~97% 절감)'
+                    : '⚡ Sonnet — 스마트 라우팅 (비용 ~80% 절감)'}
                 </div>
               )}
               {/* 토큰 사용량 또는 FastPath 뱃지 */}
