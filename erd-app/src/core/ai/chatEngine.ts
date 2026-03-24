@@ -2684,6 +2684,10 @@ export interface TokenUsageSummary {
   /** 캐시 포함 실제 논리적 입력 토큰 = input_tokens + cache_read + cache_creation */
   total_input_logical: number;
   system_prompt_estimate: number;
+  /** 실제 사용된 모델 (라우팅 결과) */
+  model?: string;
+  /** 스마트 라우팅으로 다운그레이드 되었는지 */
+  routedDown?: boolean;
 }
 
 // ── 널리지 인메모리 캐시 (30초 TTL) ────────────────────────────────────────
@@ -3058,6 +3062,61 @@ export { SUMMARY_THRESHOLD, KEEP_RECENT };
 export interface ChatImage {
   data: string;        // base64
   media_type: string;  // image/png, image/jpeg, etc.
+}
+
+/**
+ * 질문 복잡도 분류 — Opus가 필요한지 Sonnet으로 충분한지 판별
+ * true = 단순 질문 (Sonnet OK), false = 복잡 질문 (Opus 필요)
+ */
+function classifyQueryComplexity(
+  msg: string,
+  history: ChatTurn[],
+  tools: Array<{ name: string }>,
+  images?: ChatImage[],
+): boolean {
+  // 이미지 포함 → 복잡 (vision 분석은 Opus가 우수)
+  if (images && images.length > 0) return false;
+
+  // Opus가 필요한 복잡한 작업 키워드
+  const COMPLEX_PATTERNS = [
+    /아티팩트/, /바이블/, /테이블링/, /밸런스.*조정/, /분석해/, /전체.*조회/,
+    /비교해/, /요약해/, /정리해/, /리팩토링/, /최적화/, /설계/,
+    /보고서/, /문서.*만들/, /릴리즈.*노트/, /시트.*만들/,
+    /수정해/, /편집해/, /추가해/, /삭제해/, /변경해/,
+    /이어서.*생성/, /계속/, /FK.*무결성/, /검증/,
+    /코드.*분석/, /쿼리.*짜/, /SQL.*작성/, /시각화/,
+    /Jira/, /Confluence/, /이슈.*만들/, /티켓/,
+    /3[dD]/, /모델링/, /씬.*뷰/, /프리팹/,
+  ];
+  if (COMPLEX_PATTERNS.some(p => p.test(msg))) return false;
+
+  // 도구가 많이 필요한 경우 → 복잡
+  const heavyTools = ['edit_game_data', 'add_game_data_rows', 'create_artifact', 'patch_artifact',
+    'jira_create_issue', 'jira_search', 'confluence_search', 'web_search'];
+  const hasHeavyTools = tools.some(t => heavyTools.includes(t.name));
+  if (hasHeavyTools && msg.length > 100) return false;
+
+  // 긴 메시지 → 복잡할 가능성 높음
+  if (msg.length > 300) return false;
+
+  // 대화 히스토리가 길면 맥락 유지가 중요 → Opus
+  if (history.length > 10) return false;
+
+  // 짧고 단순한 질문 패턴
+  const SIMPLE_PATTERNS = [
+    /^.{0,50}\?$/, // 짧은 질문
+    /뭐야/, /뭔가요/, /뭐지/, /알려줘/, /설명해/,
+    /몇 ?개/, /몇 ?명/, /얼마/, /어디/, /언제/, /누구/,
+    /있어\?/, /있나요/, /있나\?/, /있니/,
+    /맞아\?/, /맞나요/, /인가요/, /인가\?/,
+    /차이/, /다른 ?점/, /의미/, /뜻/,
+    /안녕/, /고마워/, /감사/, /ㅎㅎ/, /ㅋㅋ/, /ㅇㅇ/,
+    /^[^\n]{1,80}$/, // 한 줄 짧은 메시지
+  ];
+  if (SIMPLE_PATTERNS.some(p => p.test(msg))) return true;
+
+  // 기본값: 150자 이하면 단순 질문으로 간주
+  return msg.length <= 150;
 }
 
 export async function sendChatMessage(
@@ -3469,6 +3528,8 @@ export async function sendChatMessage(
       total_tokens: total_input_logical + total_output,
       total_input_logical,
       system_prompt_estimate: systemPromptEstimate,
+      model: selectedModel,
+      routedDown,
     };
   };
 
@@ -3486,7 +3547,31 @@ export async function sendChatMessage(
       : tool
   );
 
-  const selectedModel = useCanvasStore.getState().claudeModel || 'claude-opus-4-6';
+  // ── 스마트 라우팅: 단순 질문은 Sonnet으로 비용 절감 ──
+  const userPrefModel = useCanvasStore.getState().claudeModel || 'claude-opus-4-6';
+  let routedDown = false;
+  let selectedModel = userPrefModel;
+
+  if (userPrefModel.includes('opus')) {
+    const isSimple = classifyQueryComplexity(userMessage, history, filteredTools, images);
+    if (isSimple) {
+      selectedModel = 'claude-sonnet-4-6';
+      routedDown = true;
+      onThinkingUpdate?.({
+        type: 'tool_start', iteration: 0, maxIterations: MAX_ITERATIONS,
+        toolName: 'smart_routing', toolLabel: '⚡ 스마트 라우팅',
+        detail: `단순 질문 감지 → Sonnet으로 전환 (비용 절감)`,
+        timestamp: Date.now(),
+      });
+      onThinkingUpdate?.({
+        type: 'tool_done', iteration: 0, maxIterations: MAX_ITERATIONS,
+        toolName: 'smart_routing', toolLabel: '⚡ Sonnet 사용',
+        detail: `Opus → Sonnet (약 80% 비용 절감)`,
+        timestamp: Date.now(),
+      });
+    }
+  }
+
   const requestBase = {
     model: selectedModel,
     max_tokens: dynamicMaxTokens,
