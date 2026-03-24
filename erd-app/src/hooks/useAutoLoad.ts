@@ -82,7 +82,15 @@ export function useAutoLoad() {
             setRepo2Error('응답 파싱 실패');
           }
         } else {
-          setRepo2Error(aegisResp ? `HTTP ${aegisResp.status}` : '연결 실패');
+          let errDetail = aegisResp ? `HTTP ${aegisResp.status}` : '연결 실패';
+          if (aegisResp && !aegisResp.ok) {
+            try {
+              const errData = await aegisResp.json() as { error?: string; detail?: string; hint?: string };
+              errDetail = errData.detail || errData.hint || errData.error || errDetail;
+              console.warn('[AutoSync] aegis sync error:', errData);
+            } catch { /* ignore parse error */ }
+          }
+          setRepo2Error(errDetail);
         }
 
         // sync 후 변경이 있으면 다시 로드

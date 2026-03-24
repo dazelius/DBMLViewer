@@ -5280,6 +5280,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
           if (route === 'sync' && req.method === 'POST') {
+            // ── git 가용성 체크 ──
+            try {
+              await runGitAsync('git --version', activeDir.startsWith('/') || activeDir.includes(':') ? (existsSync(activeDir) ? activeDir : process.cwd()) : process.cwd())
+            } catch {
+              sLog('ERROR', `[git sync] git 실행 불가 — PATH에 git이 없습니다.`)
+              sendJson(res, 500, { error: 'git is not installed or not in PATH', detail: 'git 명령을 실행할 수 없습니다. 서버에 git이 설치되어 있는지 확인하세요.' })
+              return
+            }
+
             // ── 뮤텍스: 동일 디렉토리에 대한 동시 sync 방지 ──
             if (_gitSyncLocks.has(activeDir)) {
               sendJson(res, 202, { status: 'syncing', message: 'Git sync already in progress. Use /api/git/status to check.' })
@@ -5291,8 +5300,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const repoUrl = body.repoUrl || activeRepoUrl
             const token = body.token || activeToken
             const branch = body.branch || 'main'
+
+            if (!repoUrl) {
+              sLog('ERROR', `[git sync] repoUrl 미설정 (repo=${repoParam})`)
+              sendJson(res, 400, { error: 'Repository URL not configured', detail: `repo=${repoParam}에 대한 GITLAB_REPO${isRepo2 ? '2_' : '_'}URL 환경변수가 설정되지 않았습니다.` })
+              return
+            }
+
             const authUrl = buildAuthUrl(repoUrl, token)
             const isCloned = existsSync(join(activeDir, '.git'))
+
+            sLog('INFO', `[git sync] repo=${repoParam} dir=${activeDir} cloned=${isCloned} branch=${branch} repoUrl=${repoUrl.replace(/\/\/[^@]+@/, '//***@')}`)
 
             // 이미 clone 되어있고 빠르게 끝나는 경우: 동기 처리
             if (isCloned) {
@@ -5321,6 +5339,20 @@ document.addEventListener('DOMContentLoaded', () => {
                   const newHead = await runGitAsync('git rev-parse HEAD', activeDir)
                   sendJson(res, 200, { status: 'updated', message: 'Pulled latest changes', commit: newHead.substring(0, 8) })
                 }
+              } catch (syncErr: unknown) {
+                const errMsg = syncErr instanceof Error ? syncErr.message : String(syncErr)
+                sLog('ERROR', `[git sync] fetch/pull 실패 (${repoParam}): ${errMsg}`)
+                sendJson(res, 500, {
+                  error: 'Git sync failed',
+                  detail: errMsg,
+                  repo: repoParam,
+                  branch,
+                  hint: errMsg.includes('Could not resolve host') ? '서버에서 GitLab에 접근할 수 없습니다 (네트워크/DNS).'
+                    : errMsg.includes('Authentication') || errMsg.includes('401') || errMsg.includes('403') ? 'GitLab 토큰이 만료되었거나 권한이 부족합니다.'
+                    : errMsg.includes('not found') || errMsg.includes('does not exist') ? `브랜치 '${branch}'가 존재하지 않습니다. 올바른 브랜치명을 확인하세요.`
+                    : errMsg.includes('index.lock') ? 'Git lock 파일 충돌. 잠시 후 재시도하세요.'
+                    : '서버 로그를 확인하세요.',
+                })
               } finally {
                 _gitSyncLocks.delete(activeDir)
                 releaseLock()
