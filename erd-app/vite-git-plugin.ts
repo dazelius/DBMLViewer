@@ -5289,6 +5289,25 @@ document.addEventListener('DOMContentLoaded', () => {
               return
             }
 
+            // ── stale lock 파일 강제 정리 (뮤텍스 전에 실행) ──
+            if (existsSync(join(activeDir, '.git'))) {
+              const STALE_LOCK_MAX_AGE_MS = 120_000 // 2분 이상 된 lock은 stale
+              const lockFiles = ['index.lock', 'shallow.lock', 'HEAD.lock', 'FETCH_HEAD.lock',
+                'refs/heads/main.lock', 'refs/heads/master.lock', 'refs/heads/develop.lock']
+              for (const lf of lockFiles) {
+                const lockPath = join(activeDir, '.git', lf)
+                if (existsSync(lockPath)) {
+                  try {
+                    const age = Date.now() - statSync(lockPath).mtimeMs
+                    if (age > STALE_LOCK_MAX_AGE_MS || !_gitSyncLocks.has(activeDir)) {
+                      unlinkSync(lockPath)
+                      sLog('WARN', `[git sync] Removed stale lock (${Math.round(age / 1000)}s old): ${lf}`)
+                    }
+                  } catch { /* non-critical */ }
+                }
+              }
+            }
+
             // ── 뮤텍스: 동일 디렉토리에 대한 동시 sync 방지 ──
             if (_gitSyncLocks.has(activeDir)) {
               sendJson(res, 202, { status: 'syncing', message: 'Git sync already in progress. Use /api/git/status to check.' })
@@ -5318,7 +5337,7 @@ document.addEventListener('DOMContentLoaded', () => {
               _gitSyncLocks.set(activeDir, new Promise<void>(r => { releaseLock = r }))
 
               try {
-                // stale lock 파일 자동 제거
+                // stale lock 파일 자동 제거 (branch-specific)
                 for (const lockFile of ['index.lock', 'shallow.lock', 'HEAD.lock', 'refs/heads/' + branch + '.lock', 'FETCH_HEAD.lock']) {
                   const lockPath = join(activeDir, '.git', lockFile)
                   if (existsSync(lockPath)) {
