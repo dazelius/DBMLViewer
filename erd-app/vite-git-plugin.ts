@@ -533,16 +533,49 @@ function runGit(args: string[], cwd: string): string {
   }
 }
 
+function _purgeGitLocks(cwd: string) {
+  const gitDir = join(cwd, '.git')
+  if (!existsSync(gitDir)) return
+  const lockPatterns = ['index.lock', 'shallow.lock', 'HEAD.lock', 'FETCH_HEAD.lock']
+  // branch locks: scan refs/heads/
+  const refsDir = join(gitDir, 'refs', 'heads')
+  if (existsSync(refsDir)) {
+    try {
+      for (const f of readdirSync(refsDir)) {
+        if (f.endsWith('.lock')) lockPatterns.push(`refs/heads/${f}`)
+      }
+    } catch { /* non-critical */ }
+  }
+  for (const lf of lockPatterns) {
+    const p = join(gitDir, lf)
+    if (existsSync(p)) {
+      try { unlinkSync(p); sLog('WARN', `[git] Purged lock: ${lf}`) } catch { /* non-critical */ }
+    }
+  }
+}
+
 async function runGitAsync(cmd: string, cwd: string): Promise<string> {
   const parts = cmd.match(/(?:[^\s"]+|"[^"]*")+/g) || []
   const bin = parts[0]!
   const args = parts.slice(1).map((a: string) => a.replace(/^"|"$/g, ''))
-  return new Promise<string>((resolve, reject) => {
+  const exec = () => new Promise<string>((resolve, reject) => {
     execFile(bin, args, { cwd, encoding: 'utf-8', timeout: 300_000, maxBuffer: 10 * 1024 * 1024 }, (err: Error | null, stdout: string, stderr: string) => {
       if (err) reject(new Error(stderr || err.message || String(err)))
       else resolve((stdout ?? '').trim())
     })
   })
+  try {
+    return await exec()
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('index.lock') || msg.includes('.lock')) {
+      sLog('WARN', `[git] Lock conflict on "${cmd.slice(0, 40)}…" — purging locks and retrying`)
+      _purgeGitLocks(cwd)
+      await new Promise(r => setTimeout(r, 500))
+      return exec()
+    }
+    throw e
+  }
 }
 
 function sendJson(res: ServerResponse, status: number, data: unknown) {
@@ -5325,23 +5358,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             // ── stale lock 파일 강제 정리 (뮤텍스 전에 실행) ──
-            if (existsSync(join(activeDir, '.git'))) {
-              const STALE_LOCK_MAX_AGE_MS = 120_000 // 2분 이상 된 lock은 stale
-              const lockFiles = ['index.lock', 'shallow.lock', 'HEAD.lock', 'FETCH_HEAD.lock',
-                'refs/heads/main.lock', 'refs/heads/master.lock', 'refs/heads/develop.lock']
-              for (const lf of lockFiles) {
-                const lockPath = join(activeDir, '.git', lf)
-                if (existsSync(lockPath)) {
-                  try {
-                    const age = Date.now() - statSync(lockPath).mtimeMs
-                    if (age > STALE_LOCK_MAX_AGE_MS || !_gitSyncLocks.has(activeDir)) {
-                      unlinkSync(lockPath)
-                      sLog('WARN', `[git sync] Removed stale lock (${Math.round(age / 1000)}s old): ${lf}`)
-                    }
-                  } catch { /* non-critical */ }
-                }
-              }
-            }
+            _purgeGitLocks(activeDir)
 
             // ── 뮤텍스: 동일 디렉토리에 대한 동시 sync 방지 ──
             if (_gitSyncLocks.has(activeDir)) {
@@ -5372,14 +5389,7 @@ document.addEventListener('DOMContentLoaded', () => {
               _gitSyncLocks.set(activeDir, new Promise<void>(r => { releaseLock = r }))
 
               try {
-                // stale lock 파일 자동 제거 (branch-specific)
-                for (const lockFile of ['index.lock', 'shallow.lock', 'HEAD.lock', 'refs/heads/' + branch + '.lock', 'FETCH_HEAD.lock']) {
-                  const lockPath = join(activeDir, '.git', lockFile)
-                  if (existsSync(lockPath)) {
-                    try { unlinkSync(lockPath); sLog('WARN', `Removed stale ${lockFile}: ${lockPath}`) } catch { /* non-critical */ }
-                  }
-                }
-
+                _purgeGitLocks(activeDir)
                 await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
                 await runGitAsync(`git remote set-url origin "${authUrl}"`, activeDir)
                 await runGitAsync(`git fetch origin ${branch}`, activeDir)
