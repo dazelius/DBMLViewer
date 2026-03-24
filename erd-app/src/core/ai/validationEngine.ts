@@ -60,6 +60,8 @@ export async function fetchRulesFromServer(): Promise<ValidationRule[]> {
 
     const resp = await fetch('/api/validation-rules/list');
     if (!resp.ok) throw new Error(`${resp.status}`);
+    const ct = resp.headers.get('content-type') || '';
+    if (!ct.includes('json')) throw new Error(`Expected JSON, got ${ct}`);
     const data = await resp.json() as { rules: ValidationRule[] };
     _rulesCache = data.rules ?? [];
     return _rulesCache;
