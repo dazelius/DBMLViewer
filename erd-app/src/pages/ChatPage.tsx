@@ -8244,7 +8244,17 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onF
           cycleSequence={loadingCycle}
         />
         <div className="flex flex-col gap-0.5">
-          <span className="text-[13px] font-semibold" style={{ color: 'var(--accent)' }}>DataMaster</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] font-semibold" style={{ color: 'var(--accent)' }}>DataMaster</span>
+            {msg.tokenUsage?.routedDown && msg.tokenUsage.model && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium" style={{
+                background: msg.tokenUsage.model.includes('haiku') ? 'rgba(74,222,128,0.15)' : 'rgba(56,189,248,0.15)',
+                color: msg.tokenUsage.model.includes('haiku') ? '#4ade80' : '#38bdf8',
+              }}>
+                {msg.tokenUsage.model.includes('haiku') ? '⚡ Haiku' : '⚡ Sonnet'}
+              </span>
+            )}
+          </div>
           {msg.isLoading && (
             <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
               {msg.liveToolCalls && msg.liveToolCalls.length > 0 ? '분석중...' : '생각중...'}

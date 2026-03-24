@@ -1097,6 +1097,30 @@ function createGitMiddleware(options: GitPluginOptions) {
 
       if (isStream) {
         // ── SSE 스트리밍: Node.js native https.request + pipe() (버퍼링 완전 제거) ──
+
+        // SSE 헤더를 즉시 전송 → Nginx proxy_read_timeout 전에 첫 바이트 도달
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-store, no-transform',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+          'X-Accel-Buffering': 'no',
+          'Transfer-Encoding': 'chunked',
+        })
+        if (res.socket) {
+          res.socket.setNoDelay(true)
+          res.socket.setTimeout(0)
+        }
+        res.flushHeaders()
+
+        // Keep-alive 하트비트: Claude 응답 대기 중 Nginx 504 방지
+        // SSE 주석(: keepalive)은 클라이언트 파서가 무시하므로 안전
+        let heartbeatActive = true
+        const heartbeat = setInterval(() => {
+          if (!heartbeatActive) return
+          try { res.write(': keepalive\n\n') } catch { /* socket closed */ }
+        }, 15_000)
+
         const proxyReq = httpsRequest({
           hostname: 'api.anthropic.com',
           path: '/v1/messages',
@@ -1107,25 +1131,25 @@ function createGitMiddleware(options: GitPluginOptions) {
             'anthropic-version': '2023-06-01',
             'Content-Length': Buffer.byteLength(finalBody),
           },
+          timeout: 300_000,
         }, (proxyRes) => {
-          // SSE 스트리밍을 위한 헤더 — 모든 버퍼링/압축 방지
-          res.writeHead(proxyRes.statusCode ?? 200, {
-            'Content-Type': 'text/event-stream; charset=utf-8',
-            'Cache-Control': 'no-cache, no-store, no-transform',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*',
-            'X-Accel-Buffering': 'no',        // nginx 프록시 버퍼링 방지
-            'Transfer-Encoding': 'chunked',   // 청크 전송 명시
-          })
+          heartbeatActive = false
+          clearInterval(heartbeat)
 
-          // 소켓 레벨 최적화: Nagle 알고리즘 OFF + 타임아웃 없음
-          if (res.socket) {
-            res.socket.setNoDelay(true)
-            res.socket.setTimeout(0)
+          // Claude가 에러를 반환한 경우에도 헤더는 이미 200으로 보냈으므로
+          // SSE 에러 이벤트로 전달 (클라이언트가 파싱)
+          if (proxyRes.statusCode && proxyRes.statusCode >= 400) {
+            let errBody = ''
+            proxyRes.on('data', (c: Buffer) => { errBody += c.toString() })
+            proxyRes.on('end', () => {
+              const errMsg = `Claude API returned ${proxyRes.statusCode}: ${errBody.slice(0, 500)}`
+              console.error(`[SSE] ${errMsg}`)
+              res.write(`event: error\ndata: ${JSON.stringify({ error: { type: 'api_error', message: errMsg } })}\n\n`)
+              res.end()
+            })
+            return
           }
-          res.flushHeaders()
 
-          // 수동 스트리밍: 각 청크 즉시 전송 (pipe() 사용 금지 — highWaterMark 버퍼링 방지)
           let chunkCount = 0
           let totalBytes = 0
           const startTime = Date.now()
@@ -1135,7 +1159,6 @@ function createGitMiddleware(options: GitPluginOptions) {
             if (chunkCount <= 3 || chunkCount % 100 === 0) {
               console.log(`[SSE] chunk #${chunkCount}: +${chunk.length}B = ${totalBytes}B (+${Date.now() - startTime}ms)`)
             }
-            // 즉시 전송 — cork/uncork로 단일 TCP 패킷 보장
             if (res.socket) res.socket.cork()
             res.write(chunk)
             if (res.socket) process.nextTick(() => res.socket!.uncork())
@@ -1149,11 +1172,23 @@ function createGitMiddleware(options: GitPluginOptions) {
           })
         })
 
+        proxyReq.on('timeout', () => {
+          heartbeatActive = false
+          clearInterval(heartbeat)
+          console.error('[Claude SSE proxy] 타임아웃 (300s)')
+          res.write(`event: error\ndata: ${JSON.stringify({ error: { type: 'timeout', message: 'Claude API 응답 타임아웃 (300초)' } })}\n\n`)
+          res.end()
+          proxyReq.destroy()
+        })
+
         proxyReq.on('error', (err) => {
+          heartbeatActive = false
+          clearInterval(heartbeat)
           console.error('[Claude SSE proxy] 요청 오류:', err.message)
           if (!res.headersSent) {
             sendJson(res, 502, { error: `Claude API 연결 실패: ${err.message}` })
           } else {
+            res.write(`event: error\ndata: ${JSON.stringify({ error: { type: 'network', message: err.message } })}\n\n`)
             res.end()
           }
         })

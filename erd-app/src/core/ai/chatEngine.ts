@@ -2279,11 +2279,12 @@ async function streamClaude(
         }
       }
 
-      if (response.status === 529 || response.status === 503 || response.status === 502) {
+      if (response.status === 529 || response.status === 503 || response.status === 502 || response.status === 504) {
         if (attempt < MAX_RETRIES) {
           const delay = RETRY_DELAYS[Math.min(attempt, RETRY_DELAYS.length - 1)];
-          console.warn(`[streamClaude] ⚠️ ${response.status} Overloaded — ${delay / 1000}초 후 재시도 (${attempt + 1}/${MAX_RETRIES})`);
-          onTextDelta(`\n⏳ 서버 과부하 (${response.status}) — ${delay / 1000}초 후 자동 재시도합니다... (${attempt + 1}/${MAX_RETRIES})\n`);
+          const label = response.status === 504 ? 'Gateway Timeout' : 'Overloaded';
+          console.warn(`[streamClaude] ⚠️ ${response.status} ${label} — ${delay / 1000}초 후 재시도 (${attempt + 1}/${MAX_RETRIES})`);
+          onTextDelta(`\n⏳ ${label} (${response.status}) — ${delay / 1000}초 후 자동 재시도합니다... (${attempt + 1}/${MAX_RETRIES})\n`);
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
@@ -2313,6 +2314,11 @@ async function streamClaude(
 
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
+
+  // 빠른 모델(Haiku/Sonnet)은 모든 text_delta가 한 청크에 도착하므로
+  // React가 중간 렌더를 할 수 없음 → text_delta 후 이벤트 루프 양보 필요
+  const reqModel = String((requestBody as Record<string, unknown>).model ?? '');
+  const _needsStreamYield = reqModel.includes('haiku') || reqModel.includes('sonnet');
 
   // 블록별 누적
   const blocks: Record<number, ContentBlock & { _inputStr?: string }> = {};
@@ -2436,7 +2442,9 @@ async function streamClaude(
   };
 
   let _readCount = 0;
+  let _textDeltaCount = 0;
   const _streamStart = performance.now();
+  if (_needsStreamYield) console.log(`[streamClaude] 🔀 Fast model (${reqModel}) — streaming yield enabled`);
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -2497,8 +2505,12 @@ async function streamClaude(
 
           if (delta.type === 'text_delta' && b.type === 'text') {
             (b as TextBlock).text = ((b as TextBlock).text || '') + (delta.text ?? '');
-            // 마커 파서를 통해 아티팩트 스트리밍 감지
+            _textDeltaCount++;
             processTextForArtifact(delta.text ?? '');
+            if (_needsStreamYield) {
+              // eslint-disable-next-line no-await-in-loop
+              await new Promise<void>(r => { setTimeout(r, 20); });
+            }
           } else if (delta.type === 'input_json_delta' && b.type === 'tool_use') {
             const tb = b as ContentBlock & { _inputStr: string };
             tb._inputStr = (tb._inputStr || '') + (delta.partial_json ?? '');
@@ -2586,6 +2598,9 @@ async function streamClaude(
       onArtifactProgress(_artStreamedHtml, '', _artStreamedHtml.length, '');
     }
   }
+
+  const _streamElapsed = performance.now() - _streamStart;
+  console.log(`[streamClaude] ✅ ${reqModel} — ${_readCount} reads, ${_textDeltaCount} text deltas, ${Math.round(_streamElapsed)}ms`);
 
   const contentArray = Object.entries(blocks)
     .sort(([a], [b]) => Number(a) - Number(b))
@@ -3590,17 +3605,21 @@ export async function sendChatMessage(
     }
   }
 
+  // Haiku: 도구 없이 경량 응답 (도구가 있으면 TTFT가 늘고 짧은 응답이 한꺼번에 나타남)
+  const routedMaxTokens = routingTier === 'haiku' ? 1024 : dynamicMaxTokens;
+  const routedTools = routingTier === 'haiku' ? [] : cachedTools;
+
   const requestBase = {
     model: selectedModel,
-    max_tokens: dynamicMaxTokens,
+    max_tokens: routedMaxTokens,
     system: [
       {
         type: 'text' as const,
         text: systemPrompt,
-        cache_control: { type: 'ephemeral' as const },  // 시스템 프롬프트 캐싱
+        cache_control: { type: 'ephemeral' as const },
       },
     ],
-    tools: cachedTools,
+    ...(routedTools.length > 0 ? { tools: routedTools } : {}),
   };
 
   // 바이브테이블링 job 체이닝: 이전 job의 출력 파일을 다음 job의 기반으로 사용
