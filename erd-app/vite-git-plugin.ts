@@ -9945,7 +9945,44 @@ function createChatApiMiddleware(options: GitPluginOptions) {
         return
       }
 
-      const MODEL = 'claude-opus-4-6'
+      // ── 스마트 라우팅: 질문 복잡도에 따라 모델 자동 선택 ──
+      const COMPLEX_PATTERNS = [
+        /아티팩트/, /바이블/, /테이블링/, /밸런스.*조정/, /분석해/, /전체.*조회/,
+        /비교해/, /요약해/, /정리해/, /리팩토링/, /최적화/, /설계/,
+        /보고서/, /문서.*만들/, /릴리즈.*노트/, /시트.*만들/,
+        /수정해/, /편집해/, /추가해/, /삭제해/, /변경해/,
+        /이어서.*생성/, /계속해/, /FK.*무결성/, /검증/,
+        /코드.*분석/, /쿼리.*짜/, /SQL.*작성/, /시각화/,
+        /Jira/, /Confluence/, /이슈.*만들/, /티켓/,
+        /3[dD]/, /모델링/, /씬.*뷰/, /프리팹/,
+      ]
+      const HAIKU_PATTERNS = [
+        /^(안녕|하이|헬로|hello|hi|hey)\b/i,
+        /^(고마워|감사|ㄳ|땡큐|thanks|thank you)/i,
+        /^(ㅎㅎ|ㅋㅋ|ㅇㅇ|ㅇㅋ|ㄴㄴ|넵|네|응|ㅇ|ok|ㅎ|ㅋ)+$/i,
+        /^(잘 ?했어|좋아|좋네|오키|알겠어|알았어|그래)/,
+        /^(수고|잘 ?자|바이|bye)/i,
+        /^(뭐해|뭐 ?하고 ?있어|심심)/,
+      ]
+      const msgTrimmed = userMessage.replace(/\[Slack 사용자:[^\]]*\]\s*/g, '').trim()
+      const hasImages = userImages.length > 0
+      const historyLen = session.messages.length
+
+      let MODEL: string
+      let routingLabel = ''
+      if (hasImages || COMPLEX_PATTERNS.some(p => p.test(msgTrimmed)) || msgTrimmed.length > 300 || historyLen > 20) {
+        MODEL = 'claude-opus-4-6'
+      } else if (historyLen <= 4 && (HAIKU_PATTERNS.some(p => p.test(msgTrimmed)) || msgTrimmed.length <= 15)) {
+        MODEL = 'claude-haiku-4-5-20251001'
+        routingLabel = '⚡ Haiku'
+      } else if (msgTrimmed.length <= 150) {
+        MODEL = 'claude-sonnet-4-6'
+        routingLabel = '⚡ Sonnet'
+      } else {
+        MODEL = 'claude-opus-4-6'
+      }
+      if (routingLabel) sLog('INFO', `[chatApi] 스마트 라우팅: ${routingLabel} (msg=${msgTrimmed.slice(0, 50)})`)
+
       const MAX_ITERATIONS = 20
       // ── 동적 max_tokens: 슬랙/아티팩트/바이브테이블링이면 16384, 일반 대화면 8192 ──
       const ARTIFACT_KEYWORDS = /정리해줘|문서로|보고서|시트.*만들|뽑아줘|만들어줘|아티팩트|3D|모델링|캐릭터.*시트|릴리즈.*노트|분석|작성해줘|보여줘|프로필|비교|현황|리스트|목록|전체/
@@ -10092,7 +10129,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
               session.updated = new Date().toISOString()
               saveSession(session)
 
-              res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: finalText, tool_calls: allToolCalls })}\n\n`)
+              res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: finalText, tool_calls: allToolCalls, model: MODEL, routing: routingLabel || undefined })}\n\n`)
               res.end()
               return
             }
@@ -10199,7 +10236,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
           saveSession(session)
 
           if (!res.writableEnded) {
-          res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: finalText, tool_calls: allToolCalls })}\n\n`)
+          res.write(`event: done\ndata: ${JSON.stringify({ session_id: session.id, content: finalText, tool_calls: allToolCalls, model: MODEL, routing: routingLabel || undefined })}\n\n`)
           res.end()
           }
         } catch (err) {
