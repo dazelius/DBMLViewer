@@ -2005,6 +2005,7 @@ interface ClaudeResponse {
 export type ClaudeMsg =
   | { role: 'user' | 'assistant'; content: string }
   | { role: 'user'; content: { type: 'tool_result'; tool_use_id: string; content: string }[] }
+  | { role: 'user'; content: Array<Record<string, unknown>> }
   | { role: 'assistant'; content: ContentBlock[] };
 
 /**
@@ -3054,6 +3055,11 @@ ${turnsText}
 
 export { SUMMARY_THRESHOLD, KEEP_RECENT };
 
+export interface ChatImage {
+  data: string;        // base64
+  media_type: string;  // image/png, image/jpeg, etc.
+}
+
 export async function sendChatMessage(
   userMessage: string,
   history: ChatTurn[],
@@ -3068,6 +3074,8 @@ export async function sendChatMessage(
   toolFilter?: string[],
   /** 대화 서머라이제이션: 이전 대화 요약 (있으면 히스토리 앞에 주입) */
   conversationSummary?: string,
+  /** 이미지 첨부 (Claude vision) */
+  images?: ChatImage[],
 ): Promise<{ content: string; toolCalls: ToolCallResult[]; rawMessages?: ClaudeMsg[]; tokenUsage?: TokenUsageSummary }> {
   // 컴포넌트가 아직 로딩 중일 때 schema가 null일 수 있으므로 스토어에서 fallback
   const effectiveSchema = schema ?? useSchemaStore.getState().schema;
@@ -3371,9 +3379,22 @@ export async function sendChatMessage(
     }
   }
 
+  // 이미지가 있으면 content를 배열로 구성 (Claude vision)
+  let userMsgObj: ClaudeMsg;
+  if (images && images.length > 0) {
+    const blocks: Array<Record<string, unknown>> = images.map(img => ({
+      type: 'image',
+      source: { type: 'base64', media_type: img.media_type, data: img.data },
+    }));
+    blocks.push({ type: 'text', text: userMessage });
+    userMsgObj = { role: 'user', content: blocks };
+  } else {
+    userMsgObj = { role: 'user', content: userMessage };
+  }
+
   const messages: ClaudeMsg[] = [
     ...rawHistoryMsgs,
-    { role: 'user', content: userMessage },
+    userMsgObj,
   ];
 
   const allToolCalls: ToolCallResult[] = [];

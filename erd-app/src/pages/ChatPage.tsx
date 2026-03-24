@@ -47,6 +47,7 @@ import {
   summarizeConversation,
   SUMMARY_THRESHOLD,
   KEEP_RECENT,
+  type ChatImage,
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
 import type { ParsedSchema } from '../core/schema/types.ts';
@@ -8898,6 +8899,28 @@ export default function ChatPage() {
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [pendingImages, setPendingImages] = useState<ChatImage[]>([]);
+
+  // 클립보드 붙여넣기로 이미지 감지
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of Array.from(items)) {
+      if (!item.type.startsWith('image/')) continue;
+      const file = item.getAsFile();
+      if (!file) continue;
+      e.preventDefault();
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const base64 = result.split(',')[1];
+        if (!base64) return;
+        setPendingImages(prev => [...prev, { data: base64, media_type: item.type }]);
+      };
+      reader.readAsDataURL(file);
+    }
+  }, []);
+
   // historyRef: Claude API에 넘길 대화 이력 — localStorage에서 복원
   const historyRef = useRef<ChatTurn[]>((() => {
     try {
@@ -8978,12 +9001,17 @@ export default function ChatPage() {
   const canChat = true; // 데이터 없이도 Claude API만으로 채팅 가능 (디버그 모드)
 
   const sendMessage = useCallback(async (text: string, displayText?: string) => {
-    if (!text.trim() || isLoading) return;
+    if ((!text.trim() && pendingImages.length === 0) || isLoading) return;
+
+    const imgCount = pendingImages.length;
+    const userDisplayContent = imgCount > 0
+      ? `${displayText !== undefined ? displayText : text.trim()}${imgCount > 0 ? `\n📎 이미지 ${imgCount}장` : ''}`
+      : (displayText !== undefined ? displayText : text.trim());
 
     const userMsg: Message = {
       id: genId(),
       role: 'user',
-      content: displayText !== undefined ? displayText : text.trim(),
+      content: userDisplayContent,
       timestamp: new Date(),
     };
 
@@ -8997,7 +9025,9 @@ export default function ChatPage() {
     };
 
     setMessages((prev) => [...prev, userMsg, loadingMsg]);
+    const imagesToSend = [...pendingImages];
     setInput('');
+    setPendingImages([]);
     setIsLoading(true);
 
     const loadingId = loadingMsg.id;
@@ -9244,6 +9274,7 @@ export default function ChatPage() {
         // ★ 편집 요청 시 patch_artifact만 사용 가능 (데이터 조회 등 차단 → 속도 대폭 향상)
         isEditRequest ? ['patch_artifact'] : undefined,
         summaryRef.current || undefined,
+        imagesToSend.length > 0 ? imagesToSend : undefined,
       );
 
       // history 갱신 (max_tokens로 잘린 경우 rawMessages 포함 → 계속해줘 지원)
@@ -9436,7 +9467,7 @@ export default function ChatPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [isLoading, schema, tableData]);
+  }, [isLoading, schema, tableData, pendingImages]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -9444,6 +9475,10 @@ export default function ChatPage() {
       sendMessage(input);
     }
   };
+
+  const removeImage = useCallback((index: number) => {
+    setPendingImages(prev => prev.filter((_, i) => i !== index));
+  }, []);
 
   // ── 피드백 핸들러: 만족도를 받아 널리지로 축적 ─────────────────────────
   const handleFeedback = useCallback(async (msgId: string, rating: 'good' | 'bad', tags?: string[], comment?: string) => {
@@ -10451,6 +10486,28 @@ export default function ChatPage() {
             <div className="w-full px-6">
               {/* 입력 바 (포트레이트 제거 — 플로팅으로 이동) */}
               <div className="flex-1">
+              {/* 이미지 미리보기 */}
+              {pendingImages.length > 0 && (
+                <div className="flex gap-2 mb-2 flex-wrap px-1">
+                  {pendingImages.map((img, i) => (
+                    <div key={i} className="relative group" style={{ width: 72, height: 72 }}>
+                      <img
+                        src={`data:${img.media_type};base64,${img.data}`}
+                        alt={`image-${i}`}
+                        className="rounded-lg object-cover w-full h-full"
+                        style={{ border: '1px solid var(--border-color)' }}
+                      />
+                      <button
+                        onClick={() => removeImage(i)}
+                        className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        style={{ background: '#ef4444', color: '#fff', fontSize: 12, lineHeight: 1 }}
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div
                 className="flex items-end gap-3 rounded-2xl px-5 py-3.5"
                 style={{
@@ -10482,10 +10539,11 @@ export default function ChatPage() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
+                  onPaste={handlePaste}
                   placeholder={
                     hasData
-                      ? '게임 데이터에 대해 무엇이든 질문하세요... (Shift+Enter: 줄바꿈)'
-                      : 'Claude와 대화하세요 (데이터 미로드 — SQL 도구 제한됨)'
+                      ? '게임 데이터에 대해 무엇이든 질문하세요... (Ctrl+V로 이미지 붙여넣기)'
+                      : 'Claude와 대화하세요 (Ctrl+V로 이미지 붙여넣기)'
                   }
                   disabled={isLoading || !canChat}
                   rows={1}
@@ -10499,7 +10557,7 @@ export default function ChatPage() {
                 />
                 <button
                   onClick={() => sendMessage(input)}
-                  disabled={isLoading || !input.trim() || !canChat}
+                  disabled={isLoading || (!input.trim() && pendingImages.length === 0) || !canChat}
                   className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-all"
                   style={{
                     background: isLoading || !input.trim() || !canChat
