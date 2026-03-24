@@ -9879,7 +9879,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
 
       loadServerData(options.localDir)
 
-      let body: { message?: string; session_id?: string; stream?: boolean; fast?: boolean }
+      let body: { message?: string; session_id?: string; stream?: boolean; fast?: boolean; images?: Array<{ data: string; media_type?: string }> }
       try {
         const raw = await readBody(req)
         body = JSON.parse(raw || '{}')
@@ -9887,6 +9887,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
 
       const userMessage = body.message?.trim()
       if (!userMessage) { sendJson(res, 400, { error: '"message" field is required' }); return }
+      const userImages = Array.isArray(body.images) ? body.images.filter(img => img?.data) : []
 
       const session = getOrCreateSession(body.session_id)
       const isStream = body.stream === true
@@ -9931,9 +9932,23 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       _activeRequests.set(session.id, Date.now())
 
       // Claude messages 빌드 (히스토리 + 새 메시지) → 슬라이딩 윈도우 적용
+      // 이미지가 있으면 content를 배열로 구성 (Claude vision)
+      let userContent: unknown = userMessage
+      if (userImages.length > 0) {
+        const contentBlocks: Array<Record<string, unknown>> = userImages.map(img => ({
+          type: 'image' as const,
+          source: {
+            type: 'base64' as const,
+            media_type: img.media_type || 'image/png',
+            data: img.data,
+          },
+        }))
+        contentBlocks.push({ type: 'text' as const, text: userMessage })
+        userContent = contentBlocks
+      }
       const rawMessages: Array<{ role: string; content: unknown }> = [
         ...session.messages,
-        { role: 'user', content: userMessage },
+        { role: 'user', content: userContent },
       ]
       const messages = applyContextWindow(rawMessages)
       const trimmedCount = rawMessages.length - messages.length

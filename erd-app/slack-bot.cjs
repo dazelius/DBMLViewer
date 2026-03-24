@@ -273,7 +273,7 @@ function buildMetaContext(channel, threadTs) {
 }
 
 // ── DataMaster API 호출 (SSE 스트리밍 — 텍스트 + 도구 진행 상황 수집) ──
-async function callDataMasterStreaming(message, sessionId, onToolStart, onIteration) {
+async function callDataMasterStreaming(message, sessionId, onToolStart, onIteration, images) {
   const url = `${DATAMASTER_URL}/api/v1/chat`;
   
   const controller = new AbortController();
@@ -282,14 +282,19 @@ async function callDataMasterStreaming(message, sessionId, onToolStart, onIterat
   const totalTimeout = setTimeout(() => controller.abort(), TOTAL_TIMEOUT);
 
   try {
+    const bodyPayload = {
+      message,
+      session_id: sessionId,
+      stream: true,
+    };
+    if (images && images.length > 0) {
+      bodyPayload.images = images;
+    }
+
     const resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message,
-        session_id: sessionId,
-        stream: true,
-      }),
+      body: JSON.stringify(bodyPayload),
       signal: controller.signal,
     });
 
@@ -1000,6 +1005,37 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+// ── Slack 파일에서 이미지 다운로드 → base64 ──
+async function downloadSlackImages(files, botToken) {
+  if (!files || files.length === 0) return [];
+  const images = [];
+  const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+  const MAX_SIZE = 20 * 1024 * 1024; // 20MB (Claude 제한)
+
+  for (const file of files) {
+    if (!IMAGE_TYPES.has(file.mimetype)) continue;
+    if (file.size > MAX_SIZE) {
+      console.log(`[Slack] 이미지 건너뜀 (크기 초과): ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+      continue;
+    }
+    try {
+      const url = file.url_private_download || file.url_private;
+      if (!url) continue;
+      const resp = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${botToken}` },
+      });
+      if (!resp.ok) { console.log(`[Slack] 이미지 다운로드 실패: ${file.name} (${resp.status})`); continue; }
+      const arrayBuf = await resp.arrayBuffer();
+      const base64 = Buffer.from(arrayBuf).toString('base64');
+      images.push({ data: base64, media_type: file.mimetype, name: file.name });
+      console.log(`[Slack] 이미지 다운로드 완료: ${file.name} (${(arrayBuf.byteLength / 1024).toFixed(0)}KB)`);
+    } catch (e) {
+      console.error(`[Slack] 이미지 다운로드 오류: ${file.name}`, e.message);
+    }
+  }
+  return images;
+}
+
 // ── 메시지 처리 핸들러 ──
 async function handleMessage({ message, say, client, event }) {
   // 봇 자신의 메시지 무시
@@ -1011,7 +1047,11 @@ async function handleMessage({ message, say, client, event }) {
   const userId = event?.user || message?.user || '';
   const userText = cleanSlackText(event?.text || message?.text || '');
 
-  if (!userText) return;
+  // 이미지 첨부 파일 감지
+  const attachedFiles = event?.files || message?.files || [];
+  const hasImages = attachedFiles.some(f => f.mimetype?.startsWith('image/'));
+
+  if (!userText && !hasImages) return;
 
   // ── 중복 이벤트 방지 (같은 메시지 ts를 두 번 처리 안 함) ──
   if (currentTs && _processedMessages.has(currentTs)) {
@@ -1159,6 +1199,17 @@ async function handleMessage({ message, say, client, event }) {
       console.log(`[Slack] 메타정보 주입: 테이블 ${getThreadMeta(channel, threadTs).queriedTables.length}개, 스키마 ${getThreadMeta(channel, threadTs).schemas.length}개`);
     }
     
+    // ── 이미지 첨부 처리 ──
+    let slackImages = [];
+    if (hasImages) {
+      console.log(`[Slack] 이미지 ${attachedFiles.filter(f => f.mimetype?.startsWith('image/')).length}개 감지, 다운로드 중...`);
+      slackImages = await downloadSlackImages(attachedFiles, SLACK_BOT_TOKEN);
+      if (slackImages.length > 0) {
+        const imgNames = slackImages.map(i => i.name).join(', ');
+        enrichedMessage = enrichedMessage + `\n\n[첨부 이미지: ${imgNames}]`;
+      }
+    }
+
     // 실시간 도구 사용 표시 (SSE 스트리밍)
     const toolProgress = [];
 
@@ -1258,7 +1309,7 @@ async function handleMessage({ message, say, client, event }) {
     const MAX_RETRIES = 2;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        result = await callDataMasterStreaming(enrichedMessage, sessionId, onToolStart, onIteration);
+        result = await callDataMasterStreaming(enrichedMessage, sessionId, onToolStart, onIteration, slackImages);
         break; // 성공 시 루프 탈출
       } catch (apiErr) {
         const errMsg = apiErr.message || '';
