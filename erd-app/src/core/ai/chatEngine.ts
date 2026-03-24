@@ -5299,13 +5299,10 @@ function showTab(id){
 
               // Confluence 호스팅 URL을 프록시 URL로 변환하는 헬퍼
               const toProxyUrl = (url: string): string => {
-                // 이미 프록시 경로이면 그대로
-                if (url.startsWith('/api/confluence/attachment')) return url;
-                // 외부 URL (Confluence가 아닌)은 그대로
+                if (url.includes('/api/confluence/attachment')) return url;
                 if (url.startsWith('http') && !url.includes('atlassian.net') && !url.includes(wikiBase.replace(/^https?:\/\//, ''))) return url;
-                // Confluence 호스팅 URL → 프록시
                 const absUrl = url.startsWith('http') ? url : `${wikiBase}${url.startsWith('/') ? '' : '/'}${url}`;
-                return `/api/confluence/attachment?url=${encodeURIComponent(absUrl)}`;
+                return `./api/confluence/attachment?url=${encodeURIComponent(absUrl)}`;
               };
 
               // 1) Confluence 첨부 이미지: <ac:image><ri:attachment ri:filename="..." /></ac:image>

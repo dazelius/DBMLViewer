@@ -2075,9 +2075,9 @@ function renderMarkdown(text: string): React.ReactNode[] {
       if (imgMatch) {
         const [, alt, url] = imgMatch;
         // Confluence URL이면 프록시 사용
-        const isConfBlock = /atlassian\.net\/wiki\//.test(url) && !url.startsWith('/api/');
+        const isConfBlock = /atlassian\.net\/wiki\//.test(url) && !url.startsWith('/api/') && !url.startsWith('./api/');
         const proxiedBlockUrl = isConfBlock
-          ? `/api/confluence/attachment?url=${encodeURIComponent(url)}`
+          ? `./api/confluence/attachment?url=${encodeURIComponent(url)}`
           : url;
         nodes.push(
           <div key={i} className="my-2">
@@ -2275,9 +2275,9 @@ function inlineMarkdown(text: string): React.ReactNode {
 
     if (imgUrl !== undefined) {
       // 이미지: ![alt](url) — Confluence URL이면 프록시 사용
-      const isConfImg = /atlassian\.net\/wiki\//.test(imgUrl) && !imgUrl.startsWith('/api/');
+      const isConfImg = /atlassian\.net\/wiki\//.test(imgUrl) && !imgUrl.startsWith('/api/') && !imgUrl.startsWith('./api/');
       const proxiedImgUrl = isConfImg
-        ? `/api/confluence/attachment?url=${encodeURIComponent(imgUrl)}`
+        ? `./api/confluence/attachment?url=${encodeURIComponent(imgUrl)}`
         : imgUrl;
       segments.push(
         <img
@@ -2300,11 +2300,11 @@ function inlineMarkdown(text: string): React.ReactNode {
       );
     } else if (linkUrl !== undefined) {
       // Confluence/Atlassian 호스팅 URL → 프록시 경로로 변환
-      const isConfluenceHosted = /atlassian\.net\/wiki\//.test(linkUrl) && !linkUrl.startsWith('/api/');
+      const isConfluenceHosted = /atlassian\.net\/wiki\//.test(linkUrl) && !linkUrl.startsWith('/api/') && !linkUrl.startsWith('./api/');
       const effectiveUrl = isConfluenceHosted
-        ? `/api/confluence/attachment?url=${encodeURIComponent(linkUrl)}`
+        ? `./api/confluence/attachment?url=${encodeURIComponent(linkUrl)}`
         : linkUrl;
-      const isProxied = effectiveUrl.startsWith('/api/confluence/attachment');
+      const isProxied = effectiveUrl.includes('/api/confluence/attachment');
       // 링크: [text](url) — 이미지 URL이면 img로 렌더
       const isImageUrl = /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(linkUrl) || linkUrl.includes('/api/images/') || isProxied;
       if (isImageUrl && !isConfluenceHosted && !isProxied) {
