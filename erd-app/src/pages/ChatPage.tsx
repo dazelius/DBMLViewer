@@ -7235,7 +7235,7 @@ function TokenUsageBar({ usage }: { usage: TokenUsageSummary }) {
 // ── Cursor-style 씽킹 패널 ──────────────────────────────────────────────────
 
 function ThinkingPanel({ steps, isActive }: { steps: ThinkingStepUI[]; isActive: boolean }) {
-  const [expanded, setExpanded] = useState(isActive); // 활성 중에는 펼침, 완료 시 접힘
+  const [expanded, setExpanded] = useState(false); // 기본 접힘, 클릭으로 펼침
   const scrollRef = useRef<HTMLDivElement>(null);
   const [elapsed, setElapsed] = useState(0);
 
