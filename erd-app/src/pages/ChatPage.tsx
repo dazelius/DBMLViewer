@@ -1434,6 +1434,7 @@ interface Message {
   iterations?: string[]; // 이터레이션별 텍스트 (각 버블로 분리 렌더링)
   feedback?: MessageFeedback;     // 사용자 피드백 (만족도)
   isFastPath?: boolean; // FastPath 즉답 (API 미사용)
+  imageDataUrls?: string[]; // 첨부 이미지 미리보기 data URL
 }
 
 /** UI용 thinking step (chatEngine의 ThinkingStep + UI 상태) */
@@ -8177,6 +8178,21 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onF
             boxShadow: '0 6px 24px rgba(99,102,241,0.4)',
           }}
         >
+          {/* 첨부 이미지 썸네일 */}
+          {msg.imageDataUrls && msg.imageDataUrls.length > 0 && (
+            <div className="flex gap-2 flex-wrap px-4 pt-3 pb-1">
+              {msg.imageDataUrls.map((url, i) => (
+                <img
+                  key={i}
+                  src={url}
+                  alt={`attachment-${i}`}
+                  className="rounded-xl object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                  style={{ maxWidth: 200, maxHeight: 160, border: '2px solid rgba(255,255,255,0.2)' }}
+                  onClick={() => window.open(url, '_blank')}
+                />
+              ))}
+            </div>
+          )}
           {userParts.map((part, idx) => {
             if (part.startsWith('```') && part.endsWith('```')) {
               const lines = part.split('\n');
@@ -8199,9 +8215,11 @@ function MessageBubble({ msg, onContinue, artifactStreaming, onOpenArtifact, onF
               );
             }
             if (!part.trim()) return null;
+            const displayText = part.replace(/\n📎 이미지 \d+장$/, '');
+            if (!displayText.trim()) return null;
             return (
               <p key={idx} className="text-[15px] whitespace-pre-wrap leading-relaxed" style={{ color: '#fff', padding: '14px 24px' }}>
-                {part}
+                {displayText}
               </p>
             );
           })}
@@ -8901,7 +8919,8 @@ export default function ChatPage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [pendingImages, setPendingImages] = useState<ChatImage[]>([]);
 
-  // 클립보드 붙여넣기로 이미지 감지
+  const SUPPORTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -8910,14 +8929,32 @@ export default function ChatPage() {
       const file = item.getAsFile();
       if (!file) continue;
       e.preventDefault();
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        const base64 = result.split(',')[1];
-        if (!base64) return;
-        setPendingImages(prev => [...prev, { data: base64, media_type: item.type }]);
-      };
-      reader.readAsDataURL(file);
+
+      const mediaType = SUPPORTED_IMAGE_TYPES.has(item.type) ? item.type : 'image/png';
+
+      if (SUPPORTED_IMAGE_TYPES.has(item.type)) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const base64 = (reader.result as string).split(',')[1];
+          if (!base64) return;
+          setPendingImages(prev => [...prev, { data: base64, media_type: mediaType }]);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        const canvas = document.createElement('canvas');
+        const img = new Image();
+        img.onload = () => {
+          canvas.width = img.width;
+          canvas.height = img.height;
+          canvas.getContext('2d')!.drawImage(img, 0, 0);
+          const pngDataUrl = canvas.toDataURL('image/png');
+          const base64 = pngDataUrl.split(',')[1];
+          if (!base64) return;
+          setPendingImages(prev => [...prev, { data: base64, media_type: 'image/png' }]);
+          URL.revokeObjectURL(img.src);
+        };
+        img.src = URL.createObjectURL(file);
+      }
     }
   }, []);
 
@@ -8974,14 +9011,15 @@ export default function ChatPage() {
 
   // 대화 내역 localStorage 캐시 저장 (isLoading 메시지 제외)
   useEffect(() => {
-    const toSave = messages.filter((m) => !m.isLoading);
+    const toSave = messages.filter((m) => !m.isLoading).map(m =>
+      m.imageDataUrls ? { ...m, imageDataUrls: undefined } : m
+    );
     if (toSave.length === 0) {
       localStorage.removeItem(CHAT_CACHE_KEY);
     } else {
       try {
         localStorage.setItem(CHAT_CACHE_KEY, JSON.stringify(toSave));
       } catch {
-        // 용량 초과 시 오래된 절반 제거
         try {
           localStorage.setItem(CHAT_CACHE_KEY, JSON.stringify(toSave.slice(-20)));
         } catch { /* ignore */ }
@@ -9013,6 +9051,7 @@ export default function ChatPage() {
       role: 'user',
       content: userDisplayContent,
       timestamp: new Date(),
+      imageDataUrls: imgCount > 0 ? pendingImages.map(img => `data:${img.media_type};base64,${img.data}`) : undefined,
     };
 
     const loadingMsg: Message = {

@@ -3380,11 +3380,16 @@ export async function sendChatMessage(
   }
 
   // 이미지가 있으면 content를 배열로 구성 (Claude vision)
+  const ALLOWED_MEDIA = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
   let userMsgObj: ClaudeMsg;
   if (images && images.length > 0) {
     const blocks: Array<Record<string, unknown>> = images.map(img => ({
       type: 'image',
-      source: { type: 'base64', media_type: img.media_type, data: img.data },
+      source: {
+        type: 'base64',
+        media_type: ALLOWED_MEDIA.has(img.media_type) ? img.media_type : 'image/png',
+        data: img.data,
+      },
     }));
     blocks.push({ type: 'text', text: userMessage });
     userMsgObj = { role: 'user', content: blocks };
