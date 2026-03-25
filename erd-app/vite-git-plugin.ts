@@ -561,9 +561,22 @@ function runGit(args: string[], cwd: string): string {
 }
 
 // ── 서버 시작 시 에셋 인덱스 자동 빌드 (sync_assets.ps1 대체) ──
+function _getIdxPath(): string {
+  const candidates = [
+    join(process.cwd(), '..', '..', 'assets', '.asset_index.json'),
+    join(process.cwd(), '.asset_index.json'),
+  ]
+  for (const c of candidates) {
+    if (existsSync(c)) return c
+  }
+  const primary = candidates[0]
+  const dir = primary.replace(/[\\/][^\\/]+$/, '')
+  try { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }); return primary } catch { /* fallback */ }
+  return candidates[1]
+}
+
 function _buildAssetIndexIfNeeded() {
-  const ASSETS_DIR = join(process.cwd(), '..', '..', 'assets')
-  const idxPath = join(ASSETS_DIR, '.asset_index.json')
+  const idxPath = _getIdxPath()
 
   if (existsSync(idxPath)) {
     try {
@@ -575,28 +588,47 @@ function _buildAssetIndexIfNeeded() {
     } catch { /* continue to rebuild */ }
   }
 
-  // 여러 가능한 Unity 에셋 경로를 순서대로 확인
+  // Unity Assets 폴더를 찾되, 반드시 "GameContents"가 포함된 레벨을 기준으로 사용
   const candidates = [
     join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets'),
     join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
-    join(process.cwd(), '.git-repo-aegis'),
   ]
+  // 깊은 경로 → 얕은 경로 순으로 GameContents 존재 여부 확인
+  const _repoRoot = join(process.cwd(), '.git-repo-aegis')
+  const _deepSearch = [
+    join(_repoRoot, 'Client', 'Project_Aegis', 'Assets'),
+    join(_repoRoot, 'Client', 'Project_Aegis'),
+    join(_repoRoot, 'Client'),
+    _repoRoot,
+  ]
+  for (const d of _deepSearch) {
+    if (existsSync(join(d, 'GameContents'))) {
+      if (!candidates.includes(d)) candidates.push(d)
+      break
+    }
+  }
+  candidates.push(_repoRoot)
+
   let UNITY_ASSETS_DIR = ''
   for (const c of candidates) {
-    if (existsSync(c)) { UNITY_ASSETS_DIR = c; break }
+    if (existsSync(c) && existsSync(join(c, 'GameContents'))) { UNITY_ASSETS_DIR = c; break }
+  }
+  if (!UNITY_ASSETS_DIR) {
+    // GameContents 없어도 가장 깊은 존재하는 폴더 사용
+    for (const c of candidates) {
+      if (existsSync(c)) { UNITY_ASSETS_DIR = c; break }
+    }
   }
   if (!UNITY_ASSETS_DIR) {
     sLog('WARN', `[AssetIndex] Unity 에셋 폴더 없음 — 후보: ${candidates.map(c => c.replace(process.cwd(), '.')).join(', ')}`)
     return
   }
-  sLog('INFO', `[AssetIndex] 에셋 경로: ${UNITY_ASSETS_DIR}`)
+  sLog('INFO', `[AssetIndex] 에셋 경로: ${UNITY_ASSETS_DIR} (GameContents: ${existsSync(join(UNITY_ASSETS_DIR, 'GameContents'))})`)
 
   sLog('INFO', '[AssetIndex] 에셋 인덱스 빌드 시작...')
   const t0 = Date.now()
 
   try {
-    if (!existsSync(ASSETS_DIR)) mkdirSync(ASSETS_DIR, { recursive: true })
-
     const entries: { path: string; name: string; ext: string; sizeKB: number; lfs?: boolean }[] = []
     const _realFiles = new Set<string>()
     const _metaFiles: string[] = []
@@ -652,8 +684,10 @@ function _buildAssetIndexIfNeeded() {
     }
     if (lfsCount > 0) sLog('INFO', `[AssetIndex] LFS 가상 엔트리 ${lfsCount}개 추가 (실제 파일 미존재, .meta로 추론)`)
 
+    const idxDir = idxPath.replace(/[\\/][^\\/]+$/, '')
+    if (!existsSync(idxDir)) mkdirSync(idxDir, { recursive: true })
     writeFileSync(idxPath, JSON.stringify(entries))
-    sLog('INFO', `[AssetIndex] 완료: ${entries.length}개 파일 (실제 ${_realFiles.size} + LFS ${lfsCount}), ${Date.now() - t0}ms`)
+    sLog('INFO', `[AssetIndex] 완료: ${entries.length}개 파일 (실제 ${_realFiles.size} + LFS ${lfsCount}), idx: ${idxPath}, ${Date.now() - t0}ms`)
   } catch (e) {
     sLog('ERROR', `[AssetIndex] 빌드 실패: ${e}`)
   }
@@ -1619,8 +1653,7 @@ function createGitMiddleware(options: GitPluginOptions) {
       // 로컬 이미지 없으면 에셋 인덱스 PNG 폴백
       if (all.length === 0) {
         try {
-          const _aidxDir = join(process.cwd(), '..', '..', 'assets')
-          const _aidxPath = join(_aidxDir, '.asset_index.json')
+          const _aidxPath = _getIdxPath()
           if (existsSync(_aidxPath)) {
             let raw = readFileSync(_aidxPath, 'utf-8')
             if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
@@ -1694,15 +1727,19 @@ function createGitMiddleware(options: GitPluginOptions) {
         join(process.cwd(), '..', '..', 'assets'),
         join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets'),
         join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
+        join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis'),
+        join(process.cwd(), '.git-repo-aegis', 'Client'),
         join(process.cwd(), '.git-repo-aegis'),
       ]
+      const norm = relPath.replace(/\.\./g, '').replace(/\//g, sep)
       for (const baseDir of _assetCandidates) {
-        const norm = relPath.replace(/\.\./g, '').replace(/\//g, sep)
         const candidate = join(baseDir, norm)
         if (existsSync(candidate)) { serveFile(candidate, relPath); return }
       }
 
-      res.writeHead(404); res.end('not found'); return
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'not found', path: relPath, tried: _assetCandidates.map(d => `${join(d, norm).replace(process.cwd(), '.')} → ${existsSync(join(d, norm)) ? '✓' : '✗'}`) }))
+      return
     }
 
     // ── /api/images/smart : 파일명으로 스마트 검색 (폴더 몰라도 됨) ──────────────
@@ -1722,7 +1759,7 @@ function createGitMiddleware(options: GitPluginOptions) {
       // 2) 에셋 인덱스 폴백
       if (!match) {
         try {
-          const _aidxPath = join(process.cwd(), '..', '..', 'assets', '.asset_index.json')
+          const _aidxPath = _getIdxPath()
           if (existsSync(_aidxPath)) {
             let raw = readFileSync(_aidxPath, 'utf-8')
             if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
@@ -2416,7 +2453,6 @@ function createGitMiddleware(options: GitPluginOptions) {
     // ── /api/assets/* : 에셋 엔드포인트 (try-catch로 서버 크래시 방지) ────────────
     if (req.url?.startsWith('/api/assets/')) {
       // 공통 헬퍼 - assets/ 폴더 없으면 unity_project 또는 aegis repo 직접 사용
-      const ASSETS_DIR       = join(process.cwd(), '..', '..', 'assets')
       const _uaCandidates = [
         join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets'),
         join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
@@ -2424,8 +2460,13 @@ function createGitMiddleware(options: GitPluginOptions) {
         join(process.cwd(), '.git-repo-aegis', 'Client'),
         join(process.cwd(), '.git-repo-aegis'),
       ]
-      const UNITY_ASSETS_DIR = _uaCandidates.find(p => existsSync(p)) || _uaCandidates[0]
-      const idxPath          = join(ASSETS_DIR, '.asset_index.json')
+      const UNITY_ASSETS_DIR = (() => {
+        for (const c of _uaCandidates) {
+          if (existsSync(c) && existsSync(join(c, 'GameContents'))) return c
+        }
+        return _uaCandidates.find(p => existsSync(p)) || _uaCandidates[0]
+      })()
+      const idxPath = _getIdxPath()
 
       type AssetEntry = { path: string; name: string; ext: string; sizeKB: number }
 
@@ -2445,7 +2486,7 @@ function createGitMiddleware(options: GitPluginOptions) {
       /** relPath 기준으로 실제 파일 경로 해석 — 모든 후보 디렉터리 순회 */
       const resolveAssetFile = (relPath: string): string | null => {
         const norm = relPath.replace(/\//g, sep)
-        const tryDirs = [ASSETS_DIR, ..._uaCandidates]
+        const tryDirs = [..._uaCandidates]
         for (const d of tryDirs) {
           const p = join(d, norm)
           if (existsSync(p)) return p
@@ -2576,7 +2617,7 @@ function createGitMiddleware(options: GitPluginOptions) {
 
           if (!filePath) {
             const norm = pathParam.replace(/\//g, sep)
-            const tried = [ASSETS_DIR, ..._uaCandidates].map(d => `${join(d, norm)} → ${existsSync(join(d, norm)) ? '✓' : '✗'}`)
+            const tried = _uaCandidates.map(d => `${join(d, norm)} → ${existsSync(join(d, norm)) ? '✓' : '✗'}`)
             res.writeHead(404, { 'Content-Type': 'application/json' })
             res.end(JSON.stringify({ error: `Asset not found: ${pathParam}`, tried, hint: 'git clone이 완료되었는지 확인하세요.' }))
             return
@@ -2819,7 +2860,7 @@ function createGitMiddleware(options: GitPluginOptions) {
         if (req.url.startsWith('/api/assets/materials')) {
           const url2        = new URL(req.url, 'http://localhost')
           const fbxPathParam = url2.searchParams.get('fbxPath') || ''
-          const matIdxPath  = join(ASSETS_DIR, '.material_index.json')
+          const matIdxPath  = join(idxPath.replace(/[\\/][^\\/]+$/, ''), '.material_index.json')
 
           if (!existsSync(matIdxPath)) {
             sendJson(res, 404, { error: 'Material index not found. Run build_material_index.ps1 first.' })
@@ -7691,10 +7732,9 @@ function serverExecuteTool(
       const ext = String(input.ext ?? '').toLowerCase().replace(/^\./, '')
       if (!query) return { result: '검색어가 필요합니다.' }
       try {
-        const ASSETS_DIR = join(process.cwd(), '..', '..', 'assets')
-        const idxPath = join(ASSETS_DIR, '.asset_index.json')
-        if (!existsSync(idxPath)) return { result: '에셋 인덱스 없음. sync_assets.ps1 을 먼저 실행하세요.' }
-        let rawIdx = readFileSync(idxPath, 'utf-8')
+        const _idxP = _getIdxPath()
+        if (!existsSync(_idxP)) return { result: '에셋 인덱스 없음. 에셋 인덱싱 버튼을 눌러주세요.' }
+        let rawIdx = readFileSync(_idxP, 'utf-8')
         if (rawIdx.charCodeAt(0) === 0xFEFF) rawIdx = rawIdx.slice(1)
         const idx = JSON.parse(rawIdx) as { path: string; name: string; ext: string; sizeKB: number }[]
         let filtered = idx
@@ -7730,10 +7770,9 @@ function serverExecuteTool(
           }))
         } else {
           // 자동 검색 (에셋 인덱스에서)
-          const ASSETS_DIR2 = join(process.cwd(), '..', '..', 'assets')
-          const idxPath = join(ASSETS_DIR2, '.asset_index.json')
-          if (existsSync(idxPath)) {
-            let rawIdx = readFileSync(idxPath, 'utf-8')
+          const _idxP2 = _getIdxPath()
+          if (existsSync(_idxP2)) {
+            let rawIdx = readFileSync(_idxP2, 'utf-8')
             if (rawIdx.charCodeAt(0) === 0xFEFF) rawIdx = rawIdx.slice(1)
             const idx = JSON.parse(rawIdx) as { path: string; name: string; ext: string }[]
             // 모델 경로에서 키워드 추출
@@ -7792,9 +7831,9 @@ function serverExecuteTool(
 
         // 로컬 이미지 없으면 에셋 인덱스 PNG 폴백
         if (all.length === 0) {
-          const _aidxPath = join(process.cwd(), '..', '..', 'assets', '.asset_index.json')
-          if (existsSync(_aidxPath)) {
-            let raw = readFileSync(_aidxPath, 'utf-8')
+          const _aidxPath2 = _getIdxPath()
+          if (existsSync(_aidxPath2)) {
+            let raw = readFileSync(_aidxPath2, 'utf-8')
             if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
             const assetIdx = JSON.parse(raw) as { path: string; name: string; ext: string }[]
             for (const a of assetIdx.filter(x => x.ext === 'png')) {
