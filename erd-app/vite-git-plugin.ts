@@ -1166,7 +1166,7 @@ function createGitMiddleware(options: GitPluginOptions) {
         sendJson(res, 400, { error: 'CLAUDE_API_KEY 환경변수가 설정되지 않았습니다.' })
         return
       }
-      const rawBody = await readBody(req)
+      const rawBody = await readBody(req, 50 * 1024 * 1024)
       const skipKnowledge = req.headers['x-tm-knowledge'] === 'injected'
 
       // ── 널리지 자동 주입 (외부 도구용) ──
@@ -1360,7 +1360,7 @@ function createGitMiddleware(options: GitPluginOptions) {
         return
       }
 
-      const rawBody = await readBody(req)
+      const rawBody = await readBody(req, 50 * 1024 * 1024)
       let parsed: any
       try { parsed = JSON.parse(rawBody || '{}') } catch { sendJson(res, 400, { error: 'Invalid JSON body' }); return }
 
@@ -10072,9 +10072,14 @@ function createChatApiMiddleware(options: GitPluginOptions) {
 
       let body: { message?: string; session_id?: string; stream?: boolean; fast?: boolean; images?: Array<{ data: string; media_type?: string }> }
       try {
-        const raw = await readBody(req)
+        const raw = await readBody(req, 50 * 1024 * 1024) // 50MB — base64 이미지 포함 가능
         body = JSON.parse(raw || '{}')
-      } catch { sendJson(res, 400, { error: 'Invalid JSON body' }); return }
+      } catch (parseErr) {
+        const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr)
+        sLog('ERROR', `[chatApi] body parse error: ${errMsg}`)
+        sendJson(res, 400, { error: `Invalid request: ${errMsg}` })
+        return
+      }
 
       const userMessage = body.message?.trim()
       if (!userMessage) { sendJson(res, 400, { error: '"message" field is required' }); return }

@@ -1006,29 +1006,67 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 // ── Slack 파일에서 이미지 다운로드 → base64 ──
-async function downloadSlackImages(files, botToken) {
+async function downloadSlackImages(files, botToken, slackClient) {
   if (!files || files.length === 0) return [];
   const images = [];
-  const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+  const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
+  const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
   const MAX_SIZE = 20 * 1024 * 1024; // 20MB (Claude 제한)
 
-  for (const file of files) {
-    if (!IMAGE_TYPES.has(file.mimetype)) continue;
+  for (const rawFile of files) {
+    // 파일이 이미지인지 확인 (mimetype 또는 filetype으로)
+    const mime = rawFile.mimetype || '';
+    const ftype = (rawFile.filetype || '').toLowerCase();
+    if (!IMAGE_MIMES.has(mime) && !IMAGE_EXTS.has(ftype) && !mime.startsWith('image/')) continue;
+
+    console.log(`[Slack] 이미지 파일 감지: id=${rawFile.id} name=${rawFile.name} mime=${mime} ftype=${ftype} url_private=${!!rawFile.url_private} url_private_download=${!!rawFile.url_private_download}`);
+
+    // url_private이 없으면 files.info API로 조회
+    let file = rawFile;
+    if (!file.url_private && !file.url_private_download && file.id && slackClient) {
+      try {
+        console.log(`[Slack] url_private 없음 — files.info로 조회: ${file.id}`);
+        const infoResp = await slackClient.files.info({ file: file.id });
+        if (infoResp.ok && infoResp.file) {
+          file = infoResp.file;
+          console.log(`[Slack] files.info 성공: url_private=${!!file.url_private}`);
+        } else {
+          console.log(`[Slack] files.info 실패: ${JSON.stringify(infoResp.error || 'unknown')}`);
+        }
+      } catch (e) {
+        console.error(`[Slack] files.info 오류:`, e.message);
+      }
+    }
+
     if (file.size > MAX_SIZE) {
       console.log(`[Slack] 이미지 건너뜀 (크기 초과): ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
       continue;
     }
+
+    const downloadUrl = file.url_private_download || file.url_private;
+    if (!downloadUrl) {
+      console.log(`[Slack] 이미지 건너뜀 (URL 없음): ${file.name} — keys: ${Object.keys(file).join(',')}`);
+      continue;
+    }
+
     try {
-      const url = file.url_private_download || file.url_private;
-      if (!url) continue;
-      const resp = await fetch(url, {
+      const resp = await fetch(downloadUrl, {
         headers: { 'Authorization': `Bearer ${botToken}` },
       });
-      if (!resp.ok) { console.log(`[Slack] 이미지 다운로드 실패: ${file.name} (${resp.status})`); continue; }
+      if (!resp.ok) {
+        console.log(`[Slack] 이미지 다운로드 실패: ${file.name} (${resp.status} ${resp.statusText})`);
+        continue;
+      }
       const arrayBuf = await resp.arrayBuffer();
       const base64 = Buffer.from(arrayBuf).toString('base64');
-      images.push({ data: base64, media_type: file.mimetype, name: file.name });
-      console.log(`[Slack] 이미지 다운로드 완료: ${file.name} (${(arrayBuf.byteLength / 1024).toFixed(0)}KB)`);
+      const mediaType = IMAGE_MIMES.has(file.mimetype) ? file.mimetype
+        : ftype === 'jpg' || ftype === 'jpeg' ? 'image/jpeg'
+        : ftype === 'png' ? 'image/png'
+        : ftype === 'gif' ? 'image/gif'
+        : ftype === 'webp' ? 'image/webp'
+        : 'image/png';
+      images.push({ data: base64, media_type: mediaType, name: file.name });
+      console.log(`[Slack] 이미지 다운로드 완료: ${file.name} (${(arrayBuf.byteLength / 1024).toFixed(0)}KB, ${mediaType})`);
     } catch (e) {
       console.error(`[Slack] 이미지 다운로드 오류: ${file.name}`, e.message);
     }
@@ -1047,9 +1085,29 @@ async function handleMessage({ message, say, client, event }) {
   const userId = event?.user || message?.user || '';
   const userText = cleanSlackText(event?.text || message?.text || '');
 
-  // 이미지 첨부 파일 감지
-  const attachedFiles = event?.files || message?.files || [];
-  const hasImages = attachedFiles.some(f => f.mimetype?.startsWith('image/'));
+  // 이미지 첨부 파일 감지 (mimetype 또는 filetype으로 판별)
+  let attachedFiles = event?.files || message?.files || [];
+  const IMAGE_FILE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
+
+  // app_mention 이벤트에서 files가 누락될 수 있음 → conversations.history로 원본 메시지 조회
+  if (attachedFiles.length === 0 && currentTs && channel && client) {
+    try {
+      const histResp = await client.conversations.history({
+        channel, latest: currentTs, inclusive: true, limit: 1,
+      });
+      const origMsg = histResp.messages?.[0];
+      if (origMsg?.files && origMsg.files.length > 0) {
+        attachedFiles = origMsg.files;
+        console.log(`[Slack] conversations.history에서 파일 ${attachedFiles.length}개 복원`);
+      }
+    } catch (e) {
+      console.log(`[Slack] conversations.history 조회 실패 (파일 복원): ${e.message}`);
+    }
+  }
+
+  const hasImages = attachedFiles.some(f =>
+    f.mimetype?.startsWith('image/') || IMAGE_FILE_EXTS.has((f.filetype || '').toLowerCase())
+  );
 
   if (!userText && !hasImages) return;
 
@@ -1202,11 +1260,15 @@ async function handleMessage({ message, say, client, event }) {
     // ── 이미지 첨부 처리 ──
     let slackImages = [];
     if (hasImages) {
-      console.log(`[Slack] 이미지 ${attachedFiles.filter(f => f.mimetype?.startsWith('image/')).length}개 감지, 다운로드 중...`);
-      slackImages = await downloadSlackImages(attachedFiles, SLACK_BOT_TOKEN);
+      const imgFileCount = attachedFiles.filter(f => f.mimetype?.startsWith('image/') || ['png','jpg','jpeg','gif','webp'].includes((f.filetype||'').toLowerCase())).length;
+      console.log(`[Slack] 이미지 ${imgFileCount}개 감지, 다운로드 중...`);
+      slackImages = await downloadSlackImages(attachedFiles, SLACK_BOT_TOKEN, client);
       if (slackImages.length > 0) {
         const imgNames = slackImages.map(i => i.name).join(', ');
         enrichedMessage = enrichedMessage + `\n\n[첨부 이미지: ${imgNames}]`;
+        console.log(`[Slack] 이미지 ${slackImages.length}개 다운로드 성공 → API에 전송`);
+      } else {
+        console.log(`[Slack] 이미지 다운로드 결과: 0개 (감지 ${imgFileCount}개에서 모두 실패)`);
       }
     }
 
