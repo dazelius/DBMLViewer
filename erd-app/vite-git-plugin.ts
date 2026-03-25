@@ -536,7 +536,6 @@ function runGit(args: string[], cwd: string): string {
 // ── 서버 시작 시 에셋 인덱스 자동 빌드 (sync_assets.ps1 대체) ──
 function _buildAssetIndexIfNeeded() {
   const ASSETS_DIR = join(process.cwd(), '..', '..', 'assets')
-  const UNITY_ASSETS_DIR = join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets')
   const idxPath = join(ASSETS_DIR, '.asset_index.json')
 
   if (existsSync(idxPath)) {
@@ -549,10 +548,21 @@ function _buildAssetIndexIfNeeded() {
     } catch { /* continue to rebuild */ }
   }
 
-  if (!existsSync(UNITY_ASSETS_DIR)) {
-    sLog('WARN', '[AssetIndex] unity_project 폴더 없음 — 에셋 인덱스 빌드 스킵')
+  // 여러 가능한 Unity 에셋 경로를 순서대로 확인
+  const candidates = [
+    join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets'),
+    join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
+    join(process.cwd(), '.git-repo-aegis'),
+  ]
+  let UNITY_ASSETS_DIR = ''
+  for (const c of candidates) {
+    if (existsSync(c)) { UNITY_ASSETS_DIR = c; break }
+  }
+  if (!UNITY_ASSETS_DIR) {
+    sLog('WARN', `[AssetIndex] Unity 에셋 폴더 없음 — 후보: ${candidates.map(c => c.replace(process.cwd(), '.')).join(', ')}`)
     return
   }
+  sLog('INFO', `[AssetIndex] 에셋 경로: ${UNITY_ASSETS_DIR}`)
 
   sLog('INFO', '[AssetIndex] 에셋 인덱스 빌드 시작...')
   const t0 = Date.now()
@@ -2226,9 +2236,13 @@ function createGitMiddleware(options: GitPluginOptions) {
 
     // ── /api/assets/* : 에셋 엔드포인트 (try-catch로 서버 크래시 방지) ────────────
     if (req.url?.startsWith('/api/assets/')) {
-      // 공통 헬퍼 - assets/ 폴더 없으면 unity_project 직접 사용
+      // 공통 헬퍼 - assets/ 폴더 없으면 unity_project 또는 aegis repo 직접 사용
       const ASSETS_DIR       = join(process.cwd(), '..', '..', 'assets')
-      const UNITY_ASSETS_DIR = join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets')
+      const _uaCandidates = [
+        join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets'),
+        join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
+      ]
+      const UNITY_ASSETS_DIR = _uaCandidates.find(p => existsSync(p)) || _uaCandidates[0]
       const idxPath          = join(ASSETS_DIR, '.asset_index.json')
 
       type AssetEntry = { path: string; name: string; ext: string; sizeKB: number }
@@ -2312,9 +2326,14 @@ function createGitMiddleware(options: GitPluginOptions) {
       try {
         // ── /api/assets/index : 에셋 인덱스 검색 ─────────────────────────────
         if (req.url.startsWith('/api/assets/index')) {
-          const idx = loadIdx()
+          let idx = loadIdx()
           if (idx.length === 0) {
-            sendJson(res, 200, { results: [], total: 0, message: 'No asset index. Run sync_assets.ps1 first.' })
+            // 인덱스 없으면 즉시 빌드 시도
+            _buildAssetIndexIfNeeded()
+            idx = loadIdx()
+          }
+          if (idx.length === 0) {
+            sendJson(res, 200, { results: [], total: 0, message: 'No asset index. Unity 에셋 폴더를 찾을 수 없습니다.' })
             return
           }
           const url2     = new URL(req.url, 'http://localhost')
@@ -10870,8 +10889,8 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
   return {
     name: 'vite-git-plugin',
     configureServer(server) {
-      // 서버 시작 시 에셋 인덱스 자동 빌드 (백그라운드)
-      setTimeout(() => _buildAssetIndexIfNeeded(), 3000)
+      // 서버 시작 시 에셋 인덱스 자동 빌드 (git sync 완료 후 실행되도록 충분한 딜레이)
+      setTimeout(() => _buildAssetIndexIfNeeded(), 30_000)
 
       // /TableMaster/api/... → /api/... rewrite (Vite base 경로 안에서 API 호출 시)
       server.middlewares.use((req, _res, next) => {
@@ -10885,8 +10904,8 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
       server.middlewares.use(safeMiddleware('gitApi', createGitMiddleware(options)))
     },
     configurePreviewServer(server) {
-      // 서버 시작 시 에셋 인덱스 자동 빌드 (백그라운드)
-      setTimeout(() => _buildAssetIndexIfNeeded(), 3000)
+      // 서버 시작 시 에셋 인덱스 자동 빌드 (git sync 완료 후 실행되도록 충분한 딜레이)
+      setTimeout(() => _buildAssetIndexIfNeeded(), 30_000)
 
       // /TableMaster/api/... → /api/... rewrite
       server.middlewares.use((req, _res, next) => {
