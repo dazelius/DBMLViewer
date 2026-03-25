@@ -91,7 +91,8 @@ export function useAutoLoad() {
         if (finalAegisResp && finalAegisResp.ok) {
           try {
             const aegisData = await finalAegisResp.json() as { status?: string; commit?: string; branch?: string };
-            const r2status = (aegisData.status as 'cloned' | 'updated' | 'up-to-date') ?? 'up-to-date';
+            // 202 syncing 응답도 정상 처리 (백그라운드에서 sync 진행 중)
+            const r2status = (aegisData.status === 'syncing' ? 'up-to-date' : aegisData.status as 'cloned' | 'updated' | 'up-to-date') ?? 'up-to-date';
             setRepo2Done(r2status, aegisData.commit ?? '', aegisData.branch ?? BRANCH);
           } catch {
             setRepo2Error('응답 파싱 실패');

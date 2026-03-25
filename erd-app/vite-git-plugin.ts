@@ -5478,44 +5478,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
             sLog('INFO', `[git sync] repo=${repoParam} dir=${activeDir} cloned=${isCloned} branch=${branch} repoUrl=${repoUrl.replace(/\/\/[^@]+@/, '//***@')}`)
 
-            // 이미 clone 되어있고 빠르게 끝나는 경우: 동기 처리
+            // 이미 clone 되어있는 경우: 즉시 202 응답 후 백그라운드 fetch (504 방지)
             if (isCloned) {
-              let releaseLock: () => void = () => {}
-              _gitSyncLocks.set(activeDir, new Promise<void>(r => { releaseLock = r }))
+              const localHead = (() => { try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: activeDir, encoding: 'utf-8', timeout: 5000 }).trim() } catch { return '?' } })()
+              sendJson(res, 202, { status: 'syncing', message: 'Sync started in background', commit: localHead, repo: repoParam })
 
-              try {
-                _purgeGitLocks(activeDir)
-                await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
-                await runGitAsync(`git remote set-url origin "${authUrl}"`, activeDir)
-                await runGitAsync(`git fetch origin ${branch}`, activeDir)
-                const localHead = await runGitAsync('git rev-parse HEAD', activeDir)
-                const remoteHead = await runGitAsync(`git rev-parse origin/${branch}`, activeDir).catch(() => localHead)
+              ;(async () => {
+                let releaseLock: () => void = () => {}
+                _gitSyncLocks.set(activeDir, new Promise<void>(r => { releaseLock = r }))
+                try {
+                  _purgeGitLocks(activeDir)
+                  await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
+                  await runGitAsync(`git remote set-url origin "${authUrl}"`, activeDir)
+                  await runGitAsync(`git fetch origin ${branch}`, activeDir)
+                  const newLocalHead = await runGitAsync('git rev-parse HEAD', activeDir)
+                  const remoteHead = await runGitAsync(`git rev-parse origin/${branch}`, activeDir).catch(() => newLocalHead)
 
-                if (localHead === remoteHead) {
-                  sendJson(res, 200, { status: 'up-to-date', message: 'Already up to date', commit: localHead.substring(0, 8) })
-                } else {
-                  await runGitAsync(`git reset --hard origin/${branch}`, activeDir)
-                  const newHead = await runGitAsync('git rev-parse HEAD', activeDir)
-                  sendJson(res, 200, { status: 'updated', message: 'Pulled latest changes', commit: newHead.substring(0, 8) })
+                  if (newLocalHead !== remoteHead) {
+                    await runGitAsync(`git reset --hard origin/${branch}`, activeDir)
+                    const finalHead = await runGitAsync('git rev-parse --short HEAD', activeDir)
+                    sLog('INFO', `[git sync] 백그라운드 업데이트 완료 (${repoParam}): ${finalHead}`)
+                  } else {
+                    sLog('INFO', `[git sync] 이미 최신 (${repoParam}): ${newLocalHead.substring(0, 8)}`)
+                  }
+                } catch (syncErr: unknown) {
+                  const errMsg = syncErr instanceof Error ? syncErr.message : String(syncErr)
+                  sLog('ERROR', `[git sync] 백그라운드 fetch/pull 실패 (${repoParam}): ${errMsg}`)
+                } finally {
+                  _gitSyncLocks.delete(activeDir)
+                  releaseLock()
                 }
-              } catch (syncErr: unknown) {
-                const errMsg = syncErr instanceof Error ? syncErr.message : String(syncErr)
-                sLog('ERROR', `[git sync] fetch/pull 실패 (${repoParam}): ${errMsg}`)
-                sendJson(res, 500, {
-                  error: 'Git sync failed',
-                  detail: errMsg,
-                  repo: repoParam,
-                  branch,
-                  hint: errMsg.includes('Could not resolve host') ? '서버에서 GitLab에 접근할 수 없습니다 (네트워크/DNS).'
-                    : errMsg.includes('Authentication') || errMsg.includes('401') || errMsg.includes('403') ? 'GitLab 토큰이 만료되었거나 권한이 부족합니다.'
-                    : errMsg.includes('not found') || errMsg.includes('does not exist') ? `브랜치 '${branch}'가 존재하지 않습니다. 올바른 브랜치명을 확인하세요.`
-                    : errMsg.includes('index.lock') ? 'Git lock 파일 충돌 — 자동 정리 3회 시도 후에도 실패. 서버 재시작 또는 수동으로 .git/index.lock 삭제 필요.'
-                    : '서버 로그를 확인하세요.',
-                })
-              } finally {
-                _gitSyncLocks.delete(activeDir)
-                releaseLock()
-              }
+              })()
               return
             }
 

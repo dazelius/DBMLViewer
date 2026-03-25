@@ -1089,8 +1089,11 @@ async function handleMessage({ message, say, client, event }) {
   let attachedFiles = event?.files || message?.files || [];
   const IMAGE_FILE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 
-  // app_mention 이벤트에서 files가 누락될 수 있음 → conversations.history로 원본 메시지 조회
+  console.log(`[Slack:debug] handleMessage: text="${userText.slice(0,50)}" event.files=${event?.files?.length ?? 'undefined'} message.files=${message?.files?.length ?? 'undefined'} subtype=${event?.subtype || message?.subtype || 'none'} channel=${channel} ts=${currentTs}`);
+
+  // event.files / message.files 가 비어있으면 여러 방법으로 파일 복원 시도
   if (attachedFiles.length === 0 && currentTs && channel && client) {
+    // 방법 1: conversations.history — 해당 메시지의 원본 조회
     try {
       const histResp = await client.conversations.history({
         channel, latest: currentTs, inclusive: true, limit: 1,
@@ -1098,11 +1101,34 @@ async function handleMessage({ message, say, client, event }) {
       const origMsg = histResp.messages?.[0];
       if (origMsg?.files && origMsg.files.length > 0) {
         attachedFiles = origMsg.files;
-        console.log(`[Slack] conversations.history에서 파일 ${attachedFiles.length}개 복원`);
+        console.log(`[Slack:debug] conversations.history에서 파일 ${attachedFiles.length}개 복원`);
       }
     } catch (e) {
-      console.log(`[Slack] conversations.history 조회 실패 (파일 복원): ${e.message}`);
+      console.log(`[Slack:debug] conversations.history 실패: ${e.message}`);
     }
+
+    // 방법 2: conversations.replies — 스레드에서 최근 파일이 포함된 메시지 조회
+    if (attachedFiles.length === 0 && threadTs) {
+      try {
+        const repliesResp = await client.conversations.replies({
+          channel, ts: threadTs, limit: 10,
+        });
+        const msgs = repliesResp.messages || [];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].files && msgs[i].files.length > 0) {
+            attachedFiles = msgs[i].files;
+            console.log(`[Slack:debug] conversations.replies에서 파일 ${attachedFiles.length}개 복원 (msg ts=${msgs[i].ts})`);
+            break;
+          }
+        }
+      } catch (e) {
+        console.log(`[Slack:debug] conversations.replies 실패: ${e.message}`);
+      }
+    }
+  }
+
+  if (attachedFiles.length > 0) {
+    console.log(`[Slack:debug] 파일 목록: ${JSON.stringify(attachedFiles.map(f => ({ id: f.id, name: f.name, mimetype: f.mimetype, filetype: f.filetype, has_url: !!f.url_private })))}`);
   }
 
   const hasImages = attachedFiles.some(f =>
@@ -1816,17 +1842,44 @@ async function handleMessage({ message, say, client, event }) {
 
 // ── 이벤트 리스너 ──
 
+let _botUserId = '';
+
 // @DataMaster 멘션
 app.event('app_mention', async (args) => {
-  await handleMessage({ ...args, message: args.event });
+  const ev = args.event;
+  // files가 없으면 약간 대기 — message 이벤트(파일 포함)가 먼저 처리될 수 있도록
+  if (!ev.files || ev.files.length === 0) {
+    await new Promise(r => setTimeout(r, 500));
+  }
+  await handleMessage({ ...args, message: ev });
 });
 
-// DM (1:1 메시지)
+// DM + 채널 메시지 (파일 첨부 시 app_mention에 files가 누락될 수 있으므로 message 이벤트도 처리)
 app.event('message', async (args) => {
   const { event } = args;
-  // DM 채널만 처리 (im 타입)
+
+  // DM → 항상 처리
   if (event.channel_type === 'im') {
     await handleMessage({ ...args, message: event });
+    return;
+  }
+
+  // 채널 메시지: 파일이 첨부되고 봇 멘션이 포함된 경우만 처리
+  // (app_mention 이벤트에서 files가 누락되는 케이스 보완)
+  if (event.files && event.files.length > 0 && event.text) {
+    if (!_botUserId) {
+      try {
+        const authResp = await args.client.auth.test();
+        _botUserId = authResp.user_id || '';
+      } catch { /* ignore */ }
+    }
+    const hasBotMention = _botUserId
+      ? event.text.includes(`<@${_botUserId}>`)
+      : /datamaster/i.test(event.text);
+    if (hasBotMention) {
+      console.log(`[Slack:debug] message 이벤트에서 파일+멘션 감지 (files=${event.files.length})`);
+      await handleMessage({ ...args, message: event });
+    }
   }
 });
 
