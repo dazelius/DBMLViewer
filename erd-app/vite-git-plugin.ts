@@ -1254,10 +1254,11 @@ function createGitMiddleware(options: GitPluginOptions) {
         // Keep-alive 하트비트: Claude 응답 대기 중 Nginx 504 방지
         // SSE 주석(: keepalive)은 클라이언트 파서가 무시하므로 안전
         let heartbeatActive = true
+        try { res.write(': keepalive\n\n') } catch { /* ignore */ }
         const heartbeat = setInterval(() => {
           if (!heartbeatActive) return
           try { res.write(': keepalive\n\n') } catch { /* socket closed */ }
-        }, 15_000)
+        }, 5_000)
 
         const proxyReq = httpsRequest({
           hostname: 'api.anthropic.com',
@@ -1497,12 +1498,19 @@ function createGitMiddleware(options: GitPluginOptions) {
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
         'Access-Control-Allow-Origin': '*',
+        'X-Accel-Buffering': 'no',
       })
+      res.flushHeaders()
       presenceClients.add(res)
-      broadcastPresence()               // 새 접속자 알림
+      broadcastPresence()
+      // Nginx 504 방지: 주기적 하트비트
+      const presenceHb = setInterval(() => {
+        try { res.write(': keepalive\n\n') } catch { clearInterval(presenceHb) }
+      }, 15_000)
       req.on('close', () => {
+        clearInterval(presenceHb)
         presenceClients.delete(res)
-        broadcastPresence()             // 퇴장 알림
+        broadcastPresence()
       })
       return
     }
@@ -10227,8 +10235,14 @@ function createChatApiMiddleware(options: GitPluginOptions) {
           'X-Accel-Buffering': 'no',
         })
         res.socket?.setNoDelay(true)
+        res.socket?.setTimeout(0)
         res.flushHeaders()
         res.write(`event: session\ndata: ${JSON.stringify({ session_id: session.id })}\n\n`)
+
+        // Keep-alive 하트비트: Claude 응답/도구 실행 대기 중 Nginx 504 방지
+        const _chatHeartbeat = setInterval(() => {
+          try { res.write(': keepalive\n\n') } catch { /* socket closed */ }
+        }, 5_000)
 
         try {
           for (let i = 0; i < MAX_ITERATIONS; i++) {
@@ -10434,7 +10448,8 @@ function createChatApiMiddleware(options: GitPluginOptions) {
             }
           } catch { /* 이미 소켓 닫힘 */ }
         } finally {
-          _activeRequests.delete(session.id)  // 완료·에러 모두 해제
+          clearInterval(_chatHeartbeat)
+          _activeRequests.delete(session.id)
         }
         return
       }
