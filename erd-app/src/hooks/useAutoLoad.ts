@@ -63,29 +63,44 @@ export function useAutoLoad() {
         setSyncing();
         setRepo2Syncing();
 
+        const doAegisSync = () => fetch('/api/git/sync?repo=aegis', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ branch: BRANCH }),
+        }).catch(() => null);
+
         const [syncResult, aegisResp] = await Promise.all([
           gitSync(undefined, undefined, BRANCH),
-          fetch('/api/git/sync?repo=aegis', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ branch: BRANCH }),
-          }).catch(() => null),
+          doAegisSync(),
         ]);
         setDone(syncResult.status, syncResult.commit ?? '');
 
-        if (aegisResp && aegisResp.ok) {
+        // index.lock 오류 시 자동 재시도 (서버가 lock 정리 후 재시도)
+        let finalAegisResp = aegisResp;
+        if (finalAegisResp && !finalAegisResp.ok) {
           try {
-            const aegisData = await aegisResp.json() as { status?: string; commit?: string; branch?: string };
+            const body = await finalAegisResp.clone().json() as { detail?: string };
+            if (body.detail?.includes('index.lock')) {
+              console.warn('[AutoSync] aegis index.lock — 3초 후 재시도');
+              await new Promise(r => setTimeout(r, 3000));
+              finalAegisResp = await doAegisSync();
+            }
+          } catch { /* ignore parse error */ }
+        }
+
+        if (finalAegisResp && finalAegisResp.ok) {
+          try {
+            const aegisData = await finalAegisResp.json() as { status?: string; commit?: string; branch?: string };
             const r2status = (aegisData.status as 'cloned' | 'updated' | 'up-to-date') ?? 'up-to-date';
             setRepo2Done(r2status, aegisData.commit ?? '', aegisData.branch ?? BRANCH);
           } catch {
             setRepo2Error('응답 파싱 실패');
           }
         } else {
-          let errDetail = aegisResp ? `HTTP ${aegisResp.status}` : '연결 실패';
-          if (aegisResp && !aegisResp.ok) {
+          let errDetail = finalAegisResp ? `HTTP ${finalAegisResp.status}` : '연결 실패';
+          if (finalAegisResp && !finalAegisResp.ok) {
             try {
-              const errData = await aegisResp.json() as { error?: string; detail?: string; hint?: string };
+              const errData = await finalAegisResp.json() as { error?: string; detail?: string; hint?: string };
               errDetail = errData.detail || errData.hint || errData.error || errDetail;
               console.warn('[AutoSync] aegis sync error:', errData);
             } catch { /* ignore parse error */ }

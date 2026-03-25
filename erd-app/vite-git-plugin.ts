@@ -533,11 +533,69 @@ function runGit(args: string[], cwd: string): string {
   }
 }
 
+// ── 서버 시작 시 에셋 인덱스 자동 빌드 (sync_assets.ps1 대체) ──
+function _buildAssetIndexIfNeeded() {
+  const ASSETS_DIR = join(process.cwd(), '..', '..', 'assets')
+  const UNITY_ASSETS_DIR = join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets')
+  const idxPath = join(ASSETS_DIR, '.asset_index.json')
+
+  if (existsSync(idxPath)) {
+    try {
+      const age = Date.now() - statSync(idxPath).mtimeMs
+      if (age < 24 * 60 * 60 * 1000) {
+        sLog('INFO', `[AssetIndex] 기존 인덱스 사용 (${Math.round(age / 3600000)}h old)`)
+        return
+      }
+    } catch { /* continue to rebuild */ }
+  }
+
+  if (!existsSync(UNITY_ASSETS_DIR)) {
+    sLog('WARN', '[AssetIndex] unity_project 폴더 없음 — 에셋 인덱스 빌드 스킵')
+    return
+  }
+
+  sLog('INFO', '[AssetIndex] 에셋 인덱스 빌드 시작...')
+  const t0 = Date.now()
+
+  try {
+    if (!existsSync(ASSETS_DIR)) mkdirSync(ASSETS_DIR, { recursive: true })
+
+    const entries: { path: string; name: string; ext: string; sizeKB: number }[] = []
+    const walk = (dir: string, rel: string) => {
+      let items: string[]
+      try { items = readdirSync(dir) } catch { return }
+      for (const item of items) {
+        const full = join(dir, item)
+        const relPath = rel ? `${rel}/${item}` : item
+        try {
+          const st = statSync(full)
+          if (st.isDirectory()) {
+            walk(full, relPath)
+          } else {
+            const dot = item.lastIndexOf('.')
+            entries.push({
+              path: relPath,
+              name: dot > 0 ? item.slice(0, dot) : item,
+              ext: dot > 0 ? item.slice(dot + 1).toLowerCase() : '',
+              sizeKB: Math.round(st.size / 1024 * 100) / 100,
+            })
+          }
+        } catch { /* skip inaccessible files */ }
+      }
+    }
+    walk(UNITY_ASSETS_DIR, '')
+
+    writeFileSync(idxPath, JSON.stringify(entries))
+    sLog('INFO', `[AssetIndex] 완료: ${entries.length}개 파일, ${Date.now() - t0}ms`)
+  } catch (e) {
+    sLog('ERROR', `[AssetIndex] 빌드 실패: ${e}`)
+  }
+}
+
 function _purgeGitLocks(cwd: string) {
   const gitDir = join(cwd, '.git')
   if (!existsSync(gitDir)) return
-  const lockPatterns = ['index.lock', 'shallow.lock', 'HEAD.lock', 'FETCH_HEAD.lock']
-  // branch locks: scan refs/heads/
+  const lockPatterns = ['index.lock', 'shallow.lock', 'HEAD.lock', 'FETCH_HEAD.lock', 'config.lock']
   const refsDir = join(gitDir, 'refs', 'heads')
   if (existsSync(refsDir)) {
     try {
@@ -546,11 +604,45 @@ function _purgeGitLocks(cwd: string) {
       }
     } catch { /* non-critical */ }
   }
+
+  let anyLocked = false
   for (const lf of lockPatterns) {
     const p = join(gitDir, lf)
-    if (existsSync(p)) {
-      try { unlinkSync(p); sLog('WARN', `[git] Purged lock: ${lf}`) } catch { /* non-critical */ }
+    if (!existsSync(p)) continue
+    try {
+      unlinkSync(p)
+      sLog('WARN', `[git] Purged lock: ${lf}`)
+    } catch (e) {
+      anyLocked = true
+      sLog('WARN', `[git] Lock delete failed (${lf}): ${e instanceof Error ? e.message : e}`)
     }
+  }
+
+  if (anyLocked) {
+    _killOrphanedGitProcesses(cwd)
+    // 프로세스 종료 후 재시도
+    for (const lf of lockPatterns) {
+      const p = join(gitDir, lf)
+      if (!existsSync(p)) continue
+      try { unlinkSync(p); sLog('WARN', `[git] Purged lock after kill: ${lf}`) }
+      catch (e2) { sLog('ERROR', `[git] Lock STILL stuck (${lf}): ${e2 instanceof Error ? e2.message : e2}`) }
+    }
+  }
+}
+
+function _killOrphanedGitProcesses(_repoDir: string) {
+  const isWin = process.platform === 'win32'
+  try {
+    if (isWin) {
+      // Windows: taskkill /F /IM git.exe — 모든 git 프로세스 강제 종료
+      execFileSync('taskkill', ['/F', '/IM', 'git.exe'], { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' })
+      sLog('WARN', '[git] Killed all git.exe processes')
+    } else {
+      execFileSync('pkill', ['-9', '-f', 'git'], { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' })
+      sLog('WARN', '[git] Killed all git processes')
+    }
+  } catch {
+    // taskkill exits with error if no matching processes — that's fine
   }
 }
 
@@ -564,18 +656,21 @@ async function runGitAsync(cmd: string, cwd: string): Promise<string> {
       else resolve((stdout ?? '').trim())
     })
   })
-  try {
-    return await exec()
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    if (msg.includes('index.lock') || msg.includes('.lock')) {
-      sLog('WARN', `[git] Lock conflict on "${cmd.slice(0, 40)}…" — purging locks and retrying`)
-      _purgeGitLocks(cwd)
-      await new Promise(r => setTimeout(r, 500))
-      return exec()
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await exec()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if ((msg.includes('index.lock') || msg.includes('.lock')) && attempt < 2) {
+        sLog('WARN', `[git] Lock conflict (attempt ${attempt + 1}/3) on "${cmd.slice(0, 40)}…" — purging locks`)
+        _purgeGitLocks(cwd)
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)))
+        continue
+      }
+      throw e
     }
-    throw e
   }
+  throw new Error('unreachable')
 }
 
 function sendJson(res: ServerResponse, status: number, data: unknown) {
@@ -5414,7 +5509,7 @@ document.addEventListener('DOMContentLoaded', () => {
                   hint: errMsg.includes('Could not resolve host') ? '서버에서 GitLab에 접근할 수 없습니다 (네트워크/DNS).'
                     : errMsg.includes('Authentication') || errMsg.includes('401') || errMsg.includes('403') ? 'GitLab 토큰이 만료되었거나 권한이 부족합니다.'
                     : errMsg.includes('not found') || errMsg.includes('does not exist') ? `브랜치 '${branch}'가 존재하지 않습니다. 올바른 브랜치명을 확인하세요.`
-                    : errMsg.includes('index.lock') ? 'Git lock 파일 충돌. 잠시 후 재시도하세요.'
+                    : errMsg.includes('index.lock') ? 'Git lock 파일 충돌 — 자동 정리 3회 시도 후에도 실패. 서버 재시작 또는 수동으로 .git/index.lock 삭제 필요.'
                     : '서버 로그를 확인하세요.',
                 })
               } finally {
@@ -10777,6 +10872,9 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
   return {
     name: 'vite-git-plugin',
     configureServer(server) {
+      // 서버 시작 시 에셋 인덱스 자동 빌드 (백그라운드)
+      setTimeout(() => _buildAssetIndexIfNeeded(), 3000)
+
       // /TableMaster/api/... → /api/... rewrite (Vite base 경로 안에서 API 호출 시)
       server.middlewares.use((req, _res, next) => {
         if (req.url?.startsWith('/TableMaster/api/')) {
@@ -10789,6 +10887,9 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
       server.middlewares.use(safeMiddleware('gitApi', createGitMiddleware(options)))
     },
     configurePreviewServer(server) {
+      // 서버 시작 시 에셋 인덱스 자동 빌드 (백그라운드)
+      setTimeout(() => _buildAssetIndexIfNeeded(), 3000)
+
       // /TableMaster/api/... → /api/... rewrite
       server.middlewares.use((req, _res, next) => {
         if (req.url?.startsWith('/TableMaster/api/')) {
