@@ -5520,6 +5520,8 @@ document.addEventListener('DOMContentLoaded', () => {
                   } else {
                     sLog('INFO', `[git sync] 이미 최신 (${repoParam}): ${newLocalHead.substring(0, 8)}`)
                   }
+                  // aegis repo sync 완료 후 에셋 인덱스 자동 빌드
+                  if (isRepo2) _buildAssetIndexIfNeeded()
                 } catch (syncErr: unknown) {
                   const errMsg = syncErr instanceof Error ? syncErr.message : String(syncErr)
                   sLog('ERROR', `[git sync] 백그라운드 fetch/pull 실패 (${repoParam}): ${errMsg}`)
@@ -5544,6 +5546,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
                 const head = await runGitAsync('git rev-parse --short HEAD', activeDir)
                 sLog('INFO', `Background clone complete: ${activeDir} @ ${head}`)
+                // aegis repo clone 완료 후 에셋 인덱스 자동 빌드
+                if (isRepo2) _buildAssetIndexIfNeeded()
                 runGitAsync(`git fetch --deepen=200 origin ${branch}`, activeDir)
                   .catch(() => {})
                   .finally(() => { _gitSyncLocks.delete(activeDir); releaseLock() })
@@ -10889,8 +10893,8 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
   return {
     name: 'vite-git-plugin',
     configureServer(server) {
-      // 서버 시작 시 에셋 인덱스 자동 빌드 (git sync 완료 후 실행되도록 충분한 딜레이)
-      setTimeout(() => _buildAssetIndexIfNeeded(), 30_000)
+      // 서버 시작 시 에셋 인덱스 자동 빌드 (이미 클론된 경우 즉시, 아니면 git sync 완료 후 자동 트리거)
+      setTimeout(() => _buildAssetIndexIfNeeded(), 5_000)
 
       // /TableMaster/api/... → /api/... rewrite (Vite base 경로 안에서 API 호출 시)
       server.middlewares.use((req, _res, next) => {
@@ -10904,8 +10908,8 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
       server.middlewares.use(safeMiddleware('gitApi', createGitMiddleware(options)))
     },
     configurePreviewServer(server) {
-      // 서버 시작 시 에셋 인덱스 자동 빌드 (git sync 완료 후 실행되도록 충분한 딜레이)
-      setTimeout(() => _buildAssetIndexIfNeeded(), 30_000)
+      // 서버 시작 시 에셋 인덱스 자동 빌드 (이미 클론된 경우 즉시, 아니면 git sync 완료 후 자동 트리거)
+      setTimeout(() => _buildAssetIndexIfNeeded(), 5_000)
 
       // /TableMaster/api/... → /api/... rewrite
       server.middlewares.use((req, _res, next) => {
