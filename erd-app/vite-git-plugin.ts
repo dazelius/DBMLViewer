@@ -2442,13 +2442,14 @@ function createGitMiddleware(options: GitPluginOptions) {
         }
       }
 
-      /** relPath 기준으로 실제 파일 경로 해석 (assets/ 없으면 unity_project/ fallback) */
+      /** relPath 기준으로 실제 파일 경로 해석 — 모든 후보 디렉터리 순회 */
       const resolveAssetFile = (relPath: string): string | null => {
         const norm = relPath.replace(/\//g, sep)
-        const p1 = join(ASSETS_DIR, norm)
-        if (existsSync(p1)) return p1
-        const p2 = join(UNITY_ASSETS_DIR, norm)
-        if (existsSync(p2)) return p2
+        const tryDirs = [ASSETS_DIR, ..._uaCandidates]
+        for (const d of tryDirs) {
+          const p = join(d, norm)
+          if (existsSync(p)) return p
+        }
         return null
       }
 
@@ -2574,8 +2575,10 @@ function createGitMiddleware(options: GitPluginOptions) {
           }
 
           if (!filePath) {
-            res.writeHead(404, { 'Content-Type': 'text/plain' })
-            res.end(`Asset not found: ${pathParam}\n.meta 파일만 존재할 수 있습니다. git clone이 완료되었는지 확인하세요.`)
+            const norm = pathParam.replace(/\//g, sep)
+            const tried = [ASSETS_DIR, ..._uaCandidates].map(d => `${join(d, norm)} → ${existsSync(join(d, norm)) ? '✓' : '✗'}`)
+            res.writeHead(404, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: `Asset not found: ${pathParam}`, tried, hint: 'git clone이 완료되었는지 확인하세요.' }))
             return
           }
 
