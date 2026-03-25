@@ -386,11 +386,25 @@ function tgaToPng(tgaBuf: Buffer): Buffer | null {
 const _require = createRequire(import.meta.url)
 
 // ── 로컬 이미지 디렉토리 (sync_ui_images.ps1 로 동기화) ──────────────────────
-const IMAGES_DIR = 'C:\\TableMaster\\images'
+// 로컬 우선, 없으면 aegis repo 폴백
+const _IMG_CANDIDATES = [
+  'C:\\TableMaster\\images',
+  join(process.cwd(), '..', '..', 'images'),
+]
+const IMAGES_DIR = _IMG_CANDIDATES.find(p => existsSync(p)) || _IMG_CANDIDATES[0]
+console.log(`[Init] IMAGES_DIR: ${IMAGES_DIR} (exists: ${existsSync(IMAGES_DIR)})`)
 
 // ── C# 소스코드 디렉토리 (sync_cs_files.ps1 로 동기화) ───────────────────────
-const CODE_DIR = 'C:\\TableMaster\\code'
-const CODE_INDEX_PATH = join(CODE_DIR, '.code_index.json')
+// 로컬 우선, 없으면 aegis repo에서 C# 소스 직접 탐색
+const _CODE_CANDIDATES = [
+  'C:\\TableMaster\\code',
+  join(process.cwd(), '..', '..', 'code'),
+  join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
+  join(process.cwd(), '.git-repo-aegis'),
+]
+const CODE_DIR = _CODE_CANDIDATES.find(p => existsSync(p)) || _CODE_CANDIDATES[0]
+const CODE_INDEX_PATH = join(_CODE_CANDIDATES[0], '.code_index.json')
+console.log(`[Init] CODE_DIR: ${CODE_DIR} (exists: ${existsSync(CODE_DIR)})`)
 
 interface CodeIndexEntry {
   path: string        // 상대 경로
@@ -411,17 +425,21 @@ function loadCodeIndex(): CodeIndexEntry[] {
   } catch { return [] }
 }
 
+const _SKIP_CODE_DIRS = new Set(['.git', 'node_modules', 'Library', 'Temp', 'Logs', 'obj', 'bin', 'Builds', 'Build', 'Packages'])
 function walkCode(dir: string, base: string, results: { name: string; path: string; relPath: string }[]) {
   if (!existsSync(dir)) return
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name)
-    const rel = base ? `${base}/${entry.name}` : entry.name
-    if (entry.isDirectory()) {
-      walkCode(full, rel, results)
-    } else if (entry.isFile() && extname(entry.name).toLowerCase() === '.cs') {
-      results.push({ name: entry.name, path: full, relPath: rel })
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (_SKIP_CODE_DIRS.has(entry.name)) continue
+      const full = join(dir, entry.name)
+      const rel = base ? `${base}/${entry.name}` : entry.name
+      if (entry.isDirectory()) {
+        walkCode(full, rel, results)
+      } else if (entry.isFile() && extname(entry.name).toLowerCase() === '.cs') {
+        results.push({ name: entry.name, path: full, relPath: rel })
+      }
     }
-  }
+  } catch { /* permission or read error — skip */ }
 }
 
 // ── 출판 문서 저장 디렉토리 ──────────────────────────────────────────────────
@@ -1509,11 +1527,30 @@ function createGitMiddleware(options: GitPluginOptions) {
     }
 
     // ── /api/images/list : 이미지 목록 검색 ────────────────────────────────
+    // 로컬 IMAGES_DIR 우선, 없으면 에셋 인덱스(.asset_index.json)에서 PNG 폴백
     if (req.url?.startsWith('/api/images/list')) {
       const url = new URL(req.url, 'http://localhost')
       const q = (url.searchParams.get('q') || '').toLowerCase().trim()
       const all: { name: string; path: string; relPath: string }[] = []
       walkImages(IMAGES_DIR, '', all)
+
+      // 로컬 이미지 없으면 에셋 인덱스 PNG 폴백
+      if (all.length === 0) {
+        try {
+          const _aidxDir = join(process.cwd(), '..', '..', 'assets')
+          const _aidxPath = join(_aidxDir, '.asset_index.json')
+          if (existsSync(_aidxPath)) {
+            let raw = readFileSync(_aidxPath, 'utf-8')
+            if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
+            const assetIdx = JSON.parse(raw) as { path: string; name: string; ext: string }[]
+            const pngs = assetIdx.filter(a => a.ext === 'png')
+            for (const p of pngs) {
+              all.push({ name: p.name, path: p.path, relPath: p.path })
+            }
+            sLog('INFO', `[images/list] 로컬 이미지 없음 → 에셋 인덱스 PNG ${pngs.length}개 사용`)
+          }
+        } catch { /* ignore */ }
+      }
 
       // Atlas 폴더는 Unity 스프라이트시트라 브라우저에서 아이콘처럼 안 보임 → 후순위로
       const isAtlas = (f: { relPath: string }) => f.relPath.toLowerCase().startsWith('atlas/')
@@ -1534,49 +1571,108 @@ function createGitMiddleware(options: GitPluginOptions) {
     }
 
     // ── /api/images/file : 이미지 파일 서빙 ────────────────────────────────
+    // 로컬 IMAGES_DIR 우선 → smart fallback → 에셋 디렉토리 폴백
     if (req.url?.startsWith('/api/images/file')) {
       const url = new URL(req.url, 'http://localhost')
       const relPath = url.searchParams.get('path') || ''
       if (!relPath) { res.writeHead(400); res.end('path required'); return }
-      // 경로 traversal 방지
-      const safePath = join(IMAGES_DIR, relPath.replace(/\.\./g, ''))
-      if (!safePath.startsWith(IMAGES_DIR) || !existsSync(safePath)) {
-        // 경로를 찾지 못했을 때 파일명만으로 smart fallback
-        const basename = relPath.split('/').pop() ?? ''
-        if (basename) {
-          const all: { name: string; path: string; relPath: string }[] = []
-          walkImages(IMAGES_DIR, '', all)
-          const match = all.find(f => f.name.toLowerCase() === basename.toLowerCase().replace(/\.png$/i, ''))
-            ?? all.find(f => f.relPath.toLowerCase().endsWith('/' + basename.toLowerCase()))
-          if (match) {
-            const buf = readFileSync(match.path)
-            res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600', 'X-Resolved-Path': match.relPath })
-            res.end(buf)
-            return
-          }
-        }
-        res.writeHead(404); res.end('not found'); return
+
+      const serveFile = (filePath: string, resolvedPath?: string) => {
+        const buf = readFileSync(filePath)
+        const ext = filePath.toLowerCase()
+        const ct = ext.endsWith('.jpg') || ext.endsWith('.jpeg') ? 'image/jpeg'
+          : ext.endsWith('.gif') ? 'image/gif'
+          : ext.endsWith('.webp') ? 'image/webp'
+          : 'image/png'
+        const headers: Record<string, string> = { 'Content-Type': ct, 'Cache-Control': 'public, max-age=3600' }
+        if (resolvedPath) headers['X-Resolved-Path'] = resolvedPath
+        res.writeHead(200, headers)
+        res.end(buf)
       }
-      const buf = readFileSync(safePath)
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' })
-      res.end(buf)
-      return
+
+      // 1) 로컬 IMAGES_DIR 직접 경로
+      const safePath = join(IMAGES_DIR, relPath.replace(/\.\./g, ''))
+      if (safePath.startsWith(IMAGES_DIR) && existsSync(safePath)) {
+        serveFile(safePath)
+        return
+      }
+
+      // 2) 로컬 IMAGES_DIR 내 smart fallback (파일명 매칭)
+      const basename = relPath.split('/').pop() ?? ''
+      if (basename && existsSync(IMAGES_DIR)) {
+        const all: { name: string; path: string; relPath: string }[] = []
+        walkImages(IMAGES_DIR, '', all)
+        const match = all.find(f => f.name.toLowerCase() === basename.toLowerCase().replace(/\.png$/i, ''))
+          ?? all.find(f => f.relPath.toLowerCase().endsWith('/' + basename.toLowerCase()))
+        if (match) { serveFile(match.path, match.relPath); return }
+      }
+
+      // 3) 에셋 디렉토리 폴백 (플랫폼: aegis repo 클론)
+      const _assetCandidates = [
+        join(process.cwd(), '..', '..', 'assets'),
+        join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets'),
+        join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
+        join(process.cwd(), '.git-repo-aegis'),
+      ]
+      for (const baseDir of _assetCandidates) {
+        const norm = relPath.replace(/\.\./g, '').replace(/\//g, sep)
+        const candidate = join(baseDir, norm)
+        if (existsSync(candidate)) { serveFile(candidate, relPath); return }
+      }
+
+      res.writeHead(404); res.end('not found'); return
     }
 
     // ── /api/images/smart : 파일명으로 스마트 검색 (폴더 몰라도 됨) ──────────────
+    // 로컬 IMAGES_DIR 우선, 없으면 에셋 인덱스+디렉토리 폴백
     if (req.url?.startsWith('/api/images/smart')) {
       const url = new URL(req.url, 'http://localhost')
       const name = (url.searchParams.get('name') || '').toLowerCase().replace(/\.png$/i, '')
       if (!name) { res.writeHead(400); res.end('name required'); return }
+
+      // 1) 로컬 IMAGES_DIR
       const all: { name: string; path: string; relPath: string }[] = []
       walkImages(IMAGES_DIR, '', all)
-      // 정확한 파일명 우선, 부분 일치 후순위
-      const match = all.find(f => f.name.toLowerCase() === name)
+      let match = all.find(f => f.name.toLowerCase() === name)
         ?? all.find(f => f.name.toLowerCase().includes(name))
         ?? all.find(f => name.includes(f.name.toLowerCase()))
+
+      // 2) 에셋 인덱스 폴백
+      if (!match) {
+        try {
+          const _aidxPath = join(process.cwd(), '..', '..', 'assets', '.asset_index.json')
+          if (existsSync(_aidxPath)) {
+            let raw = readFileSync(_aidxPath, 'utf-8')
+            if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
+            const assetIdx = JSON.parse(raw) as { path: string; name: string; ext: string }[]
+            const pngs = assetIdx.filter(a => a.ext === 'png')
+            const assetMatch = pngs.find(a => a.name.toLowerCase() === name)
+              ?? pngs.find(a => a.name.toLowerCase().includes(name))
+            if (assetMatch) {
+              // 에셋 디렉토리에서 실제 파일 찾기
+              const _asCandidates = [
+                join(process.cwd(), '..', '..', 'assets'),
+                join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets'),
+                join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
+                join(process.cwd(), '.git-repo-aegis'),
+              ]
+              for (const baseDir of _asCandidates) {
+                const candidate = join(baseDir, assetMatch.path.replace(/\//g, sep))
+                if (existsSync(candidate)) {
+                  match = { name: assetMatch.name, path: candidate, relPath: assetMatch.path }
+                  break
+                }
+              }
+            }
+          }
+        } catch { /* ignore */ }
+      }
+
       if (!match) { res.writeHead(404); res.end('not found'); return }
       const buf = readFileSync(match.path)
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600', 'X-Resolved-Path': match.relPath })
+      const ext = match.path.toLowerCase()
+      const ct = ext.endsWith('.jpg') || ext.endsWith('.jpeg') ? 'image/jpeg' : 'image/png'
+      res.writeHead(200, { 'Content-Type': ct, 'Cache-Control': 'public, max-age=3600', 'X-Resolved-Path': match.relPath })
       res.end(buf)
       return
     }
@@ -7576,24 +7672,39 @@ function serverExecuteTool(
     }
 
     // ── find_resource_image ──
+    // 로컬 IMAGES_DIR 우선, 없으면 에셋 인덱스에서 PNG 폴백
     case 'find_resource_image': {
       const query = String(input.query ?? '').toLowerCase()
       if (!query) return { result: '검색어가 필요합니다.' }
       try {
         const all: { name: string; path: string; relPath: string }[] = []
         walkImages(IMAGES_DIR, '', all)
+
+        // 로컬 이미지 없으면 에셋 인덱스 PNG 폴백
+        if (all.length === 0) {
+          const _aidxPath = join(process.cwd(), '..', '..', 'assets', '.asset_index.json')
+          if (existsSync(_aidxPath)) {
+            let raw = readFileSync(_aidxPath, 'utf-8')
+            if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
+            const assetIdx = JSON.parse(raw) as { path: string; name: string; ext: string }[]
+            for (const a of assetIdx.filter(x => x.ext === 'png')) {
+              all.push({ name: a.name, path: a.path, relPath: a.path })
+            }
+          }
+        }
+
         const results = all.filter(f => f.name.toLowerCase().includes(query)).slice(0, 30)
         if (results.length === 0) return { result: `"${query}" 이미지 없음 (전체 ${all.length}개 중)` }
+        const tmUrl = options.tableMasterUrl || getTableMasterUrl()
         return {
           result: results.map(r => {
-            const tmUrl = options.tableMasterUrl || getTableMasterUrl()
             const url = `${tmUrl}/api/images/file?path=${encodeURIComponent(r.relPath)}`
             return `${r.name} → ${url}`
           }).join('\n') + `\n\n총 ${results.length}개. 아티팩트에 삽입할 때: <img src="위의URL" style="max-width:100%">`,
-          data: { total: results.length, images: results.map(r => {
-            const tmUrl = options.tableMasterUrl || getTableMasterUrl()
-            return { name: r.name, relPath: r.relPath, url: `${tmUrl}/api/images/file?path=${encodeURIComponent(r.relPath)}` }
-          }) }
+          data: { total: results.length, images: results.map(r => ({
+            name: r.name, relPath: r.relPath,
+            url: `${tmUrl}/api/images/file?path=${encodeURIComponent(r.relPath)}`,
+          })) }
         }
       } catch (e) {
         return { result: `이미지 검색 오류: ${e instanceof Error ? e.message : String(e)}` }
