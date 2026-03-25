@@ -2338,6 +2338,9 @@ function createGitMiddleware(options: GitPluginOptions) {
       const _uaCandidates = [
         join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets'),
         join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
+        join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis'),
+        join(process.cwd(), '.git-repo-aegis', 'Client'),
+        join(process.cwd(), '.git-repo-aegis'),
       ]
       const UNITY_ASSETS_DIR = _uaCandidates.find(p => existsSync(p)) || _uaCandidates[0]
       const idxPath          = join(ASSETS_DIR, '.asset_index.json')
@@ -2771,14 +2774,29 @@ function createGitMiddleware(options: GitPluginOptions) {
         // ?path= : UNITY_ASSETS_DIR 기준 상대 경로 (예: GameContents, GameContents/Character)
         if (req.url.startsWith('/api/assets/browse')) {
           const url2      = new URL(req.url, 'http://localhost')
-          const pathParam = (url2.searchParams.get('path') || 'GameContents').replace(/\\/g, '/')
+          const pathParam = (url2.searchParams.get('path') || '').replace(/\\/g, '/')
           const normPath  = pathParam.replace(/^\/+/, '').replace(/\/+$/, '')
-          const targetDir = normPath
+          let targetDir = normPath
             ? join(UNITY_ASSETS_DIR, ...normPath.split('/'))
             : UNITY_ASSETS_DIR
 
+          // 경로를 찾지 못하면 후보 경로들을 순회하며 시도
+          if (!existsSync(targetDir) && normPath) {
+            for (const cand of _uaCandidates) {
+              const alt = join(cand, ...normPath.split('/'))
+              if (existsSync(alt)) { targetDir = alt; break }
+            }
+          }
+
           if (!existsSync(targetDir)) {
-            sendJson(res, 404, { error: `Directory not found: ${pathParam}` })
+            // 루트 요청인데 UNITY_ASSETS_DIR 자체가 없으면 → 진단 정보
+            const diagnosis = _uaCandidates.map(c => `${c.replace(process.cwd(), '.')} → ${existsSync(c) ? '✓' : '✗'}`).join('\n')
+            sendJson(res, 200, {
+              path: normPath || '(root)',
+              dirs: [],
+              files: [],
+              error: `Unity 에셋 디렉토리를 찾을 수 없습니다.\n\n확인된 경로:\n${diagnosis}`,
+            })
             return
           }
 

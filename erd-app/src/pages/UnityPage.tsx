@@ -781,14 +781,29 @@ export default function UnityPage() {
     return () => clearTimeout(t);
   }, [searchQuery]);
 
-  // 루트 디렉토리 로드
+  // 루트 디렉토리 로드 (GameContents 우선, 없으면 루트 폴백)
   useEffect(() => {
     fetchDir('GameContents')
-      .then(({ dirs }) => {
-        setRootDirs(dirs.map(d => ({ name: d.name, path: d.path })));
+      .then(({ dirs, files }) => {
+        if (dirs.length > 0 || files.length > 0) {
+          setRootDirs(dirs.map(d => ({ name: d.name, path: d.path })));
+        } else {
+          // GameContents 없음 → 루트에서 시도
+          return fetchDir('').then(({ dirs: rootDirs }) => {
+            setRootDirs(rootDirs.map(d => ({ name: d.name, path: d.path })));
+            setSelectedDir('');
+          });
+        }
         setRootLoaded(true);
       })
-      .catch(() => setRootLoaded(true));
+      .catch(() => {
+        // GameContents 자체가 404 → 루트로 폴백
+        fetchDir('').then(({ dirs }) => {
+          setRootDirs(dirs.map(d => ({ name: d.name, path: d.path })));
+          setSelectedDir('');
+          setRootLoaded(true);
+        }).catch(() => setRootLoaded(true));
+      });
   }, []);
 
   // 파일 열기
@@ -944,19 +959,19 @@ export default function UnityPage() {
             PROJECT
           </div>
 
-          {/* GameContents 루트 */}
+          {/* 프로젝트 루트 */}
           <div
-            onClick={() => setSelectedDir('GameContents')}
+            onClick={() => setSelectedDir(selectedDir === '' ? '' : 'GameContents')}
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
               padding: '4px 8px', cursor: 'pointer',
-              background: selectedDir === 'GameContents' ? 'rgba(99,102,241,0.15)' : 'transparent',
-              borderLeft: selectedDir === 'GameContents' ? '2px solid #818cf8' : '2px solid transparent',
-              color: selectedDir === 'GameContents' ? '#e2e8f0' : '#94a3b8',
+              background: (selectedDir === 'GameContents' || selectedDir === '') ? 'rgba(99,102,241,0.15)' : 'transparent',
+              borderLeft: (selectedDir === 'GameContents' || selectedDir === '') ? '2px solid #818cf8' : '2px solid transparent',
+              color: (selectedDir === 'GameContents' || selectedDir === '') ? '#e2e8f0' : '#94a3b8',
             }}
           >
             <FolderIcon open />
-            <span>GameContents</span>
+            <span>{selectedDir === '' ? 'Assets (Root)' : 'GameContents'}</span>
           </div>
 
           {/* 서브 디렉토리 트리 */}
