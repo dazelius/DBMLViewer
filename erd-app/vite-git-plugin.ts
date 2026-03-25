@@ -588,19 +588,26 @@ function _buildAssetIndexIfNeeded() {
   try {
     if (!existsSync(ASSETS_DIR)) mkdirSync(ASSETS_DIR, { recursive: true })
 
-    const entries: { path: string; name: string; ext: string; sizeKB: number }[] = []
+    const entries: { path: string; name: string; ext: string; sizeKB: number; lfs?: boolean }[] = []
+    const _realFiles = new Set<string>()
+    const _metaFiles: string[] = []
+    const _SKIP_DIRS = new Set(['.git', 'Library', 'Temp', 'Logs', 'obj', 'Builds', 'Packages'])
     const walk = (dir: string, rel: string) => {
       let items: string[]
       try { items = readdirSync(dir) } catch { return }
       for (const item of items) {
+        if (_SKIP_DIRS.has(item)) continue
         const full = join(dir, item)
         const relPath = rel ? `${rel}/${item}` : item
         try {
           const st = statSync(full)
           if (st.isDirectory()) {
             walk(full, relPath)
+          } else if (item.endsWith('.meta')) {
+            _metaFiles.push(relPath)
           } else {
             const dot = item.lastIndexOf('.')
+            _realFiles.add(relPath)
             entries.push({
               path: relPath,
               name: dot > 0 ? item.slice(0, dot) : item,
@@ -613,11 +620,69 @@ function _buildAssetIndexIfNeeded() {
     }
     walk(UNITY_ASSETS_DIR, '')
 
+    // .meta만 있고 실제 파일이 없는 경우 → LFS 미다운로드 에셋의 가상 엔트리 생성
+    let lfsCount = 0
+    for (const metaPath of _metaFiles) {
+      const realPath = metaPath.replace(/\.meta$/, '')
+      if (_realFiles.has(realPath)) continue
+      const fileName = realPath.split('/').pop() || ''
+      const dot = fileName.lastIndexOf('.')
+      if (dot <= 0) continue
+      const ext = fileName.slice(dot + 1).toLowerCase()
+      // 유용한 에셋만 가상 엔트리로 추가 (Unity 내부 파일 제외)
+      if (['png', 'jpg', 'jpeg', 'tga', 'fbx', 'wav', 'mp3', 'ogg', 'prefab', 'unity', 'cs', 'asset', 'mat', 'shader', 'anim', 'controller'].includes(ext)) {
+        entries.push({
+          path: realPath,
+          name: dot > 0 ? fileName.slice(0, dot) : fileName,
+          ext,
+          sizeKB: 0,
+          lfs: true,
+        })
+        lfsCount++
+      }
+    }
+    if (lfsCount > 0) sLog('INFO', `[AssetIndex] LFS 가상 엔트리 ${lfsCount}개 추가 (실제 파일 미존재, .meta로 추론)`)
+
     writeFileSync(idxPath, JSON.stringify(entries))
-    sLog('INFO', `[AssetIndex] 완료: ${entries.length}개 파일, ${Date.now() - t0}ms`)
+    sLog('INFO', `[AssetIndex] 완료: ${entries.length}개 파일 (실제 ${_realFiles.size} + LFS ${lfsCount}), ${Date.now() - t0}ms`)
   } catch (e) {
     sLog('ERROR', `[AssetIndex] 빌드 실패: ${e}`)
   }
+}
+
+/** Git LFS에서 특정 파일을 on-demand pull하여 실제 파일 경로 반환 (없으면 null) */
+function _tryLfsPull(relPath: string, unityAssetsDir: string): string | null {
+  // .git-repo-aegis 내부에서만 LFS pull 가능
+  const aegisDir = join(process.cwd(), '.git-repo-aegis')
+  if (!existsSync(join(aegisDir, '.git'))) return null
+
+  // UNITY_ASSETS_DIR 기준으로 aegis repo 내 상대 경로 계산
+  const norm = relPath.replace(/\\/g, '/')
+  const fullPath = join(unityAssetsDir, norm.replace(/\//g, sep))
+  const metaPath = fullPath + '.meta'
+
+  // .meta 파일이 있으면 실제 에셋이 LFS에 있을 가능성
+  if (!existsSync(metaPath)) return null
+
+  // aegis repo 기준 상대 경로 계산
+  const repoRelPath = fullPath.replace(aegisDir + sep, '').replace(/\\/g, '/')
+
+  try {
+    sLog('INFO', `[LFS] on-demand pull: ${repoRelPath}`)
+    execFileSync('git', ['lfs', 'pull', '--include', repoRelPath], {
+      cwd: aegisDir,
+      encoding: 'utf-8',
+      timeout: 30_000,
+      stdio: 'pipe',
+    })
+    if (existsSync(fullPath)) {
+      sLog('INFO', `[LFS] pull 성공: ${repoRelPath}`)
+      return fullPath
+    }
+  } catch (e) {
+    sLog('WARN', `[LFS] pull 실패 (${repoRelPath}): ${e instanceof Error ? e.message : e}`)
+  }
+  return null
 }
 
 function _purgeGitLocks(cwd: string) {
@@ -1620,6 +1685,11 @@ function createGitMiddleware(options: GitPluginOptions) {
         if (existsSync(candidate)) { serveFile(candidate, relPath); return }
       }
 
+      // 4) Git LFS on-demand pull
+      const _uaDirImg = _assetCandidates.find(p => existsSync(p)) || _assetCandidates[2]
+      const lfsPulled = _tryLfsPull(relPath, _uaDirImg)
+      if (lfsPulled) { serveFile(lfsPulled, relPath); return }
+
       res.writeHead(404); res.end('not found'); return
     }
 
@@ -2484,9 +2554,15 @@ function createGitMiddleware(options: GitPluginOptions) {
             if (found) filePath = resolveAssetFile(found.path)
           }
 
+          // 3) 파일 없지만 .meta 존재 → Git LFS pull 시도
+          if (!filePath) {
+            const _lfsPulled = _tryLfsPull(pathParam, UNITY_ASSETS_DIR)
+            if (_lfsPulled) filePath = _lfsPulled
+          }
+
           if (!filePath) {
             res.writeHead(404, { 'Content-Type': 'text/plain' })
-            res.end(`Asset not found: ${pathParam}\nbuild_asset_index.ps1 을 실행하여 인덱스를 생성하세요.`)
+            res.end(`Asset not found: ${pathParam}\n.meta 파일은 있지만 실제 에셋이 다운로드되지 않았을 수 있습니다 (Git LFS).`)
             return
           }
 
