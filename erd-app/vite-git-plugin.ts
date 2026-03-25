@@ -650,39 +650,47 @@ function _buildAssetIndexIfNeeded() {
   }
 }
 
-/** Git LFS에서 특정 파일을 on-demand pull하여 실제 파일 경로 반환 (없으면 null) */
-function _tryLfsPull(relPath: string, unityAssetsDir: string): string | null {
-  // .git-repo-aegis 내부에서만 LFS pull 가능
+/** aegis repo 클론 상태 진단 */
+function _diagAegisRepo(): { cloned: boolean; hasGit: boolean; totalFiles: number; realFiles: number; metaOnly: number; sampleDirs: string[] } {
   const aegisDir = join(process.cwd(), '.git-repo-aegis')
-  if (!existsSync(join(aegisDir, '.git'))) return null
+  const hasGit = existsSync(join(aegisDir, '.git'))
+  if (!hasGit) return { cloned: false, hasGit: false, totalFiles: 0, realFiles: 0, metaOnly: 0, sampleDirs: [] }
 
-  // UNITY_ASSETS_DIR 기준으로 aegis repo 내 상대 경로 계산
-  const norm = relPath.replace(/\\/g, '/')
-  const fullPath = join(unityAssetsDir, norm.replace(/\//g, sep))
-  const metaPath = fullPath + '.meta'
-
-  // .meta 파일이 있으면 실제 에셋이 LFS에 있을 가능성
-  if (!existsSync(metaPath)) return null
-
-  // aegis repo 기준 상대 경로 계산
-  const repoRelPath = fullPath.replace(aegisDir + sep, '').replace(/\\/g, '/')
-
+  let totalFiles = 0, realFiles = 0, metaOnly = 0
+  const sampleDirs: string[] = []
   try {
-    sLog('INFO', `[LFS] on-demand pull: ${repoRelPath}`)
-    execFileSync('git', ['lfs', 'pull', '--include', repoRelPath], {
-      cwd: aegisDir,
-      encoding: 'utf-8',
-      timeout: 30_000,
-      stdio: 'pipe',
-    })
-    if (existsSync(fullPath)) {
-      sLog('INFO', `[LFS] pull 성공: ${repoRelPath}`)
-      return fullPath
+    const topEntries = readdirSync(aegisDir, { withFileTypes: true })
+    for (const e of topEntries) {
+      if (e.isDirectory() && e.name !== '.git') sampleDirs.push(e.name)
     }
-  } catch (e) {
-    sLog('WARN', `[LFS] pull 실패 (${repoRelPath}): ${e instanceof Error ? e.message : e}`)
-  }
-  return null
+
+    // Client/Project_Aegis/Assets 하위 파일 샘플링
+    const assetsDir = [
+      join(aegisDir, 'Client', 'Project_Aegis', 'Assets'),
+      join(aegisDir, 'Client', 'Project_Aegis'),
+      join(aegisDir, 'Client'),
+      aegisDir,
+    ].find(p => existsSync(p)) || aegisDir
+
+    const sampleWalk = (dir: string, depth: number) => {
+      if (depth > 3 || totalFiles > 500) return
+      try {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (entry.name === '.git') continue
+          const full = join(dir, entry.name)
+          if (entry.isDirectory()) { sampleWalk(full, depth + 1) }
+          else {
+            totalFiles++
+            if (entry.name.endsWith('.meta')) metaOnly++
+            else realFiles++
+          }
+        }
+      } catch { /* skip */ }
+    }
+    sampleWalk(assetsDir, 0)
+  } catch { /* ignore */ }
+
+  return { cloned: true, hasGit, totalFiles, realFiles, metaOnly, sampleDirs }
 }
 
 function _purgeGitLocks(cwd: string) {
@@ -1685,11 +1693,6 @@ function createGitMiddleware(options: GitPluginOptions) {
         if (existsSync(candidate)) { serveFile(candidate, relPath); return }
       }
 
-      // 4) Git LFS on-demand pull
-      const _uaDirImg = _assetCandidates.find(p => existsSync(p)) || _assetCandidates[2]
-      const lfsPulled = _tryLfsPull(relPath, _uaDirImg)
-      if (lfsPulled) { serveFile(lfsPulled, relPath); return }
-
       res.writeHead(404); res.end('not found'); return
     }
 
@@ -2497,17 +2500,24 @@ function createGitMiddleware(options: GitPluginOptions) {
         // ── /api/assets/rebuild : 에셋 인덱스 강제 리빌드 ───────────────────
         if (req.url.startsWith('/api/assets/rebuild')) {
           sLog('INFO', '[AssetIndex] 수동 리빌드 요청')
+          const diag = _diagAegisRepo()
           // 기존 인덱스 삭제 → 강제 재빌드
           if (existsSync(idxPath)) {
             try { unlinkSync(idxPath) } catch { /* ignore */ }
           }
           _buildAssetIndexIfNeeded()
           const idx = loadIdx()
+          const realCount = idx.filter((a) => !(a as Record<string, unknown>).lfs).length
+          const virtualCount = idx.length - realCount
           sendJson(res, 200, {
-            success: true,
+            success: idx.length > 0,
             count: idx.length,
+            realFiles: realCount,
+            virtualEntries: virtualCount,
+            diagnosis: diag,
+            unityAssetsDir: UNITY_ASSETS_DIR,
             message: idx.length > 0
-              ? `에셋 인덱스 리빌드 완료: ${idx.length}개 파일`
+              ? `인덱스 완료: ${realCount}개 실제 파일 + ${virtualCount}개 가상 (.meta 추론)` + (virtualCount > realCount ? '\n⚠️ .meta만 있는 파일이 많습니다. git clone이 완료되지 않았을 수 있습니다.' : '')
               : '에셋 폴더를 찾을 수 없습니다. aegis 저장소를 먼저 동기화하세요.',
           })
           return
@@ -2554,15 +2564,9 @@ function createGitMiddleware(options: GitPluginOptions) {
             if (found) filePath = resolveAssetFile(found.path)
           }
 
-          // 3) 파일 없지만 .meta 존재 → Git LFS pull 시도
-          if (!filePath) {
-            const _lfsPulled = _tryLfsPull(pathParam, UNITY_ASSETS_DIR)
-            if (_lfsPulled) filePath = _lfsPulled
-          }
-
           if (!filePath) {
             res.writeHead(404, { 'Content-Type': 'text/plain' })
-            res.end(`Asset not found: ${pathParam}\n.meta 파일은 있지만 실제 에셋이 다운로드되지 않았을 수 있습니다 (Git LFS).`)
+            res.end(`Asset not found: ${pathParam}\n.meta 파일만 존재할 수 있습니다. git clone이 완료되었는지 확인하세요.`)
             return
           }
 
