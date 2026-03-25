@@ -1688,8 +1688,8 @@ function buildSystemPrompt(
     lines.push('- 질문에 대한 답변, 데이터 조회 결과 등은 텍스트로 충분합니다. 선제적으로 아티팩트를 만들지 마세요.');
     lines.push('');
     lines.push('⭐ 아티팩트 생성 시에는 **반드시** search_published_artifacts로 유사한 기존 문서를 먼저 검색하세요!');
-    lines.push('- 유사한 기존 아티팩트가 있으면 → **반드시 [문서제목](/api/p/아티팩트_id) 형식 인라인 링크 포함**하여 사용자에게 제안');
-    lines.push('- 예: "기존에 [AEGIS 캐릭터 종합 데이터 시트](/api/p/aegis_character_sheet) 문서가 있습니다. 갱신할까요?"');
+    lines.push('- 유사한 기존 아티팩트가 있으면 → **반드시 [문서제목](./api/p/아티팩트_id) 형식 인라인 링크 포함**하여 사용자에게 제안');
+    lines.push('- 예: "기존에 [AEGIS 캐릭터 종합 데이터 시트](./api/p/aegis_character_sheet) 문서가 있습니다. 갱신할까요?"');
     lines.push('- 사용자가 "갱신/수정/업데이트" 요청 시 → get_published_artifact로 기존 HTML 가져와서 create_artifact로 수정본 생성');
     lines.push('- 사용자가 기존 아티팩트를 언급/링크하면 → get_published_artifact로 가져와서 수정');
     lines.push('- 🔴 예외: edit_game_data / add_game_data_rows (바이브테이블링) 결과는 절대 아티팩트로 만들지 마세요! "정리/요약" 명목도 금지! 다운로드 링크가 결과물.');
@@ -4840,8 +4840,8 @@ function showTab(id){
             const artifacts = data2.data?.artifacts ?? [];
             tc = { kind: 'knowledge', action: 'read', name: '기존 문서 검색', content: resultStr, duration } as KnowledgeResult;
             if (artifacts.length > 0) {
-              resultStr += '\n\n⚠️ 기존 문서를 사용자에게 언급할 때 반드시 인라인 링크 포함: [문서제목](/api/p/아티팩트_id)';
-              resultStr += '\n예: [' + artifacts[0].title + '](/api/p/' + artifacts[0].id + ')';
+              resultStr += '\n\n⚠️ 기존 문서를 사용자에게 언급할 때 반드시 인라인 링크 포함: [문서제목](./api/p/아티팩트_id)';
+              resultStr += '\n예: [' + artifacts[0].title + '](./api/p/' + artifacts[0].id + ')';
               resultStr += '\n수정하려면 get_published_artifact(artifact_id)로 HTML을 가져온 후 create_artifact로 수정본 생성.';
             }
           } catch (e) {

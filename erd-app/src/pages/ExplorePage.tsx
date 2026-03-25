@@ -238,8 +238,8 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
   };
   const handleDragEnd = () => setDragging(false);
 
-  const docUrl = `/api/p/${meta.id}`;
-  const fullUrl = `${window.location.origin}${docUrl}`;
+  const docUrl = `./api/p/${meta.id}`;
+  const fullUrl = new URL(docUrl, window.location.href).href;
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -373,7 +373,7 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
           style={{ color: 'var(--text-secondary)' }}
           onClick={(e) => {
             e.stopPropagation();
-            navigator.clipboard.writeText(`${window.location.origin}/api/p/${meta.id}`);
+            navigator.clipboard.writeText(new URL(`./api/p/${meta.id}`, window.location.href).href);
             setCtxMenu(null);
           }}
         >
@@ -390,7 +390,7 @@ function DocCard({ meta, isSelected, onSelect, onDelete, onMove, folders, viewMo
           style={{ color: 'var(--text-secondary)' }}
           onClick={(e) => {
             e.stopPropagation();
-            window.open(`/api/p/${meta.id}`, '_blank');
+            window.open(new URL(`./api/p/${meta.id}`, window.location.href).href, '_blank');
             setCtxMenu(null);
           }}
         >
@@ -1283,7 +1283,7 @@ function DocPreviewPanel({ doc, docHtml }: {
           </span>
         )}
         <a
-          href={`/api/p/${doc.id}`}
+          href={new URL(`./api/p/${doc.id}`, window.location.href).href}
           target="_blank"
           rel="noopener noreferrer"
           className="ml-auto text-[10px] flex items-center gap-1 hover:opacity-80"

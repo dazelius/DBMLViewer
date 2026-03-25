@@ -4111,7 +4111,7 @@ function ArtifactSidePanel({
       });
       const data = await res.json() as { id?: string; url?: string; error?: string };
       if (data.error) throw new Error(data.error);
-      const url = `${origin}${data.url}`;
+      const url = new URL('.' + (data.url ?? ''), window.location.href).href;
       setPublishedUrl(url);
       setPublishState('done');
       onPublished?.(url); // 부모에 URL 전달 → savedArtifacts에 저장
