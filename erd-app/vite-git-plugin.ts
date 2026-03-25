@@ -406,6 +406,15 @@ const CODE_DIR = _CODE_CANDIDATES.find(p => existsSync(p)) || _CODE_CANDIDATES[0
 const CODE_INDEX_PATH = join(_CODE_CANDIDATES[0], '.code_index.json')
 console.log(`[Init] CODE_DIR: ${CODE_DIR} (exists: ${existsSync(CODE_DIR)})`)
 
+const _GUIDES_CANDIDATES = [
+  join(CODE_DIR, '_guides'),
+  join(process.cwd(), '_guides'),
+  join(__dirname, '_guides'),
+  'C:\\TableMaster\\code\\_guides',
+]
+const GUIDES_DIR = _GUIDES_CANDIDATES.find(p => existsSync(p)) || _GUIDES_CANDIDATES[0]
+console.log(`[Init] GUIDES_DIR: ${GUIDES_DIR} (exists: ${existsSync(GUIDES_DIR)})`)
+
 interface CodeIndexEntry {
   path: string        // 상대 경로
   name: string        // 파일명
@@ -1943,7 +1952,7 @@ function createGitMiddleware(options: GitPluginOptions) {
         if (!schema || !Array.isArray(schema.tables)) {
           sendJson(res, 400, { error: 'schema.tables required' }); return
         }
-        const guidesDir = join(CODE_DIR, '_guides')
+        const guidesDir = GUIDES_DIR
         if (!existsSync(guidesDir)) mkdirSync(guidesDir, { recursive: true })
 
         // ── 도메인 키워드 그루핑 ──────────────────────────────────────────────
@@ -2063,7 +2072,7 @@ function createGitMiddleware(options: GitPluginOptions) {
 
     // ── /api/guides/list : 전체 가이드 목록 (코드 + DB) ──────────────────────
     if (req.url?.startsWith('/api/guides/list')) {
-      const guidesDir = join(CODE_DIR, '_guides')
+      const guidesDir = GUIDES_DIR
       if (!existsSync(guidesDir)) { sendJson(res, 200, { guides: [] }); return }
       const files = readdirSync(guidesDir)
         .filter(f => f.endsWith('.md'))
@@ -2081,13 +2090,13 @@ function createGitMiddleware(options: GitPluginOptions) {
     if (req.url?.startsWith('/api/guides/read')) {
       const url = new URL(req.url, 'http://localhost')
       const name = (url.searchParams.get('name') || '_DB_OVERVIEW').replace(/[^a-zA-Z0-9_\-]/g, '')
-      const guidesDir = join(CODE_DIR, '_guides')
+      const guidesDir = GUIDES_DIR
       const guidePath = join(guidesDir, `${name}.md`)
       if (!existsSync(guidePath)) {
         const available = existsSync(guidesDir)
           ? readdirSync(guidesDir).filter(f => f.endsWith('.md')).map(f => f.replace('.md', ''))
           : []
-        sendJson(res, 404, { error: `Guide '${name}' not found`, available }); return
+        sendJson(res, 200, { name, content: '', available, hint: available.length === 0 ? '가이드 미생성' : `'${name}' 없음` }); return
       }
       const MAX = 200 * 1024
       let content = readFileSync(guidePath, 'utf-8')
@@ -2100,7 +2109,7 @@ function createGitMiddleware(options: GitPluginOptions) {
 
     // ── /api/code/guides : 가이드 파일 목록 ────────────────────────────────────
     if (req.url?.startsWith('/api/code/guides')) {
-      const guidesDir = join(CODE_DIR, '_guides')
+      const guidesDir = GUIDES_DIR
       if (!existsSync(guidesDir)) {
         sendJson(res, 200, { guides: [], message: 'No guides found. Run generate_code_guides.ps1 first.' })
         return
@@ -2120,18 +2129,18 @@ function createGitMiddleware(options: GitPluginOptions) {
     if (req.url?.startsWith('/api/code/guide')) {
       const url = new URL(req.url, 'http://localhost')
       const name = (url.searchParams.get('name') || '_OVERVIEW').replace(/[^a-zA-Z0-9_\-]/g, '')
-      const guidesDir = join(CODE_DIR, '_guides')
+      const guidesDir = GUIDES_DIR
       const guidePath = join(guidesDir, `${name}.md`)
 
       if (!existsSync(guidePath)) {
-        // 유사한 이름 찾기
         const available = existsSync(guidesDir)
           ? readdirSync(guidesDir).filter(f => f.endsWith('.md')).map(f => f.replace('.md', ''))
           : []
-        sendJson(res, 404, {
-          error: `Guide '${name}' not found`,
+        sendJson(res, 200, {
+          name,
+          content: '',
           available,
-          hint: 'Run generate_code_guides.ps1 to generate guides',
+          hint: available.length === 0 ? '가이드가 아직 생성되지 않았습니다.' : `'${name}' 가이드 없음. 사용 가능: ${available.join(', ')}`,
         })
         return
       }
@@ -7845,7 +7854,7 @@ function serverExecuteTool(
     // ── read_guide ──
     case 'read_guide': {
       const guideName = String(input.name ?? '').trim()
-      const guidesDir = join(CODE_DIR, '_guides')
+      const guidesDir = GUIDES_DIR
       try {
         if (!guideName) {
           // 전체 목록

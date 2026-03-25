@@ -1,0 +1,248 @@
+# DB 스키마 개요
+
+- 테이블: 100개 | 컬럼: 1208개 | 관계(FK): 127개 | Enum: 123개
+
+## 도메인별 테이블
+
+### Misc
+- **BattleModeInfo** — 배틀모드 테이블 (컬럼 40개)
+- **BattlePassUI** — 배틀 패스의 UI 설정 테이블 (컬럼 7개)
+- **BattlePass** — 배틀 패스의 메인 테이블 (컬럼 12개)
+- **BotActionDecision** — 봇 액션 사용 결정 (컬럼 8개)
+- **BotActionStat** — 봇 ���동/정확도 스탯 (컬럼 18개)
+- **BotBattleMovement** — 봇 전투 이동 패턴 (컬럼 10개)
+- **BotCondition** — 봇 조건 정의 (컬럼 5개)
+- **BotData** — 봇 캐릭터 데이터 (컬럼 18개)
+- **BotEscapeTarget** — 봇 후퇴 대상 선택 (컬럼 9개)
+- **BotMoveDecision** — 봇 이동 결정 로직 (컬럼 11개)
+- **BotSensor** — 봇 센서/시야 설정 (컬럼 22개)
+- **BotShotAmount** — 봇 사격량 결정 (컬럼 5개)
+- **BotShotSelector** — 봇 사격/장전 결정 (컬럼 8개)
+- **BotStepPoint** — 봇 스텝 포인트 데이터 (컬럼 16개)
+- **BotTargetSelector** — 봇 적 선택 우선순위 (컬럼 7개)
+- **CardPresetEnhance** — 강화 패시브 묶음과 등장 가중치 관리 (컬럼 11개)
+- **CardPresetTactical** — 전술 패시브 묶음과 등장 가중치 관리 (컬럼 12개)
+- **CardSynergy** — 전술 패시브 시너지 (컬럼 9개)
+- **Card** — 강화/전술 패시브의 정의 및 기본 특성 (컬럼 11개)
+- **ClanBadgePart** — 클랜 배지 테이블 (컬럼 8개)
+- **ClanRole** — 클랜 직위별 권한 설정 테이블 (컬럼 4개)
+- **CommonConfig** — 공용 테이블 (컬럼 2개)
+- **ContentUnlock** — 콘텐츠 언락 테이블 (컬럼 11개)
+- **Currency** — 재화 테이블 (컬럼 5개)
+- **DamageModTag** — DamageModTag의 적용에 관한 정보 (컬럼 4개)
+- **Effect** — 이펙트 테이블 (컬럼 4개)
+- **Enum** — Enum 테이블 (컬럼 3개)
+- **Event** — 이벤트의 메인 테이블 (컬럼 16개)
+- **Immune** — 특정 StatusEffect가 걸리지 않는 면역 목록 테이블 (컬럼 3개)
+- **Interactable** — 상호작용 테이블 (컬럼 27개)
+- **LobbyUI** — 로비 UI 테이블 (컬럼 7개)
+- **Mark** — 마크(Mark)의 기본 정보 (컬럼 1개)
+- **Model** — 모델(프리펩) 테이블 (컬럼 8개)
+- **Module** — 모듈 테이블 (컬럼 14개)
+- **NetworkObject** — Network Object 테이블 (컬럼 3개)
+- **Option** — 게임 옵션 테이블 (컬럼 11개)
+- **PerkEffect** — 퍽 효과 테이블 (컬럼 8개)
+- **Perk** — 퍽 테이블 (컬럼 12개)
+- **Ping** — 인게임 핑 (컬럼 9개)
+- **ProjectileSkin** — 투사체 스킨 테이블 (컬럼 5개)
+- **Projectile** — 투사체 메인 테이블 (컬럼 25개)
+- **Ranking** — 시즌 랭킹 (컬럼 5개)
+- **SkinResource** — 스킨 리소스 테이블 (컬럼 5개)
+- **StatusEffectFunction** — StatusEffect 적용 효과 (컬럼 6개)
+- **StatusEffectGroup** — StatusEffect 그룹 정의 (컬럼 8개)
+- **StatusEffect** — StatusEffect의 최상위 테이블 (컬럼 18개)
+- **Stat** — 스탯의 기본 정보 (컬럼 6개)
+- **Tier** — 티어 테이블 (컬럼 16개)
+- **Title** — 칭호 아이템 (컬럼 4개)
+
+### Character
+- **CharacterAppearance** — 캐릭터 스킨, 모델, 외형 (컬럼 15개)
+- **CharacterClass** — 캐릭터 클래스에 대한 데이터 (컬럼 4개)
+- **CharacterGearSet** — 캐릭터의 기본 기어(장비) 세트 (컬럼 7개)
+- **CharacterLevel** — 캐릭터 경험치 테이블 (컬럼 2개)
+- **CharacterPassiveSet** — 캐릭터 스킨, 모델, 외형 (컬럼 2개)
+- **CharacterPingSound** — 캐릭터 핑 사운드 (컬럼 3개)
+- **CharacterSkin** — 스킨 테이블 (컬럼 12개)
+- **CharacterStat** — 캐릭터 기초 스탯 (컬럼 116개)
+- **Character** — 캐릭터 데이터의 최상위 테이블 (컬럼 14개)
+
+### Skill
+- **BotSkillDecision** — 봇 스킬 사용 결정 (컬럼 16개)
+- **ModulePassiveEffect** — 모듈 패시브 효과 테이블 (컬럼 8개)
+- **ModulePassiveProperty** — 모듈 패시브 조건 테이블 (컬럼 15개)
+- **PassiveEffect** — 패시브 효과 테이블 (컬럼 7개)
+- **PassiveProperty** — 패시브 조건 테이블 (컬럼 15개)
+- **Passive** — 패시브 테이블 (컬럼 17개)
+- **SkillCondition** — 스킬 조건 테이블 (컬럼 4개)
+- **SkillExecuteEffect** — 스킬 실행 효과 테이블 (컬럼 15개)
+- **SkillExecuteRange** — 스킬 실행 범위 테이블 (컬럼 16개)
+- **SkillExecuteResultDisplay** — 스킬 실행 반응 연출 테이블 (컬럼 17개)
+- **SkillExecute** — 스킬 실행 테이블 (컬럼 9개)
+- **SkillSet** — 스킬 묶음 테이블 (컬럼 3개)
+- **SkillSummon** — 스킬 소환 테이블 (컬럼 8개)
+- **SkillTrans** — 스킬 전환 테이블 (컬럼 10개)
+- **SkillUI** — 스킬 UI 테이블 (컬럼 5개)
+- **Skill** — 스킬 테이블 (컬럼 82개)
+
+### Weapon
+- **WeaponSelfStat** — 방패 자체 스탯 (내구력 관련) (컬럼 14개)
+- **WeaponSkin** — 무기 스킨 테이블 (컬럼 14개)
+- **WeaponStatDisplay** — UI 무기 스탯 표시 테이블 (컬럼 3개)
+- **WeaponStat** — 총기 테이블 (컬럼 82개)
+- **Weapon** — 무기 테이블 (컬럼 38개)
+
+### Item
+- **ConsumableItem** — 소모품 아이템 테이블 (컬럼 8개)
+- **Gear** — 장비 테이블 (컬럼 8개)
+- **ItemDataName** — 아이템 타입의 enum 이 참조해야 하는 ref 이름 (컬럼 2개)
+- **ModuleItem** — 스킬 UI 테이블 (컬럼 3개)
+
+### Stage
+- **ClanPermissionGroup** — 클랜의 권한 그룹 테이블 (컬럼 2개)
+- **MapInfo** — Map 테이블 (컬럼 17개)
+- **MapObjectStat** — 스탯의 기본 정보 (컬럼 5개)
+- **MapObject** — Map Object 테이블 (컬럼 15개)
+- **MissionSet** — 미션의 상세 정의 테이블 (컬럼 16개)
+
+### Quest
+- **AchievementLevel** — 업적 레벨 경험치 테이블 (컬럼 4개)
+- **Achievement** — 업적의 메인 테이블 (컬럼 3개)
+
+### Shop
+- **BattlePassReward** — 배틀 패스의 보상 설정 테이블 (컬럼 5개)
+- **InitialRewardTable** — 칭호 아이템 (컬럼 4개)
+- **Reward** — 보상 테이블 (컬럼 4개)
+- **ShopProductGroup** — 상품 그룹 테이블 (컬럼 10개)
+- **Shop** — 상점 테이블 (컬럼 7개)
+
+### User
+- **AccountLevel** — 계정 경험치 테이블 (컬럼 2개)
+- **ProfileBanner** — 프로필 배너 아이템 (컬럼 6개)
+- **ProfileFrame** — 프로필 테두리 아이템 (컬럼 6개)
+- **ProfileIcon** — 프로필 아이콘 아이템 (컬럼 6개)
+- **SplashDamageProfile** — 스플래쉬 대미지 거리 감쇠 프로파일용 파라미터 (컬럼 5개)
+
+## Enum 목록
+- **enum_type**: enum_value
+- **EAchievementType**: None, Account, Character
+- **EAimAssistTargetType**: None, Ally, Enemy, All
+- **EAimMode**: None, Aim, Hip, Ads, ScopeAds
+- **EAmmoType**: None, Laser, Bullet
+- **EArmorSlot**: None, Chest, Head
+- **EAutoFireConditionType**: None, ADS, Always
+- **EAutoFireTargetType**: None, Ally, Enemy, All
+- **EAvailableTag**: None, Aero
+- **EBadgePartType**: None, Emblem, Frame
+- **EBattleType**: None, PointCapture, TeamDeathmatch, NeutralPointCapture, PayloadEscort, FreeForAll, Clash
+- **EBotTargetSelectorType**: None, EnemyCanCount, EnemyCanMove, EnemyCanAttack, SelfAttackerCanAttack
+- **EBotSpecialPattern**: None, WaitAndAttack, PatrolAndAttack
+- **EBotActionType**: None, StateHipFire, StateAiming, SetWeaponMain, SetWeaponSub
+- **EBotCheckPointType**: None, Always, MoveEndAndTimer, MoveEndOrTimer
+- **EBotConditionType**: None, CountAllyAtBase, CountAllyInCombat, CountAllyInDist, CountAllyInDistInForward, CountAllyInDistInBackward, PctAllyHpInDist, PctAllyLostHpIntervalInDist, CountAllyHitIntervalInDist, CountAllyTankInDist...
+- **EBotMoveDecisionTarget**: None, Base, NearestConditionalAlly, NearestConditionalFWDAlly, NearestFWDWayPoint, NearestRWDWayPoint, NearestNextStepPoint, NearestBeforeStepPoint
+- **EBotSkillDecisionCondType**: None, Required, Disabled, Bonus
+- **EBotTargetType**: None, Self, PartyHpLowestNearBy, PartyInCombatNearest, AllyHpLowestNearBy, AllyNearest, AllyTankNearest, AllyDamageNearest, AllySupportNearest, EnemyMainTarget...
+- **EBotType**: None, Normal, Prey, Creep
+- **EBotStepPointType**: Normal, StartingPointOffense, StartingPointDefense, OccupiedTerritory
+- **ECardEffectType**: None, AddPassive, AddStatusEffect, AddPerk
+- **ECardPositionType**: None, All, Offence, Defence
+- **ECardSynergyType**: None, Alpha, Beta, Gamma, Special
+- **ECardType**: None, Tactical, Instant, Enhance
+- **ECharacterClass**: None, Damage, Support, Tank, Creep
+- **ECharacterRotationMode**: None, OrientRotationToMovement, OrientRotationToCamera
+- **ECharacterSkinPart**: None, Boots, FacePaint, Head, Mask, Pants, Shirt
+- **ECharacterStance**: None, Stand, Crouch
+- **ECharacterType**: None, Monster, Player, SkillObject, Bot
+- **ECheckCondition**: None, SkillEnd, NotMaxEnValue, EnGreaterOrEqual
+- **ECheckPoint**: None, Always, MoveEndOrTimer
+- **ECheckTransType**: None, PlayWait, CheckPlay, PlayHold, LoopEnd
+- **EClanPermissionType**: None, CanDelegateMaster, CanDisbandClan, CanRenameClan, CanChangeClanBadge, CanEditNotice, CanChangeSettings, CanAppointManager, CanKickManager, CanKickMember...
+- **EClanRoleType**: None, Master, Manager, ActingMaster, BasicMember
+- **EClearConditionType**: None, AccountLv, CharacterLv
+- **EComparisonOp**: None, Equal, Less, LessOrEqual, Greater, GreaterOrEqual, NotEqual
+- **EConsumableType**: None, AccountExp, CharacterExp, AchievementExp, BattlePassExp, RankPoint, LadderPoint
+- **EContentType**: None, Character, Skill, Moudle, Shop, Friend, Ranking, Clan, Achievements, Option...
+- **EContentUnlockType**: None, ActiveSkill_1, ActiveSkill_2, UltimateSkill, PassiveSkillSlot_1, PassiveSkillSlot_2, PassiveSkillSlot_3, ModuleSlot_1, ModuleSlot_2, ClanCreate...
+- **ECrosshairAimType**: None, Cross, Dot, Launcher
+- **ECrosshairSpreadLineType**: None, Cross, RoundedEdge, Circle
+- **ECurrencyType**: None, CombatPoints, ElitePermitsFree, ElitePermitsPaid, FragmentPieces, SynapsePackets, ElitePermits
+- **EDamageType**: None, Normal, RatioArmor, RatioTargetMaxLife, RatioCurrentLife, RatioTargetCurrentLife, RatioTargetLostLife, NoShieldMultiplier, RatioTargetMaxVitality
+- **EElementalType**: None, Splash, Arcane, Fire, Cold, Poison, Lightning, Divine, Shadow, TrackingBolts...
+- **EEnergyType**: None, Ulti
+- **EExecuteCheckType**: None, Normal, Projectile, Guard, Posture, MultiTargeting, MultiTargetingOnce, Detonation, SkillWeapon, UseSummonActive
+- **EExecuteChkType**: None, PlayStep, CastStep, LoopStep, Play
+- **EExecuteOption**: None, Sequential, Essential
+- **EExecuteShapeType**: None, Box, Arc, Projectile, CurrentTarget, RotateArcCw, RoateArcCcw, Ray
+- **EExecuteTarget**: None, Enemy, Own, Ally, Summoner, Party, Environment, UserParty, All, EnemyCharacter...
+- **EExecuteTargetCompare**: None, LowerHP, AITargetCloser, Closer
+- **EFaction**: None, All, Offense, Defense
+- **EFactionRelation**: None, Hostile, Friendly
+- **EForcedSide**: None, Team1, Team2, Third
+- **EGearClass**: None, Armor, Weapon
+- **EGearRarity**: None, Common, Uncommon, Rare, Epic, Legendary
+- **EHitOption**: None, Hit, KnockBack, KnockDown, DownAir, DownStamp, HitResultRes, Pull, Bounce, Grab
+- **EHitType**: None, Normal, SuperarmorCrash, HyperarmorCrash, InvincibleCrash, GuardCrash, Weak, Environment
+- **EInteractionDetectMode**: None, RaycastOnly, ProximityOnly, ProximityThenRaycast
+- **EInteractionExecutionType**: None, Immediate, Casting
+- **EInteractionFunction**: None, ModifyStat, AddItem, RemoveItem, AddPassive, RemovePassive, AddStatusEffect, RemoveStatusEffect, Teleport, ToggleState...
+- **EInteractionType**: None, Pickup, Door, Switch, Container, NPC, Portal
+- **EItemType**: None, Module, Passive, Skin, Exp, ProfileIcon, ProfileFrame, ProfileBanner, Title, Character...
+- **ELevelObjectFunctionType**: None, GetPassive, CallCardPreset, UseSkillSelf
+- **ELevelObjectTarget**: None, CharacterInteractor, CharacterNearest, CharacterSelf, CharacterAll, CharacterOffense, CharacterDefense
+- **ELogicalOp**: None, And, Or
+- **ELookDirection**: None, Crosshair, Input, CrosshairYawOnly
+- **EMapObjectTriggerType**: None, Interaction, InteractionStrict, SelfParameter, Position, SelfSpawn, SeflDespawn
+- **EMissionType**: None, MatchWin
+- **EModuleType**: None, Perk, Passive, PropertyOnly, EffectOnly, Both
+- **EMovePointType**: None, Character, CoverPoint
+- **ENormVec3**: None, F, B, L, R, U, D, FL, FR, BL...
+- **EOptionCategory**: None, GamePlay, Graphic, Sound, AccountAndOther
+- **EOptionContent**: None, EditController, DefaultMinimap, AutoFire, AimAssist, CameraSensitivity, Vibration, Quality, FPS, MasterSound...
+- **EOptionUIType**: None, OneButton, Toggle2Btn, Toggle3Btn, Slider, ToggleSlider, Copy, AccountConnect, Language, SmallBtn...
+- **EPassiveConditionType**: None, Always, ExistEnemyInRange, ExistEnemyInRangeUnder, AttackHitby, Respawned, AllyDeath, GetAssist, StageStart, KillTarget...
+- **EPassiveEffectType**: None, ModRateMoveSpeed, ModRateMaxHealth, ModRateHeal, ModRateHealBy, ModRateFireRate, ModRateAttack, ModRateDamageHeadModifier, ModRateMoa, GetStatusEffect...
+- **EPassiveType**: None, ModuleItem, PassiveItem
+- **EPerkType**: None, ModuleItem
+- **EModulePassiveConditionType**: None, Always, AttackHit, GetAssistOrKill, ExistEnemyInRange, ExistEnemyInRangeUnder, SwapWeapon, ReloadWeapon, WeaponAttackFullChargeHit, OnCurrentAmmoEmpty...
+- **EModulePassiveEffectType**: None, RunExecute, GetStatusEffect, GetStatusEffectCurrentHitTarget, GetMark, GetMarkCurrentHitTarget, RemoveMark, RemoveMarkCurrentHitTarget, ModBulletDamageRate, ModBurstFinalShotModifier...
+- **EPingTrigger**: None, InputPing, BaseActivation, UltimateReady, BaseReactivation, OverTimeStart, BlueZoneDamageIncrease
+- **EPromitionType**: None, Direct, Cutoff
+- **ERangeType**: None, TopRight, BottomLeft
+- **ERankingType**: None, Rank, Percentile
+- **ESTATISTICS**: None, WinRate, KDA, MatchesPlayed, BestKillStreak, HeadshotRate, KillsperMatch, AssistsperMatch, DeathsperMatch, HitRate...
+- **ESkillArmorType**: None, Normal, Superarmor, SuperarmorFwd, Hyperarmor, HyperarmorFwd, Invincible, InvincibleFwd, Guard, GuardFwd
+- **ESkillCategory**: None, Test
+- **ESkillEffectType**: None, Damage, Heal, StatusEffect, Summon, Guard, GuardCrash, MoveCaster, SetCollider, Interaction...
+- **ESkillSetSlot**: None, Skill_1, Skill_2, Ulti
+- **ESkillType**: None, Normal, Dodge, Combination, Aim, ToggleON, ToggleOFF, CastLink, Posture, Hold...
+- **ESkillUIType**: None, Passive, Ultimate, Active
+- **ESkillWeapon**: None, SwordnShield, Bow, GreatHammer, Musket, Staff, Arcane, Unholy, Poison, Flame...
+- **ESkinCharacterType**: None, FullBody
+- **ESkinResourceParts**: None, Muzzle
+- **ESkinResourceType**: None, FX
+- **ESkinWeaponType**: None, PrimaryWeapon, PrimaryWeapon2, SecondaryWeapon
+- **ESpawnPosType**: None, Attatch, Ground, Follow
+- **ESpawnPositionType**: None, CurrentPos, Follow, Projectile, CurrentHitTarget
+- **EStackType**: None, Overwrite, Stack, AddDuration
+- **EStatType**: None, AimAssistAdsEnterRaidus, AimAssistAdsFireRadius, AimAssistDuration, AimAssistHipFireRadius, AimAssistKeepFire, AimAssistKeepRecoverTime, BurstInterval, BurstMinInputInterval, BurstShotCount...
+- **EStatusEffectCategory**: None, Buff, Debuff, Passive, Instant
+- **EStatusEffectCondition**: None, UseDodgeAction, UseNormalAttack, UseSpecialAction, UseSkillActive, UseSkill, GetStatusEffect, AttackHit, AttackHitby, DamagedToDeath...
+- **EStatusEffectDescValueType**: None, String, StringKey, StringStatusEffectGroupName, IntAdd, ReverseIntAdd, FloatAdd, ReverseFloatAdd, PercentAdd, ReversePercentAdd...
+- **EStatusEffectFunctionType**: None, ModRateOffence, ModRateDefence, ModRateDamage, ModDamageReductionRate, ModRateMoveSpeed, ModRateInteractionSpeed, DotEffectHPMaxRate, DotEffectSTMaxRate, DotEffectHPFixed...
+- **ESynergyEffectType**: None, AddPassive, AddStatusEffect, AddPerk
+- **ETierType**: None, Bronze, Silver, Gold, Platinum, Emerald, Diamond, Master, GrandMaster, Challenger
+- **ETransCondition**: None, MoveInputNone, MoveInputFront, MoveInputRear, MoveInputLeft, MoveInputRight, InvincibleHitBy, HitByGuardCrash, BodyCollisionHitEnemy, LowerEnValue...
+- **EWarningDisplayType**: None, Circle, Arc, Laser
+- **EWeaponFireType**: None, Auto, Charge, Semi, Throwable, PreCharge
+- **EWeaponSourceType**: None, SkillWeapon, Normal
+- **EWeaponType**: None, AR, CG, HG, Melee, Throwable, Special, DMR, SMG, SG...
+- **EEventLogicType**: None, BattlePass
+- **EEventTargetType**: None, AllUsers, NewUsers, ReturningUsers
+- **EResetCycleType**: None, Daily, Weekly, Monthly
+- **EResetDayWeekType**: None, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday
+- **EEventCategoryType**: None, Attendance
+- **ETrackType**: None, Free, Elite
+- **EShopFilterType**: None, Class, Character
+- **EProjectileType**: HitScan, Projectile
+- **EProjectileResponseEffect**: None, PointDamage, SplashDamage, PointAndSplashDamage, ExecuteOnly
+- **EProjectileResponseTrajectory**: None, Destroy, Bounce, DestroyOnEnvironment, Penetrate
