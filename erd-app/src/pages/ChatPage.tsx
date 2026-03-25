@@ -8918,6 +8918,8 @@ export default function ChatPage() {
   });
   const [showUserSettingsDialog, setShowUserSettingsDialog] = useState(false);
   const [localDirHandle, setLocalDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
+  const [assetIndexing, setAssetIndexing] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [assetIndexMsg, setAssetIndexMsg] = useState('');
   const saveUserSettings = (s: UserSettings) => {
     setUserSettings(s);
     try { localStorage.setItem(USER_SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
@@ -10301,6 +10303,51 @@ export default function ChatPage() {
                 테이블링 히스토리 지우기
               </button>
             )}
+            <button
+              onClick={async () => {
+                if (assetIndexing === 'loading') return;
+                setAssetIndexing('loading');
+                setAssetIndexMsg('');
+                try {
+                  const r = await fetch('/api/assets/rebuild');
+                  const d = await r.json();
+                  if (d.success && d.count > 0) {
+                    setAssetIndexing('done');
+                    setAssetIndexMsg(`${d.count.toLocaleString()}개 파일`);
+                  } else {
+                    setAssetIndexing('error');
+                    setAssetIndexMsg(d.message || '에셋 폴더 없음');
+                  }
+                } catch (e) {
+                  setAssetIndexing('error');
+                  setAssetIndexMsg(String(e));
+                }
+                setTimeout(() => setAssetIndexing('idle'), 5000);
+              }}
+              disabled={assetIndexing === 'loading'}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[12px] interactive"
+              style={{
+                color: assetIndexing === 'done' ? '#22c55e' : assetIndexing === 'error' ? '#f87171' : '#60a5fa',
+                background: 'var(--bg-hover)',
+                opacity: assetIndexing === 'loading' ? 0.6 : 1,
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                style={assetIndexing === 'loading' ? { animation: 'spin 1s linear infinite' } : undefined}
+              >
+                <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                <polyline points="22 2 22 8 16 8"/>
+              </svg>
+              {assetIndexing === 'loading' ? '인덱싱 중...'
+                : assetIndexing === 'done' ? `인덱싱 완료 (${assetIndexMsg})`
+                : assetIndexing === 'error' ? `인덱싱 실패`
+                : '에셋 인덱싱'}
+              {assetIndexing === 'error' && assetIndexMsg && (
+                <span className="text-[9px]" style={{ color: '#f87171', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {assetIndexMsg}
+                </span>
+              )}
+            </button>
             <button
               onClick={() => setShowUserSettingsDialog(true)}
               className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[12px] interactive"

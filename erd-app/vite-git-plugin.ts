@@ -1176,6 +1176,23 @@ function createGitMiddleware(options: GitPluginOptions) {
         sendJson(res, 400, { error: 'CLAUDE_API_KEY 환경변수가 설정되지 않았습니다.' })
         return
       }
+
+      // ★ 플랫폼 프록시 504 방지: body를 읽기 전에 즉시 SSE 헤더 전송
+      // 첫 바이트가 빠르게 전달되면 프록시 timeout 카운터가 리셋됨
+      if (!res.headersSent) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-store, no-transform',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+          'X-Accel-Buffering': 'no',
+          'Transfer-Encoding': 'chunked',
+        })
+        if (res.socket) { res.socket.setNoDelay(true); res.socket.setTimeout(0) }
+        res.flushHeaders()
+        try { res.write('event: ping\ndata: {}\n\n') } catch { /* ignore */ }
+      }
+
       const rawBody = await readBody(req, 50 * 1024 * 1024)
       const skipKnowledge = req.headers['x-tm-knowledge'] === 'injected'
 
@@ -1235,30 +1252,14 @@ function createGitMiddleware(options: GitPluginOptions) {
 
       if (isStream) {
         // ── SSE 스트리밍: Node.js native https.request + pipe() (버퍼링 완전 제거) ──
+        // 헤더는 이미 _earlySSE로 전송됨
 
-        // SSE 헤더를 즉시 전송 → Nginx proxy_read_timeout 전에 첫 바이트 도달
-        res.writeHead(200, {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache, no-store, no-transform',
-          'Connection': 'keep-alive',
-          'Access-Control-Allow-Origin': '*',
-          'X-Accel-Buffering': 'no',
-          'Transfer-Encoding': 'chunked',
-        })
-        if (res.socket) {
-          res.socket.setNoDelay(true)
-          res.socket.setTimeout(0)
-        }
-        res.flushHeaders()
-
-        // Keep-alive 하트비트: Claude 응답 대기 중 Nginx 504 방지
-        // SSE 주석(: keepalive)은 클라이언트 파서가 무시하므로 안전
-        let heartbeatActive = true
-        try { res.write(': keepalive\n\n') } catch { /* ignore */ }
-        const heartbeat = setInterval(() => {
-          if (!heartbeatActive) return
-          try { res.write(': keepalive\n\n') } catch { /* socket closed */ }
-        }, 5_000)
+        // Keep-alive: SSE 주석 대신 실제 data 이벤트를 보내서 프록시/Nginx 통과
+        // 클라이언트에서 type==="ping" 이벤트는 무시 처리됨
+        const _hb = setInterval(() => {
+          try { res.write('event: ping\ndata: {}\n\n') } catch { clearInterval(_hb) }
+        }, 2_000)
+        const _stopHb = () => { clearInterval(_hb) }
 
         const proxyReq = httpsRequest({
           hostname: 'api.anthropic.com',
@@ -1272,15 +1273,12 @@ function createGitMiddleware(options: GitPluginOptions) {
           },
           timeout: 300_000,
         }, (proxyRes) => {
-          heartbeatActive = false
-          clearInterval(heartbeat)
-
-          // Claude가 에러를 반환한 경우에도 헤더는 이미 200으로 보냈으므로
-          // SSE 에러 이벤트로 전달 (클라이언트가 파싱)
+          // Claude 에러 → SSE error 이벤트
           if (proxyRes.statusCode && proxyRes.statusCode >= 400) {
             let errBody = ''
             proxyRes.on('data', (c: Buffer) => { errBody += c.toString() })
             proxyRes.on('end', () => {
+              _stopHb()
               const errMsg = `Claude API returned ${proxyRes.statusCode}: ${errBody.slice(0, 500)}`
               console.error(`[SSE] ${errMsg}`)
               res.write(`event: error\ndata: ${JSON.stringify({ error: { type: 'api_error', message: errMsg } })}\n\n`)
@@ -1303,17 +1301,18 @@ function createGitMiddleware(options: GitPluginOptions) {
             if (res.socket) process.nextTick(() => res.socket!.uncork())
           })
           proxyRes.on('end', () => {
+            _stopHb()
             console.log(`[SSE] 완료: ${chunkCount}개 청크, ${totalBytes}B, ${Date.now() - startTime}ms`)
             res.end()
           })
           proxyRes.on('error', () => {
+            _stopHb()
             res.end()
           })
         })
 
         proxyReq.on('timeout', () => {
-          heartbeatActive = false
-          clearInterval(heartbeat)
+          _stopHb()
           console.error('[Claude SSE proxy] 타임아웃 (300s)')
           res.write(`event: error\ndata: ${JSON.stringify({ error: { type: 'timeout', message: 'Claude API 응답 타임아웃 (300초)' } })}\n\n`)
           res.end()
@@ -1321,21 +1320,16 @@ function createGitMiddleware(options: GitPluginOptions) {
         })
 
         proxyReq.on('error', (err) => {
-          heartbeatActive = false
-          clearInterval(heartbeat)
+          _stopHb()
           console.error('[Claude SSE proxy] 요청 오류:', err.message)
-          if (!res.headersSent) {
-            sendJson(res, 502, { error: `Claude API 연결 실패: ${err.message}` })
-          } else {
-            res.write(`event: error\ndata: ${JSON.stringify({ error: { type: 'network', message: err.message } })}\n\n`)
-            res.end()
-          }
+          res.write(`event: error\ndata: ${JSON.stringify({ error: { type: 'network', message: err.message } })}\n\n`)
+          res.end()
         })
 
         proxyReq.write(finalBody)
         proxyReq.end()
         } else {
-        // ── 비스트리밍: fetch 사용 ──
+        // ── 비스트리밍: fetch 사용 (이미 SSE 헤더 전송됨 → SSE로 래핑) ──
         try {
           const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
@@ -1347,14 +1341,13 @@ function createGitMiddleware(options: GitPluginOptions) {
             body: finalBody,
           })
           const data = await claudeRes.text()
-          res.writeHead(claudeRes.status, {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-          })
-          res.end(data)
+          // 이미 SSE 헤더가 전송되었으므로 JSON을 직접 SSE data로 전송
+          res.write(`data: ${data}\n\n`)
+          res.end()
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
-        sendJson(res, 500, { error: msg })
+        res.write(`event: error\ndata: ${JSON.stringify({ error: { type: 'api_error', message: msg } })}\n\n`)
+        res.end()
         }
       }
       return
@@ -1503,10 +1496,10 @@ function createGitMiddleware(options: GitPluginOptions) {
       res.flushHeaders()
       presenceClients.add(res)
       broadcastPresence()
-      // Nginx 504 방지: 주기적 하트비트
+      // Nginx 504 방지: 실제 data 이벤트로 하트비트
       const presenceHb = setInterval(() => {
-        try { res.write(': keepalive\n\n') } catch { clearInterval(presenceHb) }
-      }, 15_000)
+        try { res.write('event: ping\ndata: {}\n\n') } catch { clearInterval(presenceHb) }
+      }, 10_000)
       req.on('close', () => {
         clearInterval(presenceHb)
         presenceClients.delete(res)
@@ -2332,6 +2325,25 @@ function createGitMiddleware(options: GitPluginOptions) {
       }
 
       try {
+        // ── /api/assets/rebuild : 에셋 인덱스 강제 리빌드 ───────────────────
+        if (req.url.startsWith('/api/assets/rebuild')) {
+          sLog('INFO', '[AssetIndex] 수동 리빌드 요청')
+          // 기존 인덱스 삭제 → 강제 재빌드
+          if (existsSync(idxPath)) {
+            try { unlinkSync(idxPath) } catch { /* ignore */ }
+          }
+          _buildAssetIndexIfNeeded()
+          const idx = loadIdx()
+          sendJson(res, 200, {
+            success: true,
+            count: idx.length,
+            message: idx.length > 0
+              ? `에셋 인덱스 리빌드 완료: ${idx.length}개 파일`
+              : '에셋 폴더를 찾을 수 없습니다. aegis 저장소를 먼저 동기화하세요.',
+          })
+          return
+        }
+
         // ── /api/assets/index : 에셋 인덱스 검색 ─────────────────────────────
         if (req.url.startsWith('/api/assets/index')) {
           let idx = loadIdx()
@@ -10239,10 +10251,10 @@ function createChatApiMiddleware(options: GitPluginOptions) {
         res.flushHeaders()
         res.write(`event: session\ndata: ${JSON.stringify({ session_id: session.id })}\n\n`)
 
-        // Keep-alive 하트비트: Claude 응답/도구 실행 대기 중 Nginx 504 방지
+        // Keep-alive: 실제 data 이벤트로 프록시/Nginx 통과 보장
         const _chatHeartbeat = setInterval(() => {
-          try { res.write(': keepalive\n\n') } catch { /* socket closed */ }
-        }, 5_000)
+          try { res.write('event: ping\ndata: {}\n\n') } catch { /* socket closed */ }
+        }, 2_000)
 
         try {
           for (let i = 0; i < MAX_ITERATIONS; i++) {

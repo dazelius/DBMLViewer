@@ -2236,7 +2236,7 @@ async function streamClaude(
   onArtifactProgress?: (html: string, title: string, charCount: number, rawJson?: string) => void,
   /** true이면 이어쓰기 모드: <<<ARTIFACT_START>>> 없이도 텍스트를 바로 아티팩트 HTML로 캡처 */
   artifactContinuationMode = false,
-): Promise<ClaudeResponse & { usage?: TokenUsage; _streamedArtifactHtml?: string }> {
+): Promise<ClaudeResponse & { usage?: TokenUsage; _streamedArtifactHtml?: string; _streamAborted?: boolean }> {
   // ── 자동 재시도 + 429 모델 폴백 체인 (현재 선택 모델 이후부터) ──
   const ALL_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001'];
   const currentModel = (requestBody as Record<string, unknown>).model as string || 'claude-opus-4-6';
@@ -2443,8 +2443,10 @@ async function streamClaude(
 
   let _readCount = 0;
   let _textDeltaCount = 0;
+  let _streamAborted = false;
   const _streamStart = performance.now();
   if (_needsStreamYield) console.log(`[streamClaude] 🔀 Fast model (${reqModel}) — streaming yield enabled`);
+  try {
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -2459,15 +2461,18 @@ async function streamClaude(
       // SSE event: 타입 추적 (error 이벤트 감지용)
       if (line.startsWith('event: ')) {
         lastEventType = line.slice(7).trim();
+        if (lastEventType === 'ping') { lastEventType = ''; continue; }
         continue;
       }
 
       if (!line.startsWith('data: ')) continue;
       const raw = line.slice(6).trim();
-      if (!raw || raw === '[DONE]') continue;
+      if (!raw || raw === '[DONE]' || raw === '{}') continue;
 
       let ev: Record<string, unknown>;
       try { ev = JSON.parse(raw); } catch { continue; }
+
+      if (ev.type === 'ping' || (!ev.type && Object.keys(ev).length === 0)) continue;
 
       // Anthropic SSE 에러 이벤트 처리
       if (lastEventType === 'error' || ev.type === 'error') {
@@ -2582,6 +2587,11 @@ async function streamClaude(
     // ★ 이벤트 처리 후 브라우저에 양보 — setInterval 틱이 _artBuf 읽어서 iframe 갱신
     await new Promise<void>(r => setTimeout(r, 0));
   }
+  } catch (streamErr) {
+    _streamAborted = true;
+    console.warn(`[streamClaude] ⚠️ 스트림 중단 (네트워크/504): ${streamErr}`);
+    onTextDelta('\n⚠️ 연결이 끊겼습니다. 부분 결과를 보존합니다...\n');
+  }
 
   // ★ 스트림 종료 시 END 마커 미수신 처리 (max_tokens 초과 또는 네트워크 문제)
   // _artMarkerState가 'streaming'이면 END 마커가 안 왔지만 축적된 HTML은 유효함
@@ -2615,7 +2625,13 @@ async function streamClaude(
       return clean as ContentBlock;
     });
 
-  return { content: contentArray, stop_reason: stopReason, usage, _streamedArtifactHtml: _artStreamedHtml || undefined };
+  return {
+    content: contentArray,
+    stop_reason: _streamAborted ? 'stream_aborted' as ClaudeResponse['stop_reason'] : stopReason,
+    usage,
+    _streamedArtifactHtml: _artStreamedHtml || undefined,
+    _streamAborted,
+  };
 }
 
 // ── RAG 트레이스 유틸 ─────────────────────────────────────────────────────────
@@ -3631,7 +3647,7 @@ export async function sendChatMessage(
     onThinkingUpdate?.({ type: 'iteration_start', iteration: i + 1, maxIterations: MAX_ITERATIONS, timestamp: Date.now() });
 
     // 529 재시도 포함 스트리밍 호출
-    let data: (ClaudeResponse & { _streamedArtifactHtml?: string }) | null = null;
+    let data: (ClaudeResponse & { _streamedArtifactHtml?: string; _streamAborted?: boolean }) | null = null;
     const safeMessages = sanitizeMessages(messages); // orphan tool_use 방어
 
     // 아티팩트 이어쓰기 모드: onArtifactProgress를 감싸서 누적 HTML과 합침
@@ -3683,12 +3699,28 @@ export async function sendChatMessage(
           throw err;
         } else if (msg.includes('529') || msg.includes('과부하')) {
           if (attempt === 2) throw err;
+        } else if ((msg.includes('504') || msg.includes('Gateway') || msg.includes('network') || err instanceof TypeError) && attempt < 2) {
+          const wait = 3000 * (attempt + 1);
+          console.warn(`[Chat] ⚠️ 네트워크/504 오류 — ${wait / 1000}초 후 재시도 (${attempt + 1}/3)`);
+          onTextDelta?.(`\n⏳ 연결 오류 — ${wait / 1000}초 후 재시도합니다... (${attempt + 1}/3)\n`, '');
+          await new Promise(r => setTimeout(r, wait));
+          continue;
         } else {
           throw err;
         }
       }
     }
     if (!data) throw new Error('Claude API 연결 실패');
+
+    // ★ 스트림이 중간에 끊긴 경우: 부분 아티팩트 보존 후 이어쓰기 시도
+    if (data._streamAborted && data._streamedArtifactHtml && data._streamedArtifactHtml.length > 50) {
+      console.warn(`[Chat] ⚠️ 스트림 중단 — 아티팩트 ${data._streamedArtifactHtml.length}자 보존, 이어쓰기 예약`);
+      artifactAccumulatedHtml += data._streamedArtifactHtml;
+      artifactContinuationCount++;
+      onTextDelta?.(`\n🔄 아티팩트 생성 중 연결 끊김 — 자동 이어쓰기합니다... (${data._streamedArtifactHtml.length}자 보존)\n`, '');
+      await new Promise(r => setTimeout(r, 2000));
+      continue;
+    }
     
     // 텍스트 마커에서 캡처된 아티팩트 HTML
     const streamedArtifactHtml = data._streamedArtifactHtml;
