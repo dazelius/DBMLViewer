@@ -4121,10 +4121,27 @@ export async function sendChatMessage(
               relPath: r.relPath,
               url: `${_ab}/api/images/file?path=${encodeURIComponent(r.relPath)}`,
               isAtlas: r.isAtlas ?? false,
+              dataUri: undefined as string | undefined,
             }));
+            // POST base64 fetch: 프록시 환경에서 GET 이미지 요청이 차단될 때 대비
+            const base64Results = await Promise.allSettled(
+              images.map(img =>
+                fetch('/api/images/base64', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ path: img.relPath }),
+                }).then(r => r.ok ? r.json() : null)
+              )
+            );
+            for (let idx = 0; idx < images.length; idx++) {
+              const r = base64Results[idx];
+              if (r.status === 'fulfilled' && r.value?.dataUri) {
+                images[idx].dataUri = r.value.dataUri;
+              }
+            }
             tc = { kind: 'image_search', query, images, total: data.total } as ImageResult;
             resultStr = images.length > 0
-              ? images.map((i) => `${i.name} → ${i.url}`).join('\n') +
+              ? images.map((i) => `${i.name} → ${i.dataUri ? '(inline)' : i.url}`).join('\n') +
                 `\n\n총 ${images.length}개. 아티팩트에 삽입할 때: <img src="위의URL" style="max-width:100%">`
               : `"${query}" 이미지 없음 (전체 ${data.total}개 중)`;
           } catch (err) {
