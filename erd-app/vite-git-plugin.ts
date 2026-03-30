@@ -3352,26 +3352,39 @@ api('status').then(function(s){
 
           const entries = readdirSync(targetDir, { withFileTypes: true })
           const dirs: Array<{ name: string; path: string; count?: number }> = []
-          const files: Array<{ name: string; path: string; size?: number; modified?: string }> = []
+          const files: Array<{ name: string; path: string; size?: number; modified?: string; lfs?: boolean }> = []
+          const realFileNames = new Set<string>()
 
           for (const entry of entries) {
             const entryRelPath = normPath ? `${normPath}/${entry.name}` : entry.name
             if (entry.isDirectory()) {
               try {
                 const sub = readdirSync(join(targetDir, entry.name))
-                const count = sub.filter(n => !n.endsWith('.meta')).length
-                dirs.push({ name: entry.name, path: entryRelPath, count })
+                const realCount = sub.filter(n => !n.endsWith('.meta')).length
+                const metaCount = sub.filter(n => n.endsWith('.meta')).length
+                dirs.push({ name: entry.name, path: entryRelPath, count: realCount || metaCount })
               } catch {
                 dirs.push({ name: entry.name, path: entryRelPath })
               }
             } else if (entry.isFile() && !entry.name.endsWith('.meta')) {
+              realFileNames.add(entry.name)
               try {
                 const st = statSync(join(targetDir, entry.name))
-                files.push({ name: entry.name, path: entryRelPath, size: st.size, modified: st.mtime.toISOString() })
+                const isLfsPointer = st.size < 200 && st.size > 50
+                files.push({ name: entry.name, path: entryRelPath, size: st.size, modified: st.mtime.toISOString(), ...(isLfsPointer ? { lfs: true } : {}) })
               } catch {
                 files.push({ name: entry.name, path: entryRelPath })
               }
             }
+          }
+          // .meta만 있고 실제 파일이 없는 경우 → 가상 엔트리 추가 (LFS 미다운로드)
+          for (const entry of entries) {
+            if (!entry.isFile() || !entry.name.endsWith('.meta')) continue
+            const realName = entry.name.replace(/\.meta$/, '')
+            if (!realName || realName.includes('.') === false) continue
+            if (realFileNames.has(realName)) continue
+            const entryRelPath = normPath ? `${normPath}/${realName}` : realName
+            files.push({ name: realName, path: entryRelPath, size: 0, lfs: true })
           }
 
           sendJson(res, 200, { path: pathParam, dirs, files })
