@@ -400,6 +400,9 @@ console.log(`[Init] IMAGES_DIR candidates: ${_IMG_CANDIDATES.map(p => `${p.repla
 // 에셋 인덱스 빌드 시 발견된 Unity Assets 디렉토리 (런타임 업데이트)
 let _discoveredAssetsDir: string | null = null
 
+// LFS pull 진행 상태 (UI 표시용)
+let _lfsPullState: Record<string, unknown> = { running: false, phase: 'idle' }
+
 // ── C# 소스코드 디렉토리 (sync_cs_files.ps1 로 동기화) ───────────────────────
 // 로컬 우선, 없으면 aegis repo에서 C# 소스 직접 탐색
 const _CODE_CANDIDATES = [
@@ -702,24 +705,29 @@ function _buildAssetIndexIfNeeded() {
 
 /** aegis repo LFS 텍스처 이미지 다운로드 (clone/sync 후 호출) */
 async function _pullLfsTextures(repoDir: string): Promise<{ ok: boolean; message: string }> {
+  const _log = (msg: string) => { sLog('INFO', `[git lfs] ${msg}`); if (_lfsPullState.log && Array.isArray(_lfsPullState.log)) (_lfsPullState.log as string[]).push(msg); _lfsPullState.phase = msg }
   try {
+    _log('git lfs install --local ...')
     await runGitAsync('git lfs install --local', repoDir)
-    sLog('INFO', `[git lfs] LFS pull 시작 (UI 텍스처)...`)
-    // 레포 구조: Client/Project_Aegis/Assets/GameContents/UI/Texture/** — 전체 경로 매칭 필요
+    _log('LFS 초기화 완료')
+
     const patterns = [
       'Client/Project_Aegis/Assets/GameContents/UI/Texture/**',
       '**/Texture/Character/**',
       '**/Texture/Skill/**',
     ]
-    for (const pat of patterns) {
+    for (let i = 0; i < patterns.length; i++) {
+      const pat = patterns[i]
+      _log(`패턴 ${i + 1}/${patterns.length}: ${pat} 다운로드 중...`)
       try {
         await runGitAsync(`git lfs pull --include="${pat}"`, repoDir)
-        sLog('INFO', `[git lfs] LFS pull 성공: ${pat}`)
+        _log(`패턴 ${i + 1} 완료 ✓`)
       } catch (e) {
-        sLog('WARN', `[git lfs] 패턴 "${pat}" 실패: ${e instanceof Error ? e.message : String(e)}`)
+        _log(`패턴 ${i + 1} 실패: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
-    // 결과 확인: Texture 디렉토리에 실제 PNG가 있는지
+
+    _log('PNG 파일 카운트 중...')
     const texDir = join(repoDir, 'Client', 'Project_Aegis', 'Assets', 'GameContents', 'UI', 'Texture')
     let pngCount = 0
     const countPngs = (dir: string, depth: number) => {
@@ -728,18 +736,18 @@ async function _pullLfsTextures(repoDir: string): Promise<{ ok: boolean; message
         if (e.isDirectory()) countPngs(join(dir, e.name), depth + 1)
         else if (e.name.endsWith('.png')) {
           const buf = readFileSync(join(dir, e.name))
-          if (buf.length > 200) pngCount++ // LFS 포인터(~130B)가 아닌 실제 파일만 카운트
+          if (buf.length > 200) pngCount++
         }
       }} catch { /* skip */ }
     }
     if (existsSync(texDir)) countPngs(texDir, 0)
-    const msg = `LFS pull 완료: 실제 PNG ${pngCount}개 발견 (${texDir})`
-    sLog('INFO', `[git lfs] ${msg}`)
+    const msg = pngCount > 0 ? `✅ LFS pull 완료: 실제 PNG ${pngCount}개 다운로드됨` : `⚠️ LFS pull 완료했으나 PNG 0개 — LFS 트래킹 확인 필요`
+    _log(msg)
     return { ok: pngCount > 0, message: msg }
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    sLog('WARN', `[git lfs] LFS pull 실패: ${msg}`)
-    return { ok: false, message: `LFS pull 실패: ${msg}` }
+    const msg = `❌ LFS pull 실패: ${e instanceof Error ? e.message : String(e)}`
+    _log(msg)
+    return { ok: false, message: msg }
   }
 }
 
@@ -1668,18 +1676,129 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
-    // ── /api/images/lfs-pull : 수동 LFS 텍스처 다운로드 트리거 ─────────────
+    // ── /api/images/lfs-pull : LFS 텍스처 다운로드 (시각적 UI) ─────────────
     if (req.url?.startsWith('/api/images/lfs-pull')) {
       const aegisDir = join(process.cwd(), '.git-repo-aegis')
-      if (!existsSync(join(aegisDir, '.git'))) {
-        sendJson(res, 400, { error: 'aegis repo not cloned yet' })
+      const url = new URL(req.url, 'http://localhost')
+      const action = url.searchParams.get('action')
+
+      // JSON API 모드: ?action=start → 시작, ?action=status → 상태
+      if (action === 'start') {
+        if (!existsSync(join(aegisDir, '.git'))) { sendJson(res, 400, { error: 'aegis repo not cloned' }); return }
+        if ((_lfsPullState as { running: boolean }).running) { sendJson(res, 200, _lfsPullState); return }
+        _lfsPullState = { running: true, phase: 'starting', startedAt: Date.now(), pngCount: 0, log: ['LFS pull 시작...'] }
+        _pullLfsTextures(aegisDir).then(result => {
+          const texDir = join(aegisDir, 'Client', 'Project_Aegis', 'Assets', 'GameContents', 'UI', 'Texture')
+          let cnt = 0
+          const _c = (d: string, dep: number) => { if (dep > 5) return; try { for (const e of readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) _c(join(d, e.name), dep + 1); else if (e.name.endsWith('.png') && readFileSync(join(d, e.name)).length > 200) cnt++ } } catch {} }
+          if (existsSync(texDir)) _c(texDir, 0)
+          _lfsPullState = { running: false, phase: 'done', pngCount: cnt, message: result.message, ok: result.ok, elapsed: Date.now() - (_lfsPullState.startedAt || Date.now()), log: [...(_lfsPullState.log || []), result.message] }
+          if (result.ok) _buildAssetIndexIfNeeded()
+        })
+        sendJson(res, 200, _lfsPullState)
         return
       }
-      sendJson(res, 202, { status: 'started', message: 'LFS pull 시작됨 — 완료까지 수 분 소요될 수 있습니다. /api/debug/images 에서 결과를 확인하세요.' })
-      _pullLfsTextures(aegisDir).then(result => {
-        sLog('INFO', `[lfs-pull API] ${JSON.stringify(result)}`)
-        if (result.ok) _buildAssetIndexIfNeeded()
-      })
+      if (action === 'status') { sendJson(res, 200, _lfsPullState); return }
+
+      // HTML UI 모드: 시각적 진행 페이지
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>LFS Image Pull</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.card{background:#1a1d28;border:1px solid #2d3348;border-radius:16px;padding:32px;width:480px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+h1{font-size:20px;margin-bottom:8px;color:#fff}
+.subtitle{font-size:13px;color:#94a3b8;margin-bottom:24px}
+.status{background:#111318;border:1px solid #2d3348;border-radius:10px;padding:16px;margin-bottom:20px;min-height:120px}
+.phase{font-size:14px;font-weight:600;margin-bottom:8px}
+.log{font-size:11px;font-family:'Cascadia Code','Fira Code',monospace;color:#94a3b8;white-space:pre-wrap;max-height:200px;overflow-y:auto;line-height:1.6}
+.bar-wrap{background:#1e2130;border-radius:8px;height:8px;margin-bottom:20px;overflow:hidden}
+.bar{height:100%;border-radius:8px;transition:width .5s ease;background:linear-gradient(90deg,#34d399,#06b6d4)}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid #334155;border-top-color:#34d399;border-radius:50%;animation:spin .8s linear infinite;margin-right:8px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+.btn{display:block;width:100%;padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;transition:all .15s}
+.btn-start{background:linear-gradient(135deg,#34d399,#06b6d4);color:#0f1117}
+.btn-start:hover{opacity:.9;transform:translateY(-1px)}
+.btn-done{background:#1e293b;color:#34d399;cursor:default}
+.btn-error{background:#1e293b;color:#f87171;cursor:default}
+.count{font-size:36px;font-weight:700;color:#34d399;text-align:center;margin:12px 0}
+.count-label{font-size:12px;color:#94a3b8;text-align:center;margin-bottom:12px}
+.info{display:flex;gap:12px;margin-bottom:16px;font-size:11px;color:#94a3b8}
+.info-item{background:#111318;border-radius:6px;padding:6px 10px;flex:1;text-align:center}
+.info-item b{color:#e2e8f0;display:block;font-size:12px;margin-top:2px}
+</style></head><body>
+<div class="card">
+<h1>🖼️ LFS 텍스처 다운로드</h1>
+<div class="subtitle">Git LFS에서 UI 텍스처 이미지를 다운로드합니다</div>
+<div class="info">
+<div class="info-item">Git LFS<b id="lfsVer">확인 중...</b></div>
+<div class="info-item">현재 PNG<b id="curPng">-</b></div>
+<div class="info-item">상태<b id="stLabel">대기</b></div>
+</div>
+<div class="bar-wrap"><div class="bar" id="bar" style="width:0%"></div></div>
+<div class="status"><div class="phase" id="phase">준비 중...</div><div class="log" id="log"></div></div>
+<div id="countWrap" style="display:none"><div class="count" id="pngCount">0</div><div class="count-label">PNG 파일 다운로드 완료</div></div>
+<button class="btn btn-start" id="startBtn" onclick="startPull()">🚀 다운로드 시작</button>
+</div>
+<script>
+var polling=null,started=false;
+function api(action){return fetch(location.pathname+'?action='+action).then(function(r){return r.json()})}
+function startPull(){
+  if(started)return;started=true;
+  document.getElementById('startBtn').disabled=true;
+  document.getElementById('startBtn').innerHTML='<span class="spinner"></span>다운로드 중...';
+  document.getElementById('stLabel').textContent='진행 중';
+  document.getElementById('bar').style.width='15%';
+  api('start').then(function(){pollStatus()});
+}
+function pollStatus(){
+  polling=setInterval(function(){
+    api('status').then(function(s){
+      document.getElementById('phase').textContent=s.phase||'진행 중...';
+      if(s.log)document.getElementById('log').textContent=s.log.join('\\n');
+      if(s.running){
+        var elapsed=Date.now()-(s.startedAt||Date.now());
+        var pct=Math.min(90,15+elapsed/1000*2);
+        document.getElementById('bar').style.width=pct+'%';
+      }
+      if(!s.running&&s.phase==='done'){
+        clearInterval(polling);
+        document.getElementById('bar').style.width='100%';
+        document.getElementById('bar').style.background=s.ok?'linear-gradient(90deg,#34d399,#06b6d4)':'linear-gradient(90deg,#f87171,#fb923c)';
+        document.getElementById('stLabel').textContent=s.ok?'완료':'실패';
+        document.getElementById('countWrap').style.display='block';
+        document.getElementById('pngCount').textContent=s.pngCount||0;
+        document.getElementById('startBtn').className='btn '+(s.ok?'btn-done':'btn-error');
+        document.getElementById('startBtn').textContent=s.ok?'✅ 다운로드 완료 ('+s.pngCount+'개 PNG)':'❌ '+s.message;
+        if(s.log)document.getElementById('log').textContent=s.log.join('\\n');
+        loadDebug();
+      }
+    });
+  },3000);
+}
+function loadDebug(){
+  fetch(location.pathname.replace('lfs-pull','debug/images')).then(function(r){return r.json()}).then(function(d){
+    document.getElementById('lfsVer').textContent=d.gitLfsVersion||'?';
+    document.getElementById('curPng').textContent=(d.IMAGES_DIR_pngCount||0)+' 개';
+    if(d.samplePngs&&d.samplePngs.length){document.getElementById('log').textContent+=('\\n\\n샘플:\\n'+d.samplePngs.join('\\n'))}
+  }).catch(function(){});
+}
+loadDebug();
+api('status').then(function(s){
+  if(s.running){started=true;document.getElementById('startBtn').innerHTML='<span class="spinner"></span>다운로드 중...';document.getElementById('stLabel').textContent='진행 중';pollStatus();}
+  else if(s.phase==='done'){
+    document.getElementById('bar').style.width='100%';
+    document.getElementById('stLabel').textContent=s.ok?'완료':'실패';
+    document.getElementById('countWrap').style.display='block';
+    document.getElementById('pngCount').textContent=s.pngCount||0;
+    document.getElementById('startBtn').className='btn '+(s.ok?'btn-done':'btn-error');
+    document.getElementById('startBtn').textContent=s.ok?'✅ 이전 완료 ('+s.pngCount+'개) — 다시 시작하려면 클릭':'❌ '+s.message;
+    started=false;
+    if(s.log)document.getElementById('log').textContent=s.log.join('\\n');
+  }
+});
+</script></body></html>`
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      res.end(html)
       return
     }
 
