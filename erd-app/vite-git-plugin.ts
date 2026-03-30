@@ -6070,17 +6070,16 @@ document.addEventListener('DOMContentLoaded', () => {
               try {
                 mkdirSync(activeDir, { recursive: true })
                 sLog('INFO', `Background clone started: ${activeDir}`)
-                await runGitAsync(`git clone --depth 1 --single-branch --branch ${branch} "${authUrl}" .`, activeDir)
+                await runGitAsync(`git clone --single-branch --branch ${branch} "${authUrl}" .`, activeDir)
                 await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
                 const head = await runGitAsync('git rev-parse --short HEAD', activeDir)
                 sLog('INFO', `Background clone complete: ${activeDir} @ ${head}`)
-                // aegis repo: LFS pull (UI 텍스처) → 에셋 인덱스 빌드
+                // aegis repo: LFS pull (텍스처 보장) → 에셋 인덱스 빌드
                 if (isRepo2) {
                   _pullLfsTextures(activeDir).finally(() => _buildAssetIndexIfNeeded())
                 }
-                runGitAsync(`git fetch --deepen=200 origin ${branch}`, activeDir)
-                  .catch(() => {})
-                  .finally(() => { _gitSyncLocks.delete(activeDir); releaseLock() })
+                _gitSyncLocks.delete(activeDir)
+                releaseLock()
               } catch (e) {
                 sLog('ERROR', `Background clone failed: ${activeDir} - ${e instanceof Error ? e.message : String(e)}`)
                 _gitSyncLocks.delete(activeDir)
