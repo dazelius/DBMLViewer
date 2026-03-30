@@ -704,27 +704,48 @@ function _buildAssetIndexIfNeeded() {
 }
 
 /** aegis repo LFS 텍스처 이미지 다운로드 (clone/sync 후 호출) */
+function _runGitWithStderr(cmd: string, cwd: string): Promise<{ stdout: string; stderr: string }> {
+  const parts = cmd.match(/(?:[^\s"]+|"[^"]*")+/g) || []
+  return new Promise((resolve, reject) => {
+    execFile(parts[0]!, parts.slice(1).map((a: string) => a.replace(/^"|"$/g, '')),
+      { cwd, encoding: 'utf-8', timeout: 600_000, maxBuffer: 10 * 1024 * 1024, env: { ...process.env, GIT_LFS_SKIP_SMUDGE: undefined } },
+      (err: Error | null, stdout: string, stderr: string) => {
+        if (err) reject(new Error(`${stderr || ''}\n${err.message || String(err)}`))
+        else resolve({ stdout: (stdout ?? '').trim(), stderr: (stderr ?? '').trim() })
+      })
+  })
+}
+
 async function _pullLfsTextures(repoDir: string): Promise<{ ok: boolean; message: string }> {
   const _log = (msg: string) => { sLog('INFO', `[git lfs] ${msg}`); if (_lfsPullState.log && Array.isArray(_lfsPullState.log)) (_lfsPullState.log as string[]).push(msg); _lfsPullState.phase = msg }
   try {
     _log('git lfs install --local ...')
-    await runGitAsync('git lfs install --local', repoDir)
-    _log('LFS 초기화 완료')
+    const installResult = await _runGitWithStderr('git lfs install --local', repoDir)
+    _log(`LFS 초기화 완료: ${installResult.stderr || installResult.stdout || '(출력 없음)'}`)
 
-    const patterns = [
-      'Client/Project_Aegis/Assets/GameContents/UI/Texture/**',
-      '**/Texture/Character/**',
-      '**/Texture/Skill/**',
-    ]
-    for (let i = 0; i < patterns.length; i++) {
-      const pat = patterns[i]
-      _log(`패턴 ${i + 1}/${patterns.length}: ${pat} 다운로드 중...`)
-      try {
-        await runGitAsync(`git lfs pull --include="${pat}"`, repoDir)
-        _log(`패턴 ${i + 1} 완료 ✓`)
-      } catch (e) {
-        _log(`패턴 ${i + 1} 실패: ${e instanceof Error ? e.message : String(e)}`)
+    _log('git lfs ls-files 확인 중...')
+    try {
+      const lsResult = await _runGitWithStderr('git lfs ls-files --size', repoDir)
+      const lines = (lsResult.stdout || '').split('\n').filter(Boolean)
+      _log(`LFS 트래킹 파일: ${lines.length}개`)
+      const pngLines = lines.filter(l => l.toLowerCase().includes('.png'))
+      _log(`  그 중 PNG: ${pngLines.length}개`)
+      if (pngLines.length > 0) _log(`  샘플: ${pngLines.slice(0, 3).join(' | ')}`)
+      if (pngLines.length === 0) {
+        _log('⚠️ LFS에 PNG 파일이 없습니다 — GitLab API 다운로드가 필요합니다')
+        return { ok: false, message: '⚠️ LFS에 PNG 파일이 등록되어 있지 않음 — GitLab API 다운로드를 사용하세요' }
       }
+    } catch (e) {
+      _log(`ls-files 실패: ${e instanceof Error ? e.message : String(e)}`)
+    }
+
+    _log('git lfs pull 시작 (전체)...')
+    try {
+      const pullResult = await _runGitWithStderr('git lfs pull', repoDir)
+      _log(`pull stdout: ${pullResult.stdout || '(없음)'}`)
+      _log(`pull stderr: ${pullResult.stderr || '(없음)'}`)
+    } catch (e) {
+      _log(`git lfs pull 실패: ${e instanceof Error ? e.message : String(e)}`)
     }
 
     _log('PNG 파일 카운트 중...')
@@ -741,11 +762,188 @@ async function _pullLfsTextures(repoDir: string): Promise<{ ok: boolean; message
       }} catch { /* skip */ }
     }
     if (existsSync(texDir)) countPngs(texDir, 0)
-    const msg = pngCount > 0 ? `✅ LFS pull 완료: 실제 PNG ${pngCount}개 다운로드됨` : `⚠️ LFS pull 완료했으나 PNG 0개 — LFS 트래킹 확인 필요`
+    const msg = pngCount > 0
+      ? `✅ LFS pull 완료: 실제 PNG ${pngCount}개 다운로드됨`
+      : `⚠️ LFS pull 완료했으나 PNG 0개 — '📦 GitLab API 다운로드' 버튼을 사용하세요`
     _log(msg)
     return { ok: pngCount > 0, message: msg }
   } catch (e) {
     const msg = `❌ LFS pull 실패: ${e instanceof Error ? e.message : String(e)}`
+    _log(msg)
+    return { ok: false, message: msg }
+  }
+}
+
+/** GitLab API를 통해 PNG 텍스처를 직접 다운로드 (git LFS 우회) */
+async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabToken: string): Promise<{ ok: boolean; message: string }> {
+  const _log = (msg: string) => { sLog('INFO', `[gitlab-dl] ${msg}`); if (_lfsPullState.log && Array.isArray(_lfsPullState.log)) (_lfsPullState.log as string[]).push(msg); _lfsPullState.phase = msg }
+  const http = require('http') as typeof import('http')
+  const https = require('https') as typeof import('https')
+
+  const baseUrl = gitlabUrl.replace(/\/[^/]*\.git$/, '').replace(/\/$/, '')
+  const pathParts = new URL(gitlabUrl.replace(/\.git$/, '')).pathname.replace(/^\//, '').split('/')
+  const projectEnc = encodeURIComponent(pathParts.join('/'))
+  const branch = 'develop'
+  const targetFolder = 'Client/Project_Aegis/Assets/GameContents/UI'
+  const outDir = join(repoDir, 'Client', 'Project_Aegis', 'Assets', 'GameContents', 'UI')
+  const lfsUrl = `${gitlabUrl.replace(/\/$/, '')}/info/lfs/objects/batch`
+
+  function apiGet(url: string): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const mod = url.startsWith('https') ? https : http
+      const req = mod.get(url, { headers: { 'PRIVATE-TOKEN': gitlabToken }, timeout: 30000 }, res => {
+        const chunks: Buffer[] = []
+        res.on('data', (c: Buffer) => chunks.push(c))
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 400) reject(new Error(`HTTP ${res.statusCode}: ${Buffer.concat(chunks).toString('utf-8').slice(0, 200)}`))
+          else resolve(Buffer.concat(chunks))
+        })
+      })
+      req.on('error', reject)
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    })
+  }
+
+  function apiPost(url: string, body: unknown, headers: Record<string, string>): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const parsed = new URL(url)
+      const mod = parsed.protocol === 'https:' ? https : http
+      const data = JSON.stringify(body)
+      const req = mod.request({ hostname: parsed.hostname, port: parsed.port, path: parsed.pathname + parsed.search, method: 'POST', headers: { ...headers, 'Content-Length': Buffer.byteLength(data) }, timeout: 30000 }, res => {
+        const chunks: Buffer[] = []
+        res.on('data', (c: Buffer) => chunks.push(c))
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 400) reject(new Error(`HTTP ${res.statusCode}`))
+          else resolve(Buffer.concat(chunks))
+        })
+      })
+      req.on('error', reject)
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+      req.write(data)
+      req.end()
+    })
+  }
+
+  function downloadBinary(url: string, extraHeaders?: Record<string, string>): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const mod = url.startsWith('https') ? https : http
+      const req = mod.get(url, { headers: { ...extraHeaders }, timeout: 60000 }, res => {
+        if (res.statusCode === 301 || res.statusCode === 302) {
+          downloadBinary(res.headers.location!, extraHeaders).then(resolve, reject)
+          return
+        }
+        const chunks: Buffer[] = []
+        res.on('data', (c: Buffer) => chunks.push(c))
+        res.on('end', () => resolve(Buffer.concat(chunks)))
+      })
+      req.on('error', reject)
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+    })
+  }
+
+  try {
+    _log('GitLab API로 파일 목록 조회 중...')
+    const origin = new URL(gitlabUrl.replace(/\.git$/, '')).origin
+    let allFiles: { path: string; name: string; type: string; id: string }[] = []
+    let page = 1
+    while (true) {
+      const folderEnc = encodeURIComponent(targetFolder)
+      const url = `${origin}/api/v4/projects/${projectEnc}/repository/tree?recursive=true&per_page=100&page=${page}&ref=${branch}&path=${folderEnc}`
+      const data = JSON.parse((await apiGet(url)).toString('utf-8'))
+      if (!Array.isArray(data)) { _log(`API 응답 오류: ${JSON.stringify(data).slice(0, 200)}`); break }
+      allFiles = allFiles.concat(data)
+      _log(`페이지 ${page}: ${data.length}개 항목 (누적 ${allFiles.length})`)
+      if (data.length < 100) break
+      page++
+    }
+
+    const pngs = allFiles.filter(f => f.type === 'blob' && f.name.toLowerCase().endsWith('.png'))
+    _log(`총 PNG 파일: ${pngs.length}개`)
+    if (pngs.length === 0) return { ok: false, message: '⚠️ GitLab API에서 PNG 파일을 찾지 못했습니다' }
+
+    let ok = 0, fail = 0, lfsCount = 0
+    const lfsPointers: { oid: string; size: number; file: string }[] = []
+
+    _log(`직접 다운로드 시작 (${pngs.length}개)...`)
+    for (let i = 0; i < pngs.length; i++) {
+      const f = pngs[i]
+      const relPath = f.path.replace(/^Client\/Project_Aegis\/Assets\/GameContents\/UI\//, '')
+      const localPath = join(outDir, ...relPath.split('/'))
+      const localDir = join(localPath, '..')
+
+      if (!existsSync(localDir)) mkdirSync(localDir, { recursive: true })
+
+      const encodedPath = encodeURIComponent(f.path)
+      const dlUrl = `${origin}/api/v4/projects/${projectEnc}/repository/files/${encodedPath}/raw?ref=${branch}`
+
+      try {
+        const buf = await apiGet(dlUrl)
+        const text = buf.length < 300 ? buf.toString('utf-8') : ''
+        if (text.startsWith('version https://git-lfs.github.com/')) {
+          const oidMatch = text.match(/oid sha256:([a-f0-9]+)/)
+          const sizeMatch = text.match(/size (\d+)/)
+          if (oidMatch && sizeMatch) {
+            lfsPointers.push({ oid: oidMatch[1], size: parseInt(sizeMatch[1]), file: localPath })
+            lfsCount++
+          }
+        } else {
+          writeFileSync(localPath, buf)
+          ok++
+        }
+      } catch { fail++ }
+
+      if ((i + 1) % 50 === 0 || i === pngs.length - 1) {
+        _log(`진행: ${i + 1}/${pngs.length} (직접: ${ok}, LFS: ${lfsCount}, 실패: ${fail})`)
+        _lfsPullState.pngCount = ok
+      }
+    }
+
+    if (lfsPointers.length > 0) {
+      _log(`LFS 오브젝트 ${lfsPointers.length}개 다운로드 중...`)
+      const cred = Buffer.from(`oauth2:${gitlabToken}`).toString('base64')
+      const batchSize = 50
+      for (let i = 0; i < lfsPointers.length; i += batchSize) {
+        const batch = lfsPointers.slice(i, i + batchSize)
+        try {
+          const bodyObj = { operation: 'download', transfers: ['basic'], objects: batch.map(p => ({ oid: p.oid, size: p.size })) }
+          const resp = JSON.parse((await apiPost(lfsUrl, bodyObj, {
+            'Authorization': `Basic ${cred}`,
+            'Accept': 'application/vnd.git-lfs+json',
+            'Content-Type': 'application/vnd.git-lfs+json',
+          })).toString('utf-8'))
+
+          const dlMap = new Map<string, { href: string; auth?: string }>()
+          for (const obj of (resp.objects || [])) {
+            if (obj.actions?.download) {
+              dlMap.set(obj.oid, { href: obj.actions.download.href, auth: obj.actions.download.header?.Authorization })
+            }
+          }
+
+          for (const ptr of batch) {
+            const dl = dlMap.get(ptr.oid)
+            if (!dl) { fail++; continue }
+            try {
+              const buf = await downloadBinary(dl.href, dl.auth ? { 'Authorization': dl.auth } : undefined)
+              const dir = join(ptr.file, '..')
+              if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+              writeFileSync(ptr.file, buf)
+              ok++
+            } catch { fail++ }
+          }
+          _log(`LFS 배치 ${Math.floor(i / batchSize) + 1}: ${batch.length}개 처리`)
+        } catch (e) {
+          _log(`LFS 배치 실패: ${e instanceof Error ? e.message : String(e)}`)
+          fail += batch.length
+        }
+      }
+    }
+
+    _lfsPullState.pngCount = ok
+    const msg = ok > 0 ? `✅ GitLab API 다운로드 완료: ${ok}개 PNG (실패: ${fail})` : `❌ 다운로드된 파일 없음 (실패: ${fail})`
+    _log(msg)
+    return { ok: ok > 0, message: msg }
+  } catch (e) {
+    const msg = `❌ GitLab API 다운로드 실패: ${e instanceof Error ? e.message : String(e)}`
     _log(msg)
     return { ok: false, message: msg }
   }
@@ -1735,13 +1933,33 @@ function createGitMiddleware(options: GitPluginOptions) {
           let cnt = 0
           const _c = (d: string, dep: number) => { if (dep > 5) return; try { for (const e of readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) _c(join(d, e.name), dep + 1); else if (e.name.endsWith('.png') && readFileSync(join(d, e.name)).length > 200) cnt++ } } catch {} }
           if (existsSync(texDir)) _c(texDir, 0)
-          _lfsPullState = { running: false, phase: 'done', pngCount: cnt, message: result.message, ok: result.ok, elapsed: Date.now() - (_lfsPullState.startedAt || Date.now()), log: [...(_lfsPullState.log || []), result.message] }
+          const startedAt = typeof _lfsPullState.startedAt === 'number' ? _lfsPullState.startedAt : Date.now()
+          const prevLog = Array.isArray(_lfsPullState.log) ? _lfsPullState.log as string[] : []
+          _lfsPullState = { running: false, phase: 'done', pngCount: cnt, message: result.message, ok: result.ok, elapsed: Date.now() - startedAt, log: [...prevLog, result.message] }
           if (result.ok) _buildAssetIndexIfNeeded()
         })
         sendJson(res, 200, _lfsPullState)
         return
       }
       if (action === 'status') { sendJson(res, 200, _lfsPullState); return }
+
+      // ?action=gitlab-dl → GitLab API 직접 다운로드 (git LFS 우회)
+      if (action === 'gitlab-dl') {
+        if (!existsSync(join(aegisDir, '.git'))) { sendJson(res, 400, { error: 'aegis repo not cloned' }); return }
+        if ((_lfsPullState as { running: boolean }).running) { sendJson(res, 200, _lfsPullState); return }
+        const repo2Url = options.repo2Url || options.repoUrl
+        const repo2Token = options.repo2Token || options.token
+        if (!repo2Url || !repo2Token) { sendJson(res, 400, { error: 'GitLab repo2 URL/token not configured' }); return }
+        _lfsPullState = { running: true, phase: 'starting', startedAt: Date.now(), pngCount: 0, log: ['GitLab API 직접 다운로드 시작...'] }
+        _downloadViaGitlabApi(aegisDir, repo2Url, repo2Token).then(result => {
+          const startedAt2 = typeof _lfsPullState.startedAt === 'number' ? _lfsPullState.startedAt : Date.now()
+          const prevLog2 = Array.isArray(_lfsPullState.log) ? _lfsPullState.log as string[] : []
+          _lfsPullState = { running: false, phase: 'done', pngCount: _lfsPullState.pngCount || 0, message: result.message, ok: result.ok, elapsed: Date.now() - startedAt2, log: [...prevLog2, result.message] }
+          if (result.ok) _buildAssetIndexIfNeeded()
+        })
+        sendJson(res, 200, _lfsPullState)
+        return
+      }
 
       // HTML UI 모드: 시각적 진행 페이지
       const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>LFS Image Pull</title>
@@ -1780,7 +1998,8 @@ h1{font-size:20px;margin-bottom:8px;color:#fff}
 <div class="bar-wrap"><div class="bar" id="bar" style="width:0%"></div></div>
 <div class="status"><div class="phase" id="phase">준비 중...</div><div class="log" id="log"></div></div>
 <div id="countWrap" style="display:none"><div class="count" id="pngCount">0</div><div class="count-label">PNG 파일 다운로드 완료</div></div>
-<button class="btn btn-start" id="startBtn" onclick="startPull()">🚀 LFS Pull 시도</button>
+<button class="btn btn-start" id="gitlabDlBtn" onclick="startGitlabDl()" style="background:linear-gradient(135deg,#10b981,#059669);font-size:1.1em">📦 GitLab API 다운로드 (권장)</button>
+<button class="btn" id="startBtn" onclick="startPull()" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;margin-top:6px">🔧 LFS Pull 시도 (실험적)</button>
 <div style="display:flex;gap:8px;margin-top:10px">
 <button class="btn" style="flex:1;background:#1e293b;color:#f59e0b;border:1px solid #f59e0b33" onclick="reclone()">🗑️ 삭제 후 풀 클론</button>
 <button class="btn" style="flex:1;background:#1e293b;color:#94a3b8;border:1px solid #334155" onclick="runDiag()">🔍 진단</button>
@@ -1828,6 +2047,12 @@ function loadDebug(){
     document.getElementById('curPng').textContent=(d.IMAGES_DIR_pngCount||0)+' 개';
     if(d.samplePngs&&d.samplePngs.length){document.getElementById('log').textContent+=('\\n\\n샘플:\\n'+d.samplePngs.join('\\n'))}
   }).catch(function(){});
+}
+function startGitlabDl(){
+  if(started)return;started=true;
+  document.getElementById('gitlabDlBtn').innerHTML='<span class="spinner"></span>다운로드 중...';
+  document.getElementById('stLabel').textContent='진행 중';
+  api('gitlab-dl').then(function(){pollStatus();});
 }
 function reclone(){
   if(!confirm('⚠️ .git-repo-aegis 폴더를 삭제하고 풀 클론을 받습니다.\\n삭제 후 설정 페이지에서 aegis 레포 동기화를 다시 실행해야 합니다.\\n\\n계속하시겠습니까?'))return;
@@ -6311,13 +6536,20 @@ document.addEventListener('DOMContentLoaded', () => {
               try {
                 mkdirSync(activeDir, { recursive: true })
                 sLog('INFO', `Background clone started: ${activeDir}`)
+                if (isRepo2) {
+                  try { await runGitAsync('git lfs install', activeDir) } catch { /* ok if not available */ }
+                }
                 await runGitAsync(`git clone --single-branch --branch ${branch} "${authUrl}" .`, activeDir)
                 await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
                 const head = await runGitAsync('git rev-parse --short HEAD', activeDir)
                 sLog('INFO', `Background clone complete: ${activeDir} @ ${head}`)
-                // aegis repo: LFS pull (텍스처 보장) → 에셋 인덱스 빌드
                 if (isRepo2) {
-                  _pullLfsTextures(activeDir).finally(() => _buildAssetIndexIfNeeded())
+                  const lfsResult = await _pullLfsTextures(activeDir)
+                  if (!lfsResult.ok && activeRepoUrl && activeToken) {
+                    sLog('INFO', '[clone] LFS pull failed, falling back to GitLab API download')
+                    await _downloadViaGitlabApi(activeDir, activeRepoUrl, activeToken)
+                  }
+                  _buildAssetIndexIfNeeded()
                 }
                 _gitSyncLocks.delete(activeDir)
                 releaseLock()
