@@ -2236,25 +2236,33 @@ function InlineImageCell({ text }: { text: string }) {
   useEffect(() => {
     if (!looksLikeFilename(text)) { setImg(null); return; }
     if (_imgCache.has(text)) { setImg(_imgCache.get(text) ?? null); return; }
-    fetch(`/api/images/list?q=${encodeURIComponent(text)}`)
-      .then(r => r.json())
-      .then((data: { results: { name: string; relPath: string }[] }) => {
+    // 서버에 tool/execute로 이미지 검색 위임 (base64 포함)
+    fetch('/api/tool/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool: 'find_resource_image', input: { query: text } }),
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then((serverResult: { data?: { images: { name: string; relPath: string; url: string; dataUri?: string }[] } } | null) => {
+        if (!serverResult?.data?.images?.length) { _imgCache.set(text, null); setImg(null); return; }
         const normText = text.toLowerCase();
-        const exact = data.results.find(r =>
+        const exact = serverResult.data.images.find(r =>
           r.name.toLowerCase() === normText ||
           r.name.toLowerCase().replace(/\.png$/i, '') === normText
         );
-        const hit = exact ?? data.results[0] ?? null;
-        const result = hit ? { relPath: hit.relPath, url: `/api/images/file?path=${encodeURIComponent(hit.relPath)}` } : null;
+        const hit = exact ?? serverResult.data.images[0];
+        const result = { relPath: hit.relPath, url: hit.url || `/api/images/file?path=${encodeURIComponent(hit.relPath)}` };
         _imgCache.set(text, result);
         setImg(result);
+        if (hit.dataUri) { _dataUriCache.set(text, hit.dataUri); setImgSrc(hit.dataUri); }
       })
       .catch(() => { _imgCache.set(text, null); setImg(null); });
   }, [text]);
 
-  // GET 시도 → 실패 시 POST base64 폴백 (프록시 환경 대응)
+  // dataUri가 없을 때: GET 시도 → 실패 시 POST base64 폴백
   useEffect(() => {
-    if (!img?.url || _dataUriCache.has(text)) { if (_dataUriCache.has(text)) setImgSrc(_dataUriCache.get(text)!); return; }
+    if (imgSrc || !img?.url) return;
+    if (_dataUriCache.has(text)) { setImgSrc(_dataUriCache.get(text)!); return; }
     let cancelled = false;
     fetch(img.url)
       .then(r => { if (!r.ok) throw new Error('GET failed'); return r.blob(); })
@@ -2268,7 +2276,7 @@ function InlineImageCell({ text }: { text: string }) {
         });
       });
     return () => { cancelled = true; };
-  }, [img?.url, img?.relPath, text]);
+  }, [img?.url, img?.relPath, text, imgSrc]);
 
   const monoStyle: React.CSSProperties = { fontFamily: 'var(--font-mono)', color: 'var(--accent)', fontSize: 11 };
 

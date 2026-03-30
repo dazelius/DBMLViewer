@@ -4108,42 +4108,30 @@ export async function sendChatMessage(
           }
         }
         // ── find_resource_image ──
+        // 서버에 위임하여 base64 data URI를 직접 포함받음 (프록시 환경에서 별도 이미지 GET 불필요)
         else if (tb.name === 'find_resource_image') {
           const query = String(inp.query ?? '');
           const reason = inp.reason ? String(inp.reason) : undefined;
           try {
-            const resp = await fetch(`/api/images/list?q=${encodeURIComponent(query)}`);
+            const resp = await fetch('/api/tool/execute', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ tool: 'find_resource_image', input: { query } }),
+            });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const data = await resp.json() as { total: number; results: { name: string; relPath: string }[] };
-            const _ab = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
-            const images = data.results.map((r: { name: string; relPath: string; isAtlas?: boolean }) => ({
-              name: r.name,
-              relPath: r.relPath,
-              url: `${_ab}/api/images/file?path=${encodeURIComponent(r.relPath)}`,
-              isAtlas: r.isAtlas ?? false,
-              dataUri: undefined as string | undefined,
-            }));
-            // POST base64 fetch: 프록시 환경에서 GET 이미지 요청이 차단될 때 대비
-            const base64Results = await Promise.allSettled(
-              images.map(img =>
-                fetch('/api/images/base64', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ path: img.relPath }),
-                }).then(r => r.ok ? r.json() : null)
-              )
-            );
-            for (let idx = 0; idx < images.length; idx++) {
-              const r = base64Results[idx];
-              if (r.status === 'fulfilled' && r.value?.dataUri) {
-                images[idx].dataUri = r.value.dataUri;
-              }
+            const serverResult = await resp.json() as { result: string; data?: { total: number; images: { name: string; relPath: string; url: string; dataUri?: string; isAtlas?: boolean }[] } };
+            if (serverResult.data?.images) {
+              const _ab = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
+              const images = serverResult.data.images.map(img => ({
+                ...img,
+                url: img.url || `${_ab}/api/images/file?path=${encodeURIComponent(img.relPath)}`,
+              }));
+              tc = { kind: 'image_search', query, images, total: serverResult.data.total } as ImageResult;
+              resultStr = serverResult.result;
+            } else {
+              tc = { kind: 'image_search', query, images: [], total: 0 } as ImageResult;
+              resultStr = serverResult.result || `"${query}" 이미지 없음`;
             }
-            tc = { kind: 'image_search', query, images, total: data.total } as ImageResult;
-            resultStr = images.length > 0
-              ? images.map((i) => `${i.name} → ${i.dataUri ? '(inline)' : i.url}`).join('\n') +
-                `\n\n총 ${images.length}개. 아티팩트에 삽입할 때: <img src="위의URL" style="max-width:100%">`
-              : `"${query}" 이미지 없음 (전체 ${data.total}개 중)`;
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             tc = { kind: 'image_search', query, images: [], total: 0, error: msg } as ImageResult;
