@@ -1706,10 +1706,27 @@ function createGitMiddleware(options: GitPluginOptions) {
       }
 
       // 1) 로컬 IMAGES_DIR 직접 경로
-      const safePath = join(IMAGES_DIR, relPath.replace(/\.\./g, ''))
+      const cleanRel = relPath.replace(/\.\./g, '')
+      const safePath = join(IMAGES_DIR, cleanRel)
       if (safePath.startsWith(IMAGES_DIR) && existsSync(safePath)) {
         serveFile(safePath)
         return
+      }
+
+      // 1-b) 알려진 접두사 제거 후 재시도 (sync_ui_images.ps1이 GameContents/UI/ 이하만 저장)
+      const _knownPrefixes = [
+        'GameContents/UI/',
+        'Assets/GameContents/UI/',
+        'Client/Project_Aegis/Assets/GameContents/UI/',
+      ]
+      for (const pfx of _knownPrefixes) {
+        if (cleanRel.toLowerCase().startsWith(pfx.toLowerCase())) {
+          const stripped = join(IMAGES_DIR, cleanRel.slice(pfx.length))
+          if (stripped.startsWith(IMAGES_DIR) && existsSync(stripped)) {
+            serveFile(stripped, cleanRel)
+            return
+          }
+        }
       }
 
       // 2) 로컬 IMAGES_DIR 내 smart fallback (파일명 매칭)
@@ -7844,15 +7861,14 @@ function serverExecuteTool(
 
         const results = all.filter(f => f.name.toLowerCase().includes(query)).slice(0, 30)
         if (results.length === 0) return { result: `"${query}" 이미지 없음 (전체 ${all.length}개 중)` }
-        const tmUrl = options.tableMasterUrl || getTableMasterUrl()
+        const imgUrlFn = (relPath: string) => `./api/images/file?path=${encodeURIComponent(relPath)}`
         return {
           result: results.map(r => {
-            const url = `${tmUrl}/api/images/file?path=${encodeURIComponent(r.relPath)}`
-            return `${r.name} → ${url}`
+            return `${r.name} → ${imgUrlFn(r.relPath)}`
           }).join('\n') + `\n\n총 ${results.length}개. 아티팩트에 삽입할 때: <img src="위의URL" style="max-width:100%">`,
           data: { total: results.length, images: results.map(r => ({
             name: r.name, relPath: r.relPath,
-            url: `${tmUrl}/api/images/file?path=${encodeURIComponent(r.relPath)}`,
+            url: imgUrlFn(r.relPath),
           })) }
         }
       } catch (e) {

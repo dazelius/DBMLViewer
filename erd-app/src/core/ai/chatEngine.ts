@@ -4115,11 +4115,11 @@ export async function sendChatMessage(
             const resp = await fetch(`/api/images/list?q=${encodeURIComponent(query)}`);
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json() as { total: number; results: { name: string; relPath: string }[] };
-            const imgBase = window.location.origin;
+            const _ab = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
             const images = data.results.map((r: { name: string; relPath: string; isAtlas?: boolean }) => ({
               name: r.name,
               relPath: r.relPath,
-              url: `${imgBase}/api/images/file?path=${encodeURIComponent(r.relPath)}`,
+              url: `${_ab}/api/images/file?path=${encodeURIComponent(r.relPath)}`,
               isAtlas: r.isAtlas ?? false,
             }));
             tc = { kind: 'image_search', query, images, total: data.total } as ImageResult;

@@ -2093,7 +2093,7 @@ function renderMarkdown(text: string): React.ReactNode[] {
                 const filename = pathParam
                   ? decodeURIComponent(pathParam[1]).split('/').pop() ?? ''
                   : url.split('/').pop() ?? '';
-                if (filename) img.src = `/api/images/smart?name=${encodeURIComponent(filename)}`;
+                if (filename) img.src = resolveApiUrl(`/api/images/smart?name=${encodeURIComponent(filename)}`);
               }}
             />
           </div>,
@@ -2181,6 +2181,16 @@ function looksLikeTableName(text: string): boolean {
 
 // ── 인라인 이미지 썸네일 (테이블 셀 파일명 자동 감지) ────────────────────────
 
+// 프록시 환경에서 <img src>는 fetch 패치를 거치지 않으므로 base path를 직접 붙여야 함
+const _apiBase = (() => {
+  const b = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
+  return b || '';
+})();
+function resolveApiUrl(path: string): string {
+  if (!path.startsWith('/api/')) return path;
+  return _apiBase + path;
+}
+
 // 모듈 레벨 캐시: filename → { relPath, url } | null
 const _imgCache = new Map<string, { relPath: string; url: string } | null>();
 
@@ -2214,7 +2224,7 @@ function InlineImageCell({ text }: { text: string }) {
           r.name.toLowerCase().replace(/\.png$/i, '') === normText
         );
         const hit = exact ?? data.results[0] ?? null;
-        const result = hit ? { relPath: hit.relPath, url: `/api/images/file?path=${encodeURIComponent(hit.relPath)}` } : null;
+        const result = hit ? { relPath: hit.relPath, url: resolveApiUrl(`/api/images/file?path=${encodeURIComponent(hit.relPath)}`) } : null;
         _imgCache.set(text, result);
         setImg(result);
       })
@@ -2294,7 +2304,7 @@ function inlineMarkdown(text: string): React.ReactNode {
             const filename = pathParam
               ? decodeURIComponent(pathParam[1]).split('/').pop() ?? ''
               : imgUrl.split('/').pop() ?? '';
-            if (filename) img.src = `/api/images/smart?name=${encodeURIComponent(filename)}`;
+            if (filename) img.src = resolveApiUrl(`/api/images/smart?name=${encodeURIComponent(filename)}`);
           }}
         />,
       );
@@ -2323,7 +2333,7 @@ function inlineMarkdown(text: string): React.ReactNode {
               const filename = pathParam
                 ? decodeURIComponent(pathParam[1]).split('/').pop() ?? ''
                 : linkUrl.split('/').pop() ?? '';
-              if (filename) img.src = `/api/images/smart?name=${encodeURIComponent(filename)}`;
+              if (filename) img.src = resolveApiUrl(`/api/images/smart?name=${encodeURIComponent(filename)}`);
             }}
           />,
         );
@@ -3777,7 +3787,9 @@ document.addEventListener('error', function(e) {
     var parts = decodeURIComponent(pathParam[1]).split('/');
     filename = parts[parts.length - 1];
   }
-  img.src = '/api/images/smart?name=' + encodeURIComponent(filename);
+  var apiBase = '/';
+  try { apiBase = window.parent.location.href.split('#')[0].replace(/[^/]*$/, ''); } catch(e2) {}
+  img.src = apiBase + 'api/images/smart?name=' + encodeURIComponent(filename);
 }, true);
 `;
 
@@ -4046,8 +4058,8 @@ function ArtifactSidePanel({
   // finalTc 완료 시 blob URL 생성
   useEffect(() => {
     if (!isComplete || !finalTc) return;
-    const origin = window.location.origin;
-    const base = `<base href="${origin}/">`;
+    const baseHref = window.location.href.split('#')[0].replace(/[^/]*$/, '');
+    const base = `<base href="${baseHref}">`;
     const resolved = processArtifactCharts(resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData));
     const fullHtml = resolved.includes('<!DOCTYPE') || resolved.includes('<html')
       ? resolved
@@ -4061,9 +4073,9 @@ function ArtifactSidePanel({
   // 완료 상태에서 HTML 저장
   const handleSaveHtml = useCallback(() => {
     if (!finalTc) return;
-    const origin = window.location.origin;
+    const baseHref = window.location.href.split('#')[0].replace(/[^/]*$/, '');
     const resolved = processArtifactCharts(resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData));
-    const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
+    const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${baseHref}"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
     const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -4101,9 +4113,9 @@ function ArtifactSidePanel({
     if (!finalTc || publishState === 'loading') return;
     setPublishState('loading');
     try {
-      const origin = window.location.origin;
+      const baseHref = window.location.href.split('#')[0].replace(/[^/]*$/, '');
       const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
-      const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
+      const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${baseHref}"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
       const res = await fetch('/api/publish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4131,9 +4143,9 @@ function ArtifactSidePanel({
     const id = idMatch[1];
     setPublishState('loading');
     try {
-      const origin = window.location.origin;
+      const baseHref = window.location.href.split('#')[0].replace(/[^/]*$/, '');
       const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
-      const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${origin}/"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
+      const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${baseHref}"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
       const res = await fetch(`/api/publish/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
