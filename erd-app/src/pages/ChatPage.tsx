@@ -2205,11 +2205,14 @@ function looksLikeFilename(text: string): boolean {
   return underscoreCount >= 2 && /^[a-z][a-z0-9_]+$/.test(text);
 }
 
+// blob URL 캐시: fetch를 통해 이미지를 로드 (프록시 환경에서 <img src>는 fetch 패치를 거치지 않으므로)
+const _blobCache = new Map<string, string>();
+
 function InlineImageCell({ text }: { text: string }) {
-  // undefined = 검색중, null = 없음, {..} = 찾음
   const [img, setImg] = useState<{ relPath: string; url: string } | null | undefined>(
     _imgCache.has(text) ? (_imgCache.get(text) ?? null) : undefined
   );
+  const [blobUrl, setBlobUrl] = useState<string | null>(_blobCache.get(text) ?? null);
 
   useEffect(() => {
     if (!looksLikeFilename(text)) { setImg(null); return; }
@@ -2217,23 +2220,38 @@ function InlineImageCell({ text }: { text: string }) {
     fetch(`/api/images/list?q=${encodeURIComponent(text)}`)
       .then(r => r.json())
       .then((data: { results: { name: string; relPath: string }[] }) => {
-        // 정확히 이름이 일치하는 것 우선 (확장자 제거 후 비교), 없으면 첫 번째
         const normText = text.toLowerCase();
         const exact = data.results.find(r =>
           r.name.toLowerCase() === normText ||
           r.name.toLowerCase().replace(/\.png$/i, '') === normText
         );
         const hit = exact ?? data.results[0] ?? null;
-        const result = hit ? { relPath: hit.relPath, url: resolveApiUrl(`/api/images/file?path=${encodeURIComponent(hit.relPath)}`) } : null;
+        const result = hit ? { relPath: hit.relPath, url: `/api/images/file?path=${encodeURIComponent(hit.relPath)}` } : null;
         _imgCache.set(text, result);
         setImg(result);
       })
       .catch(() => { _imgCache.set(text, null); setImg(null); });
   }, [text]);
 
+  // fetch를 통해 이미지를 blob URL로 변환 (fetch는 main.tsx에서 패치되어 프록시를 올바르게 경유)
+  useEffect(() => {
+    if (!img?.url || _blobCache.has(text)) return;
+    let cancelled = false;
+    fetch(img.url)
+      .then(r => r.ok ? r.blob() : null)
+      .then(blob => {
+        if (blob && !cancelled) {
+          const u = URL.createObjectURL(blob);
+          _blobCache.set(text, u);
+          setBlobUrl(u);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [img?.url, text]);
+
   const monoStyle: React.CSSProperties = { fontFamily: 'var(--font-mono)', color: 'var(--accent)', fontSize: 11 };
 
-  // 검색 중 → 로딩 스피너 + 텍스트
   if (img === undefined) {
     return (
       <span className="inline-flex items-center gap-1.5">
@@ -2245,24 +2263,19 @@ function InlineImageCell({ text }: { text: string }) {
     );
   }
 
-  // 이미지 없음 → 평문
   if (!img) return <span style={monoStyle}>{text}</span>;
 
-  // 이미지 있음 → 썸네일 + 텍스트
   return (
     <span className="inline-flex items-center gap-1.5">
-      <span
-        className="inline-flex items-center justify-center rounded overflow-hidden flex-shrink-0"
-        style={{ width: 28, height: 28, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)' }}
-        title={img.relPath}
-      >
-        <img
-          src={img.url}
-          alt={text}
-          style={{ width: 26, height: 26, objectFit: 'contain' }}
-          onError={(e) => { (e.currentTarget.parentElement!.style.display = 'none'); }}
-        />
-      </span>
+      {blobUrl && (
+        <span
+          className="inline-flex items-center justify-center rounded overflow-hidden flex-shrink-0"
+          style={{ width: 28, height: 28, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)' }}
+          title={img.relPath}
+        >
+          <img src={blobUrl} alt={text} style={{ width: 26, height: 26, objectFit: 'contain' }} />
+        </span>
+      )}
       <span style={monoStyle}>{text}</span>
     </span>
   );
@@ -3209,11 +3222,12 @@ function ImageThumb({
   selected,
   onClick,
 }: {
-  img: { name: string; url: string; relPath: string; isAtlas?: boolean };
+  img: { name: string; url: string; relPath: string; isAtlas?: boolean; dataUri?: string };
   selected: boolean;
   onClick: () => void;
 }) {
-  const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
+  const [status, setStatus] = useState<'loading' | 'ok' | 'error'>(img.dataUri ? 'ok' : 'loading');
+  const imgSrc = img.dataUri || img.url;
 
   return (
     <button
@@ -3229,7 +3243,7 @@ function ImageThumb({
       <div className="w-full rounded flex items-center justify-center overflow-hidden" style={{ height: 64, background: 'rgba(255,255,255,0.04)' }}>
         {status !== 'error' ? (
           <img
-            src={img.url}
+            src={imgSrc}
             alt={img.name}
             className="w-full h-full"
             style={{ objectFit: 'contain', display: status === 'ok' ? 'block' : 'none' }}
@@ -3264,7 +3278,7 @@ function ImageThumb({
 
 function ImageCard({ tc }: { tc: ImageResult }) {
   const [expanded, setExpanded] = useState(true);
-  const [selected, setSelected] = useState<{ name: string; url: string } | null>(null);
+  const [selected, setSelected] = useState<{ name: string; url: string; dataUri?: string } | null>(null);
 
   if (tc.error) {
     return (
@@ -3333,7 +3347,7 @@ function ImageCard({ tc }: { tc: ImageResult }) {
               </div>
               <div className="flex justify-center rounded overflow-hidden" style={{ background: 'repeating-conic-gradient(#808080 0% 25%, transparent 0% 50%) 0 0 / 12px 12px' }}>
                 <img
-                  src={selected.url}
+                  src={selected.dataUri || selected.url}
                   alt={selected.name}
                   style={{ maxWidth: '100%', maxHeight: 300, objectFit: 'contain' }}
                 />

@@ -1,7 +1,7 @@
 import type { Plugin } from 'vite'
 import { execFileSync, execFile } from 'child_process'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync, unlinkSync, copyFileSync } from 'fs'
-import { join, resolve, extname, sep } from 'path'
+import { join, resolve, extname, sep, isAbsolute } from 'path'
 import { promisify } from 'util'
 import { createRequire } from 'module'
 import { request as httpRequest } from 'http'
@@ -7862,14 +7862,46 @@ function serverExecuteTool(
         const results = all.filter(f => f.name.toLowerCase().includes(query)).slice(0, 30)
         if (results.length === 0) return { result: `"${query}" 이미지 없음 (전체 ${all.length}개 중)` }
         const imgUrlFn = (relPath: string) => `./api/images/file?path=${encodeURIComponent(relPath)}`
-        return {
-          result: results.map(r => {
-            return `${r.name} → ${imgUrlFn(r.relPath)}`
-          }).join('\n') + `\n\n총 ${results.length}개. 아티팩트에 삽입할 때: <img src="위의URL" style="max-width:100%">`,
-          data: { total: results.length, images: results.map(r => ({
+
+        // 이미지 파일을 base64 data URI로 인라인 (프록시 환경에서 별도 HTTP 요청 없이 이미지 표시)
+        const _imgPrefixes = ['GameContents/UI/', 'Assets/GameContents/UI/', 'Client/Project_Aegis/Assets/GameContents/UI/']
+        const _imgResolve = (r: { path: string; relPath: string }): string | null => {
+          const MAX_B64 = 200 * 1024
+          const tryRead = (p: string): string | null => {
+            try { if (!existsSync(p)) return null; const buf = readFileSync(p); return buf.length <= MAX_B64 ? `data:image/png;base64,${buf.toString('base64')}` : null } catch { return null }
+          }
+          // 1) 절대 경로 직접
+          if (isAbsolute(r.path)) { const d = tryRead(r.path); if (d) return d }
+          // 2) IMAGES_DIR + relPath
+          { const d = tryRead(join(IMAGES_DIR, r.relPath)); if (d) return d }
+          // 3) 접두사 제거 후 IMAGES_DIR
+          for (const pfx of _imgPrefixes) {
+            if (r.relPath.toLowerCase().startsWith(pfx.toLowerCase())) {
+              const d = tryRead(join(IMAGES_DIR, r.relPath.slice(pfx.length))); if (d) return d
+            }
+          }
+          // 4) 에셋 디렉토리 후보
+          const _dirs = [
+            join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
+            join(process.cwd(), '..', '..', 'assets'),
+          ]
+          for (const d of _dirs) { const x = tryRead(join(d, r.relPath.replace(/\//g, sep))); if (x) return x }
+          return null
+        }
+
+        const images = results.map(r => {
+          const dataUri = _imgResolve(r)
+          return {
             name: r.name, relPath: r.relPath,
             url: imgUrlFn(r.relPath),
-          })) }
+            dataUri: dataUri ?? undefined,
+          }
+        })
+
+        return {
+          result: images.map(r => `${r.name} → ${r.dataUri ? '(inline)' : r.url}`).join('\n') +
+            `\n\n총 ${images.length}개. 아티팩트에 삽입할 때: <img src="위의URL" style="max-width:100%">`,
+          data: { total: images.length, images }
         }
       } catch (e) {
         return { result: `이미지 검색 오류: ${e instanceof Error ? e.message : String(e)}` }

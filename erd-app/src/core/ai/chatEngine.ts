@@ -269,7 +269,7 @@ export interface RevisionDiffResult {
 export interface ImageResult {
   kind: 'image_search';
   query: string;
-  images: { name: string; relPath: string; url: string; isAtlas?: boolean }[];
+  images: { name: string; relPath: string; url: string; isAtlas?: boolean; dataUri?: string }[];
   total: number;
   error?: string;
 }
