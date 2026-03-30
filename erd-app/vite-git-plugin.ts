@@ -1682,7 +1682,50 @@ function createGitMiddleware(options: GitPluginOptions) {
       const url = new URL(req.url, 'http://localhost')
       const action = url.searchParams.get('action')
 
-      // JSON API 모드: ?action=start → 시작, ?action=status → 상태
+      // JSON API 모드: ?action=reclone → .git-repo-aegis 삭제 (재클론 유도)
+      if (action === 'reclone') {
+        if ((_lfsPullState as { running: boolean }).running) { sendJson(res, 409, { error: 'LFS pull 진행 중' }); return }
+        try {
+          const rmrf = (dir: string) => { try { const { rmSync } = require('fs'); rmSync(dir, { recursive: true, force: true }) } catch { /* fallback */ try { execFileSync(process.platform === 'win32' ? 'cmd' : 'rm', process.platform === 'win32' ? ['/c', 'rmdir', '/s', '/q', dir] : ['-rf', dir], { timeout: 60000 }) } catch {} } }
+          if (existsSync(aegisDir)) {
+            sLog('INFO', `[reclone] .git-repo-aegis 삭제 중: ${aegisDir}`)
+            rmrf(aegisDir)
+            sLog('INFO', `[reclone] 삭제 완료. 존재: ${existsSync(aegisDir)}`)
+          }
+          _lfsPullState = { running: false, phase: 'reclone_ready', log: ['.git-repo-aegis 삭제됨 — 설정 페이지에서 aegis 레포 동기화를 다시 실행하세요.'] }
+          sendJson(res, 200, { ok: true, deleted: !existsSync(aegisDir), message: '.git-repo-aegis 삭제됨. 설정 페이지에서 aegis 레포 동기화를 다시 실행하면 풀 클론으로 받습니다.' })
+        } catch (e) {
+          sendJson(res, 500, { error: String(e) })
+        }
+        return
+      }
+
+      // ?action=diag → 샘플 PNG 파일 분석
+      if (action === 'diag') {
+        const texDir = join(aegisDir, 'Client', 'Project_Aegis', 'Assets', 'GameContents', 'UI', 'Texture')
+        const samples: Record<string, unknown>[] = []
+        const _scan = (dir: string, depth: number) => {
+          if (depth > 3 || samples.length >= 10) return
+          try { for (const e of readdirSync(dir, { withFileTypes: true })) {
+            if (e.isDirectory()) _scan(join(dir, e.name), depth + 1)
+            else if (e.name.endsWith('.png') && samples.length < 10) {
+              const fp = join(dir, e.name)
+              const buf = readFileSync(fp)
+              const isLfs = buf.length < 200 && buf.toString('utf-8').startsWith('version https://git-lfs.github.com/')
+              samples.push({ name: e.name, path: fp.replace(process.cwd(), '.'), size: buf.length, isLfs, content: isLfs ? buf.toString('utf-8').trim() : `(binary ${buf.length}B)` })
+            } else if (e.name.endsWith('.meta') && !existsSync(join(dir, e.name.replace('.meta', ''))) && samples.length < 10) {
+              samples.push({ name: e.name, path: join(dir, e.name).replace(process.cwd(), '.'), note: 'meta-only (no actual file)' })
+            }
+          }} catch {}
+        }
+        if (existsSync(texDir)) _scan(texDir, 0)
+        let gitLfsEnv = ''
+        try { gitLfsEnv = execFileSync('git', ['lfs', 'env'], { cwd: aegisDir, encoding: 'utf-8', timeout: 10000 }).trim() } catch (e) { gitLfsEnv = String(e) }
+        sendJson(res, 200, { texDir: texDir.replace(process.cwd(), '.'), exists: existsSync(texDir), samples, gitLfsEnv: gitLfsEnv.split('\n').slice(0, 15) })
+        return
+      }
+
+      // ?action=start → LFS pull 시작
       if (action === 'start') {
         if (!existsSync(join(aegisDir, '.git'))) { sendJson(res, 400, { error: 'aegis repo not cloned' }); return }
         if ((_lfsPullState as { running: boolean }).running) { sendJson(res, 200, _lfsPullState); return }
@@ -1737,7 +1780,11 @@ h1{font-size:20px;margin-bottom:8px;color:#fff}
 <div class="bar-wrap"><div class="bar" id="bar" style="width:0%"></div></div>
 <div class="status"><div class="phase" id="phase">준비 중...</div><div class="log" id="log"></div></div>
 <div id="countWrap" style="display:none"><div class="count" id="pngCount">0</div><div class="count-label">PNG 파일 다운로드 완료</div></div>
-<button class="btn btn-start" id="startBtn" onclick="startPull()">🚀 다운로드 시작</button>
+<button class="btn btn-start" id="startBtn" onclick="startPull()">🚀 LFS Pull 시도</button>
+<div style="display:flex;gap:8px;margin-top:10px">
+<button class="btn" style="flex:1;background:#1e293b;color:#f59e0b;border:1px solid #f59e0b33" onclick="reclone()">🗑️ 삭제 후 풀 클론</button>
+<button class="btn" style="flex:1;background:#1e293b;color:#94a3b8;border:1px solid #334155" onclick="runDiag()">🔍 진단</button>
+</div>
 </div>
 <script>
 var polling=null,started=false;
@@ -1781,6 +1828,29 @@ function loadDebug(){
     document.getElementById('curPng').textContent=(d.IMAGES_DIR_pngCount||0)+' 개';
     if(d.samplePngs&&d.samplePngs.length){document.getElementById('log').textContent+=('\\n\\n샘플:\\n'+d.samplePngs.join('\\n'))}
   }).catch(function(){});
+}
+function reclone(){
+  if(!confirm('⚠️ .git-repo-aegis 폴더를 삭제하고 풀 클론을 받습니다.\\n삭제 후 설정 페이지에서 aegis 레포 동기화를 다시 실행해야 합니다.\\n\\n계속하시겠습니까?'))return;
+  document.getElementById('log').textContent='삭제 중...';
+  document.getElementById('stLabel').textContent='재클론';
+  api('reclone').then(function(r){
+    document.getElementById('phase').textContent=r.ok?'삭제 완료':'삭제 실패';
+    document.getElementById('log').textContent=JSON.stringify(r,null,2)+'\\n\\n👉 이제 설정 페이지에서 aegis 레포 동기화를 실행하세요.\\n   풀 클론으로 새로 받으면서 LFS 파일도 함께 다운로드됩니다.';
+    document.getElementById('stLabel').textContent=r.ok?'재클론 대기':'오류';
+    document.getElementById('bar').style.width='50%';
+    document.getElementById('bar').style.background='linear-gradient(90deg,#f59e0b,#fb923c)';
+  });
+}
+function runDiag(){
+  document.getElementById('log').textContent='진단 중...';
+  api('diag').then(function(d){
+    document.getElementById('phase').textContent='진단 결과';
+    var txt='Texture dir: '+d.texDir+' (exists: '+d.exists+')\\n\\n';
+    if(d.samples&&d.samples.length){txt+='샘플 파일:\\n';d.samples.forEach(function(s){txt+='  '+s.name+' → size:'+s.size+' isLfs:'+s.isLfs+(s.content?' ['+s.content.substring(0,80)+']':'')+' '+(s.note||'')+'\\n'});}
+    else txt+='PNG 파일 없음 (.meta만 존재)\\n';
+    if(d.gitLfsEnv){txt+='\\ngit lfs env:\\n  '+d.gitLfsEnv.join('\\n  ');}
+    document.getElementById('log').textContent=txt;
+  });
 }
 loadDebug();
 api('status').then(function(s){
