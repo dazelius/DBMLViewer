@@ -8198,8 +8198,8 @@ function serverExecuteTool(
         if (diagnostics.length > 0) console.warn(`[find_resource_image] ${diagnostics.length}개 파일 로드 실패:\n${diagnostics.join('\n')}`)
 
         return {
-          result: images.map(r => `${r.name} → ${r.dataUri ? `(inline ${Math.round((r.dataUri?.length ?? 0) / 1024)}KB)` : r.url}`).join('\n') +
-            `\n\n총 ${images.length}개.${diagText}`,
+          result: images.map(r => `${r.name} → ${r.dataUri ? `(inline ${Math.round((r.dataUri?.length ?? 0) / 1024)}KB)` : '(파일 미발견 — UI에서 POST로 재시도)'}`).join('\n') +
+            `\n\n총 ${images.length}개. 이미지 URL은 클라이언트가 자동 처리하므로 <img src>에 직접 URL을 넣지 마세요.${diagText}`,
           data: { total: images.length, images, diagnostics: diagnostics.length > 0 ? diagnostics : undefined }
         }
       } catch (e) {

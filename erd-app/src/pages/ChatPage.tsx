@@ -2213,6 +2213,21 @@ async function fetchImagePost(params: { path?: string; name?: string }): Promise
   } catch { return null; }
 }
 
+// /api/images/ URL → POST base64로 변환하는 인라인 이미지 컴포넌트
+function PostImg({ url, alt, style }: { url: string; alt: string; style?: React.CSSProperties }) {
+  const [src, setSrc] = useState('');
+  useEffect(() => {
+    const pathParam = url.match(/[?&]path=([^&]+)/);
+    const filename = url.split('/').pop()?.split('?')[0] ?? '';
+    const params: { path?: string; name?: string } = pathParam
+      ? { path: decodeURIComponent(pathParam[1]) }
+      : { name: filename.replace(/\.png$/i, '') };
+    fetchImagePost(params).then(uri => { if (uri) setSrc(uri); });
+  }, [url]);
+  if (!src) return <span style={{ display: 'inline-block', width: 20, height: 20, borderRadius: 3, background: 'rgba(255,255,255,0.06)', verticalAlign: 'middle' }} />;
+  return <img src={src} alt={alt} style={style} />;
+}
+
 // 모듈 레벨 캐시: filename → { relPath, url } | null
 const _imgCache = new Map<string, { relPath: string; url: string } | null>();
 
@@ -2259,24 +2274,16 @@ function InlineImageCell({ text }: { text: string }) {
       .catch(() => { _imgCache.set(text, null); setImg(null); });
   }, [text]);
 
-  // dataUri가 없을 때: GET 시도 → 실패 시 POST base64 폴백
+  // dataUri가 없을 때: POST base64로 이미지 로드 (GET 요청 없이)
   useEffect(() => {
-    if (imgSrc || !img?.url) return;
+    if (imgSrc || !img?.relPath) return;
     if (_dataUriCache.has(text)) { setImgSrc(_dataUriCache.get(text)!); return; }
     let cancelled = false;
-    fetch(img.url)
-      .then(r => { if (!r.ok) throw new Error('GET failed'); return r.blob(); })
-      .then(blob => {
-        if (!cancelled) { const u = URL.createObjectURL(blob); setImgSrc(u); }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        fetchImagePost({ path: img.relPath }).then(uri => {
-          if (uri && !cancelled) { _dataUriCache.set(text, uri); setImgSrc(uri); }
-        });
-      });
+    fetchImagePost({ path: img.relPath }).then(uri => {
+      if (uri && !cancelled) { _dataUriCache.set(text, uri); setImgSrc(uri); }
+    });
     return () => { cancelled = true; };
-  }, [img?.url, img?.relPath, text, imgSrc]);
+  }, [img?.relPath, text, imgSrc]);
 
   const monoStyle: React.CSSProperties = { fontFamily: 'var(--font-mono)', color: 'var(--accent)', fontSize: 11 };
 
@@ -2325,29 +2332,28 @@ function inlineMarkdown(text: string): React.ReactNode {
     const [full, imgAlt, imgUrl, linkText, linkUrl, boldText, codeText, italicText, prefabPath, bareUrl, tableRef] = match;
 
     if (imgUrl !== undefined) {
-      // 이미지: ![alt](url) — Confluence URL이면 프록시 사용
+      // 이미지: ![alt](url) — /api/images/ URL이면 POST base64로 로드 (프록시 GET 404 방지)
+      const isApiImg = imgUrl.includes('/api/images/');
       const isConfImg = /atlassian\.net\/wiki\//.test(imgUrl) && !imgUrl.startsWith('/api/') && !imgUrl.startsWith('./api/');
-      const proxiedImgUrl = isConfImg
-        ? `./api/confluence/attachment?url=${encodeURIComponent(imgUrl)}`
-        : imgUrl;
-      segments.push(
-        <img
-          key={key++}
-          src={proxiedImgUrl}
-          alt={imgAlt ?? ''}
-          style={{ maxWidth: '100%', maxHeight: '120px', borderRadius: '4px', verticalAlign: 'middle', display: 'inline-block' }}
-          onError={(e) => {
-            const img = e.currentTarget;
-            if (img.dataset.smartRetried) return;
-            img.dataset.smartRetried = '1';
-            const pathParam = imgUrl.match(/[?&]path=([^&]+)/);
-            const filename = pathParam
-              ? decodeURIComponent(pathParam[1]).split('/').pop() ?? ''
-              : imgUrl.split('/').pop() ?? '';
-            if (filename) fetchImagePost({ name: filename.replace(/\.png$/i, '') }).then(uri => { if (uri) img.src = uri; });
-          }}
-        />,
-      );
+      const imgStyle = { maxWidth: '100%', maxHeight: '120px', borderRadius: '4px', verticalAlign: 'middle' as const, display: 'inline-block' as const };
+      if (isApiImg) {
+        segments.push(<PostImg key={key++} url={imgUrl} alt={imgAlt ?? ''} style={imgStyle} />);
+      } else {
+        const proxiedImgUrl = isConfImg
+          ? `./api/confluence/attachment?url=${encodeURIComponent(imgUrl)}`
+          : imgUrl;
+        segments.push(
+          <img key={key++} src={proxiedImgUrl} alt={imgAlt ?? ''} style={imgStyle}
+            onError={(e) => {
+              const img = e.currentTarget;
+              if (img.dataset.smartRetried) return;
+              img.dataset.smartRetried = '1';
+              const filename = imgUrl.split('/').pop() ?? '';
+              if (filename) fetchImagePost({ name: filename.replace(/\.png$/i, '') }).then(uri => { if (uri) img.src = uri; });
+            }}
+          />,
+        );
+      }
     } else if (linkUrl !== undefined) {
       // Confluence/Atlassian 호스팅 URL → 프록시 경로로 변환
       const isConfluenceHosted = /atlassian\.net\/wiki\//.test(linkUrl) && !linkUrl.startsWith('/api/') && !linkUrl.startsWith('./api/');
@@ -2358,25 +2364,22 @@ function inlineMarkdown(text: string): React.ReactNode {
       // 링크: [text](url) — 이미지 URL이면 img로 렌더
       const isImageUrl = /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(linkUrl) || linkUrl.includes('/api/images/') || isProxied;
       if (isImageUrl && !isConfluenceHosted && !isProxied) {
-        // 로컬/외부 이미지만 인라인 렌더
-        segments.push(
-          <img
-            key={key++}
-            src={effectiveUrl}
-            alt={linkText ?? ''}
-            style={{ maxWidth: '100%', maxHeight: '120px', borderRadius: '4px', verticalAlign: 'middle', display: 'inline-block' }}
-            onError={(e) => {
-              const img = e.currentTarget;
-              if (img.dataset.smartRetried) return;
-              img.dataset.smartRetried = '1';
-              const pathParam = linkUrl.match(/[?&]path=([^&]+)/);
-              const filename = pathParam
-                ? decodeURIComponent(pathParam[1]).split('/').pop() ?? ''
-                : linkUrl.split('/').pop() ?? '';
-              if (filename) fetchImagePost({ name: filename.replace(/\.png$/i, '') }).then(uri => { if (uri) img.src = uri; });
-            }}
-          />,
-        );
+        const linkImgStyle = { maxWidth: '100%', maxHeight: '120px', borderRadius: '4px', verticalAlign: 'middle' as const, display: 'inline-block' as const };
+        if (linkUrl.includes('/api/images/')) {
+          segments.push(<PostImg key={key++} url={linkUrl} alt={linkText ?? ''} style={linkImgStyle} />);
+        } else {
+          segments.push(
+            <img key={key++} src={effectiveUrl} alt={linkText ?? ''} style={linkImgStyle}
+              onError={(e) => {
+                const img = e.currentTarget;
+                if (img.dataset.smartRetried) return;
+                img.dataset.smartRetried = '1';
+                const filename = linkUrl.split('/').pop() ?? '';
+                if (filename) fetchImagePost({ name: filename.replace(/\.png$/i, '') }).then(uri => { if (uri) img.src = uri; });
+              }}
+            />,
+          );
+        }
       } else if (isProxied || (isImageUrl && isConfluenceHosted)) {
         // Confluence 프록시 이미지 → 썸네일 + 링크
         segments.push(
@@ -3254,15 +3257,19 @@ function ImageThumb({
   onClick: () => void;
 }) {
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>(img.dataUri ? 'ok' : 'loading');
-  const [resolvedSrc, setResolvedSrc] = useState<string>(img.dataUri || img.url);
+  const [resolvedSrc, setResolvedSrc] = useState<string>(img.dataUri || '');
 
-  const handleError = useCallback(() => {
-    if (img.dataUri) { setStatus('error'); return; }
-    fetchImagePost({ path: img.relPath }).then(uri => {
-      if (uri) { setResolvedSrc(uri); setStatus('loading'); }
+  useEffect(() => {
+    if (img.dataUri) { setResolvedSrc(img.dataUri); return; }
+    fetchImagePost({ path: img.relPath, name: img.name }).then(uri => {
+      if (uri) { setResolvedSrc(uri); }
       else setStatus('error');
     });
-  }, [img.dataUri, img.relPath]);
+  }, [img.dataUri, img.relPath, img.name]);
+
+  const handleError = useCallback(() => {
+    setStatus('error');
+  }, []);
 
   return (
     <button
@@ -3312,12 +3319,13 @@ function ImageThumb({
 // ── 이미지 검색 카드 ─────────────────────────────────────────────────────────
 
 function SelectedImagePreview({ img, onClose }: { img: { name: string; url: string; dataUri?: string; relPath?: string }; onClose: () => void }) {
-  const [src, setSrc] = useState(img.dataUri || img.url);
-  const handleError = useCallback(() => {
+  const [src, setSrc] = useState(img.dataUri || '');
+  useEffect(() => {
     if (img.dataUri) return;
-    const params = img.relPath ? { path: img.relPath } : { name: img.name };
+    const params = img.relPath ? { path: img.relPath, name: img.name } : { name: img.name };
     fetchImagePost(params).then(uri => { if (uri) setSrc(uri); });
-  }, [img]);
+  }, [img.dataUri, img.relPath, img.name]);
+  const handleError = useCallback(() => {}, []);
 
   return (
     <div className="mx-2 mb-2 p-3 rounded-lg" style={{ background: 'var(--bg-hover)', border: '1px solid var(--border-color)' }}>
@@ -3832,32 +3840,39 @@ const FBX_VIEWER_SCRIPT = `
 
 // 이미지 onerror smart fallback 스크립트 (경로 틀려도 파일명으로 재시도)
 const IMG_ONERROR_SCRIPT = `
-document.addEventListener('error', function(e) {
-  var img = e.target;
-  if (!img || img.tagName !== 'IMG') return;
-  var src = img.getAttribute('src') || '';
-  if (!src.includes('/api/images/') || img.dataset.smartRetried) return;
-  img.dataset.smartRetried = '1';
-  var filename = src.split('/').pop().split('?')[0];
-  if (!filename) return;
-  var pathParam = src.match(/[?&]path=([^&]+)/);
-  if (pathParam) {
-    var parts = decodeURIComponent(pathParam[1]).split('/');
-    filename = parts[parts.length - 1];
-  }
+(function() {
   var apiBase = '/';
-  try { apiBase = window.parent.location.href.split('#')[0].replace(/[^/]*$/, ''); } catch(e2) {}
-  var name = filename.replace(/\\.png$/i, '');
-  fetch(apiBase + 'api/images/base64', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: name })
-  }).then(function(r) { return r.json(); }).then(function(d) {
-    if (d.dataUri) img.src = d.dataUri;
-  }).catch(function() {
-    img.src = apiBase + 'api/images/smart?name=' + encodeURIComponent(filename);
-  });
-}, true);
+  try { apiBase = window.parent.location.href.split('#')[0].replace(/[^/]*$/, ''); } catch(e) {}
+  function replaceApiImg(img) {
+    if (img.dataset.postReplaced) return;
+    var src = img.getAttribute('src') || '';
+    if (!src.includes('/api/images/')) return;
+    img.dataset.postReplaced = '1';
+    var pathParam = src.match(/[?&]path=([^&]+)/);
+    var filename = src.split('/').pop().split('?')[0];
+    if (pathParam) { filename = decodeURIComponent(pathParam[1]).split('/').pop(); }
+    var name = filename.replace(/\\.png$/i, '');
+    var body = pathParam ? { path: decodeURIComponent(pathParam[1]), name: name } : { name: name };
+    img.removeAttribute('src');
+    fetch(apiBase + 'api/images/base64', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.dataUri) img.src = d.dataUri;
+      else img.alt = '[' + name + ']';
+    }).catch(function() { img.alt = '[' + name + ']'; });
+  }
+  function scanAll() {
+    document.querySelectorAll('img').forEach(replaceApiImg);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', scanAll);
+  else scanAll();
+  new MutationObserver(function() { scanAll(); }).observe(document.documentElement, { childList: true, subtree: true });
+  document.addEventListener('error', function(e) {
+    if (e.target && e.target.tagName === 'IMG') replaceApiImg(e.target);
+  }, true);
+})();
 `;
 
 
