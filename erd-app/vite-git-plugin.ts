@@ -1642,6 +1642,109 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
+    // ── /api/images/base64 : POST 기반 이미지 base64 반환 (프록시 환경 우회용) ──
+    // 프록시가 GET 이미지 요청을 차단하는 환경에서 POST로 이미지를 base64 data URI로 반환
+    if (req.url?.startsWith('/api/images/base64') && req.method === 'POST') {
+      try {
+        const body = JSON.parse(await readBody(req) || '{}')
+        const { path: reqPath, name: reqName } = body as { path?: string; name?: string }
+        if (!reqPath && !reqName) { sendJson(res, 400, { error: 'path or name required' }); return }
+
+        let filePath: string | null = null
+        let resolvedPath = ''
+
+        if (reqPath) {
+          const cleanRel = String(reqPath).replace(/\.\./g, '')
+          // 로컬 IMAGES_DIR
+          const safePath = join(IMAGES_DIR, cleanRel)
+          if (safePath.startsWith(IMAGES_DIR) && existsSync(safePath)) {
+            filePath = safePath; resolvedPath = cleanRel
+          }
+          // 접두사 제거 시도
+          if (!filePath) {
+            const _prefixes = ['GameContents/UI/', 'Assets/GameContents/UI/', 'Client/Project_Aegis/Assets/GameContents/UI/']
+            for (const pfx of _prefixes) {
+              if (cleanRel.toLowerCase().startsWith(pfx.toLowerCase())) {
+                const stripped = join(IMAGES_DIR, cleanRel.slice(pfx.length))
+                if (stripped.startsWith(IMAGES_DIR) && existsSync(stripped)) { filePath = stripped; resolvedPath = cleanRel; break }
+              }
+            }
+          }
+          // 파일명 매칭
+          if (!filePath) {
+            const bn = cleanRel.split('/').pop() ?? ''
+            if (bn && existsSync(IMAGES_DIR)) {
+              const all: { name: string; path: string; relPath: string }[] = []
+              walkImages(IMAGES_DIR, '', all)
+              const m = all.find(f => f.name.toLowerCase() === bn.toLowerCase().replace(/\.png$/i, ''))
+                ?? all.find(f => f.relPath.toLowerCase().endsWith('/' + bn.toLowerCase()))
+              if (m) { filePath = m.path; resolvedPath = m.relPath }
+            }
+          }
+          // 에셋 디렉토리 폴백
+          if (!filePath) {
+            const _dirs = [
+              join(process.cwd(), '..', '..', 'assets'),
+              join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
+              join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis'),
+              join(process.cwd(), '.git-repo-aegis'),
+            ]
+            const norm = cleanRel.replace(/\//g, sep)
+            for (const d of _dirs) {
+              const c = join(d, norm)
+              if (existsSync(c)) { filePath = c; resolvedPath = cleanRel; break }
+            }
+          }
+        }
+
+        if (!filePath && reqName) {
+          const n = String(reqName).toLowerCase().replace(/\.png$/i, '')
+          const all: { name: string; path: string; relPath: string }[] = []
+          walkImages(IMAGES_DIR, '', all)
+          let match = all.find(f => f.name.toLowerCase() === n)
+            ?? all.find(f => f.name.toLowerCase().includes(n))
+            ?? all.find(f => n.includes(f.name.toLowerCase()))
+          // 에셋 인덱스 폴백
+          if (!match) {
+            try {
+              const _aidxPath = _getIdxPath()
+              if (existsSync(_aidxPath)) {
+                let raw = readFileSync(_aidxPath, 'utf-8')
+                if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
+                const assetIdx = JSON.parse(raw) as { path: string; name: string; ext: string }[]
+                const pngs = assetIdx.filter(a => a.ext === 'png')
+                const am = pngs.find(a => a.name.toLowerCase() === n) ?? pngs.find(a => a.name.toLowerCase().includes(n))
+                if (am) {
+                  const _dirs = [
+                    join(process.cwd(), '..', '..', 'assets'),
+                    join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
+                    join(process.cwd(), '.git-repo-aegis'),
+                  ]
+                  for (const d of _dirs) {
+                    const c = join(d, am.path.replace(/\//g, sep))
+                    if (existsSync(c)) { match = { name: am.name, path: c, relPath: am.path }; break }
+                  }
+                }
+              }
+            } catch { /* ignore */ }
+          }
+          if (match) { filePath = match.path; resolvedPath = match.relPath }
+        }
+
+        if (!filePath) { sendJson(res, 404, { error: 'not found' }); return }
+
+        const buf = readFileSync(filePath)
+        const ext = filePath.toLowerCase()
+        const mime = ext.endsWith('.jpg') || ext.endsWith('.jpeg') ? 'image/jpeg'
+          : ext.endsWith('.gif') ? 'image/gif' : ext.endsWith('.webp') ? 'image/webp' : 'image/png'
+        const dataUri = `data:${mime};base64,${buf.toString('base64')}`
+        sendJson(res, 200, { dataUri, resolvedPath })
+      } catch (e) {
+        sendJson(res, 500, { error: String(e) })
+      }
+      return
+    }
+
     // ── /api/images/list : 이미지 목록 검색 ────────────────────────────────
     // 로컬 IMAGES_DIR 우선, 없으면 에셋 인덱스(.asset_index.json)에서 PNG 폴백
     if (req.url?.startsWith('/api/images/list')) {

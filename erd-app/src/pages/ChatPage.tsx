@@ -2191,6 +2191,28 @@ function resolveApiUrl(path: string): string {
   return _apiBase + path;
 }
 
+// POST 기반 이미지 로딩: 프록시 환경에서 GET 이미지 요청이 차단될 때 POST로 우회
+const _dataUriCache = new Map<string, string>();
+
+async function fetchImagePost(params: { path?: string; name?: string }): Promise<string | null> {
+  const cacheKey = params.path || params.name || '';
+  if (_dataUriCache.has(cacheKey)) return _dataUriCache.get(cacheKey)!;
+  try {
+    const resp = await fetch('/api/images/base64', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (data.dataUri) {
+      _dataUriCache.set(cacheKey, data.dataUri);
+      return data.dataUri;
+    }
+    return null;
+  } catch { return null; }
+}
+
 // 모듈 레벨 캐시: filename → { relPath, url } | null
 const _imgCache = new Map<string, { relPath: string; url: string } | null>();
 
@@ -2205,14 +2227,11 @@ function looksLikeFilename(text: string): boolean {
   return underscoreCount >= 2 && /^[a-z][a-z0-9_]+$/.test(text);
 }
 
-// blob URL 캐시: fetch를 통해 이미지를 로드 (프록시 환경에서 <img src>는 fetch 패치를 거치지 않으므로)
-const _blobCache = new Map<string, string>();
-
 function InlineImageCell({ text }: { text: string }) {
   const [img, setImg] = useState<{ relPath: string; url: string } | null | undefined>(
     _imgCache.has(text) ? (_imgCache.get(text) ?? null) : undefined
   );
-  const [blobUrl, setBlobUrl] = useState<string | null>(_blobCache.get(text) ?? null);
+  const [imgSrc, setImgSrc] = useState<string | null>(_dataUriCache.get(text) ?? null);
 
   useEffect(() => {
     if (!looksLikeFilename(text)) { setImg(null); return; }
@@ -2233,22 +2252,23 @@ function InlineImageCell({ text }: { text: string }) {
       .catch(() => { _imgCache.set(text, null); setImg(null); });
   }, [text]);
 
-  // fetch를 통해 이미지를 blob URL로 변환 (fetch는 main.tsx에서 패치되어 프록시를 올바르게 경유)
+  // GET 시도 → 실패 시 POST base64 폴백 (프록시 환경 대응)
   useEffect(() => {
-    if (!img?.url || _blobCache.has(text)) return;
+    if (!img?.url || _dataUriCache.has(text)) { if (_dataUriCache.has(text)) setImgSrc(_dataUriCache.get(text)!); return; }
     let cancelled = false;
     fetch(img.url)
-      .then(r => r.ok ? r.blob() : null)
+      .then(r => { if (!r.ok) throw new Error('GET failed'); return r.blob(); })
       .then(blob => {
-        if (blob && !cancelled) {
-          const u = URL.createObjectURL(blob);
-          _blobCache.set(text, u);
-          setBlobUrl(u);
-        }
+        if (!cancelled) { const u = URL.createObjectURL(blob); setImgSrc(u); }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (cancelled) return;
+        fetchImagePost({ path: img.relPath }).then(uri => {
+          if (uri && !cancelled) { _dataUriCache.set(text, uri); setImgSrc(uri); }
+        });
+      });
     return () => { cancelled = true; };
-  }, [img?.url, text]);
+  }, [img?.url, img?.relPath, text]);
 
   const monoStyle: React.CSSProperties = { fontFamily: 'var(--font-mono)', color: 'var(--accent)', fontSize: 11 };
 
@@ -2267,13 +2287,13 @@ function InlineImageCell({ text }: { text: string }) {
 
   return (
     <span className="inline-flex items-center gap-1.5">
-      {blobUrl && (
+      {imgSrc && (
         <span
           className="inline-flex items-center justify-center rounded overflow-hidden flex-shrink-0"
           style={{ width: 28, height: 28, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)' }}
           title={img.relPath}
         >
-          <img src={blobUrl} alt={text} style={{ width: 26, height: 26, objectFit: 'contain' }} />
+          <img src={imgSrc} alt={text} style={{ width: 26, height: 26, objectFit: 'contain' }} />
         </span>
       )}
       <span style={monoStyle}>{text}</span>
@@ -2309,7 +2329,6 @@ function inlineMarkdown(text: string): React.ReactNode {
           alt={imgAlt ?? ''}
           style={{ maxWidth: '100%', maxHeight: '120px', borderRadius: '4px', verticalAlign: 'middle', display: 'inline-block' }}
           onError={(e) => {
-            // 경로 틀렸을 때 smart 엔드포인트로 폴백
             const img = e.currentTarget;
             if (img.dataset.smartRetried) return;
             img.dataset.smartRetried = '1';
@@ -2317,7 +2336,7 @@ function inlineMarkdown(text: string): React.ReactNode {
             const filename = pathParam
               ? decodeURIComponent(pathParam[1]).split('/').pop() ?? ''
               : imgUrl.split('/').pop() ?? '';
-            if (filename) img.src = resolveApiUrl(`/api/images/smart?name=${encodeURIComponent(filename)}`);
+            if (filename) fetchImagePost({ name: filename.replace(/\.png$/i, '') }).then(uri => { if (uri) img.src = uri; });
           }}
         />,
       );
@@ -2346,7 +2365,7 @@ function inlineMarkdown(text: string): React.ReactNode {
               const filename = pathParam
                 ? decodeURIComponent(pathParam[1]).split('/').pop() ?? ''
                 : linkUrl.split('/').pop() ?? '';
-              if (filename) img.src = resolveApiUrl(`/api/images/smart?name=${encodeURIComponent(filename)}`);
+              if (filename) fetchImagePost({ name: filename.replace(/\.png$/i, '') }).then(uri => { if (uri) img.src = uri; });
             }}
           />,
         );
@@ -3227,7 +3246,15 @@ function ImageThumb({
   onClick: () => void;
 }) {
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>(img.dataUri ? 'ok' : 'loading');
-  const imgSrc = img.dataUri || img.url;
+  const [resolvedSrc, setResolvedSrc] = useState<string>(img.dataUri || img.url);
+
+  const handleError = useCallback(() => {
+    if (img.dataUri) { setStatus('error'); return; }
+    fetchImagePost({ path: img.relPath }).then(uri => {
+      if (uri) { setResolvedSrc(uri); setStatus('loading'); }
+      else setStatus('error');
+    });
+  }, [img.dataUri, img.relPath]);
 
   return (
     <button
@@ -3243,12 +3270,12 @@ function ImageThumb({
       <div className="w-full rounded flex items-center justify-center overflow-hidden" style={{ height: 64, background: 'rgba(255,255,255,0.04)' }}>
         {status !== 'error' ? (
           <img
-            src={imgSrc}
+            src={resolvedSrc}
             alt={img.name}
             className="w-full h-full"
             style={{ objectFit: 'contain', display: status === 'ok' ? 'block' : 'none' }}
             onLoad={() => setStatus('ok')}
-            onError={() => setStatus('error')}
+            onError={handleError}
           />
         ) : null}
         {status === 'loading' && (
@@ -3276,9 +3303,36 @@ function ImageThumb({
 
 // ── 이미지 검색 카드 ─────────────────────────────────────────────────────────
 
+function SelectedImagePreview({ img, onClose }: { img: { name: string; url: string; dataUri?: string; relPath?: string }; onClose: () => void }) {
+  const [src, setSrc] = useState(img.dataUri || img.url);
+  const handleError = useCallback(() => {
+    if (img.dataUri) return;
+    const params = img.relPath ? { path: img.relPath } : { name: img.name };
+    fetchImagePost(params).then(uri => { if (uri) setSrc(uri); });
+  }, [img]);
+
+  return (
+    <div className="mx-2 mb-2 p-3 rounded-lg" style={{ background: 'var(--bg-hover)', border: '1px solid var(--border-color)' }}>
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-[11px] font-medium flex-1" style={{ color: 'var(--text-primary)' }}>{img.name}</span>
+        <a href={img.url} target="_blank" rel="noopener noreferrer"
+          className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--bg-secondary)', color: 'var(--accent)' }}>
+          원본 열기
+        </a>
+        <button onClick={onClose} className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}>
+          닫기
+        </button>
+      </div>
+      <div className="flex justify-center rounded overflow-hidden" style={{ background: 'repeating-conic-gradient(#808080 0% 25%, transparent 0% 50%) 0 0 / 12px 12px' }}>
+        <img src={src} alt={img.name} style={{ maxWidth: '100%', maxHeight: 300, objectFit: 'contain' }} onError={handleError} />
+      </div>
+    </div>
+  );
+}
+
 function ImageCard({ tc }: { tc: ImageResult }) {
   const [expanded, setExpanded] = useState(true);
-  const [selected, setSelected] = useState<{ name: string; url: string; dataUri?: string } | null>(null);
+  const [selected, setSelected] = useState<{ name: string; url: string; dataUri?: string; relPath?: string } | null>(null);
 
   if (tc.error) {
     return (
@@ -3329,30 +3383,7 @@ function ImageCard({ tc }: { tc: ImageResult }) {
 
           {/* 선택된 이미지 확대 뷰 */}
           {selected && (
-            <div className="mx-2 mb-2 p-3 rounded-lg" style={{ background: 'var(--bg-hover)', border: '1px solid var(--border-color)' }}>
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-[11px] font-medium flex-1" style={{ color: 'var(--text-primary)' }}>{selected.name}</span>
-                <a
-                  href={selected.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[10px] px-2 py-0.5 rounded"
-                  style={{ background: 'var(--bg-secondary)', color: 'var(--accent)' }}
-                >
-                  원본 열기
-                </a>
-                <button onClick={() => setSelected(null)} className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}>
-                  닫기
-                </button>
-              </div>
-              <div className="flex justify-center rounded overflow-hidden" style={{ background: 'repeating-conic-gradient(#808080 0% 25%, transparent 0% 50%) 0 0 / 12px 12px' }}>
-                <img
-                  src={selected.dataUri || selected.url}
-                  alt={selected.name}
-                  style={{ maxWidth: '100%', maxHeight: 300, objectFit: 'contain' }}
-                />
-              </div>
-            </div>
+            <SelectedImagePreview img={selected} onClose={() => setSelected(null)} />
           )}
         </div>
       )}
@@ -3795,7 +3826,6 @@ document.addEventListener('error', function(e) {
   img.dataset.smartRetried = '1';
   var filename = src.split('/').pop().split('?')[0];
   if (!filename) return;
-  // path 파라미터에서 파일명만 추출
   var pathParam = src.match(/[?&]path=([^&]+)/);
   if (pathParam) {
     var parts = decodeURIComponent(pathParam[1]).split('/');
@@ -3803,7 +3833,16 @@ document.addEventListener('error', function(e) {
   }
   var apiBase = '/';
   try { apiBase = window.parent.location.href.split('#')[0].replace(/[^/]*$/, ''); } catch(e2) {}
-  img.src = apiBase + 'api/images/smart?name=' + encodeURIComponent(filename);
+  var name = filename.replace(/\\.png$/i, '');
+  fetch(apiBase + 'api/images/base64', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.dataUri) img.src = d.dataUri;
+  }).catch(function() {
+    img.src = apiBase + 'api/images/smart?name=' + encodeURIComponent(filename);
+  });
 }, true);
 `;
 
