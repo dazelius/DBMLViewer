@@ -390,9 +390,15 @@ const _require = createRequire(import.meta.url)
 const _IMG_CANDIDATES = [
   'C:\\TableMaster\\images',
   join(process.cwd(), '..', '..', 'images'),
+  join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets', 'GameContents', 'UI', 'Texture'),
+  join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
 ]
 const IMAGES_DIR = _IMG_CANDIDATES.find(p => existsSync(p)) || _IMG_CANDIDATES[0]
 console.log(`[Init] IMAGES_DIR: ${IMAGES_DIR} (exists: ${existsSync(IMAGES_DIR)})`)
+console.log(`[Init] IMAGES_DIR candidates: ${_IMG_CANDIDATES.map(p => `${p.replace(process.cwd(), '.')} → ${existsSync(p) ? 'OK' : 'MISS'}`).join(', ')}`)
+
+// 에셋 인덱스 빌드 시 발견된 Unity Assets 디렉토리 (런타임 업데이트)
+let _discoveredAssetsDir: string | null = null
 
 // ── C# 소스코드 디렉토리 (sync_cs_files.ps1 로 동기화) ───────────────────────
 // 로컬 우선, 없으면 aegis repo에서 C# 소스 직접 탐색
@@ -623,6 +629,7 @@ function _buildAssetIndexIfNeeded() {
     sLog('WARN', `[AssetIndex] Unity 에셋 폴더 없음 — 후보: ${candidates.map(c => c.replace(process.cwd(), '.')).join(', ')}`)
     return
   }
+  _discoveredAssetsDir = UNITY_ASSETS_DIR
   sLog('INFO', `[AssetIndex] 에셋 경로: ${UNITY_ASSETS_DIR} (GameContents: ${existsSync(join(UNITY_ASSETS_DIR, 'GameContents'))})`)
 
   sLog('INFO', '[AssetIndex] 에셋 인덱스 빌드 시작...')
@@ -690,6 +697,25 @@ function _buildAssetIndexIfNeeded() {
     sLog('INFO', `[AssetIndex] 완료: ${entries.length}개 파일 (실제 ${_realFiles.size} + LFS ${lfsCount}), idx: ${idxPath}, ${Date.now() - t0}ms`)
   } catch (e) {
     sLog('ERROR', `[AssetIndex] 빌드 실패: ${e}`)
+  }
+}
+
+/** aegis repo LFS 텍스처 이미지 다운로드 (clone/sync 후 호출) */
+async function _pullLfsTextures(repoDir: string): Promise<boolean> {
+  try {
+    await runGitAsync('git lfs install --local', repoDir)
+    sLog('INFO', `[git lfs] LFS pull 시작 (UI 텍스처)...`)
+    await runGitAsync('git lfs pull --include="GameContents/UI/Texture/**"', repoDir)
+    sLog('INFO', `[git lfs] UI 텍스처 LFS pull 완료: ${repoDir}`)
+    return true
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    sLog('WARN', `[git lfs] LFS pull 실패 (git-lfs 미설치?): ${msg}`)
+    // git-lfs 미설치 시 git checkout으로 smudge filter 시도
+    try {
+      await runGitAsync('git checkout -- "GameContents/UI/Texture"', join(repoDir, 'Client', 'Project_Aegis', 'Assets'))
+    } catch { /* ignore */ }
+    return false
   }
 }
 
@@ -1642,6 +1668,55 @@ function createGitMiddleware(options: GitPluginOptions) {
       return
     }
 
+    // ── /api/debug/images : 이미지 시스템 진단 ──────────────────────────────
+    if (req.url?.startsWith('/api/debug/images')) {
+      const aegisDir = join(process.cwd(), '.git-repo-aegis')
+      const aegisAssetsDir = join(aegisDir, 'Client', 'Project_Aegis', 'Assets')
+      const textureDir = join(aegisAssetsDir, 'GameContents', 'UI', 'Texture')
+      const samplePngs: string[] = []
+      const _sampleWalk = (dir: string, depth: number) => {
+        if (depth > 3 || samplePngs.length >= 5) return
+        try { for (const e of readdirSync(dir, { withFileTypes: true })) {
+          if (e.name === '.git') continue
+          const fp = join(dir, e.name)
+          if (e.isDirectory()) _sampleWalk(fp, depth + 1)
+          else if (e.name.toLowerCase().endsWith('.png') && samplePngs.length < 5) {
+            const buf = readFileSync(fp)
+            const isLfs = buf.length < 200 && buf.toString('utf-8').startsWith('version https://git-lfs.github.com/')
+            samplePngs.push(`${fp.replace(process.cwd(), '.')} (${buf.length}B, ${isLfs ? 'LFS_POINTER' : 'REAL'})`)
+          }
+        }} catch { /* skip */ }
+      }
+      if (existsSync(textureDir)) _sampleWalk(textureDir, 0)
+      else if (existsSync(aegisAssetsDir)) _sampleWalk(aegisAssetsDir, 0)
+
+      const allLocal: { name: string; path: string; relPath: string }[] = []
+      walkImages(IMAGES_DIR, '', allLocal)
+      const allDiscovered: { name: string; path: string; relPath: string }[] = []
+      if (_discoveredAssetsDir) walkImages(_discoveredAssetsDir, '', allDiscovered)
+
+      let gitLfsVersion = 'unknown'
+      try { gitLfsVersion = execFileSync('git', ['lfs', 'version'], { encoding: 'utf-8', timeout: 5000 }).trim() } catch { gitLfsVersion = 'NOT INSTALLED' }
+
+      sendJson(res, 200, {
+        cwd: process.cwd(),
+        IMAGES_DIR,
+        IMAGES_DIR_exists: existsSync(IMAGES_DIR),
+        IMAGES_DIR_pngCount: allLocal.length,
+        _discoveredAssetsDir,
+        _discoveredAssetsDir_exists: _discoveredAssetsDir ? existsSync(_discoveredAssetsDir) : null,
+        _discoveredAssetsDir_pngCount: allDiscovered.length,
+        aegisDir_exists: existsSync(aegisDir),
+        aegisDir_hasGit: existsSync(join(aegisDir, '.git')),
+        aegisAssetsDir_exists: existsSync(aegisAssetsDir),
+        textureDir_exists: existsSync(textureDir),
+        gitLfsVersion,
+        samplePngs,
+        candidates: _IMG_CANDIDATES.map(p => `${p.replace(process.cwd(), '.')} → ${existsSync(p) ? 'EXISTS' : 'MISS'}`),
+      })
+      return
+    }
+
     // ── /api/images/base64 : POST 기반 이미지 base64 반환 (프록시 환경 우회용) ──
     // 프록시가 GET 이미지 요청을 차단하는 환경에서 POST로 이미지를 base64 data URI로 반환
     if (req.url?.startsWith('/api/images/base64') && req.method === 'POST') {
@@ -1650,27 +1725,65 @@ function createGitMiddleware(options: GitPluginOptions) {
         const { path: reqPath, name: reqName } = body as { path?: string; name?: string }
         if (!reqPath && !reqName) { sendJson(res, 400, { error: 'path or name required' }); return }
 
+        const _isLfs = (buf: Buffer) => buf.length < 200 && buf.toString('utf-8').startsWith('version https://git-lfs.github.com/')
+        const _isValid = (p: string) => {
+          try { if (!existsSync(p)) return false; const b = readFileSync(p); return b.length > 0 && !_isLfs(b) } catch { return false }
+        }
+        const _knownPrefixes = ['GameContents/UI/', 'Assets/GameContents/UI/', 'Client/Project_Aegis/Assets/GameContents/UI/']
+        const _assetDirs = [
+          ..._discoveredAssetsDir ? [_discoveredAssetsDir] : [],
+          join(process.cwd(), '..', '..', 'assets'),
+          join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
+          join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis'),
+          join(process.cwd(), '.git-repo-aegis'),
+        ]
+
         let filePath: string | null = null
         let resolvedPath = ''
+        const tried: string[] = []
 
         if (reqPath) {
           const cleanRel = String(reqPath).replace(/\.\./g, '')
-          // 로컬 IMAGES_DIR
+          // 1) IMAGES_DIR 직접
           const safePath = join(IMAGES_DIR, cleanRel)
-          if (safePath.startsWith(IMAGES_DIR) && existsSync(safePath)) {
-            filePath = safePath; resolvedPath = cleanRel
-          }
-          // 접두사 제거 시도
+          tried.push(safePath)
+          if (safePath.startsWith(IMAGES_DIR) && _isValid(safePath)) { filePath = safePath; resolvedPath = cleanRel }
+          // 2) 접두사 제거 후 IMAGES_DIR
           if (!filePath) {
-            const _prefixes = ['GameContents/UI/', 'Assets/GameContents/UI/', 'Client/Project_Aegis/Assets/GameContents/UI/']
-            for (const pfx of _prefixes) {
+            for (const pfx of _knownPrefixes) {
               if (cleanRel.toLowerCase().startsWith(pfx.toLowerCase())) {
                 const stripped = join(IMAGES_DIR, cleanRel.slice(pfx.length))
-                if (stripped.startsWith(IMAGES_DIR) && existsSync(stripped)) { filePath = stripped; resolvedPath = cleanRel; break }
+                tried.push(stripped)
+                if (stripped.startsWith(IMAGES_DIR) && _isValid(stripped)) { filePath = stripped; resolvedPath = cleanRel; break }
               }
             }
           }
-          // 파일명 매칭
+          // 3) _discoveredAssetsDir
+          if (!filePath && _discoveredAssetsDir) {
+            const norm = cleanRel.replace(/\//g, sep)
+            const dap = join(_discoveredAssetsDir, norm)
+            tried.push(dap)
+            if (_isValid(dap)) { filePath = dap; resolvedPath = cleanRel }
+            if (!filePath) {
+              for (const pfx of _knownPrefixes) {
+                if (cleanRel.toLowerCase().startsWith(pfx.toLowerCase())) {
+                  const sp = join(_discoveredAssetsDir, cleanRel.slice(pfx.length).replace(/\//g, sep))
+                  tried.push(sp)
+                  if (_isValid(sp)) { filePath = sp; resolvedPath = cleanRel; break }
+                }
+              }
+            }
+          }
+          // 4) 에셋 디렉토리 폴백
+          if (!filePath) {
+            const norm = cleanRel.replace(/\//g, sep)
+            for (const d of _assetDirs) {
+              const c = join(d, norm)
+              tried.push(c)
+              if (_isValid(c)) { filePath = c; resolvedPath = cleanRel; break }
+            }
+          }
+          // 5) IMAGES_DIR 내 파일명 매칭
           if (!filePath) {
             const bn = cleanRel.split('/').pop() ?? ''
             if (bn && existsSync(IMAGES_DIR)) {
@@ -1678,21 +1791,27 @@ function createGitMiddleware(options: GitPluginOptions) {
               walkImages(IMAGES_DIR, '', all)
               const m = all.find(f => f.name.toLowerCase() === bn.toLowerCase().replace(/\.png$/i, ''))
                 ?? all.find(f => f.relPath.toLowerCase().endsWith('/' + bn.toLowerCase()))
-              if (m) { filePath = m.path; resolvedPath = m.relPath }
+              if (m && _isValid(m.path)) { filePath = m.path; resolvedPath = m.relPath }
             }
           }
-          // 에셋 디렉토리 폴백
+          // 6) 파일명으로 에셋 디렉토리 재귀 검색
           if (!filePath) {
-            const _dirs = [
-              join(process.cwd(), '..', '..', 'assets'),
-              join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
-              join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis'),
-              join(process.cwd(), '.git-repo-aegis'),
-            ]
-            const norm = cleanRel.replace(/\//g, sep)
-            for (const d of _dirs) {
-              const c = join(d, norm)
-              if (existsSync(c)) { filePath = c; resolvedPath = cleanRel; break }
+            const fname = (cleanRel.split('/').pop() ?? '').toLowerCase()
+            if (fname) {
+              for (const sd of _assetDirs.filter(d => existsSync(d))) {
+                const found: string[] = []
+                const _w = (dir: string, depth: number) => {
+                  if (depth > 6 || found.length > 0) return
+                  try { for (const e of readdirSync(dir, { withFileTypes: true })) {
+                    if (e.name === '.git') continue
+                    const fp = join(dir, e.name)
+                    if (e.isDirectory()) _w(fp, depth + 1)
+                    else if (e.name.toLowerCase() === fname && _isValid(fp)) found.push(fp)
+                  }} catch { /* skip */ }
+                }
+                _w(sd, 0)
+                if (found.length > 0) { filePath = found[0]; resolvedPath = cleanRel; break }
+              }
             }
           }
         }
@@ -1701,9 +1820,10 @@ function createGitMiddleware(options: GitPluginOptions) {
           const n = String(reqName).toLowerCase().replace(/\.png$/i, '')
           const all: { name: string; path: string; relPath: string }[] = []
           walkImages(IMAGES_DIR, '', all)
-          let match = all.find(f => f.name.toLowerCase() === n)
-            ?? all.find(f => f.name.toLowerCase().includes(n))
-            ?? all.find(f => n.includes(f.name.toLowerCase()))
+          // _discoveredAssetsDir도 추가
+          if (_discoveredAssetsDir && _discoveredAssetsDir !== IMAGES_DIR) walkImages(_discoveredAssetsDir, '', all)
+          let match = all.find(f => f.name.toLowerCase() === n && _isValid(f.path))
+            ?? all.find(f => f.name.toLowerCase().includes(n) && _isValid(f.path))
           // 에셋 인덱스 폴백
           if (!match) {
             try {
@@ -1715,14 +1835,9 @@ function createGitMiddleware(options: GitPluginOptions) {
                 const pngs = assetIdx.filter(a => a.ext === 'png')
                 const am = pngs.find(a => a.name.toLowerCase() === n) ?? pngs.find(a => a.name.toLowerCase().includes(n))
                 if (am) {
-                  const _dirs = [
-                    join(process.cwd(), '..', '..', 'assets'),
-                    join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
-                    join(process.cwd(), '.git-repo-aegis'),
-                  ]
-                  for (const d of _dirs) {
+                  for (const d of _assetDirs) {
                     const c = join(d, am.path.replace(/\//g, sep))
-                    if (existsSync(c)) { match = { name: am.name, path: c, relPath: am.path }; break }
+                    if (_isValid(c)) { match = { name: am.name, path: c, relPath: am.path }; break }
                   }
                 }
               }
@@ -1731,9 +1846,13 @@ function createGitMiddleware(options: GitPluginOptions) {
           if (match) { filePath = match.path; resolvedPath = match.relPath }
         }
 
-        if (!filePath) { sendJson(res, 404, { error: 'not found' }); return }
+        if (!filePath) {
+          sendJson(res, 404, { error: 'not found', tried: tried.map(t => `${t.replace(process.cwd(), '.')} → ${existsSync(t) ? 'EXISTS' : 'MISS'}`), discoveredAssetsDir: _discoveredAssetsDir?.replace(process.cwd(), '.') ?? null })
+          return
+        }
 
         const buf = readFileSync(filePath)
+        if (_isLfs(buf)) { sendJson(res, 404, { error: 'LFS pointer (actual file not downloaded)', filePath: filePath.replace(process.cwd(), '.') }); return }
         const ext = filePath.toLowerCase()
         const mime = ext.endsWith('.jpg') || ext.endsWith('.jpeg') ? 'image/jpeg'
           : ext.endsWith('.gif') ? 'image/gif' : ext.endsWith('.webp') ? 'image/webp' : 'image/png'
@@ -1795,6 +1914,9 @@ function createGitMiddleware(options: GitPluginOptions) {
       const relPath = url.searchParams.get('path') || ''
       if (!relPath) { res.writeHead(400); res.end('path required'); return }
 
+      const _isLfsFile = (p: string) => { try { const b = readFileSync(p); return b.length < 200 && b.toString('utf-8').startsWith('version https://git-lfs.github.com/') } catch { return false } }
+      const _canServe = (p: string) => existsSync(p) && !_isLfsFile(p)
+
       const serveFile = (filePath: string, resolvedPath?: string) => {
         const buf = readFileSync(filePath)
         const ext = filePath.toLowerCase()
@@ -1811,12 +1933,12 @@ function createGitMiddleware(options: GitPluginOptions) {
       // 1) 로컬 IMAGES_DIR 직접 경로
       const cleanRel = relPath.replace(/\.\./g, '')
       const safePath = join(IMAGES_DIR, cleanRel)
-      if (safePath.startsWith(IMAGES_DIR) && existsSync(safePath)) {
+      if (safePath.startsWith(IMAGES_DIR) && _canServe(safePath)) {
         serveFile(safePath)
         return
       }
 
-      // 1-b) 알려진 접두사 제거 후 재시도 (sync_ui_images.ps1이 GameContents/UI/ 이하만 저장)
+      // 1-b) 알려진 접두사 제거 후 재시도
       const _knownPrefixes = [
         'GameContents/UI/',
         'Assets/GameContents/UI/',
@@ -1825,25 +1947,42 @@ function createGitMiddleware(options: GitPluginOptions) {
       for (const pfx of _knownPrefixes) {
         if (cleanRel.toLowerCase().startsWith(pfx.toLowerCase())) {
           const stripped = join(IMAGES_DIR, cleanRel.slice(pfx.length))
-          if (stripped.startsWith(IMAGES_DIR) && existsSync(stripped)) {
+          if (stripped.startsWith(IMAGES_DIR) && _canServe(stripped)) {
             serveFile(stripped, cleanRel)
             return
           }
         }
       }
 
+      // 1-c) _discoveredAssetsDir
+      if (_discoveredAssetsDir) {
+        const dNorm = cleanRel.replace(/\//g, sep)
+        const dp = join(_discoveredAssetsDir, dNorm)
+        if (_canServe(dp)) { serveFile(dp, relPath); return }
+        for (const pfx of _knownPrefixes) {
+          if (cleanRel.toLowerCase().startsWith(pfx.toLowerCase())) {
+            const sp = join(_discoveredAssetsDir, cleanRel.slice(pfx.length).replace(/\//g, sep))
+            if (_canServe(sp)) { serveFile(sp, relPath); return }
+          }
+        }
+      }
+
       // 2) 로컬 IMAGES_DIR 내 smart fallback (파일명 매칭)
       const basename = relPath.split('/').pop() ?? ''
-      if (basename && existsSync(IMAGES_DIR)) {
-        const all: { name: string; path: string; relPath: string }[] = []
-        walkImages(IMAGES_DIR, '', all)
-        const match = all.find(f => f.name.toLowerCase() === basename.toLowerCase().replace(/\.png$/i, ''))
-          ?? all.find(f => f.relPath.toLowerCase().endsWith('/' + basename.toLowerCase()))
-        if (match) { serveFile(match.path, match.relPath); return }
+      if (basename) {
+        const searchDirs = [IMAGES_DIR, ...(_discoveredAssetsDir ? [_discoveredAssetsDir] : [])].filter(d => existsSync(d))
+        for (const sd of searchDirs) {
+          const all: { name: string; path: string; relPath: string }[] = []
+          walkImages(sd, '', all)
+          const match = all.find(f => f.name.toLowerCase() === basename.toLowerCase().replace(/\.png$/i, ''))
+            ?? all.find(f => f.relPath.toLowerCase().endsWith('/' + basename.toLowerCase()))
+          if (match && _canServe(match.path)) { serveFile(match.path, match.relPath); return }
+        }
       }
 
       // 3) 에셋 디렉토리 폴백 (플랫폼: aegis repo 클론)
       const _assetCandidates = [
+        ...(_discoveredAssetsDir ? [_discoveredAssetsDir] : []),
         join(process.cwd(), '..', '..', 'assets'),
         join(process.cwd(), '..', '..', 'unity_project', 'Client', 'Project_Aegis', 'Assets'),
         join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
@@ -1854,11 +1993,11 @@ function createGitMiddleware(options: GitPluginOptions) {
       const norm = relPath.replace(/\.\./g, '').replace(/\//g, sep)
       for (const baseDir of _assetCandidates) {
         const candidate = join(baseDir, norm)
-        if (existsSync(candidate)) { serveFile(candidate, relPath); return }
+        if (_canServe(candidate)) { serveFile(candidate, relPath); return }
       }
 
       res.writeHead(404, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'not found', path: relPath, tried: _assetCandidates.map(d => `${join(d, norm).replace(process.cwd(), '.')} → ${existsSync(join(d, norm)) ? '✓' : '✗'}`) }))
+      res.end(JSON.stringify({ error: 'not found', path: relPath, tried: _assetCandidates.map(d => `${join(d, norm).replace(process.cwd(), '.')} → ${existsSync(join(d, norm)) ? (readFileSync(join(d, norm)).length < 200 ? 'LFS' : '✓') : '✗'}`), discoveredAssetsDir: _discoveredAssetsDir?.replace(process.cwd(), '.') ?? null }))
       return
     }
 
@@ -5907,8 +6046,10 @@ document.addEventListener('DOMContentLoaded', () => {
                   } else {
                     sLog('INFO', `[git sync] 이미 최신 (${repoParam}): ${newLocalHead.substring(0, 8)}`)
                   }
-                  // aegis repo sync 완료 후 에셋 인덱스 자동 빌드
-                  if (isRepo2) _buildAssetIndexIfNeeded()
+                  // aegis repo: LFS pull (UI 텍스처) → 에셋 인덱스 빌드
+                  if (isRepo2) {
+                    _pullLfsTextures(activeDir).finally(() => _buildAssetIndexIfNeeded())
+                  }
                 } catch (syncErr: unknown) {
                   const errMsg = syncErr instanceof Error ? syncErr.message : String(syncErr)
                   sLog('ERROR', `[git sync] 백그라운드 fetch/pull 실패 (${repoParam}): ${errMsg}`)
@@ -5933,8 +6074,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 await runGitAsync('git config core.longpaths true', activeDir).catch(() => {})
                 const head = await runGitAsync('git rev-parse --short HEAD', activeDir)
                 sLog('INFO', `Background clone complete: ${activeDir} @ ${head}`)
-                // aegis repo clone 완료 후 에셋 인덱스 자동 빌드
-                if (isRepo2) _buildAssetIndexIfNeeded()
+                // aegis repo: LFS pull (UI 텍스처) → 에셋 인덱스 빌드
+                if (isRepo2) {
+                  _pullLfsTextures(activeDir).finally(() => _buildAssetIndexIfNeeded())
+                }
                 runGitAsync(`git fetch --deepen=200 origin ${branch}`, activeDir)
                   .catch(() => {})
                   .finally(() => { _gitSyncLocks.delete(activeDir); releaseLock() })
@@ -7976,9 +8119,17 @@ function serverExecuteTool(
         const _imgResolve = (r: { path: string; relPath: string }): { dataUri: string | null; tried: string[] } => {
           const MAX_B64 = 500 * 1024
           const tried: string[] = []
+          const _isLfsPointer = (buf: Buffer): boolean => buf.length < 200 && buf.toString('utf-8').startsWith('version https://git-lfs.github.com/')
           const tryRead = (p: string): string | null => {
-            tried.push(`${p} → ${existsSync(p) ? 'EXISTS' : 'MISS'}`)
-            try { if (!existsSync(p)) return null; const buf = readFileSync(p); return buf.length > 0 && buf.length <= MAX_B64 ? `data:image/png;base64,${buf.toString('base64')}` : null } catch { return null }
+            try {
+              if (!existsSync(p)) { tried.push(`${p} → MISS`); return null }
+              const buf = readFileSync(p)
+              if (_isLfsPointer(buf)) { tried.push(`${p} → LFS_POINTER(${buf.length}B)`); return null }
+              if (buf.length === 0) { tried.push(`${p} → EMPTY`); return null }
+              if (buf.length > MAX_B64) { tried.push(`${p} → TOO_LARGE(${Math.round(buf.length / 1024)}KB)`); return null }
+              tried.push(`${p} → OK(${Math.round(buf.length / 1024)}KB)`)
+              return `data:image/png;base64,${buf.toString('base64')}`
+            } catch { tried.push(`${p} → READ_ERROR`); return null }
           }
           // 1) 절대 경로 직접
           if (isAbsolute(r.path)) { const d = tryRead(r.path); if (d) return { dataUri: d, tried } }
@@ -7996,6 +8147,36 @@ function serverExecuteTool(
           for (const d of _imgDirs) {
             for (const rv of relVariants) {
               const x = tryRead(join(d, rv.replace(/\//g, sep))); if (x) return { dataUri: x, tried }
+            }
+          }
+          // 5) _discoveredAssetsDir (에셋 인덱스 빌드 시 발견된 디렉토리)
+          if (_discoveredAssetsDir) {
+            const d = tryRead(join(_discoveredAssetsDir, r.relPath.replace(/\//g, sep))); if (d) return { dataUri: d, tried }
+            for (const pfx of _imgPrefixes) {
+              if (r.relPath.toLowerCase().startsWith(pfx.toLowerCase())) {
+                const d2 = tryRead(join(_discoveredAssetsDir, r.relPath.slice(pfx.length).replace(/\//g, sep))); if (d2) return { dataUri: d2, tried }
+              }
+            }
+          }
+          // 6) 파일명으로 IMAGES_DIR 재귀 검색 (최후 수단)
+          const fname = r.relPath.split('/').pop()?.toLowerCase() ?? ''
+          if (fname) {
+            const searchDirs = [IMAGES_DIR, ...(_discoveredAssetsDir ? [_discoveredAssetsDir] : []), ..._imgDirs].filter(d => existsSync(d))
+            for (const sd of searchDirs) {
+              const found: string[] = []
+              const _walk = (dir: string, depth: number) => {
+                if (depth > 6 || found.length > 0) return
+                try { for (const e of readdirSync(dir, { withFileTypes: true })) {
+                  if (e.name === '.git') continue
+                  const fp = join(dir, e.name)
+                  if (e.isDirectory()) _walk(fp, depth + 1)
+                  else if (e.name.toLowerCase() === fname) found.push(fp)
+                }} catch { /* skip */ }
+              }
+              _walk(sd, 0)
+              if (found.length > 0) {
+                const d = tryRead(found[0]); if (d) return { dataUri: d, tried }
+              }
             }
           }
           return { dataUri: null, tried }
