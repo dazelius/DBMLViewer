@@ -272,6 +272,7 @@ export interface ImageResult {
   images: { name: string; relPath: string; url: string; isAtlas?: boolean; dataUri?: string }[];
   total: number;
   error?: string;
+  diagnostics?: string[];
 }
 
 export interface ArtifactResult {
@@ -4119,14 +4120,14 @@ export async function sendChatMessage(
               body: JSON.stringify({ tool: 'find_resource_image', input: { query } }),
             });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const serverResult = await resp.json() as { result: string; data?: { total: number; images: { name: string; relPath: string; url: string; dataUri?: string; isAtlas?: boolean }[] } };
+            const serverResult = await resp.json() as { result: string; data?: { total: number; images: { name: string; relPath: string; url: string; dataUri?: string; isAtlas?: boolean }[]; diagnostics?: string[] } };
             if (serverResult.data?.images) {
               const _ab = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
               const images = serverResult.data.images.map(img => ({
                 ...img,
                 url: img.url || `${_ab}/api/images/file?path=${encodeURIComponent(img.relPath)}`,
               }));
-              tc = { kind: 'image_search', query, images, total: serverResult.data.total } as ImageResult;
+              tc = { kind: 'image_search', query, images, total: serverResult.data.total, diagnostics: serverResult.data.diagnostics } as ImageResult;
               resultStr = serverResult.result;
             } else {
               tc = { kind: 'image_search', query, images: [], total: 0 } as ImageResult;

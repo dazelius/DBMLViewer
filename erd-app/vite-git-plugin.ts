@@ -7968,32 +7968,45 @@ function serverExecuteTool(
 
         // 이미지 파일을 base64 data URI로 인라인 (프록시 환경에서 별도 HTTP 요청 없이 이미지 표시)
         const _imgPrefixes = ['GameContents/UI/', 'Assets/GameContents/UI/', 'Client/Project_Aegis/Assets/GameContents/UI/']
-        const _imgResolve = (r: { path: string; relPath: string }): string | null => {
-          const MAX_B64 = 200 * 1024
+        const _imgDirs = [
+          join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
+          join(process.cwd(), '.git-repo-aegis'),
+          join(process.cwd(), '..', '..', 'assets'),
+        ]
+        const _imgResolve = (r: { path: string; relPath: string }): { dataUri: string | null; tried: string[] } => {
+          const MAX_B64 = 500 * 1024
+          const tried: string[] = []
           const tryRead = (p: string): string | null => {
-            try { if (!existsSync(p)) return null; const buf = readFileSync(p); return buf.length <= MAX_B64 ? `data:image/png;base64,${buf.toString('base64')}` : null } catch { return null }
+            tried.push(`${p} → ${existsSync(p) ? 'EXISTS' : 'MISS'}`)
+            try { if (!existsSync(p)) return null; const buf = readFileSync(p); return buf.length > 0 && buf.length <= MAX_B64 ? `data:image/png;base64,${buf.toString('base64')}` : null } catch { return null }
           }
           // 1) 절대 경로 직접
-          if (isAbsolute(r.path)) { const d = tryRead(r.path); if (d) return d }
+          if (isAbsolute(r.path)) { const d = tryRead(r.path); if (d) return { dataUri: d, tried } }
           // 2) IMAGES_DIR + relPath
-          { const d = tryRead(join(IMAGES_DIR, r.relPath)); if (d) return d }
+          { const d = tryRead(join(IMAGES_DIR, r.relPath)); if (d) return { dataUri: d, tried } }
           // 3) 접두사 제거 후 IMAGES_DIR
           for (const pfx of _imgPrefixes) {
             if (r.relPath.toLowerCase().startsWith(pfx.toLowerCase())) {
-              const d = tryRead(join(IMAGES_DIR, r.relPath.slice(pfx.length))); if (d) return d
+              const d = tryRead(join(IMAGES_DIR, r.relPath.slice(pfx.length))); if (d) return { dataUri: d, tried }
             }
           }
-          // 4) 에셋 디렉토리 후보
-          const _dirs = [
-            join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
-            join(process.cwd(), '..', '..', 'assets'),
-          ]
-          for (const d of _dirs) { const x = tryRead(join(d, r.relPath.replace(/\//g, sep))); if (x) return x }
-          return null
+          // 4) 에셋 디렉토리 후보 (원본 relPath + 접두사 붙인 변형)
+          const relVariants = [r.relPath]
+          if (!r.relPath.startsWith('GameContents/')) relVariants.push('GameContents/UI/' + r.relPath)
+          for (const d of _imgDirs) {
+            for (const rv of relVariants) {
+              const x = tryRead(join(d, rv.replace(/\//g, sep))); if (x) return { dataUri: x, tried }
+            }
+          }
+          return { dataUri: null, tried }
         }
 
+        const diagnostics: string[] = []
         const images = results.map(r => {
-          const dataUri = _imgResolve(r)
+          const { dataUri, tried } = _imgResolve(r)
+          if (!dataUri && tried.length > 0) {
+            diagnostics.push(`[${r.name}] 파일 못찾음:\n  ${tried.join('\n  ')}`)
+          }
           return {
             name: r.name, relPath: r.relPath,
             url: imgUrlFn(r.relPath),
@@ -8001,10 +8014,13 @@ function serverExecuteTool(
           }
         })
 
+        const diagText = diagnostics.length > 0 ? `\n\n⚠️ ${diagnostics.length}개 이미지 파일 로드 실패:\n${diagnostics.slice(0, 3).join('\n')}` : ''
+        if (diagnostics.length > 0) console.warn(`[find_resource_image] ${diagnostics.length}개 파일 로드 실패:\n${diagnostics.join('\n')}`)
+
         return {
-          result: images.map(r => `${r.name} → ${r.dataUri ? '(inline)' : r.url}`).join('\n') +
-            `\n\n총 ${images.length}개. 아티팩트에 삽입할 때: <img src="위의URL" style="max-width:100%">`,
-          data: { total: images.length, images }
+          result: images.map(r => `${r.name} → ${r.dataUri ? `(inline ${Math.round((r.dataUri?.length ?? 0) / 1024)}KB)` : r.url}`).join('\n') +
+            `\n\n총 ${images.length}개.${diagText}`,
+          data: { total: images.length, images, diagnostics: diagnostics.length > 0 ? diagnostics : undefined }
         }
       } catch (e) {
         return { result: `이미지 검색 오류: ${e instanceof Error ? e.message : String(e)}` }
