@@ -701,21 +701,45 @@ function _buildAssetIndexIfNeeded() {
 }
 
 /** aegis repo LFS 텍스처 이미지 다운로드 (clone/sync 후 호출) */
-async function _pullLfsTextures(repoDir: string): Promise<boolean> {
+async function _pullLfsTextures(repoDir: string): Promise<{ ok: boolean; message: string }> {
   try {
     await runGitAsync('git lfs install --local', repoDir)
     sLog('INFO', `[git lfs] LFS pull 시작 (UI 텍스처)...`)
-    await runGitAsync('git lfs pull --include="GameContents/UI/Texture/**"', repoDir)
-    sLog('INFO', `[git lfs] UI 텍스처 LFS pull 완료: ${repoDir}`)
-    return true
+    // 레포 구조: Client/Project_Aegis/Assets/GameContents/UI/Texture/** — 전체 경로 매칭 필요
+    const patterns = [
+      'Client/Project_Aegis/Assets/GameContents/UI/Texture/**',
+      '**/Texture/Character/**',
+      '**/Texture/Skill/**',
+    ]
+    for (const pat of patterns) {
+      try {
+        await runGitAsync(`git lfs pull --include="${pat}"`, repoDir)
+        sLog('INFO', `[git lfs] LFS pull 성공: ${pat}`)
+      } catch (e) {
+        sLog('WARN', `[git lfs] 패턴 "${pat}" 실패: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    // 결과 확인: Texture 디렉토리에 실제 PNG가 있는지
+    const texDir = join(repoDir, 'Client', 'Project_Aegis', 'Assets', 'GameContents', 'UI', 'Texture')
+    let pngCount = 0
+    const countPngs = (dir: string, depth: number) => {
+      if (depth > 5) return
+      try { for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) countPngs(join(dir, e.name), depth + 1)
+        else if (e.name.endsWith('.png')) {
+          const buf = readFileSync(join(dir, e.name))
+          if (buf.length > 200) pngCount++ // LFS 포인터(~130B)가 아닌 실제 파일만 카운트
+        }
+      }} catch { /* skip */ }
+    }
+    if (existsSync(texDir)) countPngs(texDir, 0)
+    const msg = `LFS pull 완료: 실제 PNG ${pngCount}개 발견 (${texDir})`
+    sLog('INFO', `[git lfs] ${msg}`)
+    return { ok: pngCount > 0, message: msg }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    sLog('WARN', `[git lfs] LFS pull 실패 (git-lfs 미설치?): ${msg}`)
-    // git-lfs 미설치 시 git checkout으로 smudge filter 시도
-    try {
-      await runGitAsync('git checkout -- "GameContents/UI/Texture"', join(repoDir, 'Client', 'Project_Aegis', 'Assets'))
-    } catch { /* ignore */ }
-    return false
+    sLog('WARN', `[git lfs] LFS pull 실패: ${msg}`)
+    return { ok: false, message: `LFS pull 실패: ${msg}` }
   }
 }
 
@@ -1641,6 +1665,21 @@ function createGitMiddleware(options: GitPluginOptions) {
           sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
         }
       }
+      return
+    }
+
+    // ── /api/images/lfs-pull : 수동 LFS 텍스처 다운로드 트리거 ─────────────
+    if (req.url?.startsWith('/api/images/lfs-pull')) {
+      const aegisDir = join(process.cwd(), '.git-repo-aegis')
+      if (!existsSync(join(aegisDir, '.git'))) {
+        sendJson(res, 400, { error: 'aegis repo not cloned yet' })
+        return
+      }
+      sendJson(res, 202, { status: 'started', message: 'LFS pull 시작됨 — 완료까지 수 분 소요될 수 있습니다. /api/debug/images 에서 결과를 확인하세요.' })
+      _pullLfsTextures(aegisDir).then(result => {
+        sLog('INFO', `[lfs-pull API] ${JSON.stringify(result)}`)
+        if (result.ok) _buildAssetIndexIfNeeded()
+      })
       return
     }
 
