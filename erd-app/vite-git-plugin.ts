@@ -1104,12 +1104,39 @@ function getTableMasterUrl(): string {
 }
 
 function resolveHost(req: IncomingMessage): string {
+  const fwdHost = req.headers['x-forwarded-host'] as string | undefined
+  if (fwdHost) return fwdHost.split(',')[0].trim()
   const host = req.headers.host || `localhost:${SERVER_PORT}`
   if (host.startsWith('localhost') || host.startsWith('127.0.0.1')) {
     const port = host.split(':')[1] || SERVER_PORT
     return `${getLocalIp()}:${port}`
   }
   return host
+}
+
+let _detectedProxyBase = process.env.PUBLIC_URL || process.env.DATAMASTER_PUBLIC_URL || ''
+
+function resolvePublicBase(req: IncomingMessage): string {
+  const protocol = (req.headers['x-forwarded-proto'] as string || 'http').split(',')[0].trim()
+  const host = resolveHost(req)
+  const prefix = (req.headers['x-forwarded-prefix'] as string || req.headers['x-script-name'] as string || '').replace(/\/$/, '')
+
+  if (prefix) {
+    const base = `${protocol}://${host}${prefix}`
+    _detectedProxyBase = base
+    return base
+  }
+
+  const referer = req.headers.referer || req.headers.origin || ''
+  const proxyMatch = referer.match(/(https?:\/\/[^/]+\/api\/v1\/ai-tools\/\d+\/proxy)/)
+  if (proxyMatch) {
+    _detectedProxyBase = proxyMatch[1]
+    return proxyMatch[1]
+  }
+
+  if (_detectedProxyBase) return _detectedProxyBase
+
+  return `${protocol}://${host}`
 }
 
 function readBody(req: IncomingMessage, maxBytes = 1_048_576 /* 1MB */): Promise<string> {
@@ -2118,6 +2145,13 @@ api('status').then(function(s){
         presenceClients.delete(res)
         broadcastPresence()
       })
+      return
+    }
+
+    // ── /api/public-url : 감지된 프록시 public URL 반환 ─────────────────────
+    if (req.url === '/api/public-url' && req.method === 'GET') {
+      const base = resolvePublicBase(req)
+      sendJson(res, 200, { publicBase: base, detectedProxy: _detectedProxyBase || null })
       return
     }
 
@@ -11080,9 +11114,7 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       if (!contentHtml) { sendJson(res, 400, { error: 'markdown 또는 html이 필요합니다.' }); return }
 
       // 상대 이미지 경로 → 전체 URL 변환 (슬랙 등 외부에서 열릴 때 이미지가 보이도록)
-      const host = resolveHost(req)
-      const protocol = req.headers['x-forwarded-proto'] || 'http'
-      const publicBase = `${protocol}://${host}`
+      const publicBase = resolvePublicBase(req)
       contentHtml = contentHtml.replace(
         /(?:src|href)=["'](\/(api\/images\/[^"']+))["']/gi,
         (match, path) => match.replace(path, `${publicBase}${path}`)

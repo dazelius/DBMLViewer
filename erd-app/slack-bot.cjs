@@ -57,8 +57,24 @@ function detectLocalIp() {
   }
   return 'localhost';
 }
-const DATAMASTER_PUBLIC_URL = process.env.DATAMASTER_PUBLIC_URL
+let DATAMASTER_PUBLIC_URL = process.env.DATAMASTER_PUBLIC_URL
   || `http://${detectLocalIp()}:${DATAMASTER_PORT}`;
+
+// 서버에서 프록시 URL 자동 감지 (브라우저 접속 후 감지됨)
+async function refreshPublicUrl() {
+  try {
+    const resp = await fetch(`${DATAMASTER_URL}/api/public-url`, { signal: AbortSignal.timeout(3000) });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.detectedProxy && data.detectedProxy !== DATAMASTER_PUBLIC_URL) {
+        console.log(`[Slack] Public URL 업데이트: ${DATAMASTER_PUBLIC_URL} → ${data.detectedProxy}`);
+        DATAMASTER_PUBLIC_URL = data.detectedProxy;
+      }
+    }
+  } catch { /* server not ready yet */ }
+}
+setInterval(refreshPublicUrl, 60_000);
+setTimeout(refreshPublicUrl, 5000);
 
 if (!SLACK_BOT_TOKEN || !SLACK_APP_TOKEN) {
   console.error(`
@@ -1528,11 +1544,14 @@ async function handleMessage({ message, say, client, event }) {
     const shouldForcePublish = (hasVisualTool && !isConversationalOnly(publishContent)) 
       || (result.toolCalls.length >= 2 && hasStructuredContent);
     
-    // 출판 URL 추출 헬퍼
+    // 출판 URL 추출 헬퍼: 서버가 반환한 URL을 사용하되, 내부 주소만 치환
     function extractPublishedUrl(pubData) {
-      let url = (pubData.url || '').replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
-      if (url.includes('localhost') && DATAMASTER_PUBLIC_URL !== DATAMASTER_URL) {
-        url = url.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
+      let url = pubData.url || '';
+      if (url.startsWith('/')) url = DATAMASTER_PUBLIC_URL + url;
+      else {
+        url = url.replace(DATAMASTER_URL, DATAMASTER_PUBLIC_URL);
+        if (url.includes('localhost')) url = url.replace(/http:\/\/localhost:\d+/, DATAMASTER_PUBLIC_URL);
+        url = url.replace(/http:\/\/(?:10\.|172\.\d+\.|192\.168\.)\d+[.\d]*:\d+/, DATAMASTER_PUBLIC_URL);
       }
       return url;
     }
