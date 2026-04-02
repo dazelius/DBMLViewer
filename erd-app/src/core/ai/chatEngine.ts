@@ -1547,6 +1547,7 @@ function buildSystemPrompt(
   lines.push('- **데이터 수정**: show_table_schema + query_game_data 동시 호출(스키마 알면 생략) → edit_game_data. 최소 1~2회!');
   lines.push('- **변경 이력**: query_git_history(repo=data) + query_git_history(repo=aegis) 병렬 호출 → show_revision_diff(hash).');
   lines.push('- **단순 질문**: 스키마/데이터를 이미 알고 있으면 도구 없이 바로 텍스트 응답. 불필요한 확인 호출 금지.');
+  lines.push('- **중복 조회 금지**: 이전 턴에서 이미 조회한 데이터/코드/이미지가 대화 히스토리에 있으면 같은 도구를 다시 호출하지 마세요. 기존 결과를 그대로 활용하세요.');
   lines.push('');
 
   lines.push('## 자율 워크플로 (복합 작업)');
@@ -1785,6 +1786,7 @@ function buildSystemPrompt(
   if (hasTools(['search_code', 'read_code_file'])) {
     lines.push('## 코드 분석');
     lines.push('read_guide("_OVERVIEW") → 도메인 가이드 → search_code → read_code_file 순서.');
+    lines.push('**중요: 이전 대화에서 이미 검색/열람한 코드가 있으면 절대 다시 검색하지 마세요.** 대화 히스토리의 tool_result에 코드 내용이 남아있으면 그대로 활용하세요. 같은 파일을 중복 조회하면 사용자 경험이 나빠집니다.');
     lines.push('');
   }
 
@@ -3290,6 +3292,21 @@ export async function sendChatMessage(
     const halfIdx = Math.floor(msgs.length / 2);
     const thirdIdx = Math.floor(msgs.length / 3);
 
+    // tool_use_id → tool name 맵핑 (코드 관련 tool result 식별용)
+    const codeToolIds = new Set<string>();
+    for (const m of msgs) {
+      if (m.role === 'assistant' && Array.isArray(m.content)) {
+        for (const b of m.content as ContentBlock[]) {
+          if (b.type === 'tool_use') {
+            const tb = b as ToolUseBlock;
+            if (['search_code', 'read_code_file', 'read_guide'].includes(tb.name)) {
+              codeToolIds.add(tb.id);
+            }
+          }
+        }
+      }
+    }
+
     const compressed = msgs.map((m, msgIdx) => {
       const isVeryOld = msgIdx < thirdIdx;
       const isOld = msgIdx < halfIdx;
@@ -3300,35 +3317,41 @@ export async function sendChatMessage(
         const content = (m.content as Array<Record<string, unknown>>).map(b => {
           if (b.type !== 'tool_result' || typeof b.content !== 'string') return b;
           let c = b.content as string;
+          const isCodeResult = typeof b.tool_use_id === 'string' && codeToolIds.has(b.tool_use_id as string);
+
+          // 코드 결과는 더 넉넉한 임계값 적용 (이전 코드를 재활용할 수 있도록)
+          const codeThreshold = isVeryOld ? 1500 : isOld ? 3000 : 6000;
+          const effectiveThreshold = isCodeResult ? codeThreshold : THRESHOLD;
 
           // 마크다운 테이블 행 축소: 오래된 턴은 2행, 최근은 5행
           if (/\|[^\n]+\|/.test(c)) {
             c = truncateMarkdownTable(c, isVeryOld ? 2 : isOld ? 3 : 5);
           }
 
-          // 매우 오래된 턴: tool_result 극단적 압축
-          if (isVeryOld && c.length > 300) {
-            return { ...b, content: c.slice(0, 200) + `\n...(${c.length}자, 이전 대화 요약 참조)` };
+          // 매우 오래된 턴: tool_result 극단적 압축 (코드 결과는 덜 압축)
+          if (isVeryOld && c.length > effectiveThreshold) {
+            const limit = isCodeResult ? 1200 : 200;
+            return { ...b, content: c.slice(0, limit) + `\n...(${c.length}자, 이전 대화 요약 참조)` };
           }
 
-          if (c.length <= THRESHOLD) return { ...b, content: c };
+          if (c.length <= effectiveThreshold) return { ...b, content: c };
 
           if (/<[a-zA-Z]/.test(c)) {
             const htmlCompressed = compressHtmlRows(c);
             if (htmlCompressed.length < c.length * 0.7) {
-              const limit = isOld ? 600 : 1500;
+              const limit = isCodeResult ? (isOld ? 2500 : 5000) : (isOld ? 600 : 1500);
               return { ...b, content: htmlCompressed.slice(0, limit) + `\n...(HTML ${c.length}자→${Math.min(htmlCompressed.length, limit)}자)` };
             }
           }
 
           if (c.startsWith('{') || c.startsWith('[')) {
             const jsonCompressed = compressJsonData(c);
-            if (jsonCompressed.length <= THRESHOLD) return { ...b, content: jsonCompressed };
-            const limit = isVeryOld ? 200 : isOld ? 600 : 1500;
+            if (jsonCompressed.length <= effectiveThreshold) return { ...b, content: jsonCompressed };
+            const limit = isCodeResult ? (isVeryOld ? 1200 : isOld ? 2500 : 5000) : (isVeryOld ? 200 : isOld ? 600 : 1500);
             return { ...b, content: jsonCompressed.slice(0, limit) + `\n...(JSON ${c.length}자)` };
           }
 
-          const limit = isVeryOld ? 200 : isOld ? 500 : 1200;
+          const limit = isCodeResult ? (isVeryOld ? 1200 : isOld ? 2500 : 5000) : (isVeryOld ? 200 : isOld ? 500 : 1200);
           return { ...b, content: c.slice(0, limit) + `\n...(${c.length}자)` };
         });
         return { ...m, content } as ClaudeMsg;
@@ -3350,8 +3373,8 @@ export async function sendChatMessage(
             if (typeof inp.sql === 'string' && (inp.sql as string).length > 500) {
               return { ...tb, input: { ...inp, sql: (inp.sql as string).slice(0, 300) + '...' } };
             }
-            // 오래된 턴: edit_plan/rows/csv 등 큰 입력 축소
-            if (isOld) {
+            // 오래된 턴: edit_plan/rows/csv 등 큰 입력 축소 (코드 도구는 보존)
+            if (isOld && !['search_code', 'read_code_file', 'read_guide'].includes(tb.name)) {
               const inputStr = JSON.stringify(inp);
               if (inputStr.length > (isVeryOld ? 300 : 800)) {
                 const keys = Object.keys(inp).join(', ');
