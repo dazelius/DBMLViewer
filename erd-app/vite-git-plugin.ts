@@ -2089,6 +2089,155 @@ h2{color:#38bdf8}h3{color:#a78bfa;margin-top:24px}.summary{background:#1e293b;pa
       }
       if (action === 'status') { sendJson(res, 200, _lfsPullState); return }
 
+      // ?action=lfs-retry → 로컬 LFS 포인터만 찾아서 LFS 배치 다운로드 (빠름)
+      if (action === 'lfs-retry') {
+        if (!existsSync(join(aegisDir, '.git'))) { sendJson(res, 400, { error: 'aegis repo not cloned' }); return }
+        const repo2Url = options.repo2Url || options.repoUrl
+        const repo2Token = options.repo2Token || options.token
+        if (!repo2Url || !repo2Token) { sendJson(res, 400, { error: 'GitLab repo2 URL/token not configured' }); return }
+
+        _lfsPullState = { running: true, phase: 'LFS 포인터 스캔 중...', startedAt: Date.now(), pngCount: 0, log: ['로컬 LFS 포인터 파일 스캔 시작...'] }
+
+        ;(async () => {
+          const _log = (msg: string) => { sLog('INFO', `[lfs-retry] ${msg}`); if (Array.isArray(_lfsPullState.log)) (_lfsPullState.log as string[]).push(msg); _lfsPullState.phase = msg }
+          try {
+            const { get: httpGet, request: httpReq } = await import('http')
+            const { get: httpsGet, request: httpsReq } = await import('https')
+            const assetsDir = join(aegisDir, 'Client', 'Project_Aegis', 'Assets')
+            const lfsPointers: { oid: string; size: number; file: string }[] = []
+            let scanned = 0
+            const scanDir = (dir: string, depth: number) => {
+              if (depth > 10) return
+              try {
+                for (const e of readdirSync(dir, { withFileTypes: true })) {
+                  if (e.isDirectory()) scanDir(join(dir, e.name), depth + 1)
+                  else {
+                    const fp = join(dir, e.name)
+                    const sz = statSync(fp).size
+                    if (sz > 0 && sz < 200) {
+                      try {
+                        const txt = readFileSync(fp, 'utf-8')
+                        if (txt.startsWith('version https://git-lfs.github.com/')) {
+                          const oidMatch = txt.match(/oid sha256:([a-f0-9]+)/)
+                          const sizeMatch = txt.match(/size (\d+)/)
+                          if (oidMatch && sizeMatch) {
+                            lfsPointers.push({ oid: oidMatch[1], size: parseInt(sizeMatch[1]), file: fp })
+                          }
+                        }
+                      } catch {}
+                    }
+                    scanned++
+                    if (scanned % 5000 === 0) _log(`스캔: ${scanned}개 파일, LFS 포인터: ${lfsPointers.length}개`)
+                  }
+                }
+              } catch {}
+            }
+            scanDir(assetsDir, 0)
+            _log(`스캔 완료: ${scanned}개 파일 중 LFS 포인터 ${lfsPointers.length}개 발견`)
+
+            if (lfsPointers.length === 0) {
+              _lfsPullState = { running: false, phase: 'done', pngCount: 0, message: '✅ LFS 포인터 파일 없음 (모두 다운로드 완료)', ok: true, log: _lfsPullState.log as string[] }
+              return
+            }
+
+            const gitlabUrl = repo2Url!
+            const gitlabToken = repo2Token!
+            const lfsUrl = `${gitlabUrl.replace(/\/$/, '')}/info/lfs/objects/batch`
+            _log(`LFS URL: ${lfsUrl}`)
+            const cred = Buffer.from(`oauth2:${gitlabToken}`).toString('base64')
+
+            // apiPost / downloadBinary 인라인
+            const apiPost = (url: string, body: unknown, headers: Record<string, string>): Promise<Buffer> => {
+              return new Promise((resolve, reject) => {
+                const u = new URL(url)
+                const mod = u.protocol === 'https:' ? { request: httpsReq } : { request: httpReq }
+                const data = Buffer.from(JSON.stringify(body))
+                const req2 = mod.request(u, { method: 'POST', headers: { ...headers, 'Content-Length': String(data.length) }, timeout: 30000 }, (r) => {
+                  const chunks: Buffer[] = []; r.on('data', (c: Buffer) => chunks.push(c)); r.on('end', () => resolve(Buffer.concat(chunks)))
+                })
+                req2.on('error', reject); req2.on('timeout', () => { req2.destroy(); reject(new Error('timeout')) })
+                req2.write(data); req2.end()
+              })
+            }
+            const downloadBin = (url: string, headers?: Record<string, string>): Promise<Buffer> => {
+              return new Promise((resolve, reject) => {
+                const u = new URL(url)
+                const mod = u.protocol === 'https:' ? { get: httpsGet } : { get: httpGet }
+                mod.get(u, { headers: headers || {}, timeout: 60000 }, (r) => {
+                  const chunks: Buffer[] = []; r.on('data', (c: Buffer) => chunks.push(c)); r.on('end', () => resolve(Buffer.concat(chunks)))
+                }).on('error', reject)
+              })
+            }
+
+            const batchSize = 200
+            const LFS_CONCURRENCY = 10
+            let lfsOk = 0, lfsFail = 0, lfsNoUrl = 0
+            let firstError = ''
+            for (let i = 0; i < lfsPointers.length; i += batchSize) {
+              const batch = lfsPointers.slice(i, i + batchSize)
+              try {
+                const bodyObj = { operation: 'download', transfers: ['basic'], objects: batch.map(p => ({ oid: p.oid, size: p.size })) }
+                const respBuf = await apiPost(lfsUrl, bodyObj, {
+                  'Authorization': `Basic ${cred}`,
+                  'Accept': 'application/vnd.git-lfs+json',
+                  'Content-Type': 'application/vnd.git-lfs+json',
+                })
+                const respStr = respBuf.toString('utf-8')
+                if (i === 0) _log(`LFS 배치 API 첫 응답: ${respStr.slice(0, 500)}`)
+                const resp = JSON.parse(respStr)
+
+                const dlMap = new Map<string, { href: string; auth?: string }>()
+                for (const obj of (resp.objects || [])) {
+                  if (obj.actions?.download) {
+                    dlMap.set(obj.oid, { href: obj.actions.download.href, auth: obj.actions.download.header?.Authorization })
+                  } else if (obj.error && !firstError) {
+                    firstError = `LFS obj error: ${JSON.stringify(obj.error).slice(0, 200)}`
+                  }
+                }
+
+                if (i === 0) _log(`dlMap: ${dlMap.size}/${batch.length}`)
+
+                for (let j = 0; j < batch.length; j += LFS_CONCURRENCY) {
+                  const chunk = batch.slice(j, j + LFS_CONCURRENCY)
+                  await Promise.all(chunk.map(async (ptr) => {
+                    const dl = dlMap.get(ptr.oid)
+                    if (!dl) { lfsNoUrl++; lfsFail++; return }
+                    try {
+                      const buf = await downloadBin(dl.href, dl.auth ? { 'Authorization': dl.auth } : undefined)
+                      writeFileSync(ptr.file, buf)
+                      lfsOk++
+                    } catch (e) {
+                      lfsFail++
+                      if (!firstError) firstError = `DL: ${e instanceof Error ? e.message : String(e)}`
+                    }
+                  }))
+                }
+                const batchNum = Math.floor(i / batchSize) + 1
+                const totalBatches = Math.ceil(lfsPointers.length / batchSize)
+                _log(`LFS ${batchNum}/${totalBatches}: 완료 ${lfsOk}, URL없음 ${lfsNoUrl}, DL실패 ${lfsFail - lfsNoUrl}`)
+                _lfsPullState.pngCount = lfsOk
+              } catch (e) {
+                const errMsg = e instanceof Error ? e.message : String(e)
+                _log(`LFS 배치 API 실패: ${errMsg}`)
+                if (!firstError) firstError = errMsg
+                lfsFail += batch.length
+              }
+            }
+            if (firstError) _log(`⚠️ 첫 에러: ${firstError}`)
+            const msg = lfsOk > 0 ? `✅ LFS 재시도 완료: ${lfsOk}개 성공, ${lfsFail}개 실패` : `❌ LFS 다운로드 실패: ${lfsFail}개 (${firstError})`
+            _log(msg)
+            _lfsPullState = { running: false, phase: 'done', pngCount: lfsOk, message: msg, ok: lfsOk > 0, log: _lfsPullState.log as string[] }
+            if (lfsOk > 0) _buildAssetIndexIfNeeded()
+          } catch (e) {
+            const msg = `❌ LFS 재시도 실패: ${e instanceof Error ? e.message : String(e)}`
+            _log(msg)
+            _lfsPullState = { running: false, phase: 'error', pngCount: 0, message: msg, ok: false, log: _lfsPullState.log as string[] }
+          }
+        })()
+        sendJson(res, 200, _lfsPullState)
+        return
+      }
+
       // ?action=gitlab-dl → GitLab API 직접 다운로드 (git LFS 우회)
       if (action === 'gitlab-dl') {
         if (!existsSync(join(aegisDir, '.git'))) { sendJson(res, 400, { error: 'aegis repo not cloned' }); return }
