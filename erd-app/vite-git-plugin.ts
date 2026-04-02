@@ -918,9 +918,11 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
     }
 
     if (lfsPointers.length > 0) {
-      _log(`LFS 오브젝트 ${lfsPointers.length}개 다운로드 중...`)
+      _log(`LFS 오브젝트 ${lfsPointers.length}개 다운로드 중 (배치 200, 동시 10)...`)
       const cred = Buffer.from(`oauth2:${gitlabToken}`).toString('base64')
-      const batchSize = 50
+      const batchSize = 200
+      const LFS_CONCURRENCY = 10
+      let lfsOk = 0, lfsFail = 0
       for (let i = 0; i < lfsPointers.length; i += batchSize) {
         const batch = lfsPointers.slice(i, i + batchSize)
         try {
@@ -938,21 +940,27 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
             }
           }
 
-          for (const ptr of batch) {
-            const dl = dlMap.get(ptr.oid)
-            if (!dl) { fail++; continue }
-            try {
-              const buf = await downloadBinary(dl.href, dl.auth ? { 'Authorization': dl.auth } : undefined)
-              const dir = join(ptr.file, '..')
-              if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-              writeFileSync(ptr.file, buf)
-              ok++
-            } catch { fail++ }
+          for (let j = 0; j < batch.length; j += LFS_CONCURRENCY) {
+            const chunk = batch.slice(j, j + LFS_CONCURRENCY)
+            await Promise.all(chunk.map(async (ptr) => {
+              const dl = dlMap.get(ptr.oid)
+              if (!dl) { lfsFail++; fail++; return }
+              try {
+                const buf = await downloadBinary(dl.href, dl.auth ? { 'Authorization': dl.auth } : undefined)
+                const dir = join(ptr.file, '..')
+                if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+                writeFileSync(ptr.file, buf)
+                lfsOk++; ok++
+              } catch { lfsFail++; fail++ }
+            }))
           }
-          _log(`LFS 배치 ${Math.floor(i / batchSize) + 1}: ${batch.length}개 처리`)
+          const batchNum = Math.floor(i / batchSize) + 1
+          const totalBatches = Math.ceil(lfsPointers.length / batchSize)
+          _log(`LFS 배치 ${batchNum}/${totalBatches}: +${batch.length}개 (LFS 완료: ${lfsOk}, 실패: ${lfsFail})`)
+          _lfsPullState.pngCount = ok + skip
         } catch (e) {
           _log(`LFS 배치 실패: ${e instanceof Error ? e.message : String(e)}`)
-          fail += batch.length
+          fail += batch.length; lfsFail += batch.length
         }
       }
     }
