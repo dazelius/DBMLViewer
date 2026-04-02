@@ -719,8 +719,8 @@ function _runGitWithStderr(cmd: string, cwd: string): Promise<{ stdout: string; 
   })
 }
 
-async function _pullLfsTextures(repoDir: string): Promise<{ ok: boolean; message: string }> {
-  const _log = (msg: string) => { sLog('INFO', `[git lfs] ${msg}`); if (_lfsPullState.log && Array.isArray(_lfsPullState.log)) (_lfsPullState.log as string[]).push(msg); _lfsPullState.phase = msg }
+async function _pullLfsTextures(repoDir: string, writeState = true): Promise<{ ok: boolean; message: string }> {
+  const _log = (msg: string) => { sLog('INFO', `[git lfs] ${msg}`); if (writeState && _lfsPullState.log && Array.isArray(_lfsPullState.log)) { (_lfsPullState.log as string[]).push(msg); _lfsPullState.phase = msg } }
   try {
     _log('git lfs install --local ...')
     const installResult = await _runGitWithStderr('git lfs install --local', repoDir)
@@ -1976,11 +1976,11 @@ function createGitMiddleware(options: GitPluginOptions) {
       // ?action=gitlab-dl → GitLab API 직접 다운로드 (git LFS 우회)
       if (action === 'gitlab-dl') {
         if (!existsSync(join(aegisDir, '.git'))) { sendJson(res, 400, { error: 'aegis repo not cloned' }); return }
-        if ((_lfsPullState as { running: boolean }).running) { sendJson(res, 200, _lfsPullState); return }
         const repo2Url = options.repo2Url || options.repoUrl
         const repo2Token = options.repo2Token || options.token
         if (!repo2Url || !repo2Token) { sendJson(res, 400, { error: 'GitLab repo2 URL/token not configured' }); return }
-        _lfsPullState = { running: true, phase: 'starting', startedAt: Date.now(), pngCount: 0, log: ['GitLab API 직접 다운로드 시작...'] }
+        // 이전 LFS pull 상태를 강제 리셋 (LFS pull이 running 상태로 남아있어도 gitlab-dl은 실행)
+        _lfsPullState = { running: true, phase: 'starting', startedAt: Date.now(), pngCount: 0, log: ['GitLab API 직접 다운로드 시작 (LFS 우회)...'] }
         _downloadViaGitlabApi(aegisDir, repo2Url, repo2Token).then(result => {
           const startedAt2 = typeof _lfsPullState.startedAt === 'number' ? _lfsPullState.startedAt : Date.now()
           const prevLog2 = Array.isArray(_lfsPullState.log) ? _lfsPullState.log as string[] : []
@@ -6551,7 +6551,7 @@ document.addEventListener('DOMContentLoaded', () => {
                   }
                   // aegis repo: LFS pull (UI 텍스처) → 에셋 인덱스 빌드
                   if (isRepo2) {
-                    _pullLfsTextures(activeDir).finally(() => _buildAssetIndexIfNeeded())
+                    _pullLfsTextures(activeDir, false).finally(() => _buildAssetIndexIfNeeded())
                   }
                 } catch (syncErr: unknown) {
                   const errMsg = syncErr instanceof Error ? syncErr.message : String(syncErr)
@@ -6581,7 +6581,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const head = await runGitAsync('git rev-parse --short HEAD', activeDir)
                 sLog('INFO', `Background clone complete: ${activeDir} @ ${head}`)
                 if (isRepo2) {
-                  const lfsResult = await _pullLfsTextures(activeDir)
+                  const lfsResult = await _pullLfsTextures(activeDir, false)
                   if (!lfsResult.ok && activeRepoUrl && activeToken) {
                     sLog('INFO', '[clone] LFS pull failed, falling back to GitLab API download')
                     await _downloadViaGitlabApi(activeDir, activeRepoUrl, activeToken)
