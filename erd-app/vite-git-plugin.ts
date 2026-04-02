@@ -780,10 +780,11 @@ async function _pullLfsTextures(repoDir: string, writeState = true): Promise<{ o
 /** GitLab API를 통해 PNG 텍스처를 직접 다운로드 (git LFS 우회) */
 async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabToken: string): Promise<{ ok: boolean; message: string }> {
   const _log = (msg: string) => { sLog('INFO', `[gitlab-dl] ${msg}`); if (_lfsPullState.log && Array.isArray(_lfsPullState.log)) (_lfsPullState.log as string[]).push(msg); _lfsPullState.phase = msg }
-  const http = require('http') as typeof import('http')
-  const https = require('https') as typeof import('https')
+  try {
+  const { get: httpGet, request: httpReq } = await import('http')
+  const { get: httpsGet, request: httpsReq } = await import('https')
+  _log(`URL: ${gitlabUrl}, token: ${gitlabToken ? gitlabToken.slice(0, 8) + '...' : '(없음)'}`)
 
-  const baseUrl = gitlabUrl.replace(/\/[^/]*\.git$/, '').replace(/\/$/, '')
   const pathParts = new URL(gitlabUrl.replace(/\.git$/, '')).pathname.replace(/^\//, '').split('/')
   const projectEnc = encodeURIComponent(pathParts.join('/'))
   const branch = 'develop'
@@ -793,8 +794,8 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
 
   function apiGet(url: string): Promise<Buffer> {
     return new Promise((resolve, reject) => {
-      const mod = url.startsWith('https') ? https : http
-      const req = mod.get(url, { headers: { 'PRIVATE-TOKEN': gitlabToken }, timeout: 30000 }, res => {
+      const getFn = url.startsWith('https') ? httpsGet : httpGet
+      const req = getFn(url, { headers: { 'PRIVATE-TOKEN': gitlabToken }, timeout: 30000 }, res => {
         const chunks: Buffer[] = []
         res.on('data', (c: Buffer) => chunks.push(c))
         res.on('end', () => {
@@ -810,9 +811,9 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
   function apiPost(url: string, body: unknown, headers: Record<string, string>): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const parsed = new URL(url)
-      const mod = parsed.protocol === 'https:' ? https : http
+      const reqFn = parsed.protocol === 'https:' ? httpsReq : httpReq
       const data = JSON.stringify(body)
-      const req = mod.request({ hostname: parsed.hostname, port: parsed.port, path: parsed.pathname + parsed.search, method: 'POST', headers: { ...headers, 'Content-Length': Buffer.byteLength(data) }, timeout: 30000 }, res => {
+      const req = reqFn({ hostname: parsed.hostname, port: parsed.port, path: parsed.pathname + parsed.search, method: 'POST', headers: { ...headers, 'Content-Length': Buffer.byteLength(data) }, timeout: 30000 }, res => {
         const chunks: Buffer[] = []
         res.on('data', (c: Buffer) => chunks.push(c))
         res.on('end', () => {
@@ -829,8 +830,8 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
 
   function downloadBinary(url: string, extraHeaders?: Record<string, string>): Promise<Buffer> {
     return new Promise((resolve, reject) => {
-      const mod = url.startsWith('https') ? https : http
-      const req = mod.get(url, { headers: { ...extraHeaders }, timeout: 60000 }, res => {
+      const getFn = url.startsWith('https') ? httpsGet : httpGet
+      const req = getFn(url, { headers: { ...extraHeaders }, timeout: 60000 }, res => {
         if (res.statusCode === 301 || res.statusCode === 302) {
           downloadBinary(res.headers.location!, extraHeaders).then(resolve, reject)
           return
@@ -844,7 +845,6 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
     })
   }
 
-  try {
     _log('GitLab API로 파일 목록 조회 중...')
     const origin = new URL(gitlabUrl.replace(/\.git$/, '')).origin
     let allFiles: { path: string; name: string; type: string; id: string }[] = []
