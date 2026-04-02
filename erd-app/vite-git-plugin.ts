@@ -919,24 +919,43 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
 
     if (lfsPointers.length > 0) {
       _log(`LFS 오브젝트 ${lfsPointers.length}개 다운로드 중 (배치 200, 동시 10)...`)
+      _log(`LFS URL: ${lfsUrl}`)
       const cred = Buffer.from(`oauth2:${gitlabToken}`).toString('base64')
       const batchSize = 200
       const LFS_CONCURRENCY = 10
-      let lfsOk = 0, lfsFail = 0
+      let lfsOk = 0, lfsFail = 0, lfsNoUrl = 0
+      let firstError = ''
+      let firstBatchResp = ''
       for (let i = 0; i < lfsPointers.length; i += batchSize) {
         const batch = lfsPointers.slice(i, i + batchSize)
         try {
           const bodyObj = { operation: 'download', transfers: ['basic'], objects: batch.map(p => ({ oid: p.oid, size: p.size })) }
-          const resp = JSON.parse((await apiPost(lfsUrl, bodyObj, {
+          const respBuf = await apiPost(lfsUrl, bodyObj, {
             'Authorization': `Basic ${cred}`,
             'Accept': 'application/vnd.git-lfs+json',
             'Content-Type': 'application/vnd.git-lfs+json',
-          })).toString('utf-8'))
+          })
+          const respStr = respBuf.toString('utf-8')
+          if (!firstBatchResp) {
+            firstBatchResp = respStr.slice(0, 500)
+            _log(`LFS 배치 API 첫 응답 (500자): ${firstBatchResp}`)
+          }
+          const resp = JSON.parse(respStr)
 
           const dlMap = new Map<string, { href: string; auth?: string }>()
           for (const obj of (resp.objects || [])) {
             if (obj.actions?.download) {
               dlMap.set(obj.oid, { href: obj.actions.download.href, auth: obj.actions.download.header?.Authorization })
+            } else if (obj.error) {
+              if (!firstError) firstError = `LFS obj error: ${JSON.stringify(obj.error).slice(0, 200)}`
+            }
+          }
+
+          if (i === 0) {
+            _log(`LFS 배치1 dlMap 크기: ${dlMap.size}/${batch.length} (URL 받은 비율)`)
+            if (dlMap.size === 0) {
+              const sampleObj = (resp.objects || [])[0]
+              _log(`LFS 샘플 객체: ${JSON.stringify(sampleObj).slice(0, 300)}`)
             }
           }
 
@@ -944,25 +963,31 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
             const chunk = batch.slice(j, j + LFS_CONCURRENCY)
             await Promise.all(chunk.map(async (ptr) => {
               const dl = dlMap.get(ptr.oid)
-              if (!dl) { lfsFail++; fail++; return }
+              if (!dl) { lfsNoUrl++; lfsFail++; fail++; return }
               try {
                 const buf = await downloadBinary(dl.href, dl.auth ? { 'Authorization': dl.auth } : undefined)
                 const dir = join(ptr.file, '..')
                 if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
                 writeFileSync(ptr.file, buf)
                 lfsOk++; ok++
-              } catch { lfsFail++; fail++ }
+              } catch (dlErr) {
+                lfsFail++; fail++
+                if (!firstError) firstError = `DL fail: ${dlErr instanceof Error ? dlErr.message : String(dlErr)}`
+              }
             }))
           }
           const batchNum = Math.floor(i / batchSize) + 1
           const totalBatches = Math.ceil(lfsPointers.length / batchSize)
-          _log(`LFS 배치 ${batchNum}/${totalBatches}: +${batch.length}개 (LFS 완료: ${lfsOk}, 실패: ${lfsFail})`)
+          _log(`LFS 배치 ${batchNum}/${totalBatches}: +${batch.length}개 (LFS 완료: ${lfsOk}, URL없음: ${lfsNoUrl}, DL실패: ${lfsFail - lfsNoUrl})`)
           _lfsPullState.pngCount = ok + skip
         } catch (e) {
-          _log(`LFS 배치 실패: ${e instanceof Error ? e.message : String(e)}`)
+          const errMsg = e instanceof Error ? e.message : String(e)
+          _log(`LFS 배치 API 실패: ${errMsg}`)
+          if (!firstError) firstError = `Batch API: ${errMsg}`
           fail += batch.length; lfsFail += batch.length
         }
       }
+      if (firstError) _log(`⚠️ 첫 번째 에러: ${firstError}`)
     }
 
     _lfsPullState.pngCount = ok + skip
