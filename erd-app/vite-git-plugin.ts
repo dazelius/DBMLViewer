@@ -788,8 +788,9 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
   const pathParts = new URL(gitlabUrl.replace(/\.git$/, '')).pathname.replace(/^\//, '').split('/')
   const projectEnc = encodeURIComponent(pathParts.join('/'))
   const branch = 'develop'
-  const targetFolder = 'Client/Project_Aegis/Assets/GameContents/UI'
-  const outDir = join(repoDir, 'Client', 'Project_Aegis', 'Assets', 'GameContents', 'UI')
+  const targetFolders = [
+    'Client/Project_Aegis/Assets',
+  ]
   const lfsUrl = `${gitlabUrl.replace(/\/$/, '')}/info/lfs/objects/batch`
 
   function apiGet(url: string): Promise<Buffer> {
@@ -848,31 +849,40 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
     _log('GitLab API로 파일 목록 조회 중...')
     const origin = new URL(gitlabUrl.replace(/\.git$/, '')).origin
     let allFiles: { path: string; name: string; type: string; id: string }[] = []
-    let page = 1
-    while (true) {
-      const folderEnc = encodeURIComponent(targetFolder)
-      const url = `${origin}/api/v4/projects/${projectEnc}/repository/tree?recursive=true&per_page=100&page=${page}&ref=${branch}&path=${folderEnc}`
-      const data = JSON.parse((await apiGet(url)).toString('utf-8'))
-      if (!Array.isArray(data)) { _log(`API 응답 오류: ${JSON.stringify(data).slice(0, 200)}`); break }
-      allFiles = allFiles.concat(data)
-      _log(`페이지 ${page}: ${data.length}개 항목 (누적 ${allFiles.length})`)
-      if (data.length < 100) break
-      page++
+    const seenPaths = new Set<string>()
+    for (const targetFolder of targetFolders) {
+      _log(`폴더 스캔: ${targetFolder}`)
+      let page = 1
+      while (true) {
+        const folderEnc = encodeURIComponent(targetFolder)
+        const url = `${origin}/api/v4/projects/${projectEnc}/repository/tree?recursive=true&per_page=100&page=${page}&ref=${branch}&path=${folderEnc}`
+        const data = JSON.parse((await apiGet(url)).toString('utf-8'))
+        if (!Array.isArray(data)) { _log(`API 응답 오류: ${JSON.stringify(data).slice(0, 200)}`); break }
+        for (const f of data) {
+          if (!seenPaths.has(f.path)) { seenPaths.add(f.path); allFiles.push(f) }
+        }
+        if (page % 10 === 0) _log(`  페이지 ${page}: 누적 ${allFiles.length}개 항목`)
+        if (data.length < 100) break
+        page++
+      }
+      _log(`  ${targetFolder} 완료 (누적 ${allFiles.length}개)`)
     }
 
-    const pngs = allFiles.filter(f => f.type === 'blob' && f.name.toLowerCase().endsWith('.png'))
-    _log(`총 PNG 파일: ${pngs.length}개`)
-    if (pngs.length === 0) return { ok: false, message: '⚠️ GitLab API에서 PNG 파일을 찾지 못했습니다' }
+    const blobs = allFiles.filter(f => f.type === 'blob')
+    _log(`총 다운로드 대상 파일: ${blobs.length}개 (전체 에셋)`)
+    if (blobs.length === 0) return { ok: false, message: '⚠️ GitLab API에서 에셋 파일을 찾지 못했습니다' }
 
-    let ok = 0, fail = 0, lfsCount = 0
+    let ok = 0, fail = 0, skip = 0, lfsCount = 0
     const lfsPointers: { oid: string; size: number; file: string }[] = []
 
-    _log(`직접 다운로드 시작 (${pngs.length}개)...`)
-    for (let i = 0; i < pngs.length; i++) {
-      const f = pngs[i]
-      const relPath = f.path.replace(/^Client\/Project_Aegis\/Assets\/GameContents\/UI\//, '')
-      const localPath = join(outDir, ...relPath.split('/'))
+    _log(`직접 다운로드 시작 (${blobs.length}개, 동시 5개)...`)
+    const CONCURRENCY = 5
+    let processed = 0
+
+    async function downloadOne(f: { path: string; name: string }) {
+      const localPath = join(repoDir, ...f.path.split('/'))
       const localDir = join(localPath, '..')
+      if (existsSync(localPath)) { const sz = readFileSync(localPath).length; if (sz > 200) { skip++; processed++; return } }
 
       if (!existsSync(localDir)) mkdirSync(localDir, { recursive: true })
 
@@ -895,10 +905,16 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
         }
       } catch { fail++ }
 
-      if ((i + 1) % 50 === 0 || i === pngs.length - 1) {
-        _log(`진행: ${i + 1}/${pngs.length} (직접: ${ok}, LFS: ${lfsCount}, 실패: ${fail})`)
-        _lfsPullState.pngCount = ok
+      processed++
+      if (processed % 100 === 0 || processed === blobs.length) {
+        _log(`진행: ${processed}/${blobs.length} (직접: ${ok}, LFS대기: ${lfsCount}, 스킵: ${skip}, 실패: ${fail})`)
+        _lfsPullState.pngCount = ok + skip
       }
+    }
+
+    for (let i = 0; i < blobs.length; i += CONCURRENCY) {
+      const chunk = blobs.slice(i, i + CONCURRENCY)
+      await Promise.all(chunk.map(f => downloadOne(f)))
     }
 
     if (lfsPointers.length > 0) {
@@ -941,10 +957,11 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
       }
     }
 
-    _lfsPullState.pngCount = ok
-    const msg = ok > 0 ? `✅ GitLab API 다운로드 완료: ${ok}개 PNG (실패: ${fail})` : `❌ 다운로드된 파일 없음 (실패: ${fail})`
+    _lfsPullState.pngCount = ok + skip
+    const total = ok + skip
+    const msg = total > 0 ? `✅ GitLab API 다운로드 완료: ${ok}개 신규 + ${skip}개 기존 = ${total}개 (실패: ${fail})` : `❌ 다운로드된 파일 없음 (실패: ${fail})`
     _log(msg)
-    return { ok: ok > 0, message: msg }
+    return { ok: total > 0, message: msg }
   } catch (e) {
     const msg = `❌ GitLab API 다운로드 실패: ${e instanceof Error ? e.message : String(e)}`
     _log(msg)
@@ -2027,8 +2044,8 @@ h1{font-size:20px;margin-bottom:8px;color:#fff}
 </div>
 <div class="bar-wrap"><div class="bar" id="bar" style="width:0%"></div></div>
 <div class="status"><div class="phase" id="phase">준비 중...</div><div class="log" id="log"></div></div>
-<div id="countWrap" style="display:none"><div class="count" id="pngCount">0</div><div class="count-label">PNG 파일 다운로드 완료</div></div>
-<button class="btn btn-start" id="gitlabDlBtn" onclick="startGitlabDl()" style="background:linear-gradient(135deg,#10b981,#059669);font-size:1.1em">📦 GitLab API 다운로드 (권장)</button>
+<div id="countWrap" style="display:none"><div class="count" id="pngCount">0</div><div class="count-label">에셋 파일 다운로드 완료</div></div>
+<button class="btn btn-start" id="gitlabDlBtn" onclick="startGitlabDl()" style="background:linear-gradient(135deg,#10b981,#059669);font-size:1.1em">📦 GitLab API 전체 에셋 다운로드 (권장)</button>
 <button class="btn" id="startBtn" onclick="startPull()" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;margin-top:6px">🔧 LFS Pull 시도 (실험적)</button>
 <div style="display:flex;gap:8px;margin-top:10px">
 <button class="btn" style="flex:1;background:#1e293b;color:#f59e0b;border:1px solid #f59e0b33" onclick="reclone()">🗑️ 삭제 후 풀 클론</button>

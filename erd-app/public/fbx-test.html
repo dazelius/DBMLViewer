@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>FBX Texture Debug</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f1117;color:#e2e8f0;font-family:'Segoe UI',sans-serif;display:flex;height:100vh;overflow:hidden}
+#sidebar{width:340px;background:#1a1d27;border-right:1px solid #2d3348;display:flex;flex-direction:column;overflow-y:auto;padding:12px;gap:10px}
+#viewport{flex:1;position:relative}
+canvas{display:block}
+h2{font-size:14px;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+.section{background:#252836;border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px}
+label{font-size:12px;color:#94a3b8;display:flex;align-items:center;gap:6px}
+input[type=text]{background:#1a1d27;border:1px solid #3d4460;color:#e2e8f0;padding:6px 8px;border-radius:4px;font-size:12px;width:100%}
+button{background:#6366f1;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px}
+button:hover{background:#4f46e5}
+button.secondary{background:#374151}
+select{background:#1a1d27;border:1px solid #3d4460;color:#e2e8f0;padding:4px 6px;border-radius:4px;font-size:12px}
+.toggle{display:flex;align-items:center;gap:8px;font-size:12px}
+.toggle input{accent-color:#6366f1}
+#log{background:#0f1117;border:1px solid #2d3348;border-radius:4px;padding:6px;font-family:'Consolas',monospace;font-size:11px;color:#94a3b8;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+#texPreview{display:flex;gap:4px;flex-wrap:wrap}
+#texPreview img{max-width:150px;max-height:150px;border:1px solid #3d4460;border-radius:4px;image-rendering:pixelated;background:#000}
+.mat-info{font-size:11px;color:#cbd5e1;background:#1a1d27;padding:4px 6px;border-radius:4px;margin-bottom:2px}
+#status{position:absolute;top:10px;left:10px;background:rgba(15,17,23,.85);padding:6px 12px;border-radius:6px;font-size:12px;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="sidebar">
+  <h2>FBX Texture Debug</h2>
+
+  <div class="section">
+    <label>FBX Path (assets/ 기준)</label>
+    <input type="text" id="fbxPath" placeholder="DevAssets(not packed)/_3DModel/striker/striker_001.fbx">
+    <button id="btnLoad" onclick="loadModel()">Load FBX</button>
+  </div>
+
+  <div class="section">
+    <h2>Texture Controls</h2>
+    <div class="toggle"><input type="checkbox" id="chkFlipY" checked><label for="chkFlipY">flipY (checked=true)</label></div>
+    <div class="toggle"><input type="checkbox" id="chkUseMatIdx" checked><label for="chkUseMatIdx">Material Index 텍스처 사용</label></div>
+    <div class="toggle"><input type="checkbox" id="chkFbxNative"><label for="chkFbxNative">FBXLoader 내장 텍스처 우선</label></div>
+    <div class="toggle"><input type="checkbox" id="chkWireframe"><label for="chkWireframe">Wireframe overlay</label></div>
+    <div class="toggle"><input type="checkbox" id="chkDoubleSide" checked><label for="chkDoubleSide">DoubleSide</label></div>
+    <button class="secondary" onclick="reapplyTextures()">Re-apply Textures</button>
+  </div>
+
+  <div class="section">
+    <h2>Material Info</h2>
+    <div id="matInfo">-</div>
+  </div>
+
+  <div class="section">
+    <h2>Texture Preview</h2>
+    <div id="texPreview">-</div>
+  </div>
+
+  <div class="section">
+    <h2>Log</h2>
+    <div id="log"></div>
+  </div>
+</div>
+
+<div id="viewport">
+  <div id="status">Ready</div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const logEl = document.getElementById('log');
+const statusEl = document.getElementById('status');
+const matInfoEl = document.getElementById('matInfo');
+const texPreviewEl = document.getElementById('texPreview');
+
+function log(msg) {
+  const t = new Date().toLocaleTimeString();
+  logEl.textContent += `[${t}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+  console.log('[fbx-test]', msg);
+}
+function setStatus(s) { statusEl.textContent = s; }
+
+// Scene setup
+const vp = document.getElementById('viewport');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setClearColor(0x1a1d27);
+renderer.shadowMap.enabled = true;
+vp.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
+camera.position.set(0, 100, 300);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+const ambLight = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambLight);
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+dirLight.position.set(5, 10, 7);
+scene.add(dirLight);
+
+const grid = new THREE.GridHelper(500, 20, 0x3d4460, 0x252836);
+scene.add(grid);
+
+function resize() {
+  const w = vp.clientWidth, h = vp.clientHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+
+let mixer = null;
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  if (mixer) mixer.update(clock.getDelta());
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// State
+let currentFbx = null;
+let currentMatEntries = [];
+let fbxMaterials = [];         // original FBXLoader materials
+let builtMaterials = new Map(); // our replacements
+
+window.loadModel = async function() {
+  const fbxPath = document.getElementById('fbxPath').value.trim();
+  if (!fbxPath) { log('ERROR: FBX path empty'); return; }
+
+  // Clean previous
+  if (currentFbx) { scene.remove(currentFbx); currentFbx = null; }
+  mixer = null;
+  fbxMaterials = [];
+  builtMaterials.clear();
+
+  setStatus('Loading FBX...');
+  log(`Loading: ${fbxPath}`);
+
+  const fbxUrl = `/api/assets/file?path=${encodeURIComponent(fbxPath)}`;
+
+  // Fetch material index
+  try {
+    const r = await fetch(`/api/assets/materials?fbxPath=${encodeURIComponent(fbxPath)}`);
+    if (r.ok) {
+      const d = await r.json();
+      currentMatEntries = d.materials || [];
+      log(`Material index: ${currentMatEntries.length} entries`);
+      currentMatEntries.forEach((e, i) => log(`  [${i}] name="${e.name}" albedo=${e.albedo?.split('/').pop() || 'none'}`));
+    } else {
+      currentMatEntries = [];
+      log('Material index: not found');
+    }
+  } catch { currentMatEntries = []; }
+
+  // Custom manager with URL modifier
+  const mgr = new THREE.LoadingManager();
+  mgr.setURLModifier((url) => {
+    const m = url.match(/^\/api\/assets\/([^?/]+)$/);
+    if (m) {
+      const newUrl = `/api/assets/file?path=${encodeURIComponent(m[1])}`;
+      log(`URL redirect: ${m[1]} → file API`);
+      return newUrl;
+    }
+    return url;
+  });
+
+  const loader = new FBXLoader(mgr);
+  loader.load(fbxUrl, async (fbx) => {
+    // Center + camera
+    const box = new THREE.Box3().setFromObject(fbx);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const fov = camera.fov * (Math.PI / 180);
+    const camDist = Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.6;
+    fbx.position.sub(center);
+    grid.position.y = -size.y / 2;
+    camera.position.set(0, maxDim * 0.4, camDist);
+    camera.lookAt(0, 0, 0);
+    controls.target.set(0, 0, 0);
+    controls.maxDistance = camDist * 5;
+    controls.update();
+
+    // Collect FBX materials
+    fbxMaterials = [];
+    const uniqueNames = new Set();
+    fbx.traverse((child) => {
+      if (!child.isMesh) return;
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      for (const m of mats) {
+        if (m && !uniqueNames.has(m.name)) {
+          uniqueNames.add(m.name);
+          fbxMaterials.push(m);
+        }
+      }
+    });
+    log(`FBX materials: ${fbxMaterials.length}`);
+    fbxMaterials.forEach((m, i) => {
+      const hasMap = !!(m.map);
+      const mapSize = m.map?.image ? `${m.map.image.width}x${m.map.image.height}` : 'none';
+      const flipY = m.map?.flipY;
+      log(`  [${i}] "${m.name}" type=${m.type} hasMap=${hasMap} mapSize=${mapSize} flipY=${flipY}`);
+    });
+
+    // Show mat info
+    updateMatInfo();
+
+    // Animations
+    if (fbx.animations.length > 0) {
+      mixer = new THREE.AnimationMixer(fbx);
+      const action = mixer.clipAction(fbx.animations[0]);
+      action.play();
+      log(`Playing animation: ${fbx.animations[0].name}`);
+    }
+
+    currentFbx = fbx;
+    scene.add(fbx);
+    setStatus('OK');
+
+    // Apply textures based on settings
+    await reapplyTextures();
+  }, (e) => {
+    if (e.loaded && e.total) setStatus(`Loading ${Math.round(e.loaded/e.total*100)}%`);
+  }, (err) => {
+    log(`ERROR loading FBX: ${err}`);
+    setStatus('Load failed');
+  });
+};
+
+function updateMatInfo() {
+  let html = '';
+  fbxMaterials.forEach((m, i) => {
+    const hasMap = !!(m.map);
+    html += `<div class="mat-info">[${i}] <b>${m.name}</b><br>type: ${m.type}, map: ${hasMap ? '✓' : '✗'}`;
+    if (m.map?.image) html += ` (${m.map.image.width}x${m.map.image.height}, flipY=${m.map.flipY})`;
+    html += `</div>`;
+  });
+  matInfoEl.innerHTML = html || '-';
+}
+
+window.reapplyTextures = async function() {
+  if (!currentFbx) return;
+
+  const flipY = document.getElementById('chkFlipY').checked;
+  const useMatIdx = document.getElementById('chkUseMatIdx').checked;
+  const fbxNative = document.getElementById('chkFbxNative').checked;
+  const wireframe = document.getElementById('chkWireframe').checked;
+  const doubleSide = document.getElementById('chkDoubleSide').checked;
+
+  log(`Re-apply: flipY=${flipY}, matIdx=${useMatIdx}, fbxNative=${fbxNative}, wire=${wireframe}`);
+
+  // Check if FBXLoader has loaded textures natively
+  let fbxHasNativeTextures = false;
+  currentFbx.traverse((child) => {
+    if (!child.isMesh) return;
+    const mats = Array.isArray(child.material) ? child.material : [child.material];
+    for (const m of mats) {
+      if (m.map && m.map.image) fbxHasNativeTextures = true;
+    }
+  });
+  log(`FBXLoader native textures: ${fbxHasNativeTextures}`);
+
+  if (fbxNative && fbxHasNativeTextures) {
+    log('Using FBXLoader native materials (no override)');
+    currentFbx.traverse((child) => {
+      if (!child.isMesh) return;
+      child.castShadow = true;
+      child.receiveShadow = true;
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      for (const m of mats) {
+        if (m.map) m.map.flipY = flipY;
+        m.wireframe = wireframe;
+        m.side = doubleSide ? THREE.DoubleSide : THREE.FrontSide;
+        m.needsUpdate = true;
+      }
+    });
+    showTexturePreviews();
+    return;
+  }
+
+  if (!useMatIdx || currentMatEntries.length === 0) {
+    log('Material index disabled or empty, keeping current materials');
+    currentFbx.traverse((child) => {
+      if (!child.isMesh) return;
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      for (const m of mats) {
+        m.wireframe = wireframe;
+        m.side = doubleSide ? THREE.DoubleSide : THREE.FrontSide;
+        m.needsUpdate = true;
+      }
+    });
+    return;
+  }
+
+  // Material index name matching
+  const stripSuffix = (n) => n.replace(/\.\d{3}$/, '').toLowerCase();
+  const matNameToEntry = new Map();
+  for (const e of currentMatEntries) {
+    if (e.name) matNameToEntry.set(e.name.toLowerCase(), e);
+  }
+  const findEntry = (fbxName) => {
+    if (!fbxName) return undefined;
+    const fn = stripSuffix(fbxName);
+    const direct = matNameToEntry.get(fbxName.toLowerCase());
+    if (direct) return { entry: direct, method: 'direct' };
+    for (const [k, v] of matNameToEntry) {
+      if (fn === k || fn === stripSuffix(k)) return { entry: v, method: 'strip-suffix' };
+    }
+    for (const [k, v] of matNameToEntry) {
+      if (fn.includes(k) || k.includes(fn)) return { entry: v, method: 'partial' };
+    }
+    return undefined;
+  };
+
+  // Map FBX mats → entries
+  const fbxMatToEntry = new Map();
+  for (let i = 0; i < fbxMaterials.length; i++) {
+    const fm = fbxMaterials[i];
+    const result = findEntry(fm.name);
+    const entry = result?.entry ?? currentMatEntries[i % currentMatEntries.length] ?? currentMatEntries[0];
+    const method = result?.method ?? 'index-fallback';
+    if (entry) {
+      fbxMatToEntry.set(fm.name, entry);
+      log(`  "${fm.name}" → "${entry.name}" (${method}) tex=${entry.albedo?.split('/').pop() || 'none'}`);
+    }
+  }
+
+  // Load textures
+  const texLoader = new THREE.TextureLoader();
+  const texCache = {};
+  const loadTex = (url) => {
+    if (!url) return Promise.resolve(null);
+    if (texCache[url] !== undefined) return Promise.resolve(texCache[url]);
+    return new Promise((resolve) => {
+      texLoader.load(url, (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.flipY = flipY;
+        texCache[url] = tex;
+        log(`✓ tex loaded: ${url.split('/').pop()} (flipY=${flipY})`);
+        resolve(tex);
+      }, undefined, (err) => {
+        log(`✗ tex FAILED: ${url.split('/').pop()}`);
+        texCache[url] = null;
+        resolve(null);
+      });
+    });
+  };
+
+  // Build materials
+  builtMaterials.clear();
+  for (const [fname, entry] of fbxMatToEntry) {
+    const [albedo, normal, emission] = await Promise.all([
+      loadTex(entry.albedo || ''),
+      loadTex(entry.normal || ''),
+      loadTex(entry.emission || ''),
+    ]);
+    const mat = new THREE.MeshStandardMaterial({
+      side: doubleSide ? THREE.DoubleSide : THREE.FrontSide,
+      roughness: 0.75,
+      metalness: 0.1,
+      wireframe,
+    });
+    if (albedo) { mat.map = albedo; }
+    else { mat.color.set(0x8899bb); }
+    if (normal) {
+      mat.normalMap = normal;
+      mat.normalScale.set(1, -1);
+      normal.colorSpace = THREE.NoColorSpace;
+    }
+    if (emission) {
+      mat.emissiveMap = emission;
+      mat.emissive.set(0xffffff);
+    }
+    mat.needsUpdate = true;
+    builtMaterials.set(fname, mat);
+  }
+
+  // Apply
+  let applied = 0;
+  currentFbx.traverse((child) => {
+    if (!child.isMesh) return;
+    child.castShadow = true;
+    child.receiveShadow = true;
+    if (Array.isArray(child.material)) {
+      child.material = child.material.map(m => {
+        const b = builtMaterials.get(m.name);
+        if (b) { applied++; return b; }
+        return builtMaterials.values().next().value || m;
+      });
+    } else {
+      const b = builtMaterials.get(child.material.name);
+      if (b) { applied++; child.material = b; }
+      else if (builtMaterials.size > 0) { child.material = builtMaterials.values().next().value; }
+    }
+  });
+  log(`Applied ${applied} material overrides`);
+
+  showTexturePreviews();
+  updateMatInfo();
+};
+
+function showTexturePreviews() {
+  texPreviewEl.innerHTML = '';
+  const seen = new Set();
+  currentFbx?.traverse((child) => {
+    if (!child.isMesh) return;
+    const mats = Array.isArray(child.material) ? child.material : [child.material];
+    for (const m of mats) {
+      if (!m.map?.image || seen.has(m.name)) continue;
+      seen.add(m.name);
+      const canvas = document.createElement('canvas');
+      const img = m.map.image;
+      canvas.width = Math.min(img.width, 256);
+      canvas.height = Math.min(img.height, 256);
+      canvas.title = `${m.name} (${img.width}x${img.height}, flipY=${m.map.flipY})`;
+      canvas.style.cssText = 'border:1px solid #3d4460;border-radius:4px;cursor:pointer';
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const label = document.createElement('div');
+      label.style.cssText = 'font-size:10px;color:#94a3b8;text-align:center';
+      label.textContent = `${m.name} ${img.width}x${img.height} flipY=${m.map.flipY}`;
+      const wrap = document.createElement('div');
+      wrap.appendChild(canvas);
+      wrap.appendChild(label);
+      texPreviewEl.appendChild(wrap);
+    }
+  });
+  if (texPreviewEl.children.length === 0) texPreviewEl.textContent = 'No textures loaded';
+}
+
+// Auto-load from URL params
+const params = new URLSearchParams(location.search);
+const initPath = params.get('path') || params.get('fbx') || '';
+if (initPath) {
+  document.getElementById('fbxPath').value = initPath;
+  loadModel();
+}
+
+log('Ready. Enter FBX path and click Load, or use ?path=... URL param');
+</script>
+</body>
+</html>
