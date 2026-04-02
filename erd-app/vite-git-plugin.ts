@@ -2089,6 +2089,90 @@ h2{color:#38bdf8}h3{color:#a78bfa;margin-top:24px}.summary{background:#1e293b;pa
       }
       if (action === 'status') { sendJson(res, 200, _lfsPullState); return }
 
+      // ?action=lfs-test → LFS batch API 단일 테스트 (원인 진단)
+      if (action === 'lfs-test') {
+        const repo2Url = options.repo2Url || options.repoUrl
+        const repo2Token = options.repo2Token || options.token
+        if (!repo2Url || !repo2Token) { sendJson(res, 400, { error: 'repo URL/token 없음' }); return }
+        ;(async () => {
+          try {
+            const { request: httpReq } = await import('http')
+            const { request: httpsReq } = await import('https')
+
+            // git lfs ls-files로 OID 하나 얻기
+            let sampleOid = '', sampleSize = 0
+            try {
+              const lsOut = execFileSync('git', ['lfs', 'ls-files', '--size'], { cwd: aegisDir, encoding: 'utf-8', timeout: 15000 })
+              const firstLine = lsOut.split('\n').find(l => l.includes('.png'))
+              if (firstLine) {
+                const match = firstLine.match(/^([a-f0-9]+)\s/)
+                if (match) {
+                  sampleOid = match[1]
+                  const sizeMatch = firstLine.match(/\((\d[\d.]*)\s*(B|KB|MB|GB)\)/)
+                  if (sizeMatch) {
+                    const num = parseFloat(sizeMatch[1])
+                    const unit = sizeMatch[2]
+                    sampleSize = Math.round(unit === 'GB' ? num * 1073741824 : unit === 'MB' ? num * 1048576 : unit === 'KB' ? num * 1024 : num)
+                  }
+                }
+              }
+            } catch (e) { /* fallback */ }
+
+            if (!sampleOid) {
+              // fallback: .gitattributes에서 LFS 패턴 확인
+              sendJson(res, 200, { error: 'git lfs ls-files에서 OID를 찾을 수 없음', hint: 'git lfs가 설치되지 않았거나 repo가 없습니다' })
+              return
+            }
+
+            const lfsUrl = `${repo2Url.replace(/\/$/, '')}/info/lfs/objects/batch`
+            const cred = Buffer.from(`oauth2:${repo2Token}`).toString('base64')
+            const bodyObj = { operation: 'download', transfers: ['basic'], objects: [{ oid: sampleOid, size: sampleSize || 1000 }] }
+
+            const doPost = (url: string, body: unknown, headers: Record<string, string>): Promise<{ status: number; headers: Record<string, string>; body: string }> => {
+              return new Promise((resolve, reject) => {
+                const u = new URL(url)
+                const mod = u.protocol === 'https:' ? { request: httpsReq } : { request: httpReq }
+                const data = Buffer.from(JSON.stringify(body))
+                const req2 = mod.request(u, { method: 'POST', headers: { ...headers, 'Content-Length': String(data.length) }, timeout: 15000 }, (r) => {
+                  const chunks: Buffer[] = []
+                  r.on('data', (c: Buffer) => chunks.push(c))
+                  r.on('end', () => resolve({ status: r.statusCode || 0, headers: r.headers as Record<string, string>, body: Buffer.concat(chunks).toString('utf-8') }))
+                })
+                req2.on('error', reject)
+                req2.on('timeout', () => { req2.destroy(); reject(new Error('timeout')) })
+                req2.write(data); req2.end()
+              })
+            }
+
+            // 1) oauth2 방식 시도
+            const r1 = await doPost(lfsUrl, bodyObj, {
+              'Authorization': `Basic ${cred}`,
+              'Accept': 'application/vnd.git-lfs+json',
+              'Content-Type': 'application/vnd.git-lfs+json',
+            }).catch(e => ({ status: -1, headers: {} as Record<string, string>, body: `error: ${e instanceof Error ? e.message : String(e)}` }))
+
+            // 2) PRIVATE-TOKEN 방식 시도
+            const r2 = await doPost(lfsUrl, bodyObj, {
+              'PRIVATE-TOKEN': repo2Token,
+              'Accept': 'application/vnd.git-lfs+json',
+              'Content-Type': 'application/vnd.git-lfs+json',
+            }).catch(e => ({ status: -1, headers: {} as Record<string, string>, body: `error: ${e instanceof Error ? e.message : String(e)}` }))
+
+            sendJson(res, 200, {
+              lfsUrl,
+              sampleOid: sampleOid.slice(0, 16) + '...',
+              sampleSize,
+              method1_oauth2: { status: r1.status, body: r1.body.slice(0, 500) },
+              method2_privateToken: { status: r2.status, body: r2.body.slice(0, 500) },
+              diagnosis: r1.status === 200 ? '✅ oauth2 인증 성공' : r2.status === 200 ? '✅ PRIVATE-TOKEN 인증 성공 (oauth2 실패)' : `❌ 양쪽 모두 실패 (${r1.status}, ${r2.status})`,
+            })
+          } catch (e) {
+            sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) })
+          }
+        })()
+        return
+      }
+
       // ?action=check-corrupt → 손상된 파일(에러 HTML이 덮어쓴 파일) 진단
       if (action === 'check-corrupt') {
         const assetsDir = join(aegisDir, 'Client', 'Project_Aegis', 'Assets')
