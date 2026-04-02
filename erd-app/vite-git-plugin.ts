@@ -1953,6 +1953,72 @@ function createGitMiddleware(options: GitPluginOptions) {
         return
       }
 
+      // ?action=files → 다운로드된 에셋 파일 목록 + 테스트 UI
+      if (action === 'files') {
+        const assetsDir = join(aegisDir, 'Client', 'Project_Aegis', 'Assets')
+        if (!existsSync(assetsDir)) { sendJson(res, 200, { error: 'Assets 폴더 없음', path: assetsDir.replace(process.cwd(), '.') }); return }
+        const stats: Record<string, { count: number; realCount: number; lfsCount: number; totalSize: number; samples: string[] }> = {}
+        let totalFiles = 0, totalReal = 0, totalLfs = 0
+        const walk = (dir: string, depth: number) => {
+          if (depth > 8) return
+          try {
+            for (const e of readdirSync(dir, { withFileTypes: true })) {
+              if (e.isDirectory()) walk(join(dir, e.name), depth + 1)
+              else {
+                const ext = (e.name.match(/\.[^.]+$/) || ['.unknown'])[0].toLowerCase()
+                if (!stats[ext]) stats[ext] = { count: 0, realCount: 0, lfsCount: 0, totalSize: 0, samples: [] }
+                const fp = join(dir, e.name)
+                const sz = statSync(fp).size
+                const isLfs = sz < 200
+                stats[ext].count++
+                stats[ext].totalSize += sz
+                totalFiles++
+                if (isLfs) { stats[ext].lfsCount++; totalLfs++ }
+                else { stats[ext].realCount++; totalReal++ }
+                if (stats[ext].samples.length < 5 && !isLfs) {
+                  stats[ext].samples.push(fp.replace(aegisDir + sep, '').replace(/\\/g, '/'))
+                }
+              }
+            }
+          } catch {}
+        }
+        walk(assetsDir, 0)
+        const sorted = Object.entries(stats).sort((a, b) => b[1].count - a[1].count)
+
+        const accept = req.headers?.accept || ''
+        if (accept.includes('text/html')) {
+          const imgSamples = [...(stats['.png']?.samples || []), ...(stats['.jpg']?.samples || []), ...(stats['.jpeg']?.samples || [])].slice(0, 20)
+          const rows = sorted.map(([ext, s]) => `<tr><td>${ext}</td><td>${s.count}</td><td style="color:#10b981">${s.realCount}</td><td style="color:#f59e0b">${s.lfsCount}</td><td>${(s.totalSize / 1024 / 1024).toFixed(1)}MB</td></tr>`).join('')
+          const imgCards = imgSamples.map(p => {
+            const name = p.split('/').pop()
+            const apiPath = `/api/images/${encodeURIComponent(name || '')}`
+            return `<div style="display:inline-block;margin:4px;text-align:center;background:#1e293b;border-radius:8px;padding:8px;width:120px">
+              <img src="${apiPath}" style="width:100px;height:100px;object-fit:contain;background:#0f172a;border-radius:4px" onerror="this.style.border='2px solid red';this.alt='FAIL'" />
+              <div style="font-size:10px;color:#94a3b8;word-break:break-all;margin-top:4px">${name}</div></div>`
+          }).join('')
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+          res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>에셋 파일 목록</title>
+<style>body{background:#0f172a;color:#e2e8f0;font-family:system-ui;padding:20px;margin:0}
+table{border-collapse:collapse;width:100%;max-width:800px}th,td{padding:6px 12px;text-align:right;border-bottom:1px solid #1e293b}
+th{background:#1e293b;color:#94a3b8;position:sticky;top:0}td:first-child,th:first-child{text-align:left}
+h2{color:#38bdf8}h3{color:#a78bfa;margin-top:24px}.summary{background:#1e293b;padding:16px;border-radius:12px;margin-bottom:20px;display:flex;gap:24px}
+.stat{text-align:center}.stat .num{font-size:28px;font-weight:bold;color:#38bdf8}.stat .label{font-size:12px;color:#94a3b8}</style></head><body>
+<h2>📦 다운로드된 에셋 파일</h2>
+<div class="summary">
+<div class="stat"><div class="num">${totalFiles.toLocaleString()}</div><div class="label">전체 파일</div></div>
+<div class="stat"><div class="num" style="color:#10b981">${totalReal.toLocaleString()}</div><div class="label">실제 파일</div></div>
+<div class="stat"><div class="num" style="color:#f59e0b">${totalLfs.toLocaleString()}</div><div class="label">LFS 포인터</div></div>
+</div>
+<table><thead><tr><th>확장자</th><th>총 개수</th><th>실제</th><th>LFS</th><th>용량</th></tr></thead><tbody>${rows}</tbody></table>
+<h3>🖼️ 이미지 로딩 테스트 (${imgSamples.length}개 샘플)</h3>
+<div>${imgCards || '<p style="color:#94a3b8">이미지 파일 없음</p>'}</div>
+</body></html>`)
+          return
+        }
+        sendJson(res, 200, { totalFiles, totalReal, totalLfs, byExtension: Object.fromEntries(sorted) })
+        return
+      }
+
       // ?action=diag → 샘플 PNG 파일 분석
       if (action === 'diag') {
         const texDir = join(aegisDir, 'Client', 'Project_Aegis', 'Assets', 'GameContents', 'UI', 'Texture')
