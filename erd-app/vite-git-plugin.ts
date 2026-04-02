@@ -2099,28 +2099,56 @@ h2{color:#38bdf8}h3{color:#a78bfa;margin-top:24px}.summary{background:#1e293b;pa
             const { request: httpReq } = await import('http')
             const { request: httpsReq } = await import('https')
 
-            // git lfs ls-files로 OID 하나 얻기
-            let sampleOid = '', sampleSize = 0
-            try {
-              const lsOut = execFileSync('git', ['lfs', 'ls-files', '--size'], { cwd: aegisDir, encoding: 'utf-8', timeout: 15000 })
-              const firstLine = lsOut.split('\n').find(l => l.includes('.png'))
-              if (firstLine) {
-                const match = firstLine.match(/^([a-f0-9]+)\s/)
-                if (match) {
-                  sampleOid = match[1]
-                  const sizeMatch = firstLine.match(/\((\d[\d.]*)\s*(B|KB|MB|GB)\)/)
-                  if (sizeMatch) {
-                    const num = parseFloat(sizeMatch[1])
-                    const unit = sizeMatch[2]
-                    sampleSize = Math.round(unit === 'GB' ? num * 1073741824 : unit === 'MB' ? num * 1048576 : unit === 'KB' ? num * 1024 : num)
+            // GitLab API에서 LFS 포인터 파일을 직접 가져와서 OID 추출
+            let sampleOid = '', sampleSize = 0, sampleFile = ''
+            let gitLfsVersion = 'not installed'
+            try { gitLfsVersion = execFileSync('git', ['lfs', 'version'], { cwd: aegisDir, encoding: 'utf-8', timeout: 5000 }).trim() } catch {}
+
+            // GitLab API로 알려진 PNG 파일의 raw content 가져오기 (LFS 포인터일 것)
+            const origin = new URL(repo2Url.replace(/\.git$/, '')).origin
+            const pathParts = new URL(repo2Url.replace(/\.git$/, '')).pathname.replace(/^\//, '').split('/')
+            const projectEnc = encodeURIComponent(pathParts.join('/'))
+            const testFiles = [
+              'Client/Project_Aegis/Assets/CharacterActionTool/DMTimeArea/EditorResources/CutOffLinePlayhead.png',
+              'Client/Project_Aegis/Assets/GameContents/UI/Texture/Character/icon_hero_vanguard.png',
+            ]
+            const { get: _httpGet } = await import('http')
+            const { get: _httpsGet } = await import('https')
+            const doGet2 = (url: string, headers?: Record<string, string>): Promise<{ status: number; body: string }> => {
+              return new Promise((resolve, reject) => {
+                const u = new URL(url)
+                const getter = u.protocol === 'https:' ? _httpsGet : _httpGet
+                getter(u, { headers: { ...headers, 'PRIVATE-TOKEN': repo2Token }, timeout: 10000 }, (r) => {
+                  const chunks: Buffer[] = []; r.on('data', (c: Buffer) => chunks.push(c))
+                  r.on('end', () => resolve({ status: r.statusCode || 0, body: Buffer.concat(chunks).toString('utf-8') }))
+                }).on('error', reject)
+              })
+            }
+
+            let apiTestResult = ''
+            for (const tf of testFiles) {
+              try {
+                const encodedPath = encodeURIComponent(tf)
+                const url = `${origin}/api/v4/projects/${projectEnc}/repository/files/${encodedPath}/raw?ref=develop`
+                const r = await doGet2(url)
+                apiTestResult = `${tf}: status=${r.status}, body=${r.body.slice(0, 200)}`
+                if (r.status === 200 && r.body.startsWith('version https://git-lfs.github.com/')) {
+                  const oidMatch = r.body.match(/oid sha256:([a-f0-9]+)/)
+                  const sizeMatch = r.body.match(/size (\d+)/)
+                  if (oidMatch && sizeMatch) {
+                    sampleOid = oidMatch[1]
+                    sampleSize = parseInt(sizeMatch[1])
+                    sampleFile = tf
+                    break
                   }
                 }
+              } catch (e) {
+                apiTestResult = `${tf}: error=${e instanceof Error ? e.message : String(e)}`
               }
-            } catch (e) { /* fallback */ }
+            }
 
             if (!sampleOid) {
-              // fallback: .gitattributes에서 LFS 패턴 확인
-              sendJson(res, 200, { error: 'git lfs ls-files에서 OID를 찾을 수 없음', hint: 'git lfs가 설치되지 않았거나 repo가 없습니다' })
+              sendJson(res, 200, { error: 'LFS 포인터를 찾을 수 없음', gitLfsVersion, apiTestResult })
               return
             }
 
@@ -2159,12 +2187,14 @@ h2{color:#38bdf8}h3{color:#a78bfa;margin-top:24px}.summary{background:#1e293b;pa
             }).catch(e => ({ status: -1, headers: {} as Record<string, string>, body: `error: ${e instanceof Error ? e.message : String(e)}` }))
 
             sendJson(res, 200, {
+              gitLfsVersion,
               lfsUrl,
+              sampleFile,
               sampleOid: sampleOid.slice(0, 16) + '...',
               sampleSize,
               method1_oauth2: { status: r1.status, body: r1.body.slice(0, 500) },
               method2_privateToken: { status: r2.status, body: r2.body.slice(0, 500) },
-              diagnosis: r1.status === 200 ? '✅ oauth2 인증 성공' : r2.status === 200 ? '✅ PRIVATE-TOKEN 인증 성공 (oauth2 실패)' : `❌ 양쪽 모두 실패 (${r1.status}, ${r2.status})`,
+              diagnosis: r1.status === 200 ? '✅ oauth2 인증 성공' : r2.status === 200 ? '✅ PRIVATE-TOKEN 인증 성공 (oauth2 실패 → PRIVATE-TOKEN 방식으로 전환 필요)' : `❌ 양쪽 모두 실패 (${r1.status}, ${r2.status}). LFS 서버 접근 불가 → git clone으로 해결 필요`,
             })
           } catch (e) {
             sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) })
