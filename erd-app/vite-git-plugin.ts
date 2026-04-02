@@ -2089,6 +2089,50 @@ h2{color:#38bdf8}h3{color:#a78bfa;margin-top:24px}.summary{background:#1e293b;pa
       }
       if (action === 'status') { sendJson(res, 200, _lfsPullState); return }
 
+      // ?action=check-corrupt → 손상된 파일(에러 HTML이 덮어쓴 파일) 진단
+      if (action === 'check-corrupt') {
+        const assetsDir = join(aegisDir, 'Client', 'Project_Aegis', 'Assets')
+        if (!existsSync(assetsDir)) { sendJson(res, 200, { error: 'Assets 폴더 없음' }); return }
+        let scanned = 0, lfsPointers = 0, realFiles = 0, corruptFiles = 0, emptyFiles = 0
+        const corruptSamples: { path: string; size: number; head: string }[] = []
+        const walk = (dir: string, depth: number) => {
+          if (depth > 10) return
+          try {
+            for (const e of readdirSync(dir, { withFileTypes: true })) {
+              if (e.isDirectory()) walk(join(dir, e.name), depth + 1)
+              else {
+                scanned++
+                const fp = join(dir, e.name)
+                const sz = statSync(fp).size
+                if (sz === 0) { emptyFiles++; continue }
+                if (sz < 200) {
+                  try {
+                    const txt = readFileSync(fp, 'utf-8')
+                    if (txt.startsWith('version https://git-lfs.github.com/')) { lfsPointers++; continue }
+                  } catch {}
+                }
+                const ext = (e.name.match(/\.[^.]+$/) || [''])[0].toLowerCase()
+                const isBinaryExt = /\.(png|jpg|jpeg|tga|bmp|psd|fbx|obj|dll|exe|wav|mp3|ogg|asset|prefab|unity|controller|anim)$/i.test(e.name)
+                if (isBinaryExt && sz > 200 && sz < 2000) {
+                  try {
+                    const head = readFileSync(fp, 'utf-8').slice(0, 100)
+                    if (head.includes('<html') || head.includes('<!DOCTYPE') || head.includes('{"message"') || head.includes('Not Found') || head.includes('error')) {
+                      corruptFiles++
+                      if (corruptSamples.length < 10) corruptSamples.push({ path: fp.replace(process.cwd(), '.'), size: sz, head: head.slice(0, 80) })
+                      continue
+                    }
+                  } catch {}
+                }
+                realFiles++
+              }
+            }
+          } catch {}
+        }
+        walk(assetsDir, 0)
+        sendJson(res, 200, { scanned, realFiles, lfsPointers, corruptFiles, emptyFiles, corruptSamples, verdict: corruptFiles > 0 ? `⚠️ ${corruptFiles}개 손상 파일 발견 (에러 HTML이 덮어씀). 삭제 후 재다운로드 필요.` : lfsPointers > 0 ? `${lfsPointers}개 LFS 포인터 남음. ?action=lfs-retry로 다운로드.` : `✅ 정상: 실제 파일 ${realFiles}개` })
+        return
+      }
+
       // ?action=lfs-retry → 로컬 LFS 포인터만 찾아서 LFS 배치 다운로드 (빠름)
       if (action === 'lfs-retry') {
         if (!existsSync(join(aegisDir, '.git'))) { sendJson(res, 400, { error: 'aegis repo not cloned' }); return }
