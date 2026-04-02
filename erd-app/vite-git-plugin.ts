@@ -388,9 +388,11 @@ const _require = createRequire(import.meta.url)
 // ── 로컬 이미지 디렉토리 (sync_ui_images.ps1 로 동기화) ──────────────────────
 // 로컬 우선, 없으면 aegis repo 폴백
 const _IMG_CANDIDATES = [
-  'C:\\TableMaster\\images',
+  join(process.cwd(), 'images'),
+  join(process.cwd(), '..', 'images'),
   join(process.cwd(), '..', '..', 'images'),
   join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets', 'GameContents', 'UI', 'Texture'),
+  join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets', 'GameContents', 'UI'),
   join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
 ]
 const IMAGES_DIR = _IMG_CANDIDATES.find(p => existsSync(p)) || _IMG_CANDIDATES[0]
@@ -406,7 +408,8 @@ let _lfsPullState: Record<string, unknown> = { running: false, phase: 'idle' }
 // ── C# 소스코드 디렉토리 (sync_cs_files.ps1 로 동기화) ───────────────────────
 // 로컬 우선, 없으면 aegis repo에서 C# 소스 직접 탐색
 const _CODE_CANDIDATES = [
-  'C:\\TableMaster\\code',
+  join(process.cwd(), 'code'),
+  join(process.cwd(), '..', 'code'),
   join(process.cwd(), '..', '..', 'code'),
   join(process.cwd(), '.git-repo-aegis', 'Client', 'Project_Aegis', 'Assets'),
   join(process.cwd(), '.git-repo-aegis'),
@@ -419,7 +422,7 @@ const _GUIDES_CANDIDATES = [
   join(CODE_DIR, '_guides'),
   join(process.cwd(), '_guides'),
   join(__dirname, '_guides'),
-  'C:\\TableMaster\\code\\_guides',
+  join(process.cwd(), '..', '..', 'code', '_guides'),
 ]
 const GUIDES_DIR = _GUIDES_CANDIDATES.find(p => existsSync(p)) || _GUIDES_CANDIDATES[0]
 console.log(`[Init] GUIDES_DIR: ${GUIDES_DIR} (exists: ${existsSync(GUIDES_DIR)})`)
