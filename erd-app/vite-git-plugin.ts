@@ -897,6 +897,7 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
           const sizeMatch = text.match(/size (\d+)/)
           if (oidMatch && sizeMatch) {
             lfsPointers.push({ oid: oidMatch[1], size: parseInt(sizeMatch[1]), file: localPath })
+            writeFileSync(localPath, buf)
             lfsCount++
           }
         } else {
@@ -920,6 +921,17 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
     if (lfsPointers.length > 0) {
       _log(`LFS 오브젝트 ${lfsPointers.length}개 다운로드 중 (배치 200, 동시 10)...`)
       _log(`LFS URL: ${lfsUrl}`)
+      const gitlabInternalHost = new URL(gitlabUrl.replace(/\.git$/, '')).host
+      const rewriteLfsUrl = (href: string): string => {
+        try {
+          const u = new URL(href)
+          if (u.host !== gitlabInternalHost) {
+            u.host = gitlabInternalHost
+            return u.toString()
+          }
+        } catch {}
+        return href
+      }
       const cred = Buffer.from(`oauth2:${gitlabToken}`).toString('base64')
       const batchSize = 200
       const LFS_CONCURRENCY = 10
@@ -945,15 +957,19 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
           const dlMap = new Map<string, { href: string; auth?: string }>()
           for (const obj of (resp.objects || [])) {
             if (obj.actions?.download) {
-              dlMap.set(obj.oid, { href: obj.actions.download.href, auth: obj.actions.download.header?.Authorization })
+              const originalHref = obj.actions.download.href
+              const rewrittenHref = rewriteLfsUrl(originalHref)
+              dlMap.set(obj.oid, { href: rewrittenHref, auth: obj.actions.download.header?.Authorization })
             } else if (obj.error) {
               if (!firstError) firstError = `LFS obj error: ${JSON.stringify(obj.error).slice(0, 200)}`
             }
           }
 
           if (i === 0) {
-            _log(`LFS 배치1 dlMap 크기: ${dlMap.size}/${batch.length} (URL 받은 비율)`)
-            if (dlMap.size === 0) {
+            _log(`LFS 배치1 dlMap: ${dlMap.size}/${batch.length}`)
+            const sampleEntry = dlMap.entries().next().value
+            if (sampleEntry) _log(`LFS 샘플 URL: ${(sampleEntry as [string, {href: string}])[1].href.slice(0, 120)}`)
+            else {
               const sampleObj = (resp.objects || [])[0]
               _log(`LFS 샘플 객체: ${JSON.stringify(sampleObj).slice(0, 300)}`)
             }
@@ -2300,8 +2316,13 @@ h2{color:#38bdf8}h3{color:#a78bfa;margin-top:24px}.summary{background:#1e293b;pa
 
             const gitlabUrl = repo2Url!
             const gitlabToken = repo2Token!
-            const lfsUrl = `${gitlabUrl.replace(/\/$/, '')}/info/lfs/objects/batch`
+            const gitlabUrl2 = repo2Url!
+            const lfsUrl = `${gitlabUrl2.replace(/\/$/, '')}/info/lfs/objects/batch`
             _log(`LFS URL: ${lfsUrl}`)
+            const gitlabInternalHost = new URL(gitlabUrl2.replace(/\.git$/, '')).host
+            const rewriteLfsUrl = (href: string): string => {
+              try { const u = new URL(href); if (u.host !== gitlabInternalHost) { u.host = gitlabInternalHost; return u.toString() } } catch {} return href
+            }
             const cred = Buffer.from(`oauth2:${gitlabToken}`).toString('base64')
 
             // apiPost / downloadBinary 인라인
@@ -2347,13 +2368,17 @@ h2{color:#38bdf8}h3{color:#a78bfa;margin-top:24px}.summary{background:#1e293b;pa
                 const dlMap = new Map<string, { href: string; auth?: string }>()
                 for (const obj of (resp.objects || [])) {
                   if (obj.actions?.download) {
-                    dlMap.set(obj.oid, { href: obj.actions.download.href, auth: obj.actions.download.header?.Authorization })
+                    dlMap.set(obj.oid, { href: rewriteLfsUrl(obj.actions.download.href), auth: obj.actions.download.header?.Authorization })
                   } else if (obj.error && !firstError) {
                     firstError = `LFS obj error: ${JSON.stringify(obj.error).slice(0, 200)}`
                   }
                 }
 
-                if (i === 0) _log(`dlMap: ${dlMap.size}/${batch.length}`)
+                if (i === 0) {
+                  _log(`dlMap: ${dlMap.size}/${batch.length}`)
+                  const se = dlMap.entries().next().value
+                  if (se) _log(`샘플 URL: ${(se as [string, {href: string}])[1].href.slice(0, 120)}`)
+                }
 
                 for (let j = 0; j < batch.length; j += LFS_CONCURRENCY) {
                   const chunk = batch.slice(j, j + LFS_CONCURRENCY)
