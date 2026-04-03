@@ -29,6 +29,11 @@ export default defineConfig(({ mode }) => {
         confluenceApiToken: env.CONFLUENCE_API_TOKEN || '',
         webSearchApiKey: env.WEB_SEARCH_API_KEY || '',
         tableMasterUrl: `http://${env.TABLEMASTER_HOST || 'localhost'}:${port}`,
+        googleSheetsId: env.GOOGLE_SHEETS_ID || '',
+        googleApiKey: env.GOOGLE_API_KEY || '',
+        googleSaEmail: env.GOOGLE_SA_EMAIL || '',
+        googleSaPrivateKey: env.GOOGLE_SA_PRIVATE_KEY || '',
+        googleServiceAccountJson: env.GOOGLE_SERVICE_ACCOUNT_JSON || '',
       }),
     ],
     css: {

@@ -4134,7 +4134,7 @@ export async function sendChatMessage(
                 ...img,
                 url: img.url || `${_ab}/api/images/file?path=${encodeURIComponent(img.relPath)}`,
               }));
-              tc = { kind: 'image_search', query, images, total: serverResult.data.total, diagnostics: serverResult.data.diagnostics } as ImageResult;
+              tc = { kind: 'image_search', query, images, total: serverResult.data.total, diagnostics: images.length > 0 ? undefined : serverResult.data.diagnostics } as ImageResult;
               resultStr = serverResult.result;
             } else {
               tc = { kind: 'image_search', query, images: [], total: 0 } as ImageResult;

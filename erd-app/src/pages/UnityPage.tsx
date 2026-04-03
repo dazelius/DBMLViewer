@@ -486,13 +486,15 @@ function AssetList({
   dirPath,
   typeFilter,
   onOpen,
+  onNavigate,
 }: {
   dirPath: string;
   typeFilter: AssetType | 'all';
   onOpen: (f: AssetFile) => void;
+  onNavigate?: (path: string) => void;
 }) {
   const [files, setFiles] = useState<AssetFile[]>([]);
-  const [subdirs, setSubdirs] = useState<Array<{ name: string; path: string }>>([]);
+  const [subdirs, setSubdirs] = useState<Array<{ name: string; path: string; count?: number }>>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -501,7 +503,7 @@ function AssetList({
     setLoading(true); setError('');
     fetchDir(dirPath)
       .then(({ dirs, files: rawFiles }) => {
-        setSubdirs(dirs.map(d => ({ name: d.name, path: d.path })));
+        setSubdirs(dirs.map(d => ({ name: d.name, path: d.path, count: (d as { count?: number }).count })));
         const assetFiles: AssetFile[] = rawFiles
           .map(f => {
             const ext = f.name.split('.').pop() ?? '';
@@ -528,14 +530,58 @@ function AssetList({
   );
   if (error) return <div style={{ color: '#f87171', padding: 16, fontSize: 12 }}>{error}</div>;
 
+  const hasContent = subdirs.length > 0 || files.length > 0;
+
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 16px' }}>
-      {/* 파일 카드 그리드 */}
-      {files.length > 0 ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10, paddingTop: 16 }}>
-          {files.map(f => <AssetCard key={f.path} file={f} onOpen={onOpen} />)}
+      {/* 하위 폴더 그리드 */}
+      {subdirs.length > 0 && (
+        <div style={{ paddingTop: 12 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: '#475569', letterSpacing: 0.5, marginBottom: 8, paddingLeft: 2 }}>
+            폴더 ({subdirs.length})
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8 }}>
+            {subdirs.map(d => (
+              <div
+                key={d.path}
+                onClick={() => onNavigate?.(d.path)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  background: '#161b22', border: '1px solid rgba(255,255,255,0.06)',
+                  borderRadius: 8, padding: '8px 12px', cursor: 'pointer', transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = '#1c2333'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.3)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = '#161b22'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)'; }}
+              >
+                <FolderIcon open={false} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {d.name}
+                  </div>
+                  {d.count != null && (
+                    <div style={{ fontSize: 10, color: '#475569' }}>{d.count}개 항목</div>
+                  )}
+                </div>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2"><polyline points="9 18 15 12 9 6"/></svg>
+              </div>
+            ))}
+          </div>
         </div>
-      ) : (
+      )}
+
+      {/* 파일 카드 그리드 */}
+      {files.length > 0 && (
+        <div style={{ paddingTop: 12 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: '#475569', letterSpacing: 0.5, marginBottom: 8, paddingLeft: 2 }}>
+            파일 ({files.length})
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
+            {files.map(f => <AssetCard key={f.path} file={f} onOpen={onOpen} />)}
+          </div>
+        </div>
+      )}
+
+      {!hasContent && (
         <div style={{ color: '#475569', fontSize: 12, paddingTop: 24, textAlign: 'center' }}>
           {typeFilter === 'all' ? '파일이 없습니다' : `${ALL_FILTERS.find(f => f.key === typeFilter)?.label} 파일이 없습니다`}
         </div>
@@ -1024,6 +1070,7 @@ export default function UnityPage() {
               dirPath={selectedDir}
               typeFilter={typeFilter}
               onOpen={handleOpen}
+              onNavigate={setSelectedDir}
             />
           )}
         </div>

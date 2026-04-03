@@ -44,6 +44,7 @@ export default function Toolbar() {
   const isExplore    = location.pathname.startsWith('/explore');
   const isUnity      = location.pathname.startsWith('/unity');
   const isKnowledge  = location.pathname.startsWith('/knowledge');
+  const isStrings    = location.pathname.startsWith('/strings');
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -86,9 +87,9 @@ export default function Toolbar() {
                 DataMaster
               </span>
               {/* 현재 활성 페이지 표시 */}
-              {(isEditor || isDocs || isDiff || isValidation || isQuery || isUnity) && (
+              {(isEditor || isDocs || isDiff || isValidation || isQuery || isUnity || isStrings) && (
                 <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded-md" style={{ background: 'rgba(var(--accent-rgb),0.15)', color: 'var(--accent)' }}>
-                  {isEditor ? 'ERD' : isDocs ? 'Data' : isDiff ? 'Diff' : isValidation ? 'Validation' : isUnity ? 'Unity' : 'Query'}
+                  {isEditor ? 'ERD' : isDocs ? 'Data' : isDiff ? 'Diff' : isValidation ? 'Validation' : isUnity ? 'Unity' : isStrings ? 'Strings' : 'Query'}
                 </span>
               )}
               <svg
@@ -118,6 +119,7 @@ export default function Toolbar() {
                   { label: 'Query', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>, path: '/query', active: isQuery },
                   { label: 'Unity', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/><line x1="12" y1="22" x2="12" y2="15.5"/><polyline points="22 8.5 12 15.5 2 8.5"/></svg>, path: '/unity', active: isUnity },
                   { label: 'Knowledge', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="9" y1="7" x2="16" y2="7"/><line x1="9" y1="11" x2="14" y2="11"/></svg>, path: '/knowledge', active: isKnowledge },
+                  { label: 'Strings', icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>, path: '/strings', active: isStrings },
                 ].map(({ label, icon, path, active }) => (
                   <button
                     key={path}

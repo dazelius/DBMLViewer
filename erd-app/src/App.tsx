@@ -16,6 +16,7 @@ const PrefabViewerPage = lazy(() => import('./pages/PrefabViewerPage.tsx'));
 const UnityPage = lazy(() => import('./pages/UnityPage.tsx'));
 const LevelViewerPage = lazy(() => import('./pages/LevelViewerPage.tsx'));
 const KnowledgePage = lazy(() => import('./pages/KnowledgePage.tsx'));
+const StringTablePage = lazy(() => import('./pages/StringTablePage.tsx'));
 
 function PageLoader() {
   return (
@@ -53,6 +54,7 @@ export default function App() {
           <Route path="/unity" element={<UnityPage />} />
           <Route path="/level-viewer" element={<LevelViewerPage />} />
           <Route path="/knowledge" element={<KnowledgePage />} />
+          <Route path="/strings" element={<StringTablePage />} />
         </Routes>
       </Suspense>
     </HashRouter>

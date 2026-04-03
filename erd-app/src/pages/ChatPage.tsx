@@ -3404,7 +3404,7 @@ function ImageCard({ tc }: { tc: ImageResult }) {
         </div>
       )}
 
-      {expanded && tc.diagnostics && tc.diagnostics.length > 0 && (
+      {expanded && tc.diagnostics && tc.diagnostics.length > 0 && tc.images.length === 0 && (
         <div className="px-2 py-2 text-[10px] font-mono" style={{ color: '#f59e0b', background: 'rgba(245,158,11,0.08)', borderTop: '1px solid rgba(245,158,11,0.2)', maxHeight: 120, overflow: 'auto', whiteSpace: 'pre-wrap' }}>
           ⚠️ 이미지 파일 로드 실패 (서버 경로 진단):{'\n'}{tc.diagnostics.slice(0, 3).join('\n')}
         </div>

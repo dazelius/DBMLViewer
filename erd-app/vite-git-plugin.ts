@@ -549,6 +549,12 @@ interface GitPluginOptions {
   webSearchApiKey?: string         // Brave Search API Key
   // 슬랙 다운로드 링크용 공개 URL (Tailscale 등 외부 접근 주소)
   tableMasterUrl?: string
+  // Google Sheets (String Table)
+  googleSheetsId?: string
+  googleApiKey?: string
+  googleSaEmail?: string
+  googleSaPrivateKey?: string
+  googleServiceAccountJson?: string
 }
 
 function buildAuthUrl(repoUrl: string, token?: string): string {
@@ -2276,6 +2282,64 @@ h2{color:#38bdf8}h3{color:#a78bfa;margin-top:24px}.summary{background:#1e293b;pa
         return
       }
 
+      // ?action=check-fbx → FBX 파일 존재 여부 진단
+      if (action === 'check-fbx') {
+        const assetsDir = join(aegisDir, 'Client', 'Project_Aegis', 'Assets')
+        if (!existsSync(assetsDir)) { sendJson(res, 200, { error: 'Assets 폴더 없음' }); return }
+        const fbxMeta: string[] = []
+        const fbxReal: { path: string; size: number }[] = []
+        const fbxMissing: string[] = []
+        const walk = (dir: string, depth: number) => {
+          if (depth > 10) return
+          try {
+            for (const e of readdirSync(dir, { withFileTypes: true })) {
+              if (e.isDirectory() && e.name !== '.git') walk(join(dir, e.name), depth + 1)
+              else if (e.name.endsWith('.fbx.meta')) {
+                fbxMeta.push(join(dir, e.name).replace(assetsDir + sep, '').replace(/\\/g, '/'))
+                const realPath = join(dir, e.name.replace(/\.meta$/, ''))
+                if (existsSync(realPath)) {
+                  const sz = statSync(realPath).size
+                  fbxReal.push({ path: realPath.replace(assetsDir + sep, '').replace(/\\/g, '/'), size: sz })
+                } else {
+                  fbxMissing.push(realPath.replace(assetsDir + sep, '').replace(/\\/g, '/'))
+                }
+              } else if (e.name.endsWith('.fbx') && !e.name.endsWith('.meta')) {
+                const rel = join(dir, e.name).replace(assetsDir + sep, '').replace(/\\/g, '/')
+                if (!fbxReal.find(f => f.path === rel)) {
+                  const sz = statSync(join(dir, e.name)).size
+                  fbxReal.push({ path: rel, size: sz })
+                }
+              }
+            }
+          } catch {}
+        }
+        walk(assetsDir, 0)
+        // git lfs ls-files에서 fbx 확인
+        let lfsFbxCount = 0
+        try {
+          const lsOut = execFileSync('git', ['lfs', 'ls-files', '--long'], { cwd: aegisDir, encoding: 'utf-8', timeout: 30000, maxBuffer: 50 * 1024 * 1024 })
+          for (const line of lsOut.split('\n')) {
+            if (line.toLowerCase().includes('.fbx')) lfsFbxCount++
+          }
+        } catch {}
+        const realOver200 = fbxReal.filter(f => f.size > 200).length
+        const pointers = fbxReal.filter(f => f.size > 0 && f.size <= 200).length
+        sendJson(res, 200, {
+          fbxMetaFiles: fbxMeta.length,
+          fbxRealFiles: fbxReal.length,
+          fbxMissing: fbxMissing.length,
+          fbxRealBinary: realOver200,
+          fbxLfsPointers: pointers,
+          fbxInGitLfs: lfsFbxCount,
+          missingSamples: fbxMissing.slice(0, 10),
+          realSamples: fbxReal.slice(0, 10).map(f => `${f.path} (${f.size}B)`),
+          verdict: fbxMissing.length > 0
+            ? `⚠️ ${fbxMissing.length}개 FBX 파일 누락 (.meta만 존재). git lfs에 ${lfsFbxCount}개 트래킹됨.`
+            : `✅ 모든 FBX 파일 존재 (${fbxReal.length}개)`
+        })
+        return
+      }
+
       // ?action=lfs-retry → 로컬 LFS 포인터만 찾아서 LFS 배치 다운로드 (빠름)
       if (action === 'lfs-retry') {
         if (!existsSync(join(aegisDir, '.git'))) { sendJson(res, 400, { error: 'aegis repo not cloned' }); return }
@@ -3672,6 +3736,168 @@ api('status').then(function(s){
       return
     }
 
+    // ── /api/strings : Google Sheets 스트링 테이블 ────────────────────────────
+    // 인증 우선순위: ① GOOGLE_API_KEY (가장 간단) → ② Service Account env vars → ③ Service Account JSON 파일
+    if (req.url?.startsWith('/api/strings')) {
+      const _sheetsId = options.googleSheetsId
+      if (!_sheetsId) { sendJson(res, 400, { error: 'GOOGLE_SHEETS_ID가 .env에 설정되지 않았습니다.' }); return }
+
+      const url = new URL(req.url, 'http://localhost')
+      const sheetName = url.searchParams.get('sheet') || 'Sheet1'
+      const forceRefresh = url.searchParams.get('refresh') === 'true'
+
+      type SheetsCache = { data: { headers: string[]; rows: Record<string, string>[]; total: number; sheetName: string; updatedAt: string; authMethod: string }; fetchedAt: number }
+      const g = globalThis as any
+      if (!g.__stringTableCache) g.__stringTableCache = {} as Record<string, SheetsCache>
+      const cache = g.__stringTableCache as Record<string, SheetsCache>
+      const CACHE_TTL = 60_000
+
+      if (!forceRefresh && cache[sheetName] && (Date.now() - cache[sheetName].fetchedAt) < CACHE_TTL) {
+        sendJson(res, 200, cache[sheetName].data)
+        return
+      }
+
+      try {
+        const { request: httpsReq, get: httpsGet } = await import('https')
+
+        const _httpsGetString = (u: string, headers?: Record<string, string>): Promise<{ status: number; body: string }> =>
+          new Promise((resolve, reject) => {
+            const opts = headers ? { headers } : {}
+            const fn = u.startsWith('https') ? httpsGet : (await import('http')).get
+            fn(u, opts, resp => {
+              let d = ''; resp.on('data', c => d += c); resp.on('end', () => resolve({ status: resp.statusCode || 0, body: d }))
+            }).on('error', reject)
+          })
+
+        let authMethod = ''
+        let apiUrl = ''
+        const range = encodeURIComponent(`${sheetName}!A:ZZ`)
+        const baseUrl = `https://sheets.googleapis.com/v4/spreadsheets/${_sheetsId}/values/${range}`
+
+        // ① API Key (가장 간단 — 스프레드시트가 "링크가 있는 모든 사용자" 공유인 경우)
+        if (options.googleApiKey) {
+          apiUrl = `${baseUrl}?key=${options.googleApiKey}`
+          authMethod = 'API_KEY'
+        }
+
+        // ② Service Account (env vars: GOOGLE_SA_EMAIL + GOOGLE_SA_PRIVATE_KEY)
+        if (!apiUrl && options.googleSaEmail && options.googleSaPrivateKey) {
+          const { createSign } = await import('crypto')
+          const pk = options.googleSaPrivateKey.replace(/\\n/g, '\n')
+          const now = Math.floor(Date.now() / 1000)
+          const hdr = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url')
+          const pl = Buffer.from(JSON.stringify({
+            iss: options.googleSaEmail,
+            scope: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+            aud: 'https://oauth2.googleapis.com/token',
+            exp: now + 3600, iat: now,
+          })).toString('base64url')
+          const sig = createSign('RSA-SHA256').update(`${hdr}.${pl}`).sign(pk, 'base64url')
+          const jwt = `${hdr}.${pl}.${sig}`
+
+          const tokenBody = `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=${jwt}`
+          const tokenRes = await new Promise<string>((resolve, reject) => {
+            const r = httpsReq('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(tokenBody) } }, resp => {
+              let d = ''; resp.on('data', c => d += c); resp.on('end', () => resolve(d))
+            })
+            r.on('error', reject); r.write(tokenBody); r.end()
+          })
+          const tokenJson = JSON.parse(tokenRes) as { access_token?: string; error?: string }
+          if (tokenJson.access_token) {
+            apiUrl = baseUrl
+            authMethod = `SA_ENV(${options.googleSaEmail.split('@')[0]})`
+            ;(g as any).__gSheetsToken = tokenJson.access_token
+          } else {
+            sLog('WARN', `[strings] SA env OAuth 실패: ${tokenJson.error || tokenRes.slice(0, 200)}`)
+          }
+        }
+
+        // ③ Service Account JSON 파일
+        if (!apiUrl && options.googleServiceAccountJson) {
+          const { createSign } = await import('crypto')
+          const saFullPath = isAbsolute(options.googleServiceAccountJson) ? options.googleServiceAccountJson : join(process.cwd(), options.googleServiceAccountJson)
+          if (existsSync(saFullPath)) {
+            const sa = JSON.parse(readFileSync(saFullPath, 'utf-8')) as { client_email: string; private_key: string }
+            const now = Math.floor(Date.now() / 1000)
+            const hdr = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url')
+            const pl = Buffer.from(JSON.stringify({
+              iss: sa.client_email,
+              scope: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+              aud: 'https://oauth2.googleapis.com/token',
+              exp: now + 3600, iat: now,
+            })).toString('base64url')
+            const sig = createSign('RSA-SHA256').update(`${hdr}.${pl}`).sign(sa.private_key, 'base64url')
+            const jwt = `${hdr}.${pl}.${sig}`
+
+            const tokenBody = `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=${jwt}`
+            const tokenRes = await new Promise<string>((resolve, reject) => {
+              const r = httpsReq('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(tokenBody) } }, resp => {
+                let d = ''; resp.on('data', c => d += c); resp.on('end', () => resolve(d))
+              })
+              r.on('error', reject); r.write(tokenBody); r.end()
+            })
+            const tokenJson = JSON.parse(tokenRes) as { access_token?: string; error?: string }
+            if (tokenJson.access_token) {
+              apiUrl = baseUrl
+              authMethod = `SA_FILE(${sa.client_email.split('@')[0]})`
+              ;(g as any).__gSheetsToken = tokenJson.access_token
+            } else {
+              sLog('WARN', `[strings] SA file OAuth 실패: ${tokenJson.error || tokenRes.slice(0, 200)}`)
+            }
+          }
+        }
+
+        if (!apiUrl) {
+          sendJson(res, 401, {
+            error: 'Google Sheets 인증 미설정',
+            hint: '.env에 아래 중 하나를 추가하세요:',
+            options: {
+              '방법1_API키': { desc: '스프레드시트가 "링크가 있는 모든 사용자"에게 공유된 경우 (가장 간단)', vars: ['GOOGLE_API_KEY=AIzaSy...'] },
+              '방법2_서비스계정_환경변수': { desc: '비공개 시트 접근 (서비스 계정 이메일로 시트 공유 필요)', vars: ['GOOGLE_SA_EMAIL=xxx@xxx.iam.gserviceaccount.com', 'GOOGLE_SA_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----'] },
+              '방법3_서비스계정_JSON파일': { desc: 'JSON 키 파일 사용', vars: ['GOOGLE_SERVICE_ACCOUNT_JSON=./google-service-account.json'] },
+            },
+          })
+          return
+        }
+
+        const headers_req: Record<string, string> = {}
+        if ((g as any).__gSheetsToken) headers_req['Authorization'] = `Bearer ${(g as any).__gSheetsToken}`
+        const sheetsRes = await _httpsGetString(apiUrl, Object.keys(headers_req).length > 0 ? headers_req : undefined)
+
+        if (sheetsRes.status === 403 || sheetsRes.status === 401) {
+          const errBody = (() => { try { return JSON.parse(sheetsRes.body) } catch { return null } })()
+          sendJson(res, sheetsRes.status, {
+            error: `Google API ${sheetsRes.status}: ${errBody?.error?.message || sheetsRes.body.slice(0, 300)}`,
+            hint: authMethod === 'API_KEY'
+              ? '스프레드시트 공유 설정에서 "링크가 있는 모든 사용자"에게 "뷰어" 권한을 부여하세요.'
+              : '서비스 계정 이메일을 스프레드시트에 뷰어로 추가하세요.',
+            authMethod,
+          })
+          return
+        }
+
+        const sheetsJson = JSON.parse(sheetsRes.body) as { values?: string[][]; error?: { message: string } }
+        if (sheetsJson.error) { sendJson(res, 502, { error: `Google Sheets API: ${sheetsJson.error.message}`, authMethod }); return }
+        if (!sheetsJson.values || sheetsJson.values.length < 2) { sendJson(res, 200, { headers: [], rows: [], total: 0, sheetName, authMethod }); return }
+
+        const headers = sheetsJson.values[0]
+        const rows = sheetsJson.values.slice(1).map(row => {
+          const obj: Record<string, string> = {}
+          headers.forEach((h, i) => { obj[h] = row[i] ?? '' })
+          return obj
+        })
+
+        const result = { headers, rows, total: rows.length, sheetName, updatedAt: new Date().toISOString(), authMethod }
+        cache[sheetName] = { data: result, fetchedAt: Date.now() }
+        sLog('INFO', `[strings] ${authMethod} → ${sheetName} (${rows.length}행, ${headers.length}컬럼)`)
+        sendJson(res, 200, result)
+      } catch (e) {
+        sLog('ERROR', `[strings] Google Sheets 오류: ${e instanceof Error ? e.message : String(e)}`)
+        sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) })
+      }
+      return
+    }
+
     // ── /api/assets/* : 에셋 엔드포인트 (try-catch로 서버 크래시 방지) ────────────
     if (req.url?.startsWith('/api/assets/')) {
       // 공통 헬퍼 - assets/ 폴더 없으면 unity_project 또는 aegis repo 직접 사용
@@ -4192,7 +4418,20 @@ api('status').then(function(s){
             files.push({ name: realName, path: entryRelPath, size: 0, lfs: true })
           }
 
-          sendJson(res, 200, { path: pathParam, dirs, files })
+          const totalEntries = entries.length
+          const metaEntries = entries.filter(e => e.isFile() && e.name.endsWith('.meta')).length
+          const dirEntries = entries.filter(e => e.isDirectory()).length
+          const realEntries = entries.filter(e => e.isFile() && !e.name.endsWith('.meta')).length
+          const virtualLfs = files.filter(f => f.lfs && f.size === 0).length
+          sendJson(res, 200, {
+            path: pathParam, dirs, files,
+            _debug: {
+              resolvedDir: targetDir.replace(process.cwd(), '.'),
+              unityAssetsDir: UNITY_ASSETS_DIR.replace(process.cwd(), '.'),
+              totalEntries, dirEntries, realEntries, metaEntries, virtualLfs,
+              filesSample: files.slice(0, 5).map(f => `${f.name} (${f.size ?? '?'}B${f.lfs ? ' LFS' : ''})`),
+            }
+          })
           return
         }
 
@@ -7016,15 +7255,21 @@ document.addEventListener('DOMContentLoaded', () => {
                   const remoteHead = await runGitAsync(`git rev-parse origin/${branch}`, activeDir).catch(() => newLocalHead)
 
                   if (newLocalHead !== remoteHead) {
-                    await runGitAsync(`git reset --hard origin/${branch}`, activeDir)
-                    const finalHead = await runGitAsync('git rev-parse --short HEAD', activeDir)
-                    sLog('INFO', `[git sync] 백그라운드 업데이트 완료 (${repoParam}): ${finalHead}`)
+                    if (isRepo2) {
+                      // aegis repo: merge/reset/checkout 모두 LFS 바이너리를 포인터로 되돌리므로
+                      // fetch만 하고 working tree는 절대 건드리지 않음
+                      sLog('INFO', `[git sync] aegis repo 새 커밋 감지 (${newLocalHead.substring(0, 8)} → ${remoteHead.substring(0, 8)}), working tree 변경 없음 (LFS 파일 보존)`)
+                    } else {
+                      await runGitAsync(`git reset --hard origin/${branch}`, activeDir)
+                      const finalHead = await runGitAsync('git rev-parse --short HEAD', activeDir)
+                      sLog('INFO', `[git sync] 백그라운드 업데이트 완료 (${repoParam}): ${finalHead}`)
+                    }
                   } else {
                     sLog('INFO', `[git sync] 이미 최신 (${repoParam}): ${newLocalHead.substring(0, 8)}`)
                   }
-                  // aegis repo: LFS pull (UI 텍스처) → 에셋 인덱스 빌드
+                  // aegis repo: 인덱스 빌드만 (LFS pull은 하지 않음 — git lfs pull이 동작하지 않으므로)
                   if (isRepo2) {
-                    _pullLfsTextures(activeDir, false).finally(() => _buildAssetIndexIfNeeded())
+                    _buildAssetIndexIfNeeded()
                   }
                 } catch (syncErr: unknown) {
                   const errMsg = syncErr instanceof Error ? syncErr.message : String(syncErr)
@@ -9177,13 +9422,16 @@ function serverExecuteTool(
           }
         })
 
-        const diagText = diagnostics.length > 0 ? `\n\n⚠️ ${diagnostics.length}개 이미지 파일 로드 실패:\n${diagnostics.slice(0, 3).join('\n')}` : ''
-        if (diagnostics.length > 0) console.warn(`[find_resource_image] ${diagnostics.length}개 파일 로드 실패:\n${diagnostics.join('\n')}`)
+        const inlineOk = images.filter(i => i.dataUri).length
+        const inlineFail = images.length - inlineOk
+        if (diagnostics.length > 0 && inlineOk === 0) {
+          console.warn(`[find_resource_image] ${diagnostics.length}개 인라인 실패 (URL 폴백 사용 예정):\n${diagnostics.slice(0, 3).join('\n')}`)
+        }
 
         return {
-          result: images.map(r => `${r.name} → ${r.dataUri ? `(inline ${Math.round((r.dataUri?.length ?? 0) / 1024)}KB)` : '(파일 미발견 — UI에서 POST로 재시도)'}`).join('\n') +
-            `\n\n총 ${images.length}개. 이미지 URL은 클라이언트가 자동 처리하므로 <img src>에 직접 URL을 넣지 마세요.${diagText}`,
-          data: { total: images.length, images, diagnostics: diagnostics.length > 0 ? diagnostics : undefined }
+          result: images.map(r => `${r.name} → ${r.dataUri ? `(inline ${Math.round((r.dataUri?.length ?? 0) / 1024)}KB)` : '(URL 폴백으로 로드)'}`).join('\n') +
+            `\n\n총 ${images.length}개 (인라인: ${inlineOk}, URL폴백: ${inlineFail}). 이미지 URL은 클라이언트가 자동 처리하므로 <img src>에 직접 URL을 넣지 마세요.`,
+          data: { total: images.length, images }
         }
       } catch (e) {
         return { result: `이미지 검색 오류: ${e instanceof Error ? e.message : String(e)}` }
@@ -12504,12 +12752,72 @@ function safeMiddleware(
   }
 }
 
+function _autoHealLfsFiles(options: GitPluginOptions) {
+  const aegisDir = join(process.cwd(), '.git-repo-aegis')
+  if (!existsSync(join(aegisDir, '.git'))) return
+
+  const texDir = join(aegisDir, 'Client', 'Project_Aegis', 'Assets', 'GameContents', 'UI', 'Texture')
+  if (!existsSync(texDir)) return
+
+  let sampleTotal = 0, samplePointers = 0
+  const checkDir = (dir: string, depth: number) => {
+    if (depth > 3 || sampleTotal >= 20) return
+    try {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (sampleTotal >= 20) break
+        if (e.isDirectory()) { checkDir(join(dir, e.name), depth + 1); continue }
+        if (!e.name.endsWith('.png')) continue
+        sampleTotal++
+        try {
+          const sz = statSync(join(dir, e.name)).size
+          if (sz > 0 && sz < 200) samplePointers++
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
+  }
+  checkDir(texDir, 0)
+
+  if (sampleTotal < 3) return
+  const pointerRatio = samplePointers / sampleTotal
+  if (pointerRatio < 0.5) {
+    sLog('INFO', `[startup] LFS 파일 정상 (샘플 ${sampleTotal}개 중 포인터 ${samplePointers}개 = ${Math.round(pointerRatio * 100)}%)`)
+    return
+  }
+
+  sLog('WARN', `[startup] LFS 포인터 감지! 샘플 ${sampleTotal}개 중 ${samplePointers}개가 포인터 → 자동 LFS 복구 시작`)
+
+  if ((_lfsPullState as { running: boolean }).running) {
+    sLog('INFO', '[startup] LFS pull 이미 진행 중 — 자동 복구 건너뜀')
+    return
+  }
+
+  const repo2Url = options.repo2Url || options.repoUrl
+  const repo2Token = options.repo2Token || options.token
+  if (!repo2Url || !repo2Token) {
+    sLog('WARN', '[startup] LFS 복구 불가: repo2 URL/token 미설정')
+    return
+  }
+
+  // _downloadViaGitlabApi를 직접 호출하여 PNG 텍스처 복구
+  _lfsPullState = { running: true, phase: 'auto-heal: LFS 바이너리 복구 중', startedAt: Date.now(), pngCount: 0, log: ['[자동복구] 서버 시작 시 LFS 포인터 감지 → 복구 시작'] }
+  _downloadViaGitlabApi(aegisDir, repo2Url, repo2Token).then(result => {
+    const prevLog = Array.isArray(_lfsPullState.log) ? _lfsPullState.log as string[] : []
+    _lfsPullState = { running: false, phase: 'done', pngCount: _lfsPullState.pngCount || 0, message: result.message, ok: result.ok, log: [...prevLog, `[자동복구] ${result.message}`] }
+    if (result.ok) _buildAssetIndexIfNeeded()
+    sLog('INFO', `[startup auto-heal] ${result.message}`)
+  }).catch(e => {
+    sLog('ERROR', `[startup auto-heal] 실패: ${e instanceof Error ? e.message : String(e)}`)
+    _lfsPullState = { running: false, phase: 'error', pngCount: 0, message: `자동복구 실패: ${e}`, ok: false, log: _lfsPullState.log as string[] }
+  })
+}
+
 export default function gitPlugin(options: GitPluginOptions): Plugin {
   return {
     name: 'vite-git-plugin',
     configureServer(server) {
-      // 서버 시작 시 에셋 인덱스 자동 빌드 (이미 클론된 경우 즉시, 아니면 git sync 완료 후 자동 트리거)
+      // 서버 시작 시 에셋 인덱스 자동 빌드 + LFS 자동 복구
       setTimeout(() => _buildAssetIndexIfNeeded(), 5_000)
+      setTimeout(() => _autoHealLfsFiles(options), 15_000)
 
       // /TableMaster/api/... → /api/... rewrite (Vite base 경로 안에서 API 호출 시)
       server.middlewares.use((req, _res, next) => {
@@ -12523,8 +12831,9 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
       server.middlewares.use(safeMiddleware('gitApi', createGitMiddleware(options)))
     },
     configurePreviewServer(server) {
-      // 서버 시작 시 에셋 인덱스 자동 빌드 (이미 클론된 경우 즉시, 아니면 git sync 완료 후 자동 트리거)
+      // 서버 시작 시 에셋 인덱스 자동 빌드 + LFS 자동 복구
       setTimeout(() => _buildAssetIndexIfNeeded(), 5_000)
+      setTimeout(() => _autoHealLfsFiles(options), 15_000)
 
       // /TableMaster/api/... → /api/... rewrite
       server.middlewares.use((req, _res, next) => {
