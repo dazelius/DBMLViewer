@@ -3743,7 +3743,7 @@ api('status').then(function(s){
       if (!_sheetsId) { sendJson(res, 400, { error: 'GOOGLE_SHEETS_ID가 .env에 설정되지 않았습니다.' }); return }
 
       const url = new URL(req.url, 'http://localhost')
-      const sheetName = url.searchParams.get('sheet') || 'Sheet1'
+      const sheetName = url.searchParams.get('sheet') || ''
       const forceRefresh = url.searchParams.get('refresh') === 'true'
 
       type SheetsCache = { data: { headers: string[]; rows: Record<string, string>[]; total: number; sheetName: string; updatedAt: string; authMethod: string }; fetchedAt: number }
@@ -3752,8 +3752,9 @@ api('status').then(function(s){
       const cache = g.__stringTableCache as Record<string, SheetsCache>
       const CACHE_TTL = 60_000
 
-      if (!forceRefresh && cache[sheetName] && (Date.now() - cache[sheetName].fetchedAt) < CACHE_TTL) {
-        sendJson(res, 200, cache[sheetName].data)
+      const cacheKey = sheetName || '_default'
+      if (!forceRefresh && cache[cacheKey] && (Date.now() - cache[cacheKey].fetchedAt) < CACHE_TTL) {
+        sendJson(res, 200, cache[cacheKey].data)
         return
       }
 
@@ -3770,7 +3771,7 @@ api('status').then(function(s){
 
         let authMethod = ''
         let apiUrl = ''
-        const range = encodeURIComponent(`${sheetName}!A:ZZ`)
+        const range = sheetName ? encodeURIComponent(`${sheetName}!A:ZZ`) : 'A:ZZ'
         const baseUrl = `https://sheets.googleapis.com/v4/spreadsheets/${_sheetsId}/values/${range}`
 
         // ⓪ "웹에 게시" CSV (인증 불필요 — 가장 간단)
@@ -3808,8 +3809,8 @@ api('status').then(function(s){
             }).filter(row => Object.values(row).some(v => v.trim()))
 
             const result = { headers, rows, total: rows.length, sheetName, updatedAt: new Date().toISOString(), authMethod }
-            cache[sheetName] = { data: result, fetchedAt: Date.now() }
-            sLog('INFO', `[strings] PUBLISHED_CSV → ${sheetName} (${rows.length}행, ${headers.length}컬럼)`)
+            cache[cacheKey] = { data: result, fetchedAt: Date.now() }
+            sLog('INFO', `[strings] PUBLISHED_CSV → ${sheetName || '(first sheet)'} (${rows.length}행, ${headers.length}컬럼)`)
             sendJson(res, 200, result)
             return
           }
@@ -3930,8 +3931,8 @@ api('status').then(function(s){
         })
 
         const result = { headers, rows, total: rows.length, sheetName, updatedAt: new Date().toISOString(), authMethod }
-        cache[sheetName] = { data: result, fetchedAt: Date.now() }
-        sLog('INFO', `[strings] ${authMethod} → ${sheetName} (${rows.length}행, ${headers.length}컬럼)`)
+        cache[cacheKey] = { data: result, fetchedAt: Date.now() }
+        sLog('INFO', `[strings] ${authMethod} → ${sheetName || '(first sheet)'} (${rows.length}행, ${headers.length}컬럼)`)
         sendJson(res, 200, result)
       } catch (e) {
         sLog('ERROR', `[strings] Google Sheets 오류: ${e instanceof Error ? e.message : String(e)}`)
@@ -9926,7 +9927,7 @@ function serverExecuteTool(
       try {
         const g = globalThis as any
         const cache = (g.__stringTableCache || {}) as Record<string, { data: { headers: string[]; rows: Record<string, string>[]; total: number }; fetchedAt: number }>
-        const cached = cache['Sheet1']
+        const cached = cache['_default'] || cache['Sheet1'] || cache['시트1'] || Object.values(cache)[0]
         if (!cached?.data || !cached.data.rows || cached.data.rows.length === 0) {
           return {
             result: '⚠️ 스트링 테이블이 아직 로드되지 않았습니다.\n' +
