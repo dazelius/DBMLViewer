@@ -2042,9 +2042,10 @@ function createGitMiddleware(options: GitPluginOptions) {
         if (accept.includes('text/html')) {
           const imgSamples = [...(stats['.png']?.samples || []), ...(stats['.jpg']?.samples || []), ...(stats['.jpeg']?.samples || [])].slice(0, 20)
           const rows = sorted.map(([ext, s]) => `<tr><td>${ext}</td><td>${s.count}</td><td style="color:#10b981">${s.realCount}</td><td style="color:#f59e0b">${s.lfsCount}</td><td>${(s.totalSize / 1024 / 1024).toFixed(1)}MB</td></tr>`).join('')
+          const proxyPrefix = (req.headers?.['x-forwarded-prefix'] || req.headers?.['x-script-name'] || '').toString().replace(/\/+$/, '')
           const imgCards = imgSamples.map(p => {
             const name = p.split('/').pop()
-            const apiPath = `/api/images/${encodeURIComponent(name || '')}`
+            const apiPath = `${proxyPrefix}/api/images/${encodeURIComponent(name || '')}`
             return `<div style="display:inline-block;margin:4px;text-align:center;background:#1e293b;border-radius:8px;padding:8px;width:120px">
               <img src="${apiPath}" style="width:100px;height:100px;object-fit:contain;background:#0f172a;border-radius:4px" onerror="this.style.border='2px solid red';this.alt='FAIL'" />
               <div style="font-size:10px;color:#94a3b8;word-break:break-all;margin-top:4px">${name}</div></div>`
