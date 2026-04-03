@@ -3774,12 +3774,15 @@ api('status').then(function(s){
         const range = sheetName ? encodeURIComponent(`${sheetName}!A:ZZ`) : 'A:ZZ'
         const baseUrl = `https://sheets.googleapis.com/v4/spreadsheets/${_sheetsId}/values/${range}`
 
-        // ⓪ "웹에 게시" CSV (인증 불필요 — 가장 간단)
-        // 스프레드시트 → 파일 → "웹에 게시" 하면 인증 없이 CSV로 가져올 수 있음
+        // ⓪ "웹에 게시" CSV (인증 불필요 — 시트가 게시된 경우만)
         const gid = url.searchParams.get('gid') || '0'
         const csvUrl = `https://docs.google.com/spreadsheets/d/${_sheetsId}/export?format=csv&gid=${gid}`
         const csvRes = await _httpsGetString(csvUrl)
-        if (csvRes.status === 200 && csvRes.body.length > 10 && !csvRes.body.includes('<!DOCTYPE')) {
+        const isHtml = /<!DOCTYPE|<html|<head|<body|<script/i.test(csvRes.body.slice(0, 500))
+        if (csvRes.status !== 200 || isHtml) {
+          sLog('INFO', `[strings] Published CSV 불가 (status=${csvRes.status}, isHtml=${isHtml}) → 인증 방식으로 fallback`)
+        }
+        if (csvRes.status === 200 && csvRes.body.length > 10 && !isHtml) {
           authMethod = 'PUBLISHED_CSV'
           const csvLines = csvRes.body.split('\n').filter(l => l.trim())
           if (csvLines.length >= 2) {
