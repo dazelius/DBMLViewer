@@ -3815,14 +3815,8 @@ api('status').then(function(s){
           }
         }
 
-        // ① API Key (스프레드시트가 "링크가 있는 모든 사용자" 공유인 경우)
-        if (options.googleApiKey) {
-          apiUrl = `${baseUrl}?key=${options.googleApiKey}`
-          authMethod = 'API_KEY'
-        }
-
-        // ② Service Account (env vars: GOOGLE_SA_EMAIL + GOOGLE_SA_PRIVATE_KEY)
-        if (!apiUrl && options.googleSaEmail && options.googleSaPrivateKey) {
+        // ① Service Account (env vars: GOOGLE_SA_EMAIL + GOOGLE_SA_PRIVATE_KEY) — 비공개 시트 접근 가능
+        if (options.googleSaEmail && options.googleSaPrivateKey) {
           const { createSign } = await import('crypto')
           const pk = options.googleSaPrivateKey.replace(/\\n/g, '\n')
           const now = Math.floor(Date.now() / 1000)
@@ -3853,7 +3847,7 @@ api('status').then(function(s){
           }
         }
 
-        // ③ Service Account JSON 파일
+        // ② Service Account JSON 파일
         if (!apiUrl && options.googleServiceAccountJson) {
           const { createSign } = await import('crypto')
           const saFullPath = isAbsolute(options.googleServiceAccountJson) ? options.googleServiceAccountJson : join(process.cwd(), options.googleServiceAccountJson)
@@ -3888,14 +3882,20 @@ api('status').then(function(s){
           }
         }
 
+        // ③ API Key (공개 시트 전용 — 마지막 fallback)
+        if (!apiUrl && options.googleApiKey) {
+          apiUrl = `${baseUrl}?key=${options.googleApiKey}`
+          authMethod = 'API_KEY'
+        }
+
         if (!apiUrl) {
           sendJson(res, 401, {
-            error: 'Google Sheets 접근 실패. "웹에 게시"를 설정하세요.',
-            hint: '스프레드시트 → 파일 → 공유 → "웹에 게시" → 게시 버튼 클릭 (API 키/서비스 계정 불필요!)',
+            error: 'Google Sheets 인증 실패',
+            hint: '.env에 서비스 계정 정보를 설정하세요 (비공개 시트 접근 가능)',
             options: {
-              '방법0_웹에게시': { desc: '가장 간단! 스프레드시트 → 파일 → 공유 → "웹에 게시" → 게시. API 키 불필요.', vars: ['GOOGLE_SHEETS_ID만 있으면 됨'] },
-              '방법1_API키': { desc: '"링크가 있는 모든 사용자"에게 공유 + API 키', vars: ['GOOGLE_API_KEY=AIzaSy...'] },
-              '방법2_서비스계정': { desc: '비공개 시트 (서비스 계정 이메일로 시트 공유 필요)', vars: ['GOOGLE_SA_EMAIL=xxx@xxx.iam.gserviceaccount.com', 'GOOGLE_SA_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----'] },
+              '방법1_서비스계정_환경변수': { desc: '서비스 계정 이메일을 시트에 뷰어로 추가 필요', vars: ['GOOGLE_SA_EMAIL=xxx@xxx.iam.gserviceaccount.com', 'GOOGLE_SA_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----'] },
+              '방법2_서비스계정_JSON파일': { desc: 'JSON 키 파일 사용', vars: ['GOOGLE_SERVICE_ACCOUNT_JSON=./google-service-account.json'] },
+              '방법3_API키': { desc: '공개 시트 전용 (시트가 "링크가 있는 모든 사용자"에게 공유된 경우)', vars: ['GOOGLE_API_KEY=AIzaSy...'] },
             },
           })
           return
@@ -3907,11 +3907,12 @@ api('status').then(function(s){
 
         if (sheetsRes.status === 403 || sheetsRes.status === 401) {
           const errBody = (() => { try { return JSON.parse(sheetsRes.body) } catch { return null } })()
+          const hints: Record<string, string> = {
+            'API_KEY': '스프레드시트가 "링크가 있는 모든 사용자"에게 공유되어야 합니다. 또는 서비스 계정(GOOGLE_SA_EMAIL)을 사용하세요.',
+          }
           sendJson(res, sheetsRes.status, {
             error: `Google API ${sheetsRes.status}: ${errBody?.error?.message || sheetsRes.body.slice(0, 300)}`,
-            hint: authMethod === 'API_KEY'
-              ? '스프레드시트 공유 설정에서 "링크가 있는 모든 사용자"에게 "뷰어" 권한을 부여하세요.'
-              : '서비스 계정 이메일을 스프레드시트에 뷰어로 추가하세요.',
+            hint: hints[authMethod] || `서비스 계정(${authMethod})을 스프레드시트에 뷰어로 초대했는지 확인하세요.`,
             authMethod,
           })
           return
