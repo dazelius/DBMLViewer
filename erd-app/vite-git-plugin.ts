@@ -9015,7 +9015,7 @@ const SERVER_TOOL_GROUPS: Record<string, { tools: string[]; keywords: RegExp }> 
     keywords: /스트링|string|번역|로컬라이|locali[zs]|언어|language|다국어|i18n|한국어|영어|korean|english|텍스트\s*키|키\s*값|string\s*table/i,
   },
 }
-const SERVER_ALWAYS_TOOLS = ['read_knowledge', 'save_knowledge', 'read_guide', 'query_game_data', 'show_table_schema', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule', 'search_confluence', 'get_confluence_page', 'add_confluence_comment']
+const SERVER_ALWAYS_TOOLS = ['read_knowledge', 'save_knowledge', 'read_guide', 'query_game_data', 'show_table_schema', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule', 'search_confluence', 'get_confluence_page', 'add_confluence_comment', 'query_string_table']
 
 function selectServerTools(query: string): typeof API_TOOLS {
   const matched = new Set<string>(SERVER_ALWAYS_TOOLS)

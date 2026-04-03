@@ -1796,6 +1796,14 @@ function buildSystemPrompt(
     lines.push('외부 레퍼런스 필요 시 web_search(query). URL 직접 제공 시 read_url(url).');
     lines.push('');
   }
+  if (hasTools(['query_string_table'])) {
+    lines.push('## 스트링 테이블 (로컬라이징)');
+    lines.push('번역/로컬라이징/스트링/텍스트 관련 질문 시 query_string_table 도구를 반드시 사용.');
+    lines.push('- query: 검색어 (키 이름이나 번역 텍스트), language: 특정 언어 필터 (생략 가능)');
+    lines.push('- 스트링 키, 번역 현황, 미번역 항목, 특정 텍스트 검색 등 모든 로컬라이징 데이터 조회 가능');
+    lines.push('- 사용자가 특정 텍스트가 어떤 키인지, 번역이 있는지 물으면 이 도구로 검색');
+    lines.push('');
+  }
   lines.push('');
   lines.push('## SQL 주의');
   lines.push('AS 별칭은 영문만 (한글 AS 절대 금지). ERD 요청=핵심 테이블 1개만 show_table_schema.');
