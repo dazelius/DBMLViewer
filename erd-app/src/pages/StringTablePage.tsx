@@ -28,7 +28,7 @@ export default function StringTablePage() {
     else setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/strings?sheet=Sheet1${refresh ? '&refresh=true' : ''}`);
+      const res = await fetch(`/api/strings${refresh ? '?refresh=true' : ''}`);
       const json = await res.json();
       if (!res.ok) {
         let errMsg = json.error || `HTTP ${res.status}`;
