@@ -9074,17 +9074,52 @@ function serverExecuteTool(
       if (qr.error) return { result: `SQL 오류: ${qr.error}` }
       if (qr.rowCount === 0) return { result: '결과 없음 (0행)' }
       const displayRows = qr.rows.slice(0, 50)
-      // 사람이 읽기 쉬운 마크다운 테이블 형식
+
+      // 스트링 키 자동 번역 부착: 컬럼 값 중 스트링 테이블 키에 해당하는 값을 찾아 번역 텍스트 매핑
+      const _stCache = (globalThis as any).__stringTableCache as Record<string, { data: { headers: string[]; rows: Record<string, string>[]; total: number }; fetchedAt: number }> | undefined
+      const _stCached = _stCache ? (_stCache['_default'] || _stCache['Sheet1'] || _stCache['시트1'] || Object.values(_stCache)[0]) : undefined
+      const _stMap = new Map<string, string>()
+      if (_stCached?.data?.rows) {
+        const keyCol = _stCached.data.headers.find(h => h.toLowerCase() === 'keys' || h.toLowerCase() === 'key') || _stCached.data.headers[0]
+        const koCol = _stCached.data.headers.find(h => /korean|한국|ko/i.test(h)) || _stCached.data.headers[1]
+        if (keyCol && koCol) {
+          for (const row of _stCached.data.rows) {
+            const k = row[keyCol]?.trim()
+            const v = row[koCol]?.trim()
+            if (k && v) _stMap.set(k, v)
+          }
+        }
+      }
+
+      const stringKeyPattern = /^[A-Za-z][A-Za-z0-9]*_(?:Name|Desc|Title|Text|Msg|Info|Tip|Skill|Buff|Item|Dialog|Noti|Guide|Comment|Label|Button|Popup|Error|Warning|Help|Tutorial|Mission|Quest|Achievement|Story|Lore|Intro|Outro|Chat)[_A-Za-z]*_?\d*$/i
+      const resolvedStrings = new Map<string, string>()
+      for (const row of displayRows) {
+        for (const c of qr.columns) {
+          const val = String(row[c] ?? '').trim()
+          if (val && !resolvedStrings.has(val) && (stringKeyPattern.test(val) || _stMap.has(val))) {
+            const translated = _stMap.get(val)
+            if (translated) resolvedStrings.set(val, translated)
+          }
+        }
+      }
+
       let resultText = `${qr.rowCount}행 조회됨 (표시: ${displayRows.length}행)\n`
       resultText += `컬럼: ${qr.columns.join(', ')}\n\n`
-      // 마크다운 테이블
       resultText += `| ${qr.columns.join(' | ')} |\n`
       resultText += `| ${qr.columns.map(() => '---').join(' | ')} |\n`
       for (const row of displayRows) {
         resultText += `| ${qr.columns.map(c => String(row[c] ?? '').replace(/\|/g, '\\|').slice(0, 50)).join(' | ')} |\n`
       }
       if (qr.rowCount > 50) resultText += `\n... 외 ${qr.rowCount - 50}행 (LIMIT으로 더 조회 가능)`
-      const data = { rowCount: qr.rowCount, columns: qr.columns, rows: displayRows }
+
+      if (resolvedStrings.size > 0) {
+        resultText += `\n\n📝 스트링 키 번역 (${resolvedStrings.size}건):\n`
+        for (const [key, text] of resolvedStrings) {
+          resultText += `  ${key} → "${text}"\n`
+        }
+      }
+
+      const data = { rowCount: qr.rowCount, columns: qr.columns, rows: displayRows, stringMap: resolvedStrings.size > 0 ? Object.fromEntries(resolvedStrings) : undefined }
       return { result: resultText, data }
     }
     case 'show_table_schema': {
