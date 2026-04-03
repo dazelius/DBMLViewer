@@ -742,6 +742,18 @@ async function _pullLfsTextures(repoDir: string, writeState = true): Promise<{ o
       _log(`ls-files 실패: ${e instanceof Error ? e.message : String(e)}`)
     }
 
+    // LFS URL을 내부 IP로 강제 지정 (외부 IP redirect 방지)
+    try {
+      const remoteUrl = execFileSync('git', ['config', 'remote.origin.url'], { cwd: repoDir, encoding: 'utf-8' }).trim()
+      if (remoteUrl) {
+        const internalLfsUrl = `${remoteUrl.replace(/\/$/, '')}/info/lfs`
+        execFileSync('git', ['config', 'lfs.url', internalLfsUrl], { cwd: repoDir, encoding: 'utf-8' })
+        _log(`LFS URL 설정: ${internalLfsUrl}`)
+      }
+    } catch (e) {
+      _log(`LFS URL 설정 실패: ${e instanceof Error ? e.message : String(e)}`)
+    }
+
     _log('git lfs pull 시작 (전체)...')
     try {
       const pullResult = await _runGitWithStderr('git lfs pull', repoDir)
