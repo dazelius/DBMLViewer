@@ -258,7 +258,7 @@ export default function StringTablePage() {
                           >
                             {isEmpty
                               ? <span style={{ fontSize: 11, color: '#f59e0b', opacity: 0.6, fontStyle: 'italic' }}>—</span>
-                              : <span>{copiedKey === `${key}:${col}` ? <span style={{ color: '#22c55e', fontSize: 11 }}>복사됨!</span> : highlightMatch(val, search)}</span>
+                              : <span>{copiedKey === `${key}:${col}` ? <span style={{ color: '#22c55e', fontSize: 11 }}>복사됨!</span> : renderCellText(val, search)}</span>
                             }
                           </td>
                         );
@@ -288,16 +288,39 @@ export default function StringTablePage() {
   );
 }
 
-function highlightMatch(text: string, query: string) {
-  if (!query.trim()) return text;
-  const q = query.toLowerCase();
-  const idx = text.toLowerCase().indexOf(q);
-  if (idx === -1) return text;
-  return (
-    <>
-      {text.slice(0, idx)}
-      <mark style={{ background: 'rgba(96,165,250,0.25)', color: 'inherit', borderRadius: 2, padding: '0 1px' }}>{text.slice(idx, idx + query.length)}</mark>
-      {text.slice(idx + query.length)}
-    </>
-  );
+function renderCellText(text: string, query: string) {
+  const parts: { text: string; type: 'normal' | 'wildcard' | 'search' }[] = []
+  const wcRegex = /\{(\d+)\}/g
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = wcRegex.exec(text)) !== null) {
+    if (m.index > last) parts.push({ text: text.slice(last, m.index), type: 'normal' })
+    parts.push({ text: m[0], type: 'wildcard' })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push({ text: text.slice(last), type: 'normal' })
+
+  const q = query.toLowerCase().trim()
+  const result: React.ReactNode[] = []
+  parts.forEach((p, pi) => {
+    if (p.type === 'wildcard') {
+      result.push(
+        <span key={pi} style={{ display: 'inline-block', background: 'rgba(168,85,247,0.2)', color: '#c084fc', borderRadius: 3, padding: '0 4px', fontSize: 11, fontFamily: 'var(--font-mono)', fontWeight: 600, border: '1px solid rgba(168,85,247,0.3)' }}>
+          {p.text}
+        </span>
+      )
+      return
+    }
+    if (!q) { result.push(<span key={pi}>{p.text}</span>); return }
+    const idx = p.text.toLowerCase().indexOf(q)
+    if (idx === -1) { result.push(<span key={pi}>{p.text}</span>); return }
+    result.push(
+      <span key={pi}>
+        {p.text.slice(0, idx)}
+        <mark style={{ background: 'rgba(96,165,250,0.25)', color: 'inherit', borderRadius: 2, padding: '0 1px' }}>{p.text.slice(idx, idx + q.length)}</mark>
+        {p.text.slice(idx + q.length)}
+      </span>
+    )
+  })
+  return <>{result}</>
 }
