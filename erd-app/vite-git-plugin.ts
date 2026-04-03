@@ -3773,7 +3773,49 @@ api('status').then(function(s){
         const range = encodeURIComponent(`${sheetName}!A:ZZ`)
         const baseUrl = `https://sheets.googleapis.com/v4/spreadsheets/${_sheetsId}/values/${range}`
 
-        // ① API Key (가장 간단 — 스프레드시트가 "링크가 있는 모든 사용자" 공유인 경우)
+        // ⓪ "웹에 게시" CSV (인증 불필요 — 가장 간단)
+        // 스프레드시트 → 파일 → "웹에 게시" 하면 인증 없이 CSV로 가져올 수 있음
+        const gid = url.searchParams.get('gid') || '0'
+        const csvUrl = `https://docs.google.com/spreadsheets/d/${_sheetsId}/export?format=csv&gid=${gid}`
+        const csvRes = await _httpsGetString(csvUrl)
+        if (csvRes.status === 200 && csvRes.body.length > 10 && !csvRes.body.includes('<!DOCTYPE')) {
+          authMethod = 'PUBLISHED_CSV'
+          const csvLines = csvRes.body.split('\n').filter(l => l.trim())
+          if (csvLines.length >= 2) {
+            const parseCsvRow = (line: string): string[] => {
+              const cells: string[] = []; let cur = ''; let inQuote = false
+              for (let ci = 0; ci < line.length; ci++) {
+                const ch = line[ci]
+                if (inQuote) {
+                  if (ch === '"' && line[ci + 1] === '"') { cur += '"'; ci++ }
+                  else if (ch === '"') inQuote = false
+                  else cur += ch
+                } else {
+                  if (ch === '"') inQuote = true
+                  else if (ch === ',') { cells.push(cur); cur = '' }
+                  else cur += ch
+                }
+              }
+              cells.push(cur)
+              return cells
+            }
+            const headers = parseCsvRow(csvLines[0])
+            const rows = csvLines.slice(1).map(line => {
+              const cells = parseCsvRow(line)
+              const obj: Record<string, string> = {}
+              headers.forEach((h, i) => { obj[h] = cells[i] ?? '' })
+              return obj
+            }).filter(row => Object.values(row).some(v => v.trim()))
+
+            const result = { headers, rows, total: rows.length, sheetName, updatedAt: new Date().toISOString(), authMethod }
+            cache[sheetName] = { data: result, fetchedAt: Date.now() }
+            sLog('INFO', `[strings] PUBLISHED_CSV → ${sheetName} (${rows.length}행, ${headers.length}컬럼)`)
+            sendJson(res, 200, result)
+            return
+          }
+        }
+
+        // ① API Key (스프레드시트가 "링크가 있는 모든 사용자" 공유인 경우)
         if (options.googleApiKey) {
           apiUrl = `${baseUrl}?key=${options.googleApiKey}`
           authMethod = 'API_KEY'
@@ -3848,12 +3890,12 @@ api('status').then(function(s){
 
         if (!apiUrl) {
           sendJson(res, 401, {
-            error: 'Google Sheets 인증 미설정',
-            hint: '.env에 아래 중 하나를 추가하세요:',
+            error: 'Google Sheets 접근 실패. "웹에 게시"를 설정하세요.',
+            hint: '스프레드시트 → 파일 → 공유 → "웹에 게시" → 게시 버튼 클릭 (API 키/서비스 계정 불필요!)',
             options: {
-              '방법1_API키': { desc: '스프레드시트가 "링크가 있는 모든 사용자"에게 공유된 경우 (가장 간단)', vars: ['GOOGLE_API_KEY=AIzaSy...'] },
-              '방법2_서비스계정_환경변수': { desc: '비공개 시트 접근 (서비스 계정 이메일로 시트 공유 필요)', vars: ['GOOGLE_SA_EMAIL=xxx@xxx.iam.gserviceaccount.com', 'GOOGLE_SA_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----'] },
-              '방법3_서비스계정_JSON파일': { desc: 'JSON 키 파일 사용', vars: ['GOOGLE_SERVICE_ACCOUNT_JSON=./google-service-account.json'] },
+              '방법0_웹에게시': { desc: '가장 간단! 스프레드시트 → 파일 → 공유 → "웹에 게시" → 게시. API 키 불필요.', vars: ['GOOGLE_SHEETS_ID만 있으면 됨'] },
+              '방법1_API키': { desc: '"링크가 있는 모든 사용자"에게 공유 + API 키', vars: ['GOOGLE_API_KEY=AIzaSy...'] },
+              '방법2_서비스계정': { desc: '비공개 시트 (서비스 계정 이메일로 시트 공유 필요)', vars: ['GOOGLE_SA_EMAIL=xxx@xxx.iam.gserviceaccount.com', 'GOOGLE_SA_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----'] },
             },
           })
           return
