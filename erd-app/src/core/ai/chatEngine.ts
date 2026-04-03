@@ -3098,13 +3098,12 @@ export interface ChatImage {
   media_type: string;  // image/png, image/jpeg, etc.
 }
 
-type RoutingTier = 'opus' | 'sonnet' | 'haiku';
+type RoutingTier = 'opus' | 'sonnet';
 
 /**
- * 질문 복잡도 3단계 분류
- * - haiku: 인사, 감사, 잡담 등 (도구 불필요)
- * - sonnet: 단순 질문, 짧은 조회 (가벼운 도구 1~2회)
- * - opus: 복잡한 분석, 다단계 도구, 아티팩트 생성 등
+ * 질문 복잡도 2단계 분류 (Sonnet 최소)
+ * - sonnet: 인사, 잡담, 단순 질문 (도구 1~2회 이하)
+ * - opus: 그 외 모든 작업
  */
 function classifyQueryComplexity(
   msg: string,
@@ -3114,22 +3113,10 @@ function classifyQueryComplexity(
 ): RoutingTier {
   const trimmed = msg.trim();
 
-  // ── Haiku 판별: 도구가 전혀 필요 없는 가벼운 대화 ──
-  const HAIKU_PATTERNS = [
-    /^(안녕|하이|헬로|hello|hi|hey)\b/i,
-    /^(고마워|감사|ㄳ|땡큐|thanks|thank you)/i,
-    /^(ㅎㅎ|ㅋㅋ|ㅇㅇ|ㅇㅋ|ㄴㄴ|넵|네|응|ㅇ|ok|ㅎ|ㅋ)+$/i,
-    /^(잘 ?했어|좋아|좋네|오키|알겠어|알았어|그래|ㅎ)/,
-    /^(수고|잘 ?자|바이|bye)/i,
-    /^(뭐해|뭐 ?하고 ?있어|심심)/,
-    /^.{1,15}$/,  // 15자 이하 초단문
-  ];
-  const isGreetingContext = history.length <= 2;
-  if (isGreetingContext && HAIKU_PATTERNS.some(p => p.test(trimmed))) return 'haiku';
-  if (/^(ㅎㅎ|ㅋㅋ|ㅇㅇ|ㅇㅋ|넵|네|응|ㅎ|ㅋ|ok)+$/i.test(trimmed)) return 'haiku';
-
-  // ── Opus 판별: 복잡한 작업 ──
+  // ── Opus: 이미지, 복잡한 작업, 긴 대화 ──
   if (images && images.length > 0) return 'opus';
+  if (history.length > 6) return 'opus';
+  if (msg.length > 150) return 'opus';
 
   const COMPLEX_PATTERNS = [
     /아티팩트/, /바이블/, /테이블링/, /밸런스.*조정/, /분석해/, /전체.*조회/,
@@ -3140,32 +3127,30 @@ function classifyQueryComplexity(
     /코드.*분석/, /쿼리.*짜/, /SQL.*작성/, /시각화/,
     /Jira/, /Confluence/, /이슈.*만들/, /티켓/,
     /3[dD]/, /모델링/, /씬.*뷰/, /프리팹/,
+    /만들어/, /생성해/, /작성해/,
   ];
   if (COMPLEX_PATTERNS.some(p => p.test(msg))) return 'opus';
 
   const heavyTools = ['edit_game_data', 'add_game_data_rows', 'create_artifact', 'patch_artifact',
-    'jira_create_issue', 'jira_search', 'confluence_search', 'web_search'];
-  if (tools.some(t => heavyTools.includes(t.name)) && msg.length > 100) return 'opus';
-  if (msg.length > 300) return 'opus';
-  if (history.length > 10) return 'opus';
+    'jira_create_issue', 'jira_search', 'confluence_search', 'web_search',
+    'search_code', 'read_code_file'];
+  if (tools.some(t => heavyTools.includes(t.name))) return 'opus';
 
-  // ── Sonnet 판별: 단순하지만 데이터 관련 질문 ──
-  const SIMPLE_PATTERNS = [
-    /^.{0,50}\?$/,
-    /뭐야/, /뭔가요/, /뭐지/, /알려줘/, /설명해/,
-    /몇 ?개/, /몇 ?명/, /얼마/, /어디/, /언제/, /누구/,
-    /있어\?/, /있나요/, /있나\?/, /있니/,
-    /맞아\?/, /맞나요/, /인가요/, /인가\?/,
-    /차이/, /다른 ?점/, /의미/, /뜻/,
+  // ── Sonnet: 인사, 잡담, 아주 단순한 질문만 ──
+  const SONNET_PATTERNS = [
+    /^(안녕|하이|헬로|hello|hi|hey)\b/i,
+    /^(고마워|감사|ㄳ|땡큐|thanks)/i,
+    /^(ㅎㅎ|ㅋㅋ|ㅇㅇ|ㅇㅋ|ㄴㄴ|넵|네|응|ㅇ|ok|ㅎ|ㅋ)+$/i,
+    /^(잘 ?했어|좋아|좋네|오키|알겠어|알았어|그래)/,
+    /^(수고|잘 ?자|바이|bye)/i,
   ];
-  if (SIMPLE_PATTERNS.some(p => p.test(msg))) return 'sonnet';
+  if (SONNET_PATTERNS.some(p => p.test(trimmed))) return 'sonnet';
 
-  return msg.length <= 150 ? 'sonnet' : 'opus';
+  return 'opus';
 }
 
 const ROUTING_LABELS: Record<RoutingTier, { model: ClaudeModelId; label: string; saving: string }> = {
-  haiku:  { model: 'claude-haiku-4-5-20251001', label: 'Haiku',  saving: '~97% 비용 절감' },
-  sonnet: { model: 'claude-sonnet-4-6',          label: 'Sonnet', saving: '~80% 비용 절감' },
+  sonnet: { model: 'claude-sonnet-4-6',          label: 'Sonnet', saving: '~80% 절감' },
   opus:   { model: 'claude-opus-4-6',            label: 'Opus',   saving: '' },
 };
 
@@ -3633,7 +3618,7 @@ export async function sendChatMessage(
       onThinkingUpdate?.({
         type: 'tool_start', iteration: 0, maxIterations: MAX_ITERATIONS,
         toolName: 'smart_routing', toolLabel: '⚡ 스마트 라우팅',
-        detail: `${routingTier === 'haiku' ? '가벼운 대화' : '단순 질문'} 감지 → ${info.label}로 전환`,
+        detail: `단순 질문 감지 → ${info.label}로 전환`,
         timestamp: Date.now(),
       });
       onThinkingUpdate?.({
@@ -3645,9 +3630,8 @@ export async function sendChatMessage(
     }
   }
 
-  // Haiku: 도구 없이 경량 응답 (도구가 있으면 TTFT가 늘고 짧은 응답이 한꺼번에 나타남)
-  const routedMaxTokens = routingTier === 'haiku' ? 1024 : dynamicMaxTokens;
-  const routedTools = routingTier === 'haiku' ? [] : cachedTools;
+  const routedMaxTokens = dynamicMaxTokens;
+  const routedTools = cachedTools;
 
   const requestBase = {
     model: selectedModel,
