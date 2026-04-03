@@ -1364,7 +1364,7 @@ function buildSystemPrompt(
         const content = entry.content.length > MAX_INJECT_CHARS
           ? entry.content.slice(0, MAX_INJECT_CHARS) + '\n...(잘림)'
           : entry.content;
-        lines.push(`\n### 📌 ${entry.name} (${entry.sizeKB}KB)`);
+        lines.push(`\n### 📌 ${entry.name} (${Number(entry.sizeKB).toFixed(1)}KB)`);
         lines.push(content);
       }
       lines.push('');
@@ -1382,7 +1382,7 @@ function buildSystemPrompt(
         }
         const firstLine = entry.content.split('\n').find(l => l.trim() && !l.startsWith('#'))?.trim().slice(0, 60) ?? '';
         const preview = headings.length > 0 ? headings.join(' > ') : firstLine || entry.content.slice(0, 60).replace(/\n/g, ' ').trim();
-        lines.push(`  📌 ${entry.name} (${entry.sizeKB}KB) — ${preview}`);
+        lines.push(`  📌 ${entry.name} (${Number(entry.sizeKB).toFixed(1)}KB) — ${preview}`);
       }
       lines.push('');
     }
@@ -3587,7 +3587,7 @@ export async function sendChatMessage(
     for (const entry of knowledgeEntries) {
       const knTc: KnowledgeResult = {
         kind: 'knowledge', action: 'read', name: entry.name,
-        content: `(시스템 프롬프트에 포함됨, ${entry.sizeKB}KB)`, sizeKB: entry.sizeKB,
+        content: `(시스템 프롬프트에 포함됨, ${Number(entry.sizeKB).toFixed(1)}KB)`, sizeKB: entry.sizeKB,
       };
       allToolCalls.push(knTc);
       onToolCall?.(knTc, allToolCalls.length - 1);
@@ -5500,7 +5500,7 @@ function showTab(id){
                 resultStr = `널리지 저장 실패: ${data2.error ?? 'Unknown error'}`;
                 tc = { kind: 'knowledge', action: 'save', name: knName, error: resultStr };
               } else {
-                resultStr = `✅ 널리지 "${data2.name}" ${data2.created ? '생성' : '업데이트'} 완료 (${data2.sizeKB}KB)`;
+                resultStr = `✅ 널리지 "${data2.name}" ${data2.created ? '생성' : '업데이트'} 완료 (${Number(data2.sizeKB).toFixed(1)}KB)`;
                 tc = { kind: 'knowledge', action: 'save', name: data2.name ?? knName, sizeKB: data2.sizeKB, created: data2.created };
                 // 사이드바 KnowledgeBrowser 즉시 갱신 트리거
                 try { window.dispatchEvent(new CustomEvent('knowledge-updated')); } catch { /* 무시 */ }
@@ -5526,7 +5526,7 @@ function showTab(id){
                 resultStr = '저장된 널리지가 없습니다. save_knowledge로 지식을 저장할 수 있습니다.';
               } else {
                 resultStr = `📚 저장된 널리지 (${items.length}개):\n` +
-                  items.map(it => `- ${it.name} (${it.sizeKB}KB, ${new Date(it.updatedAt).toLocaleDateString('ko-KR')})`).join('\n');
+                  items.map(it => `- ${it.name} (${Number(it.sizeKB).toFixed(1)}KB, ${new Date(it.updatedAt).toLocaleDateString('ko-KR')})`).join('\n');
               }
               tc = { kind: 'knowledge', action: 'list', name: '', items };
             } else {
@@ -5538,7 +5538,7 @@ function showTab(id){
                 tc = { kind: 'knowledge', action: 'read', name: knName, error: resultStr };
               } else {
                 const truncNote = data2.truncated ? '\n\n[주의: 파일이 너무 커서 앞 200KB만 반환됨]' : '';
-                resultStr = `# 널리지: ${data2.name} (${data2.sizeKB}KB)\n\n${data2.content}${truncNote}`;
+                resultStr = `# 널리지: ${data2.name} (${Number(data2.sizeKB).toFixed(1)}KB)\n\n${data2.content}${truncNote}`;
                 tc = { kind: 'knowledge', action: 'read', name: data2.name ?? knName, content: data2.content, sizeKB: data2.sizeKB };
               }
             }

@@ -5804,7 +5804,7 @@ function SceneYamlCard({ tc }: { tc: SceneYamlResult }) {
         <span className="text-[11px] font-semibold" style={{ color: '#a78bfa' }}>{tc.label}</span>
         {tc.fileSizeKB != null && (
           <span className="text-[10px] ml-auto" style={{ color: '#64748b' }}>
-            {tc.fileSizeKB} KB · {tc.totalSections ?? 0}개 섹션
+            {Number(tc.fileSizeKB).toFixed(1)} KB · {tc.totalSections ?? 0}개 섹션
             {tc.totalFiltered != null && tc.totalFiltered !== tc.totalSections && ` → ${tc.totalFiltered}개 매칭`}
             {tc.returnedCount != null && ` · ${tc.returnedCount}개 반환`}
           </span>
@@ -5932,7 +5932,7 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
                   {f.name}.{f.ext}
                 </span>
                 <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
-                  {f.sizeKB} KB
+                  {Number(f.sizeKB).toFixed(1)} KB
                 </span>
                 <button
                   onClick={() => {
@@ -5991,7 +5991,7 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
                   {f.name}.{f.ext}
                 </span>
                 <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
-                  {f.sizeKB}KB
+                  {Number(f.sizeKB).toFixed(1)}KB
                 </span>
                 <audio
                   controls
@@ -6027,7 +6027,7 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
                   {f.name}.unity
                 </span>
                 <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
-                  {f.sizeKB} KB
+                  {Number(f.sizeKB).toFixed(1)} KB
                 </span>
                 <button
                   onClick={() => {
@@ -6064,7 +6064,7 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
                   {f.name}.prefab
                 </span>
                 <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
-                  {f.sizeKB} KB
+                  {Number(f.sizeKB).toFixed(1)} KB
                 </span>
                 <button
                   onClick={() => {
@@ -6101,7 +6101,7 @@ function AssetSearchCard({ tc }: { tc: AssetSearchResult }) {
                   {f.path}
                 </span>
                 <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
-                  {f.sizeKB} KB
+                  {Number(f.sizeKB).toFixed(1)} KB
                 </span>
               </div>
             ))}
@@ -6271,7 +6271,7 @@ function KnowledgeCard({ tc, compact }: { tc: KnowledgeResult; compact?: boolean
     : isList
     ? `널리지 목록 (${tc.items?.length ?? 0}개)`
     : `널리지 읽기: ${tc.name}`;
-  const badge = isError ? '오류' : isSave ? `${tc.sizeKB ?? 0}KB` : isList ? `${tc.items?.length ?? 0}개` : `${tc.sizeKB ?? 0}KB`;
+  const badge = isError ? '오류' : isSave ? `${Number(tc.sizeKB ?? 0).toFixed(1)}KB` : isList ? `${tc.items?.length ?? 0}개` : `${Number(tc.sizeKB ?? 0).toFixed(1)}KB`;
 
   // 컴팩트 모드 (그룹 내부): 한 줄 요약만
   if (compact && !expanded) {
@@ -6320,7 +6320,7 @@ function KnowledgeCard({ tc, compact }: { tc: KnowledgeResult; compact?: boolean
                 <div key={it.name} className="flex items-center gap-2 py-1 px-2 rounded" style={{ background: 'rgba(139,92,246,0.06)' }}>
                   <span className="text-[11px]">🧠</span>
                   <span className="font-mono text-[11px] flex-1">{it.name}</span>
-                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{it.sizeKB}KB</span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{Number(it.sizeKB).toFixed(1)}KB</span>
                   <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{new Date(it.updatedAt).toLocaleDateString('ko-KR')}</span>
                 </div>
               ))}
@@ -6367,7 +6367,7 @@ function KnowledgeGroup({ items }: { items: KnowledgeResult[] }) {
         </span>
         {totalKB > 0 && (
           <span className="text-[10px] px-2 py-0.5 rounded-full flex-shrink-0" style={{ background: 'rgba(139,92,246,0.15)', color: '#a78bfa' }}>
-            {totalKB}KB
+            {Number(totalKB).toFixed(1)}KB
           </span>
         )}
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
@@ -6848,7 +6848,7 @@ function KnowledgeBrowser() {
                 {it.name}
               </span>
               <span className="text-[9px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
-                {it.sizeKB}KB
+                {Number(it.sizeKB).toFixed(1)}KB
               </span>
               {/* 삭제: Shift+클릭 전용 (숨겨진 잠금 아이콘) */}
               <span
@@ -7024,7 +7024,7 @@ function GuideFileRow({ guide, isOpen, onClick }: { guide: GuideFile; isOpen: bo
         {guide.name}
       </span>
       <span className="text-[9px] font-mono flex-shrink-0" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
-        {guide.sizeKB}KB
+        {Number(guide.sizeKB).toFixed(1)}KB
       </span>
     </button>
   );
