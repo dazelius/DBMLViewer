@@ -9997,9 +9997,42 @@ async function serverExecuteToolAsync(
     'build_character_profile', 'read_guide', 'show_revision_diff', 'preview_prefab',
     'patch_artifact', 'save_knowledge', 'read_knowledge', 'list_knowledge', 'delete_knowledge',
     'search_published_artifacts', 'get_published_artifact',
-    'run_validation', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule',
-    'query_string_table']
+    'run_validation', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule']
   if (syncTools.includes(toolName)) return serverExecuteTool(toolName, input, options)
+
+  // ── query_string_table (async: 캐시 없으면 직접 API 호출) ──
+  if (toolName === 'query_string_table') {
+    const g = globalThis as any
+    if (!g.__stringTableCache) g.__stringTableCache = {}
+    const cache = g.__stringTableCache as Record<string, { data: { headers: string[]; rows: Record<string, string>[]; total: number }; fetchedAt: number }>
+    let cached = cache['_default'] || cache['Sheet1'] || cache['시트1'] || Object.values(cache)[0]
+
+    if (!cached?.data || !cached.data.rows || cached.data.rows.length === 0) {
+      try {
+        const port = process.env.PORT || '5173'
+        const base = (process.env.VITE_BASE || '').replace(/\/$/, '')
+        const internalUrl = `http://localhost:${port}${base}/api/strings?refresh=true`
+        sLog('INFO', `[query_string_table] 캐시 비어있음 → 내부 API 호출: ${internalUrl}`)
+        const apiRes = await fetch(internalUrl)
+        if (apiRes.ok) {
+          const json = await apiRes.json() as { headers: string[]; rows: Record<string, string>[]; total: number }
+          if (json.rows && json.rows.length > 0) {
+            cache['_default'] = { data: json, fetchedAt: Date.now() }
+            cached = cache['_default']
+            sLog('INFO', `[query_string_table] API에서 ${json.rows.length}행 로드 완료`)
+          }
+        }
+      } catch (e) {
+        sLog('WARN', `[query_string_table] 내부 API 호출 실패: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+
+    if (!cached?.data || !cached.data.rows || cached.data.rows.length === 0) {
+      return { result: '⚠️ 스트링 테이블을 로드할 수 없습니다. GOOGLE_SHEETS_ID와 서비스 계정(GOOGLE_SA_EMAIL, GOOGLE_SA_PRIVATE_KEY)이 설정되어 있는지 확인하세요.' }
+    }
+
+    return serverExecuteTool(toolName, input, options)
+  }
 
   // ── 바이브테이블링 (Python 백엔드 호출) ──
   const BIBLE_TABLING_API_URL = process.env.BIBLE_TABLING_URL || `http://localhost:${SECONDARY_PORT}`
