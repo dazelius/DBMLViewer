@@ -2282,52 +2282,64 @@ h2{color:#38bdf8}h3{color:#a78bfa;margin-top:24px}.summary{background:#1e293b;pa
         const repo2Token = options.repo2Token || options.token
         if (!repo2Url || !repo2Token) { sendJson(res, 400, { error: 'GitLab repo2 URL/token not configured' }); return }
 
-        _lfsPullState = { running: true, phase: 'LFS 포인터 스캔 중...', startedAt: Date.now(), pngCount: 0, log: ['로컬 LFS 포인터 파일 스캔 시작...'] }
+        _lfsPullState = { running: true, phase: 'git lfs ls-files로 OID 수집 중...', startedAt: Date.now(), pngCount: 0, log: ['LFS OID 수집 시작 (git lfs ls-files)...'] }
 
         ;(async () => {
           const _log = (msg: string) => { sLog('INFO', `[lfs-retry] ${msg}`); if (Array.isArray(_lfsPullState.log)) (_lfsPullState.log as string[]).push(msg); _lfsPullState.phase = msg }
           try {
             const { get: httpGet, request: httpReq } = await import('http')
             const { get: httpsGet, request: httpsReq } = await import('https')
-            const assetsDir = join(aegisDir, 'Client', 'Project_Aegis', 'Assets')
-            const lfsPointers: { oid: string; size: number; file: string }[] = []
-            let scanned = 0
-            const scanDir = (dir: string, depth: number) => {
-              if (depth > 10) return
-              try {
-                for (const e of readdirSync(dir, { withFileTypes: true })) {
-                  if (e.isDirectory()) scanDir(join(dir, e.name), depth + 1)
-                  else {
-                    const fp = join(dir, e.name)
-                    const sz = statSync(fp).size
-                    if (sz > 0 && sz < 200) {
-                      try {
-                        const txt = readFileSync(fp, 'utf-8')
-                        if (txt.startsWith('version https://git-lfs.github.com/')) {
-                          const oidMatch = txt.match(/oid sha256:([a-f0-9]+)/)
-                          const sizeMatch = txt.match(/size (\d+)/)
-                          if (oidMatch && sizeMatch) {
-                            lfsPointers.push({ oid: oidMatch[1], size: parseInt(sizeMatch[1]), file: fp })
-                          }
-                        }
-                      } catch {}
-                    }
-                    scanned++
-                    if (scanned % 5000 === 0) _log(`스캔: ${scanned}개 파일, LFS 포인터: ${lfsPointers.length}개`)
-                  }
-                }
-              } catch {}
-            }
-            scanDir(assetsDir, 0)
-            _log(`스캔 완료: ${scanned}개 파일 중 LFS 포인터 ${lfsPointers.length}개 발견`)
 
-            if (lfsPointers.length === 0) {
-              _lfsPullState = { running: false, phase: 'done', pngCount: 0, message: '✅ LFS 포인터 파일 없음 (모두 다운로드 완료)', ok: true, log: _lfsPullState.log as string[] }
+            // git lfs ls-files로 전체 LFS OID 수집
+            let lsOutput = ''
+            try {
+              lsOutput = execFileSync('git', ['lfs', 'ls-files', '--long'], { cwd: aegisDir, encoding: 'utf-8', timeout: 30000, maxBuffer: 50 * 1024 * 1024 })
+            } catch (e) {
+              _log(`git lfs ls-files 실패: ${e instanceof Error ? e.message : String(e)}`)
+              _lfsPullState = { running: false, phase: 'error', pngCount: 0, message: '❌ git lfs ls-files 실패', ok: false, log: _lfsPullState.log as string[] }
               return
             }
 
-            const gitlabUrl = repo2Url!
-            const gitlabToken = repo2Token!
+            const lfsEntries: { oid: string; file: string }[] = []
+            for (const line of lsOutput.split('\n')) {
+              if (!line.trim()) continue
+              // format: "oid_hash * path/to/file" or "oid_hash - path/to/file"
+              const match = line.match(/^([a-f0-9]{64})\s+[*-]\s+(.+)$/)
+              if (match) lfsEntries.push({ oid: match[1], file: match[2].trim() })
+            }
+            _log(`LFS 파일 총 ${lfsEntries.length}개`)
+
+            // 이미 실제 바이너리인 파일은 제외 (>200바이트)
+            const lfsPointers: { oid: string; size: number; file: string }[] = []
+            let alreadyOk = 0
+            for (const entry of lfsEntries) {
+              const fp = join(aegisDir, entry.file.replace(/\//g, sep))
+              if (existsSync(fp)) {
+                const sz = statSync(fp).size
+                if (sz > 200) { alreadyOk++; continue }
+                // 포인터 파일에서 size 추출
+                try {
+                  const txt = readFileSync(fp, 'utf-8')
+                  const sizeMatch = txt.match(/size (\d+)/)
+                  lfsPointers.push({ oid: entry.oid, size: sizeMatch ? parseInt(sizeMatch[1]) : 0, file: fp })
+                } catch {
+                  lfsPointers.push({ oid: entry.oid, size: 0, file: fp })
+                }
+              } else {
+                // 파일이 없으면 다운로드 필요
+                const dir = join(fp, '..')
+                if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+                lfsPointers.push({ oid: entry.oid, size: 0, file: fp })
+              }
+            }
+            _log(`다운로드 필요: ${lfsPointers.length}개 (이미 완료: ${alreadyOk}개)`)
+
+            if (lfsPointers.length === 0) {
+              _lfsPullState = { running: false, phase: 'done', pngCount: alreadyOk, message: `✅ 모든 LFS 파일 다운로드 완료 (${alreadyOk}개)`, ok: true, log: _lfsPullState.log as string[] }
+              if (alreadyOk > 0) _buildAssetIndexIfNeeded()
+              return
+            }
+
             const gitlabUrl2 = repo2Url!
             const lfsUrl = `${gitlabUrl2.replace(/\/$/, '')}/info/lfs/objects/batch`
             _log(`LFS URL: ${lfsUrl}`)
@@ -2335,7 +2347,7 @@ h2{color:#38bdf8}h3{color:#a78bfa;margin-top:24px}.summary{background:#1e293b;pa
             const rewriteLfsUrl = (href: string): string => {
               try { const u = new URL(href); if (u.host !== gitlabInternalHost) { u.host = gitlabInternalHost; return u.toString() } } catch {} return href
             }
-            const cred = Buffer.from(`oauth2:${gitlabToken}`).toString('base64')
+            const cred = Buffer.from(`oauth2:${repo2Token}`).toString('base64')
 
             // apiPost / downloadBinary 인라인
             const apiPost = (url: string, body: unknown, headers: Record<string, string>): Promise<Buffer> => {
