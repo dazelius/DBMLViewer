@@ -1712,7 +1712,12 @@ function buildSystemPrompt(
     lines.push('- 사용자가 "갱신/수정/업데이트" 요청 시 → get_published_artifact로 기존 HTML 가져와서 create_artifact로 수정본 생성');
     lines.push('- 사용자가 기존 아티팩트를 언급/링크하면 → get_published_artifact로 가져와서 수정');
     lines.push('- 🔴 예외: edit_game_data / add_game_data_rows (바이브테이블링) 결과는 절대 아티팩트로 만들지 마세요! "정리/요약" 명목도 금지! 다운로드 링크가 결과물.');
-    lines.push('<<<ARTIFACT_START>>> + HTML(body만, 다크테마 bg:#0f1117 text:#e2e8f0 accent:#6366f1) + <<<ARTIFACT_END>>> → create_artifact(title). 수정은 patch_artifact만.');
+    lines.push('### 📝 아티팩트 형식 선택: Markdown vs HTML');
+    lines.push('- **기본은 Markdown**: 보고서, 정리, 문서, 릴리즈 노트 등 텍스트 위주 아티팩트는 Markdown으로 작성. 토큰 절약!');
+    lines.push('- **HTML은 필요할 때만**: 시뮬레이터, 인터랙티브 대시보드, 복잡한 레이아웃, 차트가 많은 경우에만 HTML 사용.');
+    lines.push('- Markdown 아티팩트: <<<ARTIFACT_START>>>마크다운 내용<<<ARTIFACT_END>>> → create_artifact(title)');
+    lines.push('- HTML 아티팩트: <<<ARTIFACT_START>>>HTML(body만, 다크테마 bg:#0f1117 text:#e2e8f0 accent:#6366f1)<<<ARTIFACT_END>>> → create_artifact(title)');
+    lines.push('- 수정은 patch_artifact만.');
     lines.push('');
     lines.push('### 📊 아티팩트 내 차트 삽입 — <viz-chart> 태그');
     lines.push('아티팩트 HTML 안에서 차트/시각화가 필요할 때, 전체 JS/SVG를 직접 작성하지 말고 `<viz-chart>` 태그를 사용하세요!');
@@ -4873,8 +4878,33 @@ function showTab(id){
           const title = String(inp.title ?? '문서');
           const description = String(inp.description ?? '');
           // 우선순위: 누적 HTML + 텍스트 마커 캡처 HTML > tool 파라미터 html 폴백
-          const currentHtml = streamedArtifactHtml || String(inp.html ?? '');
-          const html = artifactAccumulatedHtml ? (artifactAccumulatedHtml + currentHtml) : currentHtml;
+          const rawContent = streamedArtifactHtml || String(inp.html ?? '');
+          const mergedContent = artifactAccumulatedHtml ? (artifactAccumulatedHtml + rawContent) : rawContent;
+          // Markdown 감지: HTML 태그가 거의 없고 마크다운 문법이 있으면 → HTML 래핑
+          const isMarkdown = mergedContent.length > 20
+            && !/<(div|table|section|article|header|style|script|h[1-6])\b/i.test(mergedContent.slice(0, 500))
+            && /^#{1,6}\s|^\*\*|^\- |^\d+\.\s|^>\s|```/m.test(mergedContent.slice(0, 1000));
+          const html = isMarkdown
+            ? `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e2e8f0;padding:32px;max-width:800px;margin:0 auto;line-height:1.8">${mergedContent
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/^######\s+(.+)$/gm, '<h6 style="color:#a5b4fc;font-size:14px;margin:16px 0 8px">$1</h6>')
+                .replace(/^#####\s+(.+)$/gm, '<h5 style="color:#a5b4fc;font-size:15px;margin:16px 0 8px">$1</h5>')
+                .replace(/^####\s+(.+)$/gm, '<h4 style="color:#a5b4fc;font-size:16px;margin:18px 0 8px">$1</h4>')
+                .replace(/^###\s+(.+)$/gm, '<h3 style="color:#c4b5fd;font-size:18px;margin:20px 0 10px">$1</h3>')
+                .replace(/^##\s+(.+)$/gm, '<h2 style="color:#c4b5fd;font-size:22px;margin:24px 0 12px;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:8px">$1</h2>')
+                .replace(/^#\s+(.+)$/gm, '<h1 style="color:#e2e8f0;font-size:28px;margin:0 0 16px;border-bottom:2px solid rgba(99,102,241,0.4);padding-bottom:12px">$1</h1>')
+                .replace(/\*\*(.+?)\*\*/g, '<strong style="color:#f1f5f9">$1</strong>')
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                .replace(/`([^`]+)`/g, '<code style="background:rgba(99,102,241,0.15);color:#a5b4fc;padding:2px 6px;border-radius:4px;font-size:0.9em">$1</code>')
+                .replace(/^---$/gm, '<hr style="border:none;border-top:1px solid rgba(255,255,255,0.1);margin:24px 0">')
+                .replace(/^&gt;\s+(.+)$/gm, '<blockquote style="border-left:3px solid #6366f1;padding:8px 16px;margin:12px 0;color:#94a3b8;background:rgba(99,102,241,0.05);border-radius:0 8px 8px 0">$1</blockquote>')
+                .replace(/^- (.+)$/gm, '<li style="margin:4px 0;padding-left:4px">$1</li>')
+                .replace(/(<li[^>]*>.*<\/li>\n?)+/g, m => `<ul style="padding-left:20px;margin:8px 0">${m}</ul>`)
+                .replace(/^\d+\.\s+(.+)$/gm, '<li style="margin:4px 0;padding-left:4px">$1</li>')
+                .replace(/\n{2,}/g, '</p><p style="margin:8px 0">')
+                .replace(/\n/g, '<br>')
+              }</div>`
+            : mergedContent;
           const t0 = performance.now();
           const duration = performance.now() - t0;
 
