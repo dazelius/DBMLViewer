@@ -3763,8 +3763,7 @@ api('status').then(function(s){
         const _httpsGetString = (u: string, headers?: Record<string, string>): Promise<{ status: number; body: string }> =>
           new Promise((resolve, reject) => {
             const opts = headers ? { headers } : {}
-            const fn = u.startsWith('https') ? httpsGet : (await import('http')).get
-            fn(u, opts, resp => {
+            httpsGet(u, opts, resp => {
               let d = ''; resp.on('data', c => d += c); resp.on('end', () => resolve({ status: resp.statusCode || 0, body: d }))
             }).on('error', reject)
           })
@@ -8916,6 +8915,17 @@ const API_TOOLS = [
       required: ['table'],
     },
   },
+  {
+    name: 'query_string_table',
+    description: '로컬라이징 스트링 테이블(Google Sheets)을 검색합니다. 키 이름이나 번역 텍스트로 검색 가능합니다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '검색어 (키 이름, 한국어, 영어 등). 비워두면 전체 목록 (최대 100행)' },
+        language: { type: 'string', description: '특정 언어 컬럼만 조회 (예: Korean, English). 비워두면 전체 언어' },
+      },
+    },
+  },
 ]
 
 // ── 서버사이드 동적 도구 선택 (클라이언트 selectToolsForQuery 미러) ──
@@ -8955,6 +8965,10 @@ const SERVER_TOOL_GROUPS: Record<string, { tools: string[]; keywords: RegExp }> 
   web: {
     tools: ['web_search', 'read_url'],
     keywords: /검색|웹|url|http|사이트|레퍼런스|참고.*자료|외부/i,
+  },
+  string: {
+    tools: ['query_string_table'],
+    keywords: /스트링|string|번역|로컬라이|locali[zs]|언어|language|다국어|i18n|한국어|영어|korean|english|텍스트\s*키|키\s*값|string\s*table/i,
   },
 }
 const SERVER_ALWAYS_TOOLS = ['read_knowledge', 'save_knowledge', 'read_guide', 'query_game_data', 'show_table_schema', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule', 'search_confluence', 'get_confluence_page', 'add_confluence_comment']
@@ -9862,6 +9876,66 @@ function serverExecuteTool(
       }
     }
 
+    // ── query_string_table ──
+    case 'query_string_table': {
+      const query = String(input.query ?? '').toLowerCase().trim()
+      const langFilter = String(input.language ?? '').trim()
+      try {
+        const g = globalThis as any
+        const cache = (g.__stringTableCache || {}) as Record<string, { data: { headers: string[]; rows: Record<string, string>[]; total: number }; fetchedAt: number }>
+        const cached = cache['Sheet1']
+        if (!cached?.data || !cached.data.rows || cached.data.rows.length === 0) {
+          return {
+            result: '⚠️ 스트링 테이블이 아직 로드되지 않았습니다.\n' +
+              '사용자에게 Strings 페이지(#/strings)를 먼저 한 번 열어달라고 안내하거나,\n' +
+              '.env에 GOOGLE_SHEETS_ID + GOOGLE_API_KEY가 설정되어 있는지 확인하세요.'
+          }
+        }
+
+        const data = cached.data
+        const keyCol = data.headers.find(h => h.toLowerCase() === 'keys' || h.toLowerCase() === 'key') || data.headers[0]
+        const langCols = data.headers.filter(h => h !== keyCol)
+
+        let filtered = data.rows
+        if (query) {
+          filtered = filtered.filter(row =>
+            Object.values(row).some(v => v.toLowerCase().includes(query))
+          )
+        }
+
+        if (langFilter) {
+          const matchCol = langCols.find(c => c.toLowerCase() === langFilter.toLowerCase())
+          if (!matchCol) return { result: `언어 "${langFilter}" 컬럼을 찾을 수 없습니다. 사용 가능: ${langCols.join(', ')}` }
+        }
+
+        const displayCols = langFilter
+          ? [keyCol, ...langCols.filter(c => c.toLowerCase() === langFilter.toLowerCase())]
+          : [keyCol, ...langCols]
+
+        const maxRows = query ? 50 : 100
+        const sliced = filtered.slice(0, maxRows)
+
+        const csvLines = [displayCols.join('\t')]
+        for (const row of sliced) {
+          csvLines.push(displayCols.map(c => (row[c] || '').replace(/\t/g, ' ')).join('\t'))
+        }
+
+        const stats = langCols.map(c => {
+          const filled = data.rows.filter(r => r[c]?.trim()).length
+          return `${c}: ${filled}/${data.total} (${Math.round(filled / data.total * 100)}%)`
+        }).join(', ')
+
+        return {
+          result: `스트링 테이블${query ? ` "${query}" 검색 결과` : ''}: ${filtered.length}건${filtered.length > maxRows ? ` (상위 ${maxRows}건 표시)` : ''}\n` +
+            `언어별 완료율: ${stats}\n\n` +
+            csvLines.join('\n'),
+          data: { total: data.total, matched: filtered.length, displayed: sliced.length, headers: displayCols }
+        }
+      } catch (e) {
+        return { result: `스트링 테이블 조회 오류: ${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+
     default:
       return { result: `알 수 없는 도구: ${toolName}` }
   }
@@ -9879,7 +9953,8 @@ async function serverExecuteToolAsync(
     'build_character_profile', 'read_guide', 'show_revision_diff', 'preview_prefab',
     'patch_artifact', 'save_knowledge', 'read_knowledge', 'list_knowledge', 'delete_knowledge',
     'search_published_artifacts', 'get_published_artifact',
-    'run_validation', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule']
+    'run_validation', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule',
+    'query_string_table']
   if (syncTools.includes(toolName)) return serverExecuteTool(toolName, input, options)
 
   // ── 바이브테이블링 (Python 백엔드 호출) ──
@@ -11478,6 +11553,7 @@ function buildServerSystemPrompt(_userQuery?: string, isSlack = false, selectedT
     ['read_url', '🌐 웹페이지 내용 읽기'],
     ['search_assets', 'Unity 에셋 파일 검색 (FBX, PNG, WAV 등)'],
     ['find_resource_image', '게임 리소스 이미지(PNG) 검색'],
+    ['query_string_table', '로컬라이징 스트링 테이블 검색 (번역 키/텍스트)'],
     ['preview_prefab', 'Unity 프리팹 미리보기'],
     ['preview_fbx_animation', 'FBX 애니메이션 미리보기'],
     ['read_scene_yaml', 'Unity 씬 YAML 읽기'],
@@ -12640,6 +12716,7 @@ for line in resp.iter_lines():
   <tr><td><code>get_confluence_page</code></td><td>Confluence 페이지 전체 내용</td></tr>
   <tr><td><code>search_assets</code></td><td>Unity 에셋 파일 검색 (FBX, PNG, WAV 등)</td></tr>
   <tr><td><code>find_resource_image</code></td><td>게임 리소스 이미지 검색</td></tr>
+  <tr><td><code>query_string_table</code></td><td>로컬라이징 스트링 테이블 검색</td></tr>
   <tr><td><code>build_character_profile</code></td><td>캐릭터 연관 데이터 자동 수집</td></tr>
   <tr><td><code>read_guide</code></td><td>코드/DB 가이드 문서 읽기</td></tr>
   <tr><td><code>web_search</code></td><td>🌐 웹 검색 (외부 레퍼런스, 기술 문서)</td></tr>
