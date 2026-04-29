@@ -1048,6 +1048,124 @@ async function _downloadViaGitlabApi(repoDir: string, gitlabUrl: string, gitlabT
   }
 }
 
+/** 단일 에셋 파일을 GitLab API + LFS API로 즉시 다운로드 (on-demand)
+ *  /api/assets/file 요청 시 디스크에 파일이 없거나 LFS 포인터일 때 호출
+ *  성공 시 디스크에 저장하고 로컬 경로 반환, 실패 시 null
+ */
+const _onDemandFetchInflight = new Map<string, Promise<string | null>>()
+async function _onDemandFetchAsset(repoDir: string, gitlabUrl: string, gitlabToken: string, branch: string, repoRelativePath: string): Promise<string | null> {
+  const cacheKey = `${repoDir}::${repoRelativePath}`
+  const existing = _onDemandFetchInflight.get(cacheKey)
+  if (existing) return existing
+
+  const fetchPromise = (async (): Promise<string | null> => {
+    try {
+      const { get: httpGet, request: httpReq } = await import('http')
+      const { get: httpsGet, request: httpsReq } = await import('https')
+
+      const projectPath = new URL(gitlabUrl.replace(/\.git$/, '')).pathname.replace(/^\//, '')
+      const projectEnc = encodeURIComponent(projectPath)
+      const origin = new URL(gitlabUrl.replace(/\.git$/, '')).origin
+      const encodedFile = encodeURIComponent(repoRelativePath)
+      const rawUrl = `${origin}/api/v4/projects/${projectEnc}/repository/files/${encodedFile}/raw?ref=${branch}`
+
+      const apiGet = (url: string): Promise<Buffer> => new Promise((resolve, reject) => {
+        const getFn = url.startsWith('https') ? httpsGet : httpGet
+        const req = getFn(url, { headers: { 'PRIVATE-TOKEN': gitlabToken }, timeout: 60000 }, res => {
+          const chunks: Buffer[] = []
+          res.on('data', (c: Buffer) => chunks.push(c))
+          res.on('end', () => {
+            if (res.statusCode && res.statusCode >= 400) reject(new Error(`HTTP ${res.statusCode}`))
+            else resolve(Buffer.concat(chunks))
+          })
+        })
+        req.on('error', reject)
+        req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+      })
+
+      const apiPost = (url: string, body: unknown, headers: Record<string, string>): Promise<Buffer> => new Promise((resolve, reject) => {
+        const parsed = new URL(url)
+        const reqFn = parsed.protocol === 'https:' ? httpsReq : httpReq
+        const data = JSON.stringify(body)
+        const req = reqFn({
+          hostname: parsed.hostname, port: parsed.port, path: parsed.pathname + parsed.search, method: 'POST',
+          headers: { ...headers, 'Content-Length': Buffer.byteLength(data) }, timeout: 30000,
+        }, res => {
+          const chunks: Buffer[] = []
+          res.on('data', (c: Buffer) => chunks.push(c))
+          res.on('end', () => {
+            if (res.statusCode && res.statusCode >= 400) reject(new Error(`HTTP ${res.statusCode}`))
+            else resolve(Buffer.concat(chunks))
+          })
+        })
+        req.on('error', reject)
+        req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+        req.write(data); req.end()
+      })
+
+      const downloadBinary = (url: string, extraHeaders?: Record<string, string>): Promise<Buffer> => new Promise((resolve, reject) => {
+        const getFn = url.startsWith('https') ? httpsGet : httpGet
+        const req = getFn(url, { headers: { ...extraHeaders }, timeout: 120000 }, res => {
+          if (res.statusCode === 301 || res.statusCode === 302) {
+            downloadBinary(res.headers.location!, extraHeaders).then(resolve, reject); return
+          }
+          const chunks: Buffer[] = []
+          res.on('data', (c: Buffer) => chunks.push(c))
+          res.on('end', () => resolve(Buffer.concat(chunks)))
+        })
+        req.on('error', reject)
+        req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+      })
+
+      sLog('INFO', `[on-demand] ${repoRelativePath} 다운로드 시작...`)
+      const buf = await apiGet(rawUrl)
+      const localPath = join(repoDir, ...repoRelativePath.split('/'))
+      const localDir = join(localPath, '..')
+      if (!existsSync(localDir)) mkdirSync(localDir, { recursive: true })
+
+      const text = buf.length < 300 ? buf.toString('utf-8') : ''
+      if (text.startsWith('version https://git-lfs.github.com/')) {
+        const oidMatch = text.match(/oid sha256:([a-f0-9]+)/)
+        const sizeMatch = text.match(/size (\d+)/)
+        if (!oidMatch || !sizeMatch) { sLog('WARN', `[on-demand] ${repoRelativePath} LFS 포인터 파싱 실패`); return null }
+
+        const lfsUrl = `${gitlabUrl.replace(/\/$/, '').replace(/\.git$/, '.git')}/info/lfs/objects/batch`
+        const cred = Buffer.from(`oauth2:${gitlabToken}`).toString('base64')
+        const respBuf = await apiPost(lfsUrl, {
+          operation: 'download', transfers: ['basic'],
+          objects: [{ oid: oidMatch[1], size: parseInt(sizeMatch[1]) }],
+        }, {
+          'Authorization': `Basic ${cred}`,
+          'Accept': 'application/vnd.git-lfs+json',
+          'Content-Type': 'application/vnd.git-lfs+json',
+        })
+        const resp = JSON.parse(respBuf.toString('utf-8')) as { objects?: { oid: string; actions?: { download?: { href: string; header?: Record<string, string> } } }[] }
+        const dlAction = resp.objects?.[0]?.actions?.download
+        if (!dlAction?.href) { sLog('WARN', `[on-demand] ${repoRelativePath} LFS download URL 없음`); return null }
+
+        const gitlabHost = new URL(gitlabUrl.replace(/\.git$/, '')).host
+        let dlHref = dlAction.href
+        try { const u = new URL(dlHref); if (u.host !== gitlabHost) { u.host = gitlabHost; dlHref = u.toString() } } catch { /* ignore */ }
+        const lfsBuf = await downloadBinary(dlHref, dlAction.header?.Authorization ? { Authorization: dlAction.header.Authorization } : undefined)
+        writeFileSync(localPath, lfsBuf)
+        sLog('INFO', `[on-demand] ✅ LFS 다운로드 완료: ${repoRelativePath} (${lfsBuf.length} bytes)`)
+      } else {
+        writeFileSync(localPath, buf)
+        sLog('INFO', `[on-demand] ✅ 다운로드 완료: ${repoRelativePath} (${buf.length} bytes)`)
+      }
+      return localPath
+    } catch (e) {
+      sLog('WARN', `[on-demand] ${repoRelativePath} 실패: ${e instanceof Error ? e.message : String(e)}`)
+      return null
+    } finally {
+      _onDemandFetchInflight.delete(cacheKey)
+    }
+  })()
+
+  _onDemandFetchInflight.set(cacheKey, fetchPromise)
+  return fetchPromise
+}
+
 /** aegis repo 클론 상태 진단 */
 function _diagAegisRepo(): { cloned: boolean; hasGit: boolean; totalFiles: number; realFiles: number; metaOnly: number; sampleDirs: string[] } {
   const aegisDir = join(process.cwd(), '.git-repo-aegis')
@@ -4125,11 +4243,33 @@ api('status').then(function(s){
             if (found) filePath = resolveAssetFile(found.path)
           }
 
+          // 3) 디스크에 파일이 있어도 LFS 포인터(작은 텍스트)면 재다운로드 필요
+          const isLfsPointer = (p: string): boolean => {
+            try {
+              const stat = statSync(p)
+              if (stat.size > 300) return false
+              const head = readFileSync(p, { encoding: 'utf-8' }).slice(0, 64)
+              return head.startsWith('version https://git-lfs.github.com/')
+            } catch { return false }
+          }
+
+          // 4) 파일이 없거나 LFS 포인터면 GitLab API로 즉시 다운로드 시도 (on-demand)
+          if (!filePath || isLfsPointer(filePath)) {
+            const repo2Url = options.repo2Url || options.repoUrl
+            const repo2Token = options.repo2Token || options.token
+            if (repo2Url && repo2Token && options.repo2LocalDir) {
+              const aegisDir = options.repo2LocalDir
+              const repoRelative = pathParam.startsWith('Client/') ? pathParam : `Client/Project_Aegis/Assets/${pathParam}`
+              const fetched = await _onDemandFetchAsset(aegisDir, repo2Url, repo2Token, 'develop', repoRelative)
+              if (fetched && existsSync(fetched)) filePath = fetched
+            }
+          }
+
           if (!filePath) {
             const norm = pathParam.replace(/\//g, sep)
             const tried = _uaCandidates.map(d => `${join(d, norm)} → ${existsSync(join(d, norm)) ? '✓' : '✗'}`)
             res.writeHead(404, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify({ error: `Asset not found: ${pathParam}`, tried, hint: 'git clone이 완료되었는지 확인하세요.' }))
+            res.end(JSON.stringify({ error: `Asset not found: ${pathParam}`, tried, hint: 'git clone이 완료되었거나 LFS 다운로드가 가능한지 확인하세요.' }))
             return
           }
 
