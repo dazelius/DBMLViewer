@@ -1197,6 +1197,10 @@ const SECONDARY_PORT = process.env.SECONDARY_PORT || process.env.TOOL_PORT || '8
 
 // git sync 뮤텍스: 디렉토리별 동시 실행 방지
 const _gitSyncLocks = new Map<string, Promise<void>>()
+
+// 서버 시작 시 자동 git sync 결과 (클라이언트에서 조회 가능)
+interface StartupSyncResult { status: 'syncing' | 'updated' | 'up-to-date' | 'error' | 'skipped'; commit?: string; updatedAt?: string; error?: string }
+const _startupSyncResults: Record<string, StartupSyncResult> = {}
 function getTableMasterUrl(): string {
   const host = process.env.TABLEMASTER_HOST || 'localhost'
   return `http://${host}:${SERVER_PORT}`
@@ -7378,13 +7382,13 @@ document.addEventListener('DOMContentLoaded', () => {
           if (route === 'status' && req.method === 'GET') {
             const isCloned = existsSync(join(activeDir, '.git'))
             if (!isCloned) {
-              sendJson(res, 200, { cloned: false })
+              sendJson(res, 200, { cloned: false, startupSync: _startupSyncResults })
               return
             }
             const head = runGit(['rev-parse', '--short', 'HEAD'], activeDir)
             const date = runGit(['log', '-1', '--format=%ci'], activeDir)
             const msg = runGit(['log', '-1', '--format=%s'], activeDir)
-            sendJson(res, 200, { cloned: true, commit: head, date, message: msg })
+            sendJson(res, 200, { cloned: true, commit: head, date, message: msg, startupSync: _startupSyncResults })
             return
           }
 
@@ -13072,12 +13076,15 @@ async function _startupGitSync(options: GitPluginOptions) {
   sLog('INFO', `[startup git-sync] ${repos.map(r => r.tag).join(', ')} 동기화 시작...`)
 
   for (const repo of repos) {
+    _startupSyncResults[repo.tag] = { status: 'syncing' }
     if (!existsSync(join(repo.dir, '.git'))) {
       sLog('INFO', `[startup git-sync] ${repo.tag}: not cloned yet — skipping (will clone on first browser visit)`)
+      _startupSyncResults[repo.tag] = { status: 'skipped' }
       continue
     }
     if (_gitSyncLocks.has(repo.dir)) {
       sLog('INFO', `[startup git-sync] ${repo.tag}: sync already in progress — skipping`)
+      _startupSyncResults[repo.tag] = { status: 'syncing' }
       continue
     }
 
@@ -13102,11 +13109,16 @@ async function _startupGitSync(options: GitPluginOptions) {
           sLog('INFO', `[startup git-sync] ${repo.tag}: 업데이트 완료 → ${finalHead}`)
         }
         if (repo.isRepo2) _buildAssetIndexIfNeeded()
+        const headAfter = await runGitAsync('git rev-parse --short HEAD', repo.dir).catch(() => remoteHead.substring(0, 8))
+        _startupSyncResults[repo.tag] = { status: 'updated', commit: headAfter, updatedAt: new Date().toISOString() }
       } else {
         sLog('INFO', `[startup git-sync] ${repo.tag}: 이미 최신 (${localHead.substring(0, 8)})`)
+        _startupSyncResults[repo.tag] = { status: 'up-to-date', commit: localHead.substring(0, 8), updatedAt: new Date().toISOString() }
       }
     } catch (e) {
-      sLog('ERROR', `[startup git-sync] ${repo.tag}: 실패 — ${e instanceof Error ? e.message : String(e)}`)
+      const errMsg = e instanceof Error ? e.message : String(e)
+      sLog('ERROR', `[startup git-sync] ${repo.tag}: 실패 — ${errMsg}`)
+      _startupSyncResults[repo.tag] = { status: 'error', error: errMsg, updatedAt: new Date().toISOString() }
     } finally {
       _gitSyncLocks.delete(repo.dir)
       releaseLock()

@@ -54,9 +54,25 @@ export function useAutoLoad() {
     (async () => {
       try {
         // 이미 클론된 데이터가 있으면 즉시 로드 (sync 안 기다림)
-        const status = await gitStatus().catch(() => null);
+        const status = await gitStatus().catch(() => null) as {
+          cloned?: boolean; commit?: string;
+          startupSync?: Record<string, { status: string; commit?: string; updatedAt?: string; error?: string }>;
+        } | null;
         if (status?.cloned) {
           await loadAndApplyFiles().catch(() => 0);
+        }
+
+        // 서버 시작 시 자동 동기화 결과가 있으면 즉시 UI에 반영
+        const ss = status?.startupSync;
+        if (ss?.data && ss.data.status !== 'syncing') {
+          const d = ss.data;
+          if (d.status === 'error') setError(d.error ?? 'startup sync error');
+          else setDone((d.status === 'updated' ? 'updated' : 'up-to-date'), d.commit ?? status?.commit ?? '');
+        }
+        if (ss?.aegis && ss.aegis.status !== 'syncing') {
+          const a = ss.aegis;
+          if (a.status === 'error') setRepo2Error(a.error ?? 'startup sync error');
+          else setRepo2Done((a.status === 'updated' ? 'updated' : 'up-to-date'), a.commit ?? '', BRANCH);
         }
 
         // 백그라운드 sync 시작
