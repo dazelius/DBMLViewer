@@ -4268,14 +4268,24 @@ api('status').then(function(s){
           }
 
           // 4) 파일이 없거나 LFS 포인터면 GitLab API로 즉시 다운로드 시도 (on-demand)
+          let onDemandAttempted = false
+          let onDemandError: string | null = null
           if (!filePath || isLfsPointer(filePath)) {
             const repo2Url = options.repo2Url || options.repoUrl
             const repo2Token = options.repo2Token || options.token
             if (repo2Url && repo2Token && options.repo2LocalDir) {
+              onDemandAttempted = true
               const aegisDir = options.repo2LocalDir
               const repoRelative = pathParam.startsWith('Client/') ? pathParam : `Client/Project_Aegis/Assets/${pathParam}`
-              const fetched = await _onDemandFetchAsset(aegisDir, repo2Url, repo2Token, 'develop', repoRelative)
-              if (fetched && existsSync(fetched)) filePath = fetched
+              try {
+                const fetched = await _onDemandFetchAsset(aegisDir, repo2Url, repo2Token, 'develop', repoRelative)
+                if (fetched && existsSync(fetched)) filePath = fetched
+                else onDemandError = 'fetch returned null (LFS API 또는 GitLab raw API 응답 실패)'
+              } catch (e) {
+                onDemandError = e instanceof Error ? e.message : String(e)
+              }
+            } else {
+              onDemandError = `repo2 설정 누락 (url=${!!repo2Url}, token=${!!repo2Token}, localDir=${!!options.repo2LocalDir})`
             }
           }
 
@@ -4283,7 +4293,14 @@ api('status').then(function(s){
             const norm = pathParam.replace(/\//g, sep)
             const tried = _uaCandidates.map(d => `${join(d, norm)} → ${existsSync(join(d, norm)) ? '✓' : '✗'}`)
             res.writeHead(404, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify({ error: `Asset not found: ${pathParam}`, tried, hint: 'git clone이 완료되었거나 LFS 다운로드가 가능한지 확인하세요.' }))
+            res.end(JSON.stringify({
+              error: `Asset not found: ${pathParam}`,
+              tried,
+              onDemandFetch: { attempted: onDemandAttempted, error: onDemandError },
+              hint: onDemandAttempted
+                ? 'GitLab API 다운로드 시도 실패 — 서버 → GitLab 접근 가능 여부 / 토큰 권한 / 파일 경로 확인'
+                : 'on-demand fetch 미시도 — repo2 환경변수 설정 확인 필요',
+            }))
             return
           }
 
