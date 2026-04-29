@@ -2496,7 +2496,8 @@ async function streamClaude(
   const currentIdx = ALL_MODELS.indexOf(currentModel);
   const MODEL_FALLBACK_CHAIN = ALL_MODELS.filter((_, i) => i > currentIdx);
   const MAX_RETRIES = 5;
-  const RETRY_DELAYS = [2000, 5000, 10000, 20000, 30000];
+  // 첫 재시도는 빠르게 (플랫폼 프록시 504는 보통 일시적), 이후 점진 증가
+  const RETRY_DELAYS = [1000, 3000, 8000, 15000, 25000];
   let response!: Response;
   let fallbackIdx = 0;
 

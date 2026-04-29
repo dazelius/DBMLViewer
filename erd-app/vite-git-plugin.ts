@@ -1831,7 +1831,18 @@ function createGitMiddleware(options: GitPluginOptions) {
         try { res.write('event: ping\ndata: {}\n\n') } catch { /* ignore */ }
       }
 
-      const rawBody = await readBody(req, 50 * 1024 * 1024)
+      // ★ body 읽기/Knowledge 주입 중에도 keep-alive ping을 계속 보냄 (504 방지)
+      // 큰 body(이미지 포함 50MB)가 있을 때 프록시가 timeout으로 끊는 것을 방지
+      const _earlyHb = setInterval(() => {
+        try { res.write('event: ping\ndata: {}\n\n') } catch { clearInterval(_earlyHb) }
+      }, 1500)
+
+      let rawBody: string
+      try {
+        rawBody = await readBody(req, 50 * 1024 * 1024)
+      } finally {
+        clearInterval(_earlyHb)
+      }
       const skipKnowledge = req.headers['x-tm-knowledge'] === 'injected'
 
       // ── 널리지 자동 주입 (외부 도구용) ──
@@ -1884,6 +1895,9 @@ function createGitMiddleware(options: GitPluginOptions) {
           console.warn('[Claude proxy] 널리지 주입 실패 (원본으로 진행):', e)
         }
       }
+
+      // Knowledge 주입 후 Claude API 요청 직전 한 번 더 ping (긴 system prompt 처리 시간 방지)
+      try { res.write('event: ping\ndata: {}\n\n') } catch { /* ignore */ }
 
       let isStream = false
       try { isStream = JSON.parse(rawBody || '{}').stream === true } catch (e) { /* non-critical */ }
