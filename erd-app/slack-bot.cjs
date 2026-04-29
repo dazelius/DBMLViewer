@@ -785,7 +785,18 @@ function formatToolSummary(toolCalls) {
 function extractSlackSummary(markdown) {
   if (!markdown) return '📊 분석이 완료되었습니다.';
   
-  const lines = markdown.split('\n');
+  // 먼저 아티팩트 마커/태그, HTML 블록 제거
+  let cleaned = markdown;
+  cleaned = cleaned.replace(/<<<ARTIFACT_START>>>[\s\S]*?<<<ARTIFACT_END>>>/g, '');
+  cleaned = cleaned.replace(/<<<ARTIFACT_START>>>[\s\S]*/g, '');
+  cleaned = cleaned.replace(/<artifact\b[^>]*>[\s\S]*?<\/artifact>/gi, '');
+  cleaned = cleaned.replace(/<artifact\b[^>]*>[\s\S]*/gi, '');
+  cleaned = cleaned.replace(/<!DOCTYPE[\s\S]*?<\/html>/gi, '');
+  cleaned = cleaned.replace(/<html[\s\S]*?<\/html>/gi, '');
+  cleaned = cleaned.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '');
+  cleaned = cleaned.replace(/<[^>]+>/g, '');
+  
+  const lines = cleaned.split('\n');
   const summaryLines = [];
   let inCodeBlock = false;
   let inTable = false;
@@ -802,6 +813,10 @@ function extractSlackSummary(markdown) {
     // 테이블 구분선 스킵
     if (/^[\s|:-]+$/.test(line)) continue;
     
+    // CSS/HTML 잔여물 스킵
+    if (/^\s*[a-z.*#@][^{]*\{/.test(line)) continue;
+    if (/^\s*\}/.test(line)) continue;
+    
     const trimmed = line.trim();
     if (!trimmed) {
       if (summaryLines.length > 0) summaryLines.push('');
@@ -810,8 +825,8 @@ function extractSlackSummary(markdown) {
     
     summaryLines.push(trimmed);
     
-    // 요약은 최대 600자 정도
-    if (summaryLines.join('\n').length > 600) break;
+    // 요약은 최대 800자 정도 (검증 결과 등을 충분히 담기 위해)
+    if (summaryLines.join('\n').length > 800) break;
   }
   
   let summary = summaryLines.join('\n').trim();
@@ -1160,8 +1175,13 @@ async function handleMessage({ message, say, client, event }) {
   }
   if (currentTs) _processedMessages.add(currentTs);
 
-  // ── 같은 쓰레드에서 이미 처리 중이면 안내 메시지만 ──
+  // ── 같은 쓰레드에서 이미 처리 중이면 안내 메시지만 (3분 초과 stale entry는 자동 해제) ──
   const threadKey = `${channel}:${threadTs || 'main'}`;
+  const _activeStart = _activeThreads.get(threadKey);
+  if (_activeStart && (Date.now() - _activeStart) > 3 * 60 * 1000) {
+    console.warn(`[Slack] stale _activeThreads entry 해제: ${threadKey} (${Math.round((Date.now() - _activeStart) / 1000)}초 경과)`);
+    _activeThreads.delete(threadKey);
+  }
   if (_activeThreads.has(threadKey)) {
     console.log(`[Slack] 쓰레드 처리 중 — 대기 안내: ${threadKey}`);
     await say({ text: '⏳ 이전 질문을 처리 중입니다. 완료 후 다시 질문해주세요.', thread_ts: threadTs });
@@ -1408,12 +1428,25 @@ async function handleMessage({ message, say, client, event }) {
       // no-op: 이터레이션 번호는 슬랙 진행상황에 표시하지 않음
     };
     
-    // 에러 시 자동 재시도 (최대 2회)
+    // 에러 시 자동 재시도 (최대 2회) + 빈 응답도 1회 재시도
     let result;
     const MAX_RETRIES = 2;
+    let emptyRetried = false;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         result = await callDataMasterStreaming(enrichedMessage, sessionId, onToolStart, onIteration, slackImages);
+        // 빈 응답이고 아직 빈 응답 재시도 안 했으면 1회 재시도
+        if (result && !result.content?.trim() && result.toolCalls.length === 0 && !emptyRetried) {
+          emptyRetried = true;
+          console.warn('[Slack] 빈 응답 수신 — 3초 후 재시도');
+          if (loadingMsg?.ts) {
+            try { await client.chat.update({ channel, ts: loadingMsg.ts, text: '⏳ 응답 대기 중... 재시도합니다.', blocks: [{ type: 'context', elements: [{ type: 'mrkdwn', text: '⏳ 응답 대기 중... *자동 재시도*' }] }] }); } catch { /* ignore */ }
+          }
+          await new Promise(r => setTimeout(r, 3000));
+          toolProgress.length = 0;
+          lastUpdate = 0;
+          continue;
+        }
         break; // 성공 시 루프 탈출
       } catch (apiErr) {
         const errMsg = apiErr.message || '';
@@ -1435,7 +1468,6 @@ async function handleMessage({ message, say, client, event }) {
             } catch { /* ignore */ }
           }
           await new Promise(r => setTimeout(r, waitSec * 1000));
-          // 재시도 시 진행상황 초기화
           toolProgress.length = 0;
           lastUpdate = 0;
           continue;
@@ -1445,6 +1477,21 @@ async function handleMessage({ message, say, client, event }) {
     }
     if (!result) throw new Error('재시도 횟수 초과');
     const rawContent = result.content || '';
+    
+    // ── 빈 응답 방어: API가 빈 content를 반환하면 안내 메시지 ──
+    if (!rawContent.trim() && result.toolCalls.length === 0) {
+      console.warn('[Slack] API가 빈 응답 반환 — fallback 메시지 전송');
+      const emptyMsg = '😅 응답을 생성하지 못했습니다. 질문을 다시 시도해주세요.';
+      if (loadingMsg?.ts) {
+        try {
+          await client.chat.update({ channel, ts: loadingMsg.ts, text: emptyMsg,
+            blocks: [{ type: 'section', text: { type: 'mrkdwn', text: emptyMsg } }] });
+        } catch { try { await say({ text: emptyMsg, thread_ts: threadTs }); } catch { /* ignore */ } }
+      }
+      clearTimeout(globalTimeout);
+      _activeThreads.delete(threadKey);
+      return;
+    }
     
     // ── :::visualizer 블록 추출 → 차트 이미지 URL 변환 ──
     const { blocks: vizBlocks, stripped: contentWithoutViz } = extractVisualizerBlocks(rawContent);
@@ -1472,6 +1519,7 @@ async function handleMessage({ message, say, client, event }) {
     const VISUAL_TOOLS = new Set([
       'preview_fbx_animation', 'preview_prefab', 'find_resource_image',
       'build_character_profile', 'search_assets',
+      'run_validation',
     ]);
     const usedTools = new Set(result.toolCalls.map(tc => tc.tool));
     const hasVisualTool = [...usedTools].some(t => VISUAL_TOOLS.has(t));
@@ -1512,14 +1560,30 @@ async function handleMessage({ message, say, client, event }) {
     // AI가 아티팩트 내용(HTML, YAML 등)을 텍스트에 포함시키는 경우 Slack에 코드가 노출되는 것을 방지
     function stripArtifactCode(text) {
       let cleaned = text;
+      // <<<ARTIFACT_START>>>...<<<ARTIFACT_END>>> 마커 사이 콘텐츠 전체 제거
+      cleaned = cleaned.replace(/<<<ARTIFACT_START>>>[\s\S]*?<<<ARTIFACT_END>>>/g, '');
+      // <<<ARTIFACT_START>>> 이후 끝까지 (END 마커 없이 잘린 경우)
+      cleaned = cleaned.replace(/<<<ARTIFACT_START>>>[\s\S]*/g, '');
+      // <artifact ...>...</artifact> 태그 전체 제거
+      cleaned = cleaned.replace(/<artifact\b[^>]*>[\s\S]*?<\/artifact>/gi, '');
+      // <artifact ...> 닫히지 않은 태그 이후 전체 제거
+      cleaned = cleaned.replace(/<artifact\b[^>]*>[\s\S]*/gi, '');
       // YAML 블록 형태: "id: xxx\ntitle: xxx\nhtml: |\n  <!DOCTYPE..." 패턴 제거
       cleaned = cleaned.replace(/^(?:id:\s*.+\n)?(?:title:\s*.+\n)?html:\s*\|?\s*\n[\s\S]*?(?:<\/html>|<\/body>|<\/style>|<\/script>)[^\n]*/gm, '');
       // 인라인 HTML 블록: <!DOCTYPE ... </html> 전체 제거
       cleaned = cleaned.replace(/<!DOCTYPE[\s\S]*?<\/html>/gi, '');
+      // <html>...</html> 블록 제거
+      cleaned = cleaned.replace(/<html[\s\S]*?<\/html>/gi, '');
       // 마크다운 코드펜스 안의 HTML 제거: ```html ... ```
       cleaned = cleaned.replace(/```(?:html|htm|css|xml)\n[\s\S]*?```/gi, '');
+      // 인라인 style 태그 포함 긴 HTML 제거 (CSS가 노출되는 경우)
+      cleaned = cleaned.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '');
       // 길게 이어지는 HTML 태그 라인 제거 (style, div, table 등이 3줄 이상)
       cleaned = cleaned.replace(/(?:^[ \t]*<(?:style|div|table|tr|td|th|head|body|meta|link|section|h[1-6]|span|p|ul|ol|li|img|a |!--|script)[^>]*>.*\n){3,}/gim, '');
+      // CSS 블록 제거 (body{...} 등)
+      cleaned = cleaned.replace(/^[a-z.*#@][^{]*\{[^}]*\}\s*$/gm, '');
+      // 남은 인라인 HTML 태그 제거 (텍스트만 유지)
+      cleaned = cleaned.replace(/<[^>]+>/g, '');
       // 남은 빈 줄 정리
       cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
       return cleaned;
@@ -1769,6 +1833,14 @@ async function handleMessage({ message, say, client, event }) {
       fallbackText = mdToSlack(fbSource).slice(0, 3000);
     }
     
+    // 빈 text/blocks 안전장치: Slack API는 빈 text를 거부함
+    if (!fallbackText.trim()) {
+      fallbackText = rawContent.trim() ? rawContent.slice(0, 3000) : '✅ 처리가 완료되었습니다.';
+    }
+    if (blocks.length === 0) {
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: fallbackText.slice(0, 2900) } });
+    }
+    
     if (loadingMsg?.ts) {
       try {
         await client.chat.update({
@@ -1779,11 +1851,16 @@ async function handleMessage({ message, say, client, event }) {
         });
       } catch (updateErr) {
         console.warn('[Slack] blocks 업데이트 실패, plaintext 시도:', updateErr.message);
-        await client.chat.update({
-          channel,
-          ts: loadingMsg.ts,
-          text: fallbackText.slice(0, 3800),
-        });
+        try {
+          await client.chat.update({
+            channel,
+            ts: loadingMsg.ts,
+            text: fallbackText.slice(0, 3800) || '응답 표시 중 오류가 발생했습니다.',
+          });
+        } catch (updateErr2) {
+          console.error('[Slack] plaintext 업데이트도 실패:', updateErr2.message);
+          try { await say({ text: fallbackText.slice(0, 3800), thread_ts: threadTs }); } catch { /* give up */ }
+        }
       }
     } else {
       await say({ text: fallbackText, blocks, thread_ts: threadTs });
@@ -1841,17 +1918,15 @@ async function handleMessage({ message, say, client, event }) {
     
     if (loadingMsg?.ts) {
       try {
-        await client.chat.update({
-          channel,
-          ts: loadingMsg.ts,
-          text: userMsg,
-          blocks,
-        });
-      } catch { /* ignore */ }
+        await client.chat.update({ channel, ts: loadingMsg.ts, text: userMsg, blocks });
+      } catch {
+        // update 실패 시 새 메시지로 전송
+        try { await say({ text: userMsg, blocks, thread_ts: threadTs }); } catch { /* give up */ }
+      }
     } else {
       try {
         await say({ text: userMsg, blocks, thread_ts: threadTs });
-      } catch { /* ignore */ }
+      } catch { /* give up */ }
     }
   } finally {
     clearTimeout(globalTimeout);

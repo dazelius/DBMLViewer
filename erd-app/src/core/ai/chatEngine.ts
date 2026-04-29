@@ -1245,6 +1245,218 @@ const TOOL_GROUPS: Record<string, { tools: string[]; keywords: RegExp }> = {
 };
 const ALWAYS_TOOLS = ['read_knowledge', 'save_knowledge', 'read_guide', 'query_game_data', 'show_table_schema', 'save_validation_rule', 'list_validation_rules', 'delete_validation_rule', 'search_confluence', 'get_confluence_page', 'add_confluence_comment', 'query_string_table'];
 
+/** Markdown → styled dark-theme HTML (아티팩트용).
+ *  HTML passthrough: viz-chart, data-embed div, img, [[TableRef]] 등 커스텀 태그를 보존. */
+export function mdToStyledHtml(md: string): string {
+  if (!md || md.length < 10) return md;
+  const looksLikeHtml = /<(div|table|section|article|header|style|script|h[1-6])\b/i.test(md.slice(0, 500));
+  if (looksLikeHtml) return md;
+  const looksLikeMd = /^#{1,6}\s|^\*\*|^\- |^\d+\.\s|^>\s|```|\|.*\|/m.test(md.slice(0, 1500));
+  if (!looksLikeMd) return md;
+  return _mdToHtml(md);
+}
+function _mdToHtml(md: string): string {
+  // 줄바꿈 정규화 (\r\n → \n, lone \r → \n)
+  md = md.replace(/\r\n?/g, '\n');
+  // ── 1) 커스텀 HTML 태그를 placeholder로 보호 (이스케이프 대상에서 제외) ──
+  const saved: string[] = [];
+  const PH = (idx: number) => `\x00PH${idx}\x00`;
+  const protect = (s: string) => { const i = saved.length; saved.push(s); return PH(i); };
+  // <viz-chart ...>...</viz-chart>
+  md = md.replace(/<viz-chart\b[\s\S]*?<\/viz-chart>/gi, m => protect(m));
+  // <div data-embed="...">...</div>  (self-closing 포함)
+  md = md.replace(/<div\b[^>]*?data-embed[^>]*?>[\s\S]*?<\/div>/gi, m => protect(m));
+  md = md.replace(/<div\b[^>]*?data-embed[^>]*?\/>/gi, m => protect(m));
+  // <img ...> / <img ... />
+  md = md.replace(/<img\b[^>]*?\/?>/gi, m => protect(m));
+  // [[TableName]] 레퍼런스
+  md = md.replace(/\[\[([^\]]+)\]\]/g, m => protect(m));
+
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const restore = (s: string) => s.replace(/\x00PH(\d+)\x00/g, (_, idx) => saved[Number(idx)] ?? '');
+  // 보이지 않는 Unicode 문자 전부 제거 (Claude가 삽입하는 ZWS, LRM, RLM, BOM, soft-hyphen 등)
+  const stripZW = (s: string) => s.replace(/[\u00AD\u034F\u061C\u070F\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2069\u2028\u2029\uFEFF\uFFF9-\uFFFB]/g, '')
+    .replace(/\u00A0/g, ' ');
+
+  // ── 2) Markdown 테이블 블록을 미리 HTML로 변환하여 placeholder로 보호 ──
+  const tableS = 'border-collapse:collapse;width:100%;margin:16px 0;font-size:14px';
+  const thS = 'padding:10px 14px;text-align:left;border-bottom:2px solid rgba(99,102,241,0.4);color:#a5b4fc;font-weight:600;background:rgba(99,102,241,0.08)';
+  const tdS = 'padding:8px 14px;border-bottom:1px solid rgba(255,255,255,0.06);color:#e2e8f0';
+  const inlineBasic = (s: string) => esc(s)
+    .replace(/\*\*(.+?)\*\*/g, '<strong style="color:#f1f5f9">$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/`([^`]+)`/g, '<code style="background:rgba(99,102,241,0.15);color:#a5b4fc;padding:2px 6px;border-radius:4px;font-size:0.9em">$1</code>');
+  // 전체 md에서 보이지 않는 문자 제거 (테이블 regex 매칭 전에 정규화)
+  md = stripZW(md);
+
+  // 테이블 블록: 줄별 스캔으로 |가 2개 이상인 연속 줄을 찾아 HTML 테이블로 변환
+  {
+    const mdLines = md.split('\n');
+    const outLines: string[] = [];
+    let inCodeFence = false;
+    let tableBlock: string[] = [];
+
+    const flushTbl = () => {
+      if (tableBlock.length < 2) {
+        outLines.push(...tableBlock);
+        tableBlock = [];
+        return;
+      }
+      const dataRows: string[][] = [];
+      for (const row of tableBlock) {
+        const clean = row.trim();
+        if (!clean) continue;
+        const pipeIdx = clean.indexOf('|');
+        if (pipeIdx < 0) continue;
+        let inner = clean;
+        if (inner.startsWith('|')) inner = inner.slice(1);
+        if (inner.endsWith('|')) inner = inner.slice(0, -1);
+        const cells = inner.split('|').map((c: string) => c.trim());
+        if (cells.every((c: string) => /^[\s:]*-{1,}[\s:]*$/.test(c))) continue;
+        dataRows.push(cells);
+      }
+      if (dataRows.length < 1) { outLines.push(...tableBlock); tableBlock = []; return; }
+      const [header, ...body] = dataRows;
+      let html = `<table style="${tableS}"><thead><tr>${header.map(c => `<th style="${thS}">${inlineBasic(c)}</th>`).join('')}</tr></thead><tbody>`;
+      for (const row of body) {
+        html += `<tr>${row.map(c => `<td style="${tdS}">${inlineBasic(c)}</td>`).join('')}</tr>`;
+      }
+      html += '</tbody></table>';
+      outLines.push(protect(html));
+      tableBlock = [];
+    };
+
+    for (const rawLine of mdLines) {
+      const ln = rawLine.trimEnd();
+      if (ln.trimStart().startsWith('```')) { inCodeFence = !inCodeFence; flushTbl(); outLines.push(rawLine); continue; }
+      if (inCodeFence) { flushTbl(); outLines.push(rawLine); continue; }
+      const stripped = ln.trim();
+      const pipes = stripped.split('|').length - 1;
+      if (pipes >= 2 && stripped.indexOf('|') >= 0) {
+        tableBlock.push(rawLine);
+      } else {
+        flushTbl();
+        outLines.push(rawLine);
+      }
+    }
+    flushTbl();
+    md = outLines.join('\n');
+  }
+
+  const lines = md.split('\n');
+  const out: string[] = [];
+  let inCode = false, codeLines: string[] = [];
+  let inTable = false;
+
+  const flushTable = () => { if (inTable) { out.push('</tbody></table>'); inTable = false; } };
+  const inline = (s: string) => {
+    // placeholder 안의 내용은 건드리지 않음
+    let r = s;
+    // Markdown 이미지 ![alt](url) → <img>
+    r = r.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:8px;margin:8px 0">');
+    r = r.replace(/\*\*(.+?)\*\*/g, '<strong style="color:#f1f5f9">$1</strong>');
+    r = r.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    r = r.replace(/~~(.+?)~~/g, '<del style="color:#94a3b8">$1</del>');
+    r = r.replace(/`([^`]+)`/g, '<code style="background:rgba(99,102,241,0.15);color:#a5b4fc;padding:2px 6px;border-radius:4px;font-size:0.9em">$1</code>');
+    r = r.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" style="color:#818cf8;text-decoration:underline">$1</a>');
+    return r;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const line = stripZW(raw.trimEnd());
+
+    // ── 코드 블록 ──
+    if (line.startsWith('```')) {
+      if (inCode) {
+        out.push(`<pre style="background:#1e1e2e;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;overflow-x:auto;margin:12px 0;font-size:13px;line-height:1.5"><code>${esc(codeLines.join('\n'))}</code></pre>`);
+        inCode = false; codeLines = [];
+      } else {
+        flushTable();
+        inCode = true;
+      }
+      continue;
+    }
+    if (inCode) { codeLines.push(raw); continue; }
+
+    // ── placeholder-only 줄은 그대로 통과 ──
+    if (/^\x00PH\d+\x00$/.test(line.trim())) { flushTable(); out.push(line.trim()); continue; }
+
+    // ── 테이블 행 (pipe 2개 이상이면 테이블 행으로 인식) ──
+    const trimL = line.trim();
+    const pipeCount = trimL.split('|').length - 1;
+    const isTableRow = pipeCount >= 2;
+    if (isTableRow) {
+      let inner = trimL;
+      if (inner.startsWith('|')) inner = inner.slice(1);
+      if (inner.endsWith('|')) inner = inner.slice(0, -1);
+      const rawCells = inner.split('|');
+      const isSep = rawCells.length > 0 && rawCells.every(c => /^[\s:]*-{1,}[\s:]*$/.test(c));
+      if (isSep) { continue; }
+      const cells = rawCells.map(c => c.trim());
+      if (cells.length === 0) { flushTable(); out.push(`<p style="margin:8px 0">${inline(esc(line))}</p>`); continue; }
+      if (!inTable) {
+        flushTable();
+        out.push(`<table style="${tableS}"><thead><tr>${cells.map(c => `<th style="${thS}">${inline(esc(c))}</th>`).join('')}</tr></thead><tbody>`);
+        inTable = true;
+      } else {
+        out.push(`<tr>${cells.map(c => `<td style="${tdS}">${inline(esc(c))}</td>`).join('')}</tr>`);
+      }
+      continue;
+    }
+    flushTable();
+
+    if (!line.trim()) { out.push('<br>'); continue; }
+
+    // ── 헤딩 ──
+    if (/^#{1,6}\s/.test(line)) {
+      const lvl = line.match(/^(#{1,6})\s/)![1].length;
+      const txt = inline(esc(line.replace(/^#{1,6}\s+/, '')));
+      const sizes = ['28px', '22px', '18px', '16px', '15px', '14px'];
+      const extras = lvl === 1 ? ';border-bottom:2px solid rgba(99,102,241,0.4);padding-bottom:12px' : lvl === 2 ? ';border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:8px' : '';
+      const clr = lvl <= 2 ? '#c4b5fd' : '#a5b4fc';
+      out.push(`<h${lvl} style="color:${clr};font-size:${sizes[lvl - 1]};margin:${lvl <= 2 ? 24 : 16}px 0 ${lvl <= 2 ? 12 : 8}px${extras}">${txt}</h${lvl}>`);
+      continue;
+    }
+
+    // ── 수평선 ──
+    if (line === '---' || line === '***' || line === '___') { out.push('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.1);margin:24px 0">'); continue; }
+
+    // ── 인용문 (연속 > 줄을 하나의 blockquote로 합침) ──
+    if (/^>\s?/.test(line)) {
+      const bqLines: string[] = [line.replace(/^>\s?/, '')];
+      while (i + 1 < lines.length && /^>\s?/.test(lines[i + 1])) { i++; bqLines.push(lines[i].replace(/^>\s?/, '')); }
+      out.push(`<blockquote style="border-left:3px solid #6366f1;padding:8px 16px;margin:12px 0;color:#94a3b8;background:rgba(99,102,241,0.05);border-radius:0 8px 8px 0">${bqLines.map(l => inline(esc(l))).join('<br>')}</blockquote>`);
+      continue;
+    }
+
+    // ── 비순서 리스트 ──
+    if (/^[-*]\s+/.test(line)) {
+      const items: string[] = [line.replace(/^[-*]\s+/, '')];
+      while (i + 1 < lines.length && /^[-*]\s+/.test(lines[i + 1])) { i++; items.push(lines[i].replace(/^[-*]\s+/, '')); }
+      out.push(`<ul style="padding-left:20px;margin:8px 0">${items.map(it => `<li style="margin:4px 0">${inline(esc(it))}</li>`).join('')}</ul>`);
+      continue;
+    }
+
+    // ── 순서 리스트 ──
+    if (/^\d+\.\s+/.test(line)) {
+      const items: string[] = [line.replace(/^\d+\.\s+/, '')];
+      while (i + 1 < lines.length && /^\d+\.\s+/.test(lines[i + 1])) { i++; items.push(lines[i].replace(/^\d+\.\s+/, '')); }
+      out.push(`<ol style="padding-left:20px;margin:8px 0">${items.map(it => `<li style="margin:4px 0">${inline(esc(it))}</li>`).join('')}</ol>`);
+      continue;
+    }
+
+    // ── 일반 문단 ──
+    out.push(`<p style="margin:8px 0">${inline(esc(line))}</p>`);
+  }
+  if (inCode) out.push(`<pre style="background:#1e1e2e;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;overflow-x:auto;margin:12px 0;font-size:13px"><code>${esc(codeLines.join('\n'))}</code></pre>`);
+  flushTable();
+
+  // ── 2) placeholder를 원래 HTML로 복원 ──
+  const body = restore(out.join('\n'));
+  return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e2e8f0;padding:32px;max-width:860px;margin:0 auto;line-height:1.7">${body}</div>`;
+}
+
 function selectToolsForQuery(query: string, existingFilter?: string[]): typeof TOOLS {
   if (existingFilter) return TOOLS.filter(t => existingFilter.includes(t.name));
 
@@ -2279,8 +2491,8 @@ async function streamClaude(
   artifactContinuationMode = false,
 ): Promise<ClaudeResponse & { usage?: TokenUsage; _streamedArtifactHtml?: string; _streamAborted?: boolean }> {
   // ── 자동 재시도 + 429 모델 폴백 체인 (현재 선택 모델 이후부터) ──
-  const ALL_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001'];
-  const currentModel = (requestBody as Record<string, unknown>).model as string || 'claude-opus-4-6';
+  const ALL_MODELS = ['claude-opus-4-7', 'claude-sonnet-4-7', 'claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001'];
+  const currentModel = (requestBody as Record<string, unknown>).model as string || 'claude-opus-4-7';
   const currentIdx = ALL_MODELS.indexOf(currentModel);
   const MODEL_FALLBACK_CHAIN = ALL_MODELS.filter((_, i) => i > currentIdx);
   const MAX_RETRIES = 5;
@@ -3032,10 +3244,9 @@ export async function tryFastPath(
       for (const [ruleName, vs] of byRule) {
         const icon = vs[0].severity === 'error' ? '🔴' : '🟡';
         text += `${icon} **${ruleName}** — ${vs.length}건\n`;
-        for (const v of vs.slice(0, 5)) {
+        for (const v of vs) {
           text += `  - \`${v.table}\` id=${v.rowId}: ${v.details}\n`;
         }
-        if (vs.length > 5) text += `  - _... 외 ${vs.length - 5}건_\n`;
         text += '\n';
       }
     }
@@ -3188,8 +3399,8 @@ function classifyQueryComplexity(
 }
 
 const ROUTING_LABELS: Record<RoutingTier, { model: ClaudeModelId; label: string; saving: string }> = {
-  sonnet: { model: 'claude-sonnet-4-6',          label: 'Sonnet', saving: '~80% 절감' },
-  opus:   { model: 'claude-opus-4-6',            label: 'Opus',   saving: '' },
+  sonnet: { model: 'claude-sonnet-4-7',          label: 'Sonnet', saving: '~80% 절감' },
+  opus:   { model: 'claude-opus-4-7',            label: 'Opus',   saving: '' },
 };
 
 export async function sendChatMessage(
@@ -3642,7 +3853,7 @@ export async function sendChatMessage(
   );
 
   // ── 스마트 라우팅: 질문 복잡도에 따라 모델 자동 선택 ──
-  const userPrefModel = useCanvasStore.getState().claudeModel || 'claude-opus-4-6';
+  const userPrefModel = useCanvasStore.getState().claudeModel || 'claude-opus-4-7';
   let routedDown = false;
   let selectedModel = userPrefModel;
   let routingTier: RoutingTier = 'opus';
@@ -3811,8 +4022,14 @@ export async function sendChatMessage(
       // ★ 텍스트 마커로 HTML이 스트리밍됐지만 create_artifact를 호출하지 않고 end_turn된 경우 → 자동 아티팩트 생성
       if (streamedArtifactHtml && streamedArtifactHtml.length >= 10 && !alreadyHasArtifact) {
         // 누적 HTML이 있으면 합침
-        const finalArtHtml = artifactAccumulatedHtml ? (artifactAccumulatedHtml + streamedArtifactHtml) : streamedArtifactHtml;
+        const mergedArtContent = artifactAccumulatedHtml ? (artifactAccumulatedHtml + streamedArtifactHtml) : streamedArtifactHtml;
+        // Markdown 감지 → HTML 변환
+        const _autoIsMd = mergedArtContent.length > 20
+          && !/<(div|table|section|article|header|style|script|h[1-6])\b/i.test(mergedArtContent.slice(0, 500))
+          && /^#{1,6}\s|^\*\*|^\- |^\d+\.\s|^>\s|```|\|.*\|/m.test(mergedArtContent.slice(0, 1000));
+        const finalArtHtml = _autoIsMd ? _mdToHtml(mergedArtContent) : mergedArtContent;
         const autoTitle = text.match(/^#+\s*(.+)/m)?.[1]
+          ?? mergedArtContent.match(/^#+\s*(.+)/m)?.[1]
           ?? text.match(/^(.{1,50})/)?.[1]?.replace(/\s+/g, ' ').trim()
           ?? '문서';
         const autoTc: ArtifactResult = {
@@ -4167,10 +4384,12 @@ export async function sendChatMessage(
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const serverResult = await resp.json() as { result: string; data?: { total: number; images: { name: string; relPath: string; url: string; dataUri?: string; isAtlas?: boolean }[]; diagnostics?: string[] } };
             if (serverResult.data?.images) {
-              const _ab = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
+              const _origin = window.location.origin;
+              const _basePath = window.location.pathname.split('#')[0].replace(/[^/]*$/, '');
+              const _absBase = `${_origin}${_basePath}`.replace(/\/$/, '');
               const images = serverResult.data.images.map(img => ({
                 ...img,
-                url: img.url || `${_ab}/api/images/file?path=${encodeURIComponent(img.relPath)}`,
+                url: img.dataUri || `${_absBase}/api/images/smart?name=${encodeURIComponent(img.name.replace(/\.png$/i, ''))}`,
               }));
               tc = { kind: 'image_search', query, images, total: serverResult.data.total, diagnostics: images.length > 0 ? undefined : serverResult.data.diagnostics } as ImageResult;
               resultStr = serverResult.result;
@@ -4883,28 +5102,8 @@ function showTab(id){
           // Markdown 감지: HTML 태그가 거의 없고 마크다운 문법이 있으면 → HTML 래핑
           const isMarkdown = mergedContent.length > 20
             && !/<(div|table|section|article|header|style|script|h[1-6])\b/i.test(mergedContent.slice(0, 500))
-            && /^#{1,6}\s|^\*\*|^\- |^\d+\.\s|^>\s|```/m.test(mergedContent.slice(0, 1000));
-          const html = isMarkdown
-            ? `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e2e8f0;padding:32px;max-width:800px;margin:0 auto;line-height:1.8">${mergedContent
-                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                .replace(/^######\s+(.+)$/gm, '<h6 style="color:#a5b4fc;font-size:14px;margin:16px 0 8px">$1</h6>')
-                .replace(/^#####\s+(.+)$/gm, '<h5 style="color:#a5b4fc;font-size:15px;margin:16px 0 8px">$1</h5>')
-                .replace(/^####\s+(.+)$/gm, '<h4 style="color:#a5b4fc;font-size:16px;margin:18px 0 8px">$1</h4>')
-                .replace(/^###\s+(.+)$/gm, '<h3 style="color:#c4b5fd;font-size:18px;margin:20px 0 10px">$1</h3>')
-                .replace(/^##\s+(.+)$/gm, '<h2 style="color:#c4b5fd;font-size:22px;margin:24px 0 12px;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:8px">$1</h2>')
-                .replace(/^#\s+(.+)$/gm, '<h1 style="color:#e2e8f0;font-size:28px;margin:0 0 16px;border-bottom:2px solid rgba(99,102,241,0.4);padding-bottom:12px">$1</h1>')
-                .replace(/\*\*(.+?)\*\*/g, '<strong style="color:#f1f5f9">$1</strong>')
-                .replace(/\*(.+?)\*/g, '<em>$1</em>')
-                .replace(/`([^`]+)`/g, '<code style="background:rgba(99,102,241,0.15);color:#a5b4fc;padding:2px 6px;border-radius:4px;font-size:0.9em">$1</code>')
-                .replace(/^---$/gm, '<hr style="border:none;border-top:1px solid rgba(255,255,255,0.1);margin:24px 0">')
-                .replace(/^&gt;\s+(.+)$/gm, '<blockquote style="border-left:3px solid #6366f1;padding:8px 16px;margin:12px 0;color:#94a3b8;background:rgba(99,102,241,0.05);border-radius:0 8px 8px 0">$1</blockquote>')
-                .replace(/^- (.+)$/gm, '<li style="margin:4px 0;padding-left:4px">$1</li>')
-                .replace(/(<li[^>]*>.*<\/li>\n?)+/g, m => `<ul style="padding-left:20px;margin:8px 0">${m}</ul>`)
-                .replace(/^\d+\.\s+(.+)$/gm, '<li style="margin:4px 0;padding-left:4px">$1</li>')
-                .replace(/\n{2,}/g, '</p><p style="margin:8px 0">')
-                .replace(/\n/g, '<br>')
-              }</div>`
-            : mergedContent;
+            && /^#{1,6}\s|^\*\*|^\- |^\d+\.\s|^>\s|```|\|.*\|/m.test(mergedContent.slice(0, 1000));
+          const html = isMarkdown ? _mdToHtml(mergedContent) : mergedContent;
           const t0 = performance.now();
           const duration = performance.now() - t0;
 
@@ -6260,7 +6459,7 @@ function showTab(id){
 
       // ★ max_tokens로 잘렸지만 완성된 아티팩트 HTML이 있는 경우 → 자동 아티팩트 생성
       if (artHtmlTruncated && htmlLooksComplete && !hasArtifact) {
-        const finalArtHtml = artifactAccumulatedHtml + streamedArtifactHtml!;
+        const finalArtHtml = mdToStyledHtml(artifactAccumulatedHtml + streamedArtifactHtml!);
         const autoTitle = truncatedText.match(/^#+\s*(.+)/m)?.[1] ?? '문서';
         const autoTc: ArtifactResult = { kind: 'artifact', title: autoTitle, description: '', html: finalArtHtml, duration: 0 };
         allToolCalls.push(autoTc);
@@ -6303,7 +6502,7 @@ function showTab(id){
     // ★ 마지막 이터레이션: 잘린 아티팩트라도 누적된 HTML로 생성 (바이브테이블링이면 제외)
     const hadBT = allToolCalls.some(tc => tc.kind === 'bible_tabling_edit' || tc.kind === 'bible_tabling_add_rows');
     if (artHtmlTruncated && !hasArtifact && !hadBT) {
-      const finalArtHtml = artifactAccumulatedHtml + streamedArtifactHtml!;
+      const finalArtHtml = mdToStyledHtml(artifactAccumulatedHtml + streamedArtifactHtml!);
       const autoTitle = truncatedText.match(/^#+\s*(.+)/m)?.[1] ?? '문서 (미완성)';
       const autoTc: ArtifactResult = { kind: 'artifact', title: autoTitle, description: '(max_tokens로 잘린 문서)', html: finalArtHtml, duration: 0 };
       allToolCalls.push(autoTc);

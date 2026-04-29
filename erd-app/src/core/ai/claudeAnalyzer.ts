@@ -75,7 +75,7 @@ ${context}
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-7',
       max_tokens: 2048,
       system,
       messages: [{ role: 'user', content: naturalLanguage }],
@@ -110,7 +110,7 @@ export async function analyzeSchemaWithAI(schema: ParsedSchema): Promise<AIInsig
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-7',
       max_tokens: 2048,
       system: systemPrompt,
       messages: [

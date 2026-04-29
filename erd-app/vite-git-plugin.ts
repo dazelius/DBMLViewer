@@ -9430,7 +9430,7 @@ function serverExecuteTool(
 
         const results = all.filter(f => f.name.toLowerCase().includes(query)).slice(0, 30)
         if (results.length === 0) return { result: `"${query}" 이미지 없음 (전체 ${all.length}개 중)` }
-        const imgUrlFn = (relPath: string) => `./api/images/file?path=${encodeURIComponent(relPath)}`
+        const imgUrlFn = (relPath: string, name: string) => `./api/images/file?path=${encodeURIComponent(relPath)}&name=${encodeURIComponent(name)}`
 
         // 이미지 파일을 base64 data URI로 인라인 (프록시 환경에서 별도 HTTP 요청 없이 이미지 표시)
         const _imgPrefixes = ['GameContents/UI/', 'Assets/GameContents/UI/', 'Client/Project_Aegis/Assets/GameContents/UI/']
@@ -9513,7 +9513,7 @@ function serverExecuteTool(
           }
           return {
             name: r.name, relPath: r.relPath,
-            url: imgUrlFn(r.relPath),
+            url: imgUrlFn(r.relPath, r.name),
             dataUri: dataUri ?? undefined,
           }
         })
@@ -9760,46 +9760,65 @@ function serverExecuteTool(
       summary += vResult.violations.length === 0
         ? '✅ 위반 없음'
         : `⚠️ ${vResult.violations.length}건 위반 (error ${errors.length}, warning ${warnings.length})\n\n`
-      for (const v of vResult.violations.slice(0, 15)) {
-        summary += `${v.severity === 'error' ? '🔴' : '🟡'} ${v.ruleName} — ${v.table} id=${v.rowId}: ${v.details}\n`
+
+      // 룰별 그룹핑하여 전체 위반 표시
+      const byRule2 = new Map<string, typeof vResult.violations>()
+      for (const v of vResult.violations) {
+        if (!byRule2.has(v.ruleName)) byRule2.set(v.ruleName, [])
+        byRule2.get(v.ruleName)!.push(v)
       }
-      if (vResult.violations.length > 15) {
-        summary += `\n... 외 ${vResult.violations.length - 15}건 — 전체 리포트는 아래 문서를 확인하세요.\n`
-        summary += `\n🔴 중요: 위반 건수가 많으므로 반드시 아티팩트로 전체 검증 리포트를 생성하세요!`
-        summary += `\n아래 HTML을 아티팩트로 출력하세요:\n\n`
-        // 테이블별로 그룹화
-        const byTable = new Map<string, typeof vResult.violations>()
-        for (const v of vResult.violations) {
-          if (!byTable.has(v.table)) byTable.set(v.table, [])
-          byTable.get(v.table)!.push(v)
+      for (const [ruleName, vs] of byRule2) {
+        const icon = vs[0].severity === 'error' ? '🔴' : '🟡'
+        summary += `${icon} ${ruleName} — ${vs.length}건\n`
+        for (const v of vs) {
+          summary += `  - ${v.table} id=${v.rowId}: ${v.details}\n`
         }
-        let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>데이터 검증 리포트</title><style>`
-        html += `*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0d1117;color:#e6edf3;padding:24px}`
-        html += `h1{font-size:20px;margin-bottom:8px;color:#f0f6fc}h2{font-size:15px;margin:20px 0 8px;color:#8b949e;border-bottom:1px solid #21262d;padding-bottom:6px}`
-        html += `.summary{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:16px}`
-        html += `.stat{display:inline-block;margin-right:16px;font-size:13px}.stat b{font-size:18px}`
-        html += `table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px}`
-        html += `th{text-align:left;padding:6px 8px;background:#161b22;border-bottom:1px solid #30363d;color:#8b949e;font-weight:500}`
-        html += `td{padding:5px 8px;border-bottom:1px solid #21262d}tr:hover td{background:#161b22}`
-        html += `.err{color:#f85149}.warn{color:#d29922}.badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600}`
-        html += `.badge.error{background:rgba(248,81,73,0.15);color:#f85149}.badge.warning{background:rgba(210,153,34,0.15);color:#d29922}`
-        html += `</style></head><body>`
-        html += `<h1>🛡️ 데이터 검증 리포트</h1>`
-        html += `<div class="summary"><div class="stat">전체 룰: <b>${vResult.totalRules}</b>개</div>`
-        html += `<div class="stat">검증됨: <b>${vResult.checkedRules}</b>개</div>`
-        html += `<div class="stat">🔴 오류: <b>${errors.length}</b>건</div>`
-        html += `<div class="stat">🟡 경고: <b>${warnings.length}</b>건</div>`
-        html += `<div class="stat">⏱️ <b>${vResult.durationMs}</b>ms</div></div>`
-        for (const [tbl, vs] of byTable) {
-          html += `<h2>${tbl} (${vs.length}건)</h2><table><tr><th>심각도</th><th>룰</th><th>ID</th><th>상세</th></tr>`
-          for (const v of vs) {
-            const cls = v.severity === 'error' ? 'err' : 'warn'
-            html += `<tr><td><span class="badge ${v.severity}">${v.severity}</span></td><td>${v.ruleName}</td><td class="${cls}">${v.rowId}</td><td>${v.details}</td></tr>`
+        summary += '\n'
+      }
+
+      // HTML 리포트 자동 출판
+      if (vResult.violations.length > 0) {
+        try {
+          const byTable = new Map<string, typeof vResult.violations>()
+          for (const v of vResult.violations) {
+            if (!byTable.has(v.table)) byTable.set(v.table, [])
+            byTable.get(v.table)!.push(v)
           }
-          html += `</table>`
-        }
-        html += `</body></html>`
-        summary += `<artifact type="text/html" title="검증 리포트 (${vResult.violations.length}건)">\n${html}\n</artifact>`
+          let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>데이터 검증 리포트</title><style>`
+          html += `*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0d1117;color:#e6edf3;padding:24px}`
+          html += `h1{font-size:20px;margin-bottom:8px;color:#f0f6fc}h2{font-size:15px;margin:20px 0 8px;color:#8b949e;border-bottom:1px solid #21262d;padding-bottom:6px}`
+          html += `.summary{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:16px}`
+          html += `.stat{display:inline-block;margin-right:16px;font-size:13px}.stat b{font-size:18px}`
+          html += `table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px}`
+          html += `th{text-align:left;padding:6px 8px;background:#161b22;border-bottom:1px solid #30363d;color:#8b949e;font-weight:500}`
+          html += `td{padding:5px 8px;border-bottom:1px solid #21262d}tr:hover td{background:#161b22}`
+          html += `.err{color:#f85149}.warn{color:#d29922}.badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600}`
+          html += `.badge.error{background:rgba(248,81,73,0.15);color:#f85149}.badge.warning{background:rgba(210,153,34,0.15);color:#d29922}`
+          html += `</style></head><body>`
+          html += `<h1>🛡️ 데이터 검증 리포트</h1>`
+          html += `<div class="summary"><div class="stat">전체 룰: <b>${vResult.totalRules}</b>개</div>`
+          html += `<div class="stat">검증됨: <b>${vResult.checkedRules}</b>개</div>`
+          html += `<div class="stat">🔴 오류: <b>${errors.length}</b>건</div>`
+          html += `<div class="stat">🟡 경고: <b>${warnings.length}</b>건</div>`
+          html += `<div class="stat">⏱️ <b>${vResult.durationMs}</b>ms</div></div>`
+          for (const [tbl, vs] of byTable) {
+            html += `<h2>${tbl} (${vs.length}건)</h2><table><tr><th>심각도</th><th>룰</th><th>ID</th><th>상세</th></tr>`
+            for (const v of vs) {
+              const cls = v.severity === 'error' ? 'err' : 'warn'
+              html += `<tr><td><span class="badge ${v.severity}">${v.severity}</span></td><td>${v.ruleName}</td><td class="${cls}">${v.rowId}</td><td>${v.details}</td></tr>`
+            }
+            html += `</table>`
+          }
+          html += `</body></html>`
+          const pubId = `pub_validation_${Date.now().toString(36)}`
+          ensurePublishedDir()
+          writeFileSync(join(PUBLISHED_DIR, `${pubId}.html`), html, 'utf-8')
+          const pubList = readPublishedIndex()
+          pubList.unshift({ id: pubId, title: `검증 리포트 — ${vResult.violations.length}건 위반`, description: `🔴 ${errors.length} 🟡 ${warnings.length}`, createdAt: new Date().toISOString() })
+          writePublishedIndex(pubList)
+          const pubBase = _detectedProxyBase || ''
+          summary += `\n📊 전체 리포트: ${pubBase}/api/p/${pubId}`
+        } catch { /* 출판 실패해도 텍스트 결과는 반환 */ }
       }
       return { result: summary, data: vResult }
     }
@@ -11483,14 +11502,24 @@ function serverFastPath(msg: string, options: GitPluginOptions): string | null {
     } else {
       lines.push(`- ⚠️ **${result.violations.length}건 위반** (🔴 error ${errors.length}, 🟡 warning ${warnings.length})`)
       lines.push('')
-      const INLINE_LIMIT = 15
-      for (const v of result.violations.slice(0, INLINE_LIMIT)) {
-        const icon = v.severity === 'error' ? '🔴' : '🟡'
-        lines.push(`${icon} **${v.ruleName}** — \`${v.table}\` id=${v.rowId}: ${v.details}`)
+
+      // 룰별 그룹핑하여 전체 위반 표시
+      const byRule = new Map<string, typeof result.violations>()
+      for (const v of result.violations) {
+        if (!byRule.has(v.ruleName)) byRule.set(v.ruleName, [])
+        byRule.get(v.ruleName)!.push(v)
       }
-      if (result.violations.length > INLINE_LIMIT) {
-        lines.push(`\n... 외 ${result.violations.length - INLINE_LIMIT}건 — 전체 내용은 아래 리포트 문서에서 확인하세요.`)
-        // 테이블별로 그룹화한 HTML 아티팩트 생성
+      for (const [ruleName, vs] of byRule) {
+        const icon = vs[0].severity === 'error' ? '🔴' : '🟡'
+        lines.push(`${icon} **${ruleName}** — ${vs.length}건`)
+        for (const v of vs) {
+          lines.push(`  - \`${v.table}\` id=${v.rowId}: ${v.details}`)
+        }
+        lines.push('')
+      }
+
+      // HTML 리포트를 자동 출판하여 링크 제공
+      try {
         const byTable = new Map<string, typeof result.violations>()
         for (const v of result.violations) {
           if (!byTable.has(v.table)) byTable.set(v.table, [])
@@ -11527,9 +11556,18 @@ function serverFastPath(msg: string, options: GitPluginOptions): string | null {
           html += `</table>`
         }
         html += `</body></html>`
-        lines.push('')
-        lines.push(`<artifact type="text/html" title="검증 리포트 — ${result.violations.length}건 위반">\n${html}\n</artifact>`)
-      }
+
+        const pubId = `pub_validation_${Date.now().toString(36)}`
+        const pubTitle = `검증 리포트 — ${result.violations.length}건 위반`
+        ensurePublishedDir()
+        writeFileSync(join(PUBLISHED_DIR, `${pubId}.html`), html, 'utf-8')
+        const pubList = readPublishedIndex()
+        pubList.unshift({ id: pubId, title: pubTitle, description: `🔴 ${errors.length} 🟡 ${warnings.length}`, createdAt: new Date().toISOString() })
+        writePublishedIndex(pubList)
+        const pubBase = _detectedProxyBase || ''
+        const reportUrl = pubBase ? `${pubBase}/api/p/${pubId}` : `/api/p/${pubId}`
+        lines.push(`📊 [전체 리포트 보기](${reportUrl})`)
+      } catch { /* 출판 실패해도 텍스트 결과는 반환 */ }
     }
     return lines.join('\n')
   }
@@ -12198,15 +12236,15 @@ function createChatApiMiddleware(options: GitPluginOptions) {
       let MODEL: string
       let routingLabel = ''
       if (hasImages || COMPLEX_PATTERNS.some(p => p.test(msgTrimmed)) || msgTrimmed.length > 300 || historyLen > 20) {
-        MODEL = 'claude-opus-4-6'
+        MODEL = 'claude-opus-4-7'
       } else if (historyLen <= 4 && (HAIKU_PATTERNS.some(p => p.test(msgTrimmed)) || msgTrimmed.length <= 15)) {
         MODEL = 'claude-haiku-4-5-20251001'
         routingLabel = '⚡ Haiku'
       } else if (msgTrimmed.length <= 150) {
-        MODEL = 'claude-sonnet-4-6'
+        MODEL = 'claude-sonnet-4-7'
         routingLabel = '⚡ Sonnet'
       } else {
-        MODEL = 'claude-opus-4-6'
+        MODEL = 'claude-opus-4-7'
       }
       if (routingLabel) sLog('INFO', `[chatApi] 스마트 라우팅: ${routingLabel} (msg=${msgTrimmed.slice(0, 50)})`)
 
@@ -12713,7 +12751,7 @@ td{padding:8px 12px;border:1px solid #334155;font-size:13px}
   "tool_calls": [
     { "tool": "query_game_data", "input": {"sql": "SELECT COUNT(*) FROM character"}, "result": {...} }
   ],
-  "model": "claude-opus-4-6"
+  "model": "claude-opus-4-7"
 }</code></pre>
   <h3>Response (SSE 스트리밍, stream=true)</h3>
 <pre><code>event: session
@@ -13003,11 +13041,74 @@ function _autoHealLfsFiles(options: GitPluginOptions) {
   })
 }
 
+async function _startupGitSync(options: GitPluginOptions) {
+  const BRANCH = 'develop'
+  const repos: { tag: string; dir: string; url: string; token: string; isRepo2: boolean }[] = []
+
+  if (options.repoUrl && options.localDir) {
+    repos.push({ tag: 'data', dir: options.localDir, url: options.repoUrl, token: options.token || '', isRepo2: false })
+  }
+  if (options.repo2Url && options.repo2LocalDir) {
+    repos.push({ tag: 'aegis', dir: options.repo2LocalDir, url: options.repo2Url, token: options.repo2Token || options.token || '', isRepo2: true })
+  }
+
+  if (repos.length === 0) {
+    sLog('INFO', '[startup git-sync] repo URL 미설정 — 건너뜀')
+    return
+  }
+
+  sLog('INFO', `[startup git-sync] ${repos.map(r => r.tag).join(', ')} 동기화 시작...`)
+
+  for (const repo of repos) {
+    if (!existsSync(join(repo.dir, '.git'))) {
+      sLog('INFO', `[startup git-sync] ${repo.tag}: not cloned yet — skipping (will clone on first browser visit)`)
+      continue
+    }
+    if (_gitSyncLocks.has(repo.dir)) {
+      sLog('INFO', `[startup git-sync] ${repo.tag}: sync already in progress — skipping`)
+      continue
+    }
+
+    let releaseLock: () => void = () => {}
+    _gitSyncLocks.set(repo.dir, new Promise<void>(r => { releaseLock = r }))
+    try {
+      _purgeGitLocks(repo.dir)
+      const authUrl = buildAuthUrl(repo.url, repo.token)
+      await runGitAsync('git config core.longpaths true', repo.dir).catch(() => {})
+      await runGitAsync(`git remote set-url origin "${authUrl}"`, repo.dir)
+      sLog('INFO', `[startup git-sync] ${repo.tag}: fetching origin/${BRANCH}...`)
+      await runGitAsync(`git fetch origin ${BRANCH}`, repo.dir)
+      const localHead = await runGitAsync('git rev-parse HEAD', repo.dir)
+      const remoteHead = await runGitAsync(`git rev-parse origin/${BRANCH}`, repo.dir).catch(() => localHead)
+
+      if (localHead !== remoteHead) {
+        if (repo.isRepo2) {
+          sLog('INFO', `[startup git-sync] ${repo.tag}: 새 커밋 감지 (${localHead.substring(0, 8)} → ${remoteHead.substring(0, 8)}), working tree 변경 없음 (LFS 보존)`)
+        } else {
+          await runGitAsync(`git reset --hard origin/${BRANCH}`, repo.dir)
+          const finalHead = await runGitAsync('git rev-parse --short HEAD', repo.dir)
+          sLog('INFO', `[startup git-sync] ${repo.tag}: 업데이트 완료 → ${finalHead}`)
+        }
+        if (repo.isRepo2) _buildAssetIndexIfNeeded()
+      } else {
+        sLog('INFO', `[startup git-sync] ${repo.tag}: 이미 최신 (${localHead.substring(0, 8)})`)
+      }
+    } catch (e) {
+      sLog('ERROR', `[startup git-sync] ${repo.tag}: 실패 — ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      _gitSyncLocks.delete(repo.dir)
+      releaseLock()
+    }
+  }
+  sLog('INFO', '[startup git-sync] 완료')
+}
+
 export default function gitPlugin(options: GitPluginOptions): Plugin {
   return {
     name: 'vite-git-plugin',
     configureServer(server) {
-      // 서버 시작 시 에셋 인덱스 자동 빌드 + LFS 자동 복구
+      // 서버 시작 시 Git 자동 동기화 + 에셋 인덱스 빌드 + LFS 자동 복구
+      setTimeout(() => _startupGitSync(options).catch(e => sLog('ERROR', `[startup git-sync] unexpected: ${e}`)), 3_000)
       setTimeout(() => _buildAssetIndexIfNeeded(), 5_000)
       setTimeout(() => _autoHealLfsFiles(options), 15_000)
 
@@ -13023,7 +13124,8 @@ export default function gitPlugin(options: GitPluginOptions): Plugin {
       server.middlewares.use(safeMiddleware('gitApi', createGitMiddleware(options)))
     },
     configurePreviewServer(server) {
-      // 서버 시작 시 에셋 인덱스 자동 빌드 + LFS 자동 복구
+      // 서버 시작 시 Git 자동 동기화 + 에셋 인덱스 빌드 + LFS 자동 복구
+      setTimeout(() => _startupGitSync(options).catch(e => sLog('ERROR', `[startup git-sync] unexpected: ${e}`)), 3_000)
       setTimeout(() => _buildAssetIndexIfNeeded(), 5_000)
       setTimeout(() => _autoHealLfsFiles(options), 15_000)
 

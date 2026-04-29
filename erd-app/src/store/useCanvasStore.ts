@@ -5,10 +5,10 @@ import { computeFocusLayout } from '../core/layout/autoLayout.ts';
 import type { AnomalyReport } from '../core/ai/anomalyDetector.ts';
 import type { ValidationResult } from '../core/ai/validationEngine.ts';
 
-export type ClaudeModelId = 'claude-opus-4-6' | 'claude-sonnet-4-6' | 'claude-sonnet-4-20250514' | 'claude-haiku-4-5-20251001';
+export type ClaudeModelId = 'claude-opus-4-7' | 'claude-sonnet-4-7' | 'claude-sonnet-4-20250514' | 'claude-haiku-4-5-20251001';
 export const CLAUDE_MODELS: { id: ClaudeModelId; label: string; short: string; color: string }[] = [
-  { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', short: 'Opus 4.6', color: '#a78bfa' },
-  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', short: 'Sonnet 4.6', color: '#38bdf8' },
+  { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', short: 'Opus 4.7', color: '#a78bfa' },
+  { id: 'claude-sonnet-4-7', label: 'Claude Sonnet 4.7', short: 'Sonnet 4.7', color: '#38bdf8' },
   { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', short: 'Sonnet 4', color: '#60a5fa' },
   { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', short: 'Haiku 4.5', color: '#34d399' },
 ];
@@ -68,7 +68,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   tableData: new Map(),
   anomalyReport: null,
   validationResult: null,
-  claudeModel: (() => { const s = localStorage.getItem('tm_claude_model'); return CLAUDE_MODELS.some(m => m.id === s) ? s as ClaudeModelId : 'claude-sonnet-4-6'; })(),
+  claudeModel: (() => { const s = localStorage.getItem('tm_claude_model'); return CLAUDE_MODELS.some(m => m.id === s) ? s as ClaudeModelId : 'claude-sonnet-4-7'; })(),
 
   setNodes: (nodes) => set({ nodes: new Map(nodes) }),
 

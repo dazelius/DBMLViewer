@@ -48,6 +48,7 @@ import {
   SUMMARY_THRESHOLD,
   KEEP_RECENT,
   type ChatImage,
+  mdToStyledHtml,
 } from '../core/ai/chatEngine.ts';
 import { executeDataSQL, type TableDataMap } from '../core/query/schemaQueryEngine.ts';
 import type { ParsedSchema } from '../core/schema/types.ts';
@@ -3843,15 +3844,26 @@ const IMG_ONERROR_SCRIPT = `
 (function() {
   var apiBase = '/';
   try { apiBase = window.parent.location.href.split('#')[0].replace(/[^/]*$/, ''); } catch(e) {}
+  function extractName(src) {
+    var nameParam = src.match(/[?&]name=([^&]+)/);
+    if (nameParam) return decodeURIComponent(nameParam[1]).replace(/\\.png$/i, '');
+    var pathParam = src.match(/[?&]path=([^&]+)/);
+    if (pathParam) return decodeURIComponent(pathParam[1]).split('/').pop().replace(/\\.png$/i, '');
+    var seg = src.split('/').pop().split('?')[0];
+    if (seg && seg !== 'smart' && seg !== 'file' && seg !== 'base64') return seg.replace(/\\.png$/i, '');
+    return '';
+  }
   function replaceApiImg(img) {
     if (img.dataset.postReplaced) return;
     var src = img.getAttribute('src') || '';
-    if (!src.includes('/api/images/')) return;
+    if (!src) return;
+    var isApi = src.includes('/api/images/') || src.includes('api/images/');
+    var isRelBroken = src.startsWith('./') || (src.startsWith('/') && !src.startsWith('//'));
+    if (!isApi && !isRelBroken) return;
     img.dataset.postReplaced = '1';
+    var name = extractName(src);
+    if (!name) { img.alt = '[이미지]'; return; }
     var pathParam = src.match(/[?&]path=([^&]+)/);
-    var filename = src.split('/').pop().split('?')[0];
-    if (pathParam) { filename = decodeURIComponent(pathParam[1]).split('/').pop(); }
-    var name = filename.replace(/\\.png$/i, '');
     var body = pathParam ? { path: decodeURIComponent(pathParam[1]), name: name } : { name: name };
     img.removeAttribute('src');
     fetch(apiBase + 'api/images/base64', {
@@ -3860,15 +3872,25 @@ const IMG_ONERROR_SCRIPT = `
       body: JSON.stringify(body)
     }).then(function(r) { return r.json(); }).then(function(d) {
       if (d.dataUri) img.src = d.dataUri;
-      else img.alt = '[' + name + ']';
+      else {
+        fetch(apiBase + 'api/images/smart?name=' + encodeURIComponent(name)).then(function(r2) {
+          if (r2.ok) return r2.blob();
+          throw new Error('not ok');
+        }).then(function(blob) {
+          img.src = URL.createObjectURL(blob);
+        }).catch(function() { img.alt = '[' + name + ']'; });
+      }
     }).catch(function() { img.alt = '[' + name + ']'; });
   }
   function scanAll() {
-    document.querySelectorAll('img').forEach(replaceApiImg);
+    document.querySelectorAll('img').forEach(function(img) {
+      if (!img.dataset.postReplaced && img.src && !img.src.startsWith('data:') && !img.src.startsWith('blob:') && !img.complete) return;
+      if (!img.dataset.postReplaced && img.src && !img.src.startsWith('data:') && !img.src.startsWith('blob:')) replaceApiImg(img);
+    });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', scanAll);
-  else scanAll();
-  new MutationObserver(function() { scanAll(); }).observe(document.documentElement, { childList: true, subtree: true });
+  else setTimeout(scanAll, 100);
+  new MutationObserver(function() { setTimeout(scanAll, 50); }).observe(document.documentElement, { childList: true, subtree: true });
   document.addEventListener('error', function(e) {
     if (e.target && e.target.tagName === 'IMG') replaceApiImg(e.target);
   }, true);
@@ -4043,7 +4065,7 @@ function ArtifactSidePanel({
         const iframe = streamIframeRef.current ?? document.getElementById('artifact-stream-iframe') as HTMLIFrameElement | null;
         const doc = iframe?.contentDocument;
         if (doc?.body) {
-          doc.body.innerHTML = processArtifactCharts(_artBuf.html);
+          doc.body.innerHTML = processArtifactCharts(mdToStyledHtml(_artBuf.html));
           const fbxScript = doc.getElementById('__fbx_viewer_init__');
           if (fbxScript && !fbxScript.textContent) fbxScript.textContent = FBX_VIEWER_SCRIPT;
           lastIframeHtmlLen = _artBuf.html.length;
@@ -4142,7 +4164,8 @@ function ArtifactSidePanel({
     if (!isComplete || !finalTc) return;
     const baseHref = window.location.href.split('#')[0].replace(/[^/]*$/, '');
     const base = `<base href="${baseHref}">`;
-    const resolved = processArtifactCharts(resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData));
+    const converted = mdToStyledHtml(finalTc.html ?? '');
+    const resolved = processArtifactCharts(resolveArtifactEmbeds(converted, schema, tableData));
     const fullHtml = resolved.includes('<!DOCTYPE') || resolved.includes('<html')
       ? resolved
       : `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">${base}<title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}ul,ol{padding-left:1.4em;margin:.4em 0}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script><script>${FBX_VIEWER_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
@@ -4156,7 +4179,7 @@ function ArtifactSidePanel({
   const handleSaveHtml = useCallback(() => {
     if (!finalTc) return;
     const baseHref = window.location.href.split('#')[0].replace(/[^/]*$/, '');
-    const resolved = processArtifactCharts(resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData));
+    const resolved = processArtifactCharts(resolveArtifactEmbeds(mdToStyledHtml(finalTc.html ?? ''), schema, tableData));
     const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${baseHref}"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
     const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -4196,7 +4219,7 @@ function ArtifactSidePanel({
     setPublishState('loading');
     try {
       const baseHref = window.location.href.split('#')[0].replace(/[^/]*$/, '');
-      const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
+      const resolved = resolveArtifactEmbeds(mdToStyledHtml(finalTc.html ?? ''), schema, tableData);
       const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${baseHref}"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
       const res = await fetch('/api/publish', {
         method: 'POST',
@@ -4226,7 +4249,7 @@ function ArtifactSidePanel({
     setPublishState('loading');
     try {
       const baseHref = window.location.href.split('#')[0].replace(/[^/]*$/, '');
-      const resolved = resolveArtifactEmbeds(finalTc.html ?? '', schema, tableData);
+      const resolved = resolveArtifactEmbeds(mdToStyledHtml(finalTc.html ?? ''), schema, tableData);
       const fullHtml = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><base href="${baseHref}"><title>${finalTc.title ?? '문서'}</title><style>*,*::before,*::after{box-sizing:border-box}body{margin:16px;font-family:'Segoe UI',sans-serif;font-size:13px;background:#0f1117;color:#e2e8f0;line-height:1.6}h1,h2,h3,h4,h5,h6{color:#fff;margin:.8em 0 .4em}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border:1px solid #334155;padding:6px 10px;text-align:left;font-size:12px}th{background:#1e293b;color:#94a3b8;font-weight:600}tr:nth-child(even) td{background:rgba(255,255,255,.02)}.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:12px 16px;margin-bottom:12px}img{max-width:100%;height:auto}${EMBED_CSS}</style><script>${IMG_ONERROR_SCRIPT}</script>${MERMAID_INIT_SCRIPT}${ERD_RENDERER_SCRIPT}${INTERACTIVE_TABLE_SCRIPT}</head><body>${resolved}</body></html>`;
       const res = await fetch(`/api/publish/${id}`, {
         method: 'PUT',
