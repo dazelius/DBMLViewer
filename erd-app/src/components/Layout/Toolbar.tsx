@@ -30,8 +30,30 @@ export default function Toolbar() {
   const syncCommit   = useSyncStore((s) => s.commit);
   const syncResultType = useSyncStore((s) => s.resultType);
   const syncLastAt   = useSyncStore((s) => s.lastSyncAt);
+  const syncErrorMsg = useSyncStore((s) => s.errorMsg);
 
   const repo2 = useSyncStore((s) => s.repo2);
+
+  const handleManualSync = async (repo: 'data' | 'aegis') => {
+    const { setSyncing, setDone, setError, setRepo2Syncing, setRepo2Done, setRepo2Error } = useSyncStore.getState();
+    if (repo === 'data') setSyncing(); else setRepo2Syncing();
+    try {
+      const url = repo === 'aegis' ? '/api/git/sync?repo=aegis' : '/api/git/sync';
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch: 'develop' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+      const resultStatus = (data.status === 'syncing' ? 'up-to-date' : data.status) as 'cloned' | 'updated' | 'up-to-date';
+      if (repo === 'data') setDone(resultStatus, data.commit ?? '');
+      else setRepo2Done(resultStatus, data.commit ?? '', data.branch ?? 'develop');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (repo === 'data') setError(msg); else setRepo2Error(msg);
+    }
+  };
 
   const presenceCount = usePresence();
 
@@ -196,6 +218,8 @@ export default function Toolbar() {
             commit={syncCommit}
             resultType={syncResultType}
             lastSyncAt={syncLastAt}
+            errorMsg={syncErrorMsg}
+            onRefresh={() => handleManualSync('data')}
           />
           <GitVersionChip
             label="Aegis"
@@ -204,6 +228,8 @@ export default function Toolbar() {
             resultType={repo2.resultType}
             lastSyncAt={repo2.lastSyncAt}
             branch={repo2.branch ?? undefined}
+            errorMsg={repo2.errorMsg}
+            onRefresh={() => handleManualSync('aegis')}
           />
 
           <Divider />
@@ -285,7 +311,7 @@ function ModeTab({ active, onClick, children }: { active: boolean; onClick: () =
 
 // ── Git 버전 칩 ──────────────────────────────────────────────────────────────
 function GitVersionChip({
-  label, status, commit, resultType, lastSyncAt, branch,
+  label, status, commit, resultType, lastSyncAt, branch, errorMsg, onRefresh,
 }: {
   label?: string;
   status: 'idle' | 'syncing' | 'done' | 'error';
@@ -293,87 +319,133 @@ function GitVersionChip({
   resultType: 'cloned' | 'updated' | 'up-to-date' | null;
   lastSyncAt: Date | null;
   branch?: string;
+  errorMsg?: string | null;
+  onRefresh?: () => void;
 }) {
   const shortHash = commit ? commit.slice(0, 7) : null;
   const timeStr = lastSyncAt
     ? lastSyncAt.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
     : null;
 
-  // idle 이어도 commit 정보가 남아 있으면 done 처럼 표시 (SyncToast가 reset() 후에도 유지)
   const effectiveStatus = (status === 'idle' && commit) ? 'done' : status;
-  if (effectiveStatus === 'idle') return null;
+
+  // ── 상태별 색상/라벨 ──
+  let dotColor = '#94a3b8';
+  let bgColor = 'var(--bg-surface)';
+  let borderColor = 'var(--border-color)';
+  let statusLabel = '대기';
+  let statusLabelColor = 'var(--text-muted)';
+  let icon: React.ReactNode = null;
 
   if (effectiveStatus === 'syncing') {
-    return (
-      <div
-        className="flex items-center gap-1.5 px-2.5 h-7 rounded-lg text-[11px] font-medium"
-        style={{ background: 'var(--bg-surface)', color: 'var(--text-muted)', border: '1px solid var(--border-color)' }}
+    dotColor = '#60a5fa';
+    bgColor = 'rgba(96,165,250,0.10)';
+    borderColor = 'rgba(96,165,250,0.35)';
+    statusLabel = '동기화 중';
+    statusLabelColor = '#60a5fa';
+    icon = (
+      <svg
+        width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+        className="spinner" style={{ flexShrink: 0, color: '#60a5fa' }}
       >
-        <svg
-          width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
-          className="spinner" style={{ flexShrink: 0 }}
-        >
-          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-        </svg>
-        <span>동기화 중…</span>
-      </div>
+        <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+      </svg>
     );
-  }
-
-  if (effectiveStatus === 'error') {
-    return (
-      <div
-        className="flex items-center gap-1.5 px-2.5 h-7 rounded-lg text-[11px] font-semibold"
-        style={{ background: 'rgba(239,68,68,0.08)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}
-      >
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-          <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-        </svg>
-        <span>동기화 오류</span>
-      </div>
+  } else if (effectiveStatus === 'error') {
+    dotColor = '#f87171';
+    bgColor = 'rgba(239,68,68,0.10)';
+    borderColor = 'rgba(239,68,68,0.35)';
+    statusLabel = '오류';
+    statusLabelColor = '#f87171';
+    icon = (
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink: 0 }}>
+        <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+      </svg>
     );
-  }
-
-  const isLatest  = resultType === 'up-to-date';
-  const isUpdated = resultType === 'updated' || resultType === 'cloned';
-  const dotColor    = isLatest ? '#22c55e' : isUpdated ? '#60a5fa' : 'var(--text-muted)';
-  const statusLabelColor = isLatest ? '#22c55e' : isUpdated ? '#60a5fa' : 'var(--text-muted)';
-  const bgColor     = isLatest ? 'rgba(34,197,94,0.07)' : isUpdated ? 'rgba(96,165,250,0.07)' : 'var(--bg-surface)';
-  const borderColor = isLatest ? 'rgba(34,197,94,0.25)' : isUpdated ? 'rgba(96,165,250,0.25)' : 'var(--border-color)';
-  const statusLabel = isLatest ? '최신' : isUpdated ? '업데이트됨' : '';
-
-  return (
-    <div
-      className="flex items-center gap-1.5 px-2.5 h-7 rounded-lg text-[11px] font-medium select-none"
-      style={{ background: bgColor, border: `1px solid ${borderColor}`, color: 'var(--text-secondary)' }}
-      title={`[${label ?? 'repo'}] ${branch ? `branch: ${branch}  |  ` : ''}마지막 동기화: ${timeStr ?? '-'}  |  commit: ${commit ?? '-'}`}
-    >
-      <span
-        className="w-[6px] h-[6px] rounded-full flex-shrink-0"
-        style={{ background: dotColor, boxShadow: `0 0 6px ${dotColor}` }}
-      />
-      {label && (
-        <span style={{ color: 'var(--text-muted)', fontSize: 10, fontWeight: 600 }}>{label}</span>
-      )}
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ opacity: 0.55, flexShrink: 0 }}>
+  } else if (effectiveStatus === 'done') {
+    const isLatest  = resultType === 'up-to-date';
+    const isUpdated = resultType === 'updated' || resultType === 'cloned';
+    if (isLatest) {
+      dotColor = '#22c55e';
+      bgColor = 'rgba(34,197,94,0.10)';
+      borderColor = 'rgba(34,197,94,0.30)';
+      statusLabel = '최신';
+      statusLabelColor = '#22c55e';
+    } else if (isUpdated) {
+      dotColor = '#60a5fa';
+      bgColor = 'rgba(96,165,250,0.10)';
+      borderColor = 'rgba(96,165,250,0.30)';
+      statusLabel = '업데이트됨';
+      statusLabelColor = '#60a5fa';
+    }
+    icon = (
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ opacity: 0.65, flexShrink: 0 }}>
         <circle cx="12" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" />
         <path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9" />
         <line x1="12" y1="12" x2="12" y2="15" />
       </svg>
-      {shortHash && (
+    );
+  } else {
+    icon = (
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ opacity: 0.5, flexShrink: 0 }}>
+        <circle cx="12" cy="12" r="10" />
+        <polyline points="12 6 12 12 16 14" />
+      </svg>
+    );
+  }
+
+  const tooltipLines = [
+    `${label ?? 'repo'} 저장소`,
+    branch ? `브랜치: ${branch}` : null,
+    `상태: ${statusLabel}`,
+    commit ? `커밋: ${commit.slice(0, 12)}` : null,
+    timeStr ? `마지막 확인: ${timeStr}` : null,
+    errorMsg ? `오류: ${errorMsg}` : null,
+    onRefresh ? '— 클릭하여 수동 동기화 —' : null,
+  ].filter(Boolean).join('\n');
+
+  return (
+    <button
+      type="button"
+      onClick={onRefresh}
+      disabled={!onRefresh || effectiveStatus === 'syncing'}
+      className="flex items-center gap-1.5 px-2.5 h-8 rounded-lg text-[11px] font-medium select-none cursor-pointer transition-all"
+      style={{
+        background: bgColor,
+        border: `1px solid ${borderColor}`,
+        color: 'var(--text-secondary)',
+        opacity: effectiveStatus === 'syncing' ? 0.85 : 1,
+      }}
+      title={tooltipLines}
+      onMouseEnter={(e) => { if (onRefresh && effectiveStatus !== 'syncing') e.currentTarget.style.filter = 'brightness(1.15)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.filter = 'none'; }}
+    >
+      <span
+        className="w-[7px] h-[7px] rounded-full flex-shrink-0"
+        style={{
+          background: dotColor,
+          boxShadow: `0 0 8px ${dotColor}`,
+          animation: effectiveStatus === 'syncing' ? 'pulse 1.2s ease-in-out infinite' : 'none',
+        }}
+      />
+      {label && (
+        <span style={{ color: 'var(--text-primary)', fontSize: 11, fontWeight: 700, letterSpacing: '0.02em' }}>{label}</span>
+      )}
+      {icon}
+      {shortHash ? (
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-primary)', letterSpacing: '0.03em' }}>
           {shortHash}
         </span>
+      ) : (
+        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>—</span>
       )}
-      {statusLabel && (
-        <span className="px-1.5 py-px rounded-md text-[10px] font-bold" style={{ color: statusLabelColor }}>
-          {statusLabel}
-        </span>
-      )}
+      <span className="px-1.5 py-px rounded-md text-[10px] font-bold" style={{ color: statusLabelColor }}>
+        {statusLabel}
+      </span>
       {timeStr && (
         <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>{timeStr}</span>
       )}
-    </div>
+    </button>
   );
 }
 

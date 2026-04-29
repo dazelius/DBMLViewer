@@ -219,6 +219,12 @@ kbd {
   animation: spin 0.6s linear infinite;
 }
 
+/* Pulse (for sync indicator dots) */
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+
 /* Focus Mode banner entrance animation */
 @keyframes focusBannerIn {
   from {
