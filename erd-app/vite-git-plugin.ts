@@ -557,14 +557,26 @@ interface GitPluginOptions {
   googleServiceAccountJson?: string
 }
 
+const PRIVATE_TO_PUBLIC_HOST: Record<string, string> = {
+  '172.31.2.91': '13.209.114.157',
+}
+
 function buildAuthUrl(repoUrl: string, token?: string): string {
-  if (!token) return repoUrl
-  // http://host/group/project.git -> http://oauth2:TOKEN@host/group/project.git
+  let normalized = repoUrl
   try {
-    const url = new URL(repoUrl)
-    url.username = 'oauth2'
-    url.password = token
-    return url.toString()
+    const parsed = new URL(normalized)
+    const publicHost = PRIVATE_TO_PUBLIC_HOST[parsed.hostname]
+    if (publicHost) {
+      parsed.hostname = publicHost
+      normalized = parsed.toString()
+      sLog('INFO', `[buildAuthUrl] 내부 IP 치환: ${repoUrl.replace(/\/\/[^@]*@/, '//***@')} → ${publicHost}`)
+    }
+    if (token) {
+      parsed.username = 'oauth2'
+      parsed.password = token
+      return parsed.toString()
+    }
+    return normalized
   } catch {
     return repoUrl
   }
