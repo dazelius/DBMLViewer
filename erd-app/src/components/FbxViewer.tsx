@@ -295,10 +295,51 @@ export function FbxViewer({
       return rawUrl;
     });
 
-    // ── FBX 로드 ─────────────────────────────────────────────────────────────
+    // ── FBX 로드 (503 응답 시 자동 재시도: 백엔드가 LFS 다운로드 진행 중일 수 있음) ──
     const loader = new FBXLoader(fbxManager);
-    loader.load(
-      url,
+
+    const loadFbxWithRetry = async (targetUrl: string, maxAttempts = 6): Promise<THREE.Group> => {
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (cancelled) throw new Error('cancelled');
+        // 먼저 fetch로 status 확인 (FBXLoader는 status를 알려주지 않음)
+        try {
+          const head = await fetch(targetUrl, { method: 'HEAD' });
+          if (head.status === 503) {
+            if (attempt < maxAttempts) {
+              const wait = Math.min(2000 + attempt * 2000, 10000);
+              setErrMsg(`서버에서 LFS 파일 다운로드 중... (${attempt}/${maxAttempts}, ${wait / 1000}초 후 재시도)`);
+              await new Promise(r => setTimeout(r, wait));
+              continue;
+            }
+          } else if (head.status === 404 && attempt < maxAttempts) {
+            const wait = 3000;
+            setErrMsg(`파일 준비 중... (${attempt}/${maxAttempts})`);
+            await new Promise(r => setTimeout(r, wait));
+            continue;
+          } else if (!head.ok) {
+            throw new Error(`HTTP ${head.status}`);
+          }
+        } catch (e) {
+          if (attempt >= maxAttempts) throw e;
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+
+        // status가 OK면 FBXLoader로 실제 로드
+        try {
+          const fbx = await new Promise<THREE.Group>((resolve, reject) => {
+            loader.load(targetUrl, resolve, undefined, reject);
+          });
+          return fbx;
+        } catch (e) {
+          if (attempt >= maxAttempts) throw e;
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      throw new Error('Max retries exceeded');
+    };
+
+    loadFbxWithRetry(url).then(
       async (fbx) => {
         if (cancelled) return;
 
@@ -482,10 +523,10 @@ export function FbxViewer({
         scene.add(fbx);
         if (!cancelled) {
           setTexInfo(fbxLoadedTexCount > 0 ? `텍스처 ${fbxLoadedTexCount}개 적용됨` : '텍스처 없음 (기본 재질)');
+          setErrMsg('');
           setStatus('ok');
         }
       },
-      undefined,
       (err) => {
         if (!cancelled) {
           const msg = err instanceof Error ? err.message : String(err);

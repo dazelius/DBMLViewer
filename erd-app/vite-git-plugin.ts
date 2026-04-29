@@ -4268,8 +4268,10 @@ api('status').then(function(s){
           }
 
           // 4) 파일이 없거나 LFS 포인터면 GitLab API로 즉시 다운로드 시도 (on-demand)
+          //    플랫폼 프록시 timeout 방지를 위해 25초 안에 못 받으면 404 + 백그라운드 다운로드 계속
           let onDemandAttempted = false
           let onDemandError: string | null = null
+          let onDemandTimedOut = false
           if (!filePath || isLfsPointer(filePath)) {
             const repo2Url = options.repo2Url || options.repoUrl
             const repo2Token = options.repo2Token || options.token
@@ -4278,9 +4280,20 @@ api('status').then(function(s){
               const aegisDir = options.repo2LocalDir
               const repoRelative = pathParam.startsWith('Client/') ? pathParam : `Client/Project_Aegis/Assets/${pathParam}`
               try {
-                const fetched = await _onDemandFetchAsset(aegisDir, repo2Url, repo2Token, 'develop', repoRelative)
+                const fetchPromise = _onDemandFetchAsset(aegisDir, repo2Url, repo2Token, 'develop', repoRelative)
+                const TIMEOUT_MS = 25000
+                const fetched = await Promise.race([
+                  fetchPromise,
+                  new Promise<null>(resolve => setTimeout(() => { onDemandTimedOut = true; resolve(null) }, TIMEOUT_MS)),
+                ])
                 if (fetched && existsSync(fetched)) filePath = fetched
-                else onDemandError = 'fetch returned null (LFS API 또는 GitLab raw API 응답 실패)'
+                else if (onDemandTimedOut) {
+                  onDemandError = `다운로드 진행 중 (${TIMEOUT_MS / 1000}s timeout) — 백그라운드에서 계속 받는 중. 잠시 후 재시도하세요.`
+                  // 백그라운드 fetch는 _onDemandFetchInflight로 인해 계속 진행됨 (await 안 함)
+                  fetchPromise.catch(() => {/* logged inside */})
+                } else {
+                  onDemandError = 'fetch returned null (LFS API 또는 GitLab raw API 응답 실패)'
+                }
               } catch (e) {
                 onDemandError = e instanceof Error ? e.message : String(e)
               }
@@ -4292,12 +4305,17 @@ api('status').then(function(s){
           if (!filePath) {
             const norm = pathParam.replace(/\//g, sep)
             const tried = _uaCandidates.map(d => `${join(d, norm)} → ${existsSync(join(d, norm)) ? '✓' : '✗'}`)
-            res.writeHead(404, { 'Content-Type': 'application/json' })
+            res.writeHead(onDemandTimedOut ? 503 : 404, {
+              'Content-Type': 'application/json',
+              'Retry-After': onDemandTimedOut ? '5' : '0',
+            })
             res.end(JSON.stringify({
-              error: `Asset not found: ${pathParam}`,
+              error: onDemandTimedOut ? `Asset downloading: ${pathParam}` : `Asset not found: ${pathParam}`,
               tried,
-              onDemandFetch: { attempted: onDemandAttempted, error: onDemandError },
-              hint: onDemandAttempted
+              onDemandFetch: { attempted: onDemandAttempted, timedOut: onDemandTimedOut, error: onDemandError },
+              hint: onDemandTimedOut
+                ? '대용량 LFS 파일 다운로드 진행 중 — 5초 후 자동 재시도하세요'
+                : onDemandAttempted
                 ? 'GitLab API 다운로드 시도 실패 — 서버 → GitLab 접근 가능 여부 / 토큰 권한 / 파일 경로 확인'
                 : 'on-demand fetch 미시도 — repo2 환경변수 설정 확인 필요',
             }))
